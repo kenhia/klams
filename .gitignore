@@ -1,0 +1,17 @@
+# Rust / Cargo
+/target/
+**/target/
+**/*.rs.bk
+*.pdb
+Cargo.lock.bak
+
+# Local dev artifacts
+.scratch/
+.scratch-agent/
+
+# Editor / tooling
+.vscode/mcp.json
+
+# OS
+.DS_Store
+Thumbs.db
