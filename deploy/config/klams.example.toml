@@ -1,0 +1,43 @@
+# klams-service runtime configuration.
+#
+# Copy to $KLAMS_ROOT/config/klams.toml (provision script does this)
+# and point the systemd unit's EnvironmentFile at it via KLAMS_CONFIG.
+
+[server]
+# Bind address for the HTTP API. Loopback by default; the systemd
+# unit binds to a LAN interface in production.
+listen_addr = "127.0.0.1"
+port = 7777
+
+[auth]
+# 32-byte hex token. Generated and written by the provision script.
+# Treat as a secret; constant-time compared.
+bearer_token = "changeme-rendered-by-provision-script"
+
+[postgres]
+url = "postgres://klams:changeme@127.0.0.1:5432/klams"
+max_connections = 8
+
+[qdrant]
+# gRPC endpoint. Loopback because Qdrant is bound to 127.0.0.1:6334
+# by the Compose stack.
+grpc_url = "http://127.0.0.1:6334"
+collection = "knowledge_items"
+
+[embeddings]
+# TEI inference server. Loopback in production.
+url = "http://127.0.0.1:7070"
+model_id = "BAAI/bge-small-en-v1.5"
+vector_dim = 384
+
+[queue]
+# Bounded mpsc capacity for the worker pool. When full, the API
+# returns 503 with Retry-After.
+capacity = 1024
+workers = 4
+
+[logging]
+# "json" routes through the JSON tracing formatter for journald.
+# "pretty" is intended for dev.
+format = "json"
+level = "info"

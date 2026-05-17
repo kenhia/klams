@@ -1,0 +1,86 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/klams-types",
+    "crates/klams-core",
+    "crates/klams-store",
+    "crates/klams-api",
+    "crates/klams-service",
+    "crates/klams-client",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.83"
+license = "MIT"
+repository = "https://github.com/kenhia/klams"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+
+[workspace.dependencies]
+# async runtime
+tokio = { version = "1.41", features = ["full"] }
+futures = "0.3"
+
+# serde / json
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# http
+axum = { version = "0.7", features = ["macros"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["trace", "request-id", "util"] }
+hyper = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+axum-prometheus = "0.7"
+
+# storage
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "time", "json", "macros", "migrate"] }
+qdrant-client = "1.12"
+
+# observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+metrics = "0.23"
+
+# crypto / dedupe
+sha2 = "0.10"
+subtle = "2.6"
+
+# types
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
+
+# errors
+thiserror = "1"
+anyhow = "1"
+
+# config
+figment = { version = "0.10", features = ["toml", "env"] }
+
+# misc
+async-trait = "0.1"
+base64 = "0.22"
+unicode-normalization = "0.1"
+
+# test helpers
+wiremock = "0.6"
+
+# workspace member dependencies
+klams-types = { path = "crates/klams-types" }
+klams-core = { path = "crates/klams-core" }
+klams-store = { path = "crates/klams-store" }
+klams-api = { path = "crates/klams-api" }
+klams-client = { path = "crates/klams-client" }

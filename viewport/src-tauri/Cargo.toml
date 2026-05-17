@@ -1,0 +1,38 @@
+[package]
+name = "klams-viewport"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "klams-viewport"
+path = "src/main.rs"
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["devtools"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+klams-client = { path = "../../crates/klams-client" }
+klams-types = { path = "../../crates/klams-types" }
+tokio = { version = "1.41", features = ["full"] }
+keyring = { version = "3", features = ["windows-native", "apple-native", "linux-native"] }
+thiserror = "1"
+toml = "0.8"
+uuid = { version = "1", features = ["v4", "serde"] }
+directories = "5"
+async-trait = "0.1"
+tracing = "0.1"
+time = { version = "0.3", features = ["serde", "parsing", "macros"] }
+
+[dev-dependencies]
+tokio = { version = "1.41", features = ["macros", "rt-multi-thread"] }

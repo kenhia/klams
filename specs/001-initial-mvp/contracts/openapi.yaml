@@ -1,0 +1,443 @@
+openapi: 3.0.3
+info:
+  title: klams HTTP API
+  version: 0.1.0
+  description: |
+    klams Initial MVP HTTP API. All `/memory/*` endpoints require a
+    bearer token via the `Authorization: Bearer <token>` header. The
+    `/healthz` and `/metrics` endpoints are unauthenticated and intended
+    to be bound to a LAN-only interface by deployment.
+
+servers:
+  - url: http://kubs0:7777
+    description: kubs0 production
+  - url: http://127.0.0.1:7777
+    description: local dev
+
+security:
+  - bearerAuth: []
+
+paths:
+  /memory/facts:
+    post:
+      summary: Create or upsert a fact
+      description: |
+        Awaits persistence and returns the canonical `id` and `version`.
+        Deduplicates by `(type, payload_hash)`; an identical payload
+        results in the existing fact being returned unchanged.
+      operationId: upsertFact
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpsertFactRequest"
+      responses:
+        "200":
+          description: Fact persisted (or matched existing).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Fact"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/QueueFull" }
+    get:
+      summary: List facts
+      operationId: listFacts
+      parameters:
+        - in: query
+          name: type
+          schema: { type: string }
+        - in: query
+          name: source
+          schema: { type: string }
+        - in: query
+          name: created_after
+          schema: { type: string, format: date-time }
+        - in: query
+          name: created_before
+          schema: { type: string, format: date-time }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 50, maximum: 500 }
+        - in: query
+          name: cursor
+          schema: { type: string }
+      responses:
+        "200":
+          description: Page of facts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FactPage"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /memory/events:
+    post:
+      summary: Append an event
+      operationId: appendEvent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AppendEventRequest"
+      responses:
+        "202":
+          description: Event enqueued (immutable once persisted).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id]
+                properties:
+                  id: { type: string, format: uuid }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/QueueFull" }
+    get:
+      summary: List events
+      operationId: listEvents
+      parameters:
+        - in: query
+          name: task_id
+          schema: { type: string, format: uuid }
+        - in: query
+          name: category
+          schema: { type: string }
+        - in: query
+          name: created_after
+          schema: { type: string, format: date-time }
+        - in: query
+          name: created_before
+          schema: { type: string, format: date-time }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 50, maximum: 500 }
+        - in: query
+          name: cursor
+          schema: { type: string }
+      responses:
+        "200":
+          description: Page of events (ascending by created_at).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EventPage"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /memory/knowledge/index:
+    post:
+      summary: Index a knowledge chunk
+      description: |
+        The handler computes the normalized content hash and looks it
+        up in Qdrant synchronously before enqueueing. If a match exists,
+        the existing `knowledge_id` is returned with `deduped: true` and
+        no embedding work is queued. Otherwise the embed-and-index job
+        is enqueued and `deduped: false` is returned with the newly
+        assigned id.
+      operationId: indexKnowledge
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IndexKnowledgeRequest"
+      responses:
+        "202":
+          description: Indexing enqueued or matched existing.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [knowledge_id, deduped]
+                properties:
+                  knowledge_id: { type: string, format: uuid }
+                  deduped:      { type: boolean }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "503": { $ref: "#/components/responses/QueueFull" }
+
+  /memory/knowledge/{id}:
+    get:
+      summary: Fetch a single knowledge item by id
+      operationId: getKnowledgeItem
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The knowledge item.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KnowledgeItem"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: No knowledge item with that id.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+
+  /memory/search:
+    post:
+      summary: Unified search across memory types
+      operationId: search
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SearchRequest"
+      responses:
+        "200":
+          description: Merged ranked results.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResults"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503":
+          description: Knowledge search unavailable (Qdrant degraded). Fact/event-only fallback returned with `degraded: true`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResults"
+
+  /healthz:
+    get:
+      summary: Service health
+      security: []
+      operationId: health
+      responses:
+        "200":
+          description: All subsystems Ok.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthSnapshot"
+        "503":
+          description: At least one required subsystem is Down.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthSnapshot"
+
+  /metrics:
+    get:
+      summary: Prometheus metrics
+      security: []
+      operationId: metrics
+      responses:
+        "200":
+          description: Prometheus exposition format.
+          content:
+            text/plain:
+              schema: { type: string }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+
+  responses:
+    BadRequest:
+      description: Validation error.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    Unauthorized:
+      description: Missing or invalid bearer token.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    TooLarge:
+      description: Payload exceeds the configured limit.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    QueueFull:
+      description: Write queue at capacity; retry later.
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+
+  schemas:
+    ApiError:
+      type: object
+      required: [code, message]
+      properties:
+        code:    { type: string, example: "validation_error" }
+        message: { type: string }
+        field:   { type: string, nullable: true }
+        request_id: { type: string, nullable: true }
+
+    FactType:
+      type: string
+      enum: [UserFact, TaskFact, EnvFact]
+
+    Source:
+      type: string
+      enum: [User, Controller, Task, AgentProposal]
+
+    UpsertFactRequest:
+      type: object
+      required: [type, payload, source]
+      properties:
+        type:        { $ref: "#/components/schemas/FactType" }
+        payload:     { type: object, additionalProperties: true }
+        source:      { $ref: "#/components/schemas/Source" }
+        explicit_id: { type: string, format: uuid, nullable: true }
+
+    Fact:
+      type: object
+      required: [id, type, payload, version, source, confidence, decay_weight, use_count, created_at, updated_at]
+      properties:
+        id:           { type: string, format: uuid }
+        type:         { $ref: "#/components/schemas/FactType" }
+        payload:      { type: object, additionalProperties: true }
+        version:      { type: integer }
+        source:       { $ref: "#/components/schemas/Source" }
+        confidence:   { type: number, format: float }
+        decay_weight: { type: number, format: float }
+        use_count:    { type: integer }
+        last_used_at: { type: string, format: date-time, nullable: true }
+        created_at:   { type: string, format: date-time }
+        updated_at:   { type: string, format: date-time }
+
+    FactPage:
+      type: object
+      required: [items]
+      properties:
+        items:       { type: array, items: { $ref: "#/components/schemas/Fact" } }
+        next_cursor: { type: string, nullable: true }
+
+    AppendEventRequest:
+      type: object
+      required: [category, payload, source]
+      properties:
+        task_id:  { type: string, format: uuid, nullable: true }
+        category: { type: string, minLength: 1, maxLength: 64 }
+        payload:  { type: object, additionalProperties: true }
+        source:   { $ref: "#/components/schemas/Source" }
+
+    Event:
+      type: object
+      required: [id, category, payload, source, created_at]
+      properties:
+        id:         { type: string, format: uuid }
+        task_id:    { type: string, format: uuid, nullable: true }
+        category:   { type: string }
+        payload:    { type: object, additionalProperties: true }
+        source:     { $ref: "#/components/schemas/Source" }
+        created_at: { type: string, format: date-time }
+
+    EventPage:
+      type: object
+      required: [items]
+      properties:
+        items:       { type: array, items: { $ref: "#/components/schemas/Event" } }
+        next_cursor: { type: string, nullable: true }
+
+    IndexKnowledgeRequest:
+      type: object
+      required: [text, source]
+      properties:
+        text:    { type: string, minLength: 1, maxLength: 8192 }
+        source:  { $ref: "#/components/schemas/Source" }
+        tags:    { type: array, items: { type: string, maxLength: 64 }, maxItems: 32 }
+        repo:    { type: string, nullable: true }
+        file:    { type: string, nullable: true }
+        machine: { type: string, nullable: true }
+
+    KnowledgeItem:
+      type: object
+      required: [id, text, content_hash, source, created_at, updated_at]
+      properties:
+        id:           { type: string, format: uuid }
+        text:         { type: string }
+        content_hash: { type: string }
+        source:       { $ref: "#/components/schemas/Source" }
+        tags:         { type: array, items: { type: string } }
+        repo:         { type: string, nullable: true }
+        file:         { type: string, nullable: true }
+        machine:      { type: string, nullable: true }
+        confidence:   { type: number, format: float }
+        decay_weight: { type: number, format: float }
+        use_count:    { type: integer }
+        last_used_at: { type: string, format: date-time, nullable: true }
+        created_at:   { type: string, format: date-time }
+        updated_at:   { type: string, format: date-time }
+
+    SearchRequest:
+      type: object
+      required: [query]
+      properties:
+        query:   { type: string, minLength: 1, maxLength: 1024 }
+        types:
+          type: array
+          items: { type: string, enum: [fact, event, knowledge] }
+        filters:
+          type: object
+          additionalProperties: true
+          description: Type-scoped filters (e.g. {"fact":{"type":"UserFact"}}).
+        top_k:   { type: integer, default: 10, minimum: 1, maximum: 100 }
+
+    SearchHit:
+      type: object
+      required: [type, id, score, preview, payload]
+      properties:
+        type:    { type: string, enum: [fact, event, knowledge] }
+        id:      { type: string, format: uuid }
+        score:   { type: number, format: float }
+        preview: { type: string }
+        payload: { type: object, additionalProperties: true }
+
+    SearchResults:
+      type: object
+      required: [query, results, total]
+      properties:
+        query:    { type: string }
+        results:  { type: array, items: { $ref: "#/components/schemas/SearchHit" } }
+        total:    { type: integer }
+        degraded: { type: boolean, default: false }
+
+    SubsystemState:
+      type: string
+      enum: [Ok, Degraded, Down]
+
+    SubsystemStatus:
+      type: object
+      required: [state]
+      properties:
+        state:   { $ref: "#/components/schemas/SubsystemState" }
+        message: { type: string, nullable: true }
+
+    QueueStatus:
+      type: object
+      required: [depth, capacity, workers]
+      properties:
+        depth:    { type: integer }
+        capacity: { type: integer }
+        workers:  { type: integer }
+
+    HealthSnapshot:
+      type: object
+      required: [status, postgres, qdrant, embeddings, queue, version, uptime_seconds]
+      properties:
+        status:         { $ref: "#/components/schemas/SubsystemState" }
+        postgres:       { $ref: "#/components/schemas/SubsystemStatus" }
+        qdrant:         { $ref: "#/components/schemas/SubsystemStatus" }
+        embeddings:     { $ref: "#/components/schemas/SubsystemStatus" }
+        queue:          { $ref: "#/components/schemas/QueueStatus" }
+        version:        { type: string }
+        uptime_seconds: { type: integer }

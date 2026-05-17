@@ -1,0 +1,25 @@
+[package]
+name = "klams-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+klams-types = { workspace = true }
+klams-store = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+metrics = { workspace = true }
+time = { workspace = true }
+sha2 = { workspace = true }
+unicode-normalization = { workspace = true }

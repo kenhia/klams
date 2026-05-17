@@ -1,0 +1,277 @@
+//! Contract tests for `/memory/knowledge/index` and `/memory/knowledge/{id}`.
+//!
+//! Backed by an in-memory mock `Store` so we exercise the live axum
+//! router + worker pipeline without touching Qdrant/Postgres. The
+//! mock implements just enough behaviour to round-trip indexed items
+//! through a `WriteJob::IndexKnowledge` and serve them back via
+//! `get_knowledge`. Content-hash dedupe is exercised end-to-end.
+
+use async_trait::async_trait;
+use axum::body::{to_bytes, Body};
+use axum::http::{header, Method, Request, StatusCode};
+use klams_api::{build_router, ApiState};
+use klams_core::{spawn_workers, MemoryQueue};
+use klams_store::{EventQuery, FactQuery, Store, StoreResult, TextHit};
+use klams_types::{AppendEvent, Event, Fact, IndexKnowledge, KnowledgeItem, UpsertFact};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use time::OffsetDateTime;
+use tower::ServiceExt;
+use uuid::Uuid;
+
+#[derive(Debug, Default)]
+struct MockStore {
+    by_hash: Mutex<HashMap<String, Uuid>>,
+    by_id: Mutex<HashMap<Uuid, KnowledgeItem>>,
+}
+
+#[async_trait]
+impl Store for MockStore {
+    async fn upsert_fact(&self, _req: UpsertFact) -> StoreResult<Fact> {
+        unimplemented!()
+    }
+    async fn append_event(&self, _req: AppendEvent) -> StoreResult<Event> {
+        unimplemented!()
+    }
+    async fn index_knowledge(&self, req: IndexKnowledge) -> StoreResult<KnowledgeItem> {
+        let now = OffsetDateTime::now_utc();
+        let item = KnowledgeItem {
+            id: req.id,
+            text: req.text,
+            content_hash: req.content_hash.clone(),
+            source: req.source,
+            tags: req.tags,
+            repo: req.repo,
+            file: req.file,
+            machine: req.machine,
+            confidence: 1.0,
+            decay_weight: 1.0,
+            use_count: 0,
+            last_used_at: None,
+            created_at: now,
+            updated_at: now,
+        };
+        self.by_hash
+            .lock()
+            .unwrap()
+            .insert(req.content_hash, req.id);
+        self.by_id.lock().unwrap().insert(req.id, item.clone());
+        Ok(item)
+    }
+    async fn list_facts(&self, _q: FactQuery) -> StoreResult<(Vec<Fact>, Option<String>)> {
+        Ok((vec![], None))
+    }
+    async fn list_events(&self, _q: EventQuery) -> StoreResult<(Vec<Event>, Option<String>)> {
+        Ok((vec![], None))
+    }
+    async fn search_knowledge(
+        &self,
+        _v: Vec<f32>,
+        _k: u32,
+    ) -> StoreResult<Vec<(KnowledgeItem, f32)>> {
+        Ok(vec![])
+    }
+    async fn search_text(&self, _q: &str, _k: u32) -> StoreResult<(Vec<TextHit>, Vec<TextHit>)> {
+        Ok((vec![], vec![]))
+    }
+    async fn find_knowledge_by_content_hash(&self, h: &str) -> StoreResult<Option<Uuid>> {
+        Ok(self.by_hash.lock().unwrap().get(h).copied())
+    }
+    async fn get_knowledge(&self, id: Uuid) -> StoreResult<Option<KnowledgeItem>> {
+        Ok(self.by_id.lock().unwrap().get(&id).cloned())
+    }
+    async fn embed_query(&self, _query: &str) -> StoreResult<Vec<f32>> {
+        Ok(vec![0.0; 384])
+    }
+}
+
+fn router_with_store(store: Arc<MockStore>) -> axum::Router {
+    let (queue, rx) = MemoryQueue::new(32);
+    let _w = spawn_workers(1, rx, Arc::clone(&store));
+    build_router(
+        ApiState {
+            store,
+            queue,
+            queue_capacity: 32,
+            workers: 1,
+            started_at: std::time::Instant::now(),
+        },
+        "test-bearer",
+    )
+}
+
+async fn post(
+    app: &axum::Router,
+    uri: &str,
+    body: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(uri)
+                .header(header::AUTHORIZATION, "Bearer test-bearer")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+    let v: serde_json::Value = if bytes.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap()
+    };
+    (status, v)
+}
+
+async fn get(app: &axum::Router, uri: &str) -> (StatusCode, serde_json::Value) {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(uri)
+                .header(header::AUTHORIZATION, "Bearer test-bearer")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+    let v: serde_json::Value = if bytes.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap()
+    };
+    (status, v)
+}
+
+#[tokio::test]
+async fn post_index_returns_accepted_with_id() {
+    let store = Arc::new(MockStore::default());
+    let app = router_with_store(store);
+    let (status, body) = post(
+        &app,
+        "/memory/knowledge/index",
+        serde_json::json!({
+            "text": "hello world from contract test",
+            "source": "Controller",
+            "tags": ["t1"]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert!(body.get("knowledge_id").is_some());
+    assert_eq!(
+        body.get("deduped").and_then(serde_json::Value::as_bool),
+        Some(false)
+    );
+}
+
+#[tokio::test]
+async fn duplicate_text_returns_deduped_true_with_same_id() {
+    let store = Arc::new(MockStore::default());
+    let app = router_with_store(Arc::clone(&store));
+
+    let req = serde_json::json!({
+        "text": "exact duplicate text",
+        "source": "Controller"
+    });
+    let (status1, body1) = post(&app, "/memory/knowledge/index", req.clone()).await;
+    assert_eq!(status1, StatusCode::ACCEPTED);
+    assert_eq!(body1["deduped"], serde_json::Value::Bool(false));
+    let id1 = body1["knowledge_id"].as_str().unwrap().to_string();
+
+    // Wait for worker to persist so dedupe lookup hits.
+    for _ in 0..50 {
+        if !store.by_hash.lock().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    let (status2, body2) = post(&app, "/memory/knowledge/index", req).await;
+    assert_eq!(status2, StatusCode::ACCEPTED);
+    assert_eq!(body2["deduped"], serde_json::Value::Bool(true));
+    assert_eq!(body2["knowledge_id"].as_str().unwrap(), id1);
+}
+
+#[tokio::test]
+async fn oversized_text_returns_413() {
+    let store = Arc::new(MockStore::default());
+    let app = router_with_store(store);
+    let big = "a".repeat(8193);
+    let (status, body) = post(
+        &app,
+        "/memory/knowledge/index",
+        serde_json::json!({"text": big, "source": "Controller"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(body["code"], "payload_too_large");
+}
+
+#[tokio::test]
+async fn empty_text_returns_400_validation() {
+    let store = Arc::new(MockStore::default());
+    let app = router_with_store(store);
+    let (status, body) = post(
+        &app,
+        "/memory/knowledge/index",
+        serde_json::json!({"text": "   ", "source": "Controller"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], "validation_error");
+}
+
+#[tokio::test]
+async fn get_knowledge_returns_item_when_present() {
+    let store = Arc::new(MockStore::default());
+    let app = router_with_store(Arc::clone(&store));
+    let (_s, body) = post(
+        &app,
+        "/memory/knowledge/index",
+        serde_json::json!({"text": "fetch me back", "source": "Controller"}),
+    )
+    .await;
+    let id = body["knowledge_id"].as_str().unwrap().to_string();
+    for _ in 0..50 {
+        if store
+            .by_id
+            .lock()
+            .unwrap()
+            .contains_key(&Uuid::parse_str(&id).unwrap())
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let (status, body) = get(&app, &format!("/memory/knowledge/{id}")).await;
+    assert_eq!(status, StatusCode::OK);
+    for k in [
+        "id",
+        "text",
+        "content_hash",
+        "source",
+        "tags",
+        "created_at",
+        "updated_at",
+    ] {
+        assert!(body.get(k).is_some(), "missing field {k}");
+    }
+}
+
+#[tokio::test]
+async fn get_knowledge_returns_404_for_unknown_id() {
+    let store = Arc::new(MockStore::default());
+    let app = router_with_store(store);
+    let (status, body) = get(&app, &format!("/memory/knowledge/{}", Uuid::now_v7())).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["code"], "not_found");
+}

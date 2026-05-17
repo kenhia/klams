@@ -1,0 +1,61 @@
+# Ephemeral test stack for integration tests.
+# Brought up by tests via `docker compose -f tests/docker-compose.test.yml up -d`.
+# Uses a dedicated user-defined bridge network so containers can address
+# each other by service name (postgres, qdrant, tei) inside the network,
+# while the host accesses them on the published ports below.
+name: klams-test
+
+networks:
+  klams-test-net:
+    driver: bridge
+
+volumes:
+  klams-test-pg: {}
+  klams-test-qdrant: {}
+  klams-test-tei: {}
+
+services:
+  postgres:
+    image: postgres:16
+    networks: [klams-test-net]
+    environment:
+      POSTGRES_USER: klams
+      POSTGRES_PASSWORD: klams_test
+      POSTGRES_DB: klams
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - klams-test-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U klams"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    networks: [klams-test-net]
+    ports:
+      - "127.0.0.1:56333:6333"
+      - "127.0.0.1:56334:6334"
+    volumes:
+      - klams-test-qdrant:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:6333/readyz || exit 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  tei:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.7
+    networks: [klams-test-net]
+    command: ["--model-id", "BAAI/bge-small-en-v1.5"]
+    ports:
+      - "127.0.0.1:57070:80"
+    volumes:
+      - klams-test-tei:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 60

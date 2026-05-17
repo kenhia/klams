@@ -24,13 +24,59 @@ human-facing window into klams state.
 
 ## Status
 
-Planning. See:
+Initial MVP shipped. The service runs under systemd on `kubs0` and the
+Windows viewport reads facts, events, and knowledge over the LAN.
 
-- [specs/planning/plan.md](specs/planning/plan.md) — phased roadmap
-- [specs/planning/viewport.md](specs/planning/viewport.md) — desktop GUI plan
-- [specs/planning/backlog.md](specs/planning/backlog.md) — deferred ideas
+- [specs/001-initial-mvp/spec.md](specs/001-initial-mvp/spec.md) —
+  MVP specification + success criteria (SC-001..SC-009).
+- [specs/001-initial-mvp/plan.md](specs/001-initial-mvp/plan.md) —
+  implementation plan.
+- [specs/001-initial-mvp/tasks.md](specs/001-initial-mvp/tasks.md) —
+  task ledger.
 - [.specify/memory/constitution.md](.specify/memory/constitution.md) —
-  project constitution
+  project constitution.
+
+## Running the MVP
+
+Full end-to-end provisioning, build, and smoke checks are in the
+quickstart. The short version:
+
+1. **Provision `kubs0`**: install Docker + systemd, then run the
+   storage-root + Compose bootstrap per
+   [docs/setup.md](docs/setup.md).
+2. **Bring up dependencies**:
+
+   ```sh
+   cd deploy
+   docker compose --env-file compose.env up -d
+   ```
+
+3. **Run migrations and start the service**:
+
+   ```sh
+   cargo run -p klams-service --release   # or: systemctl start klams
+   ```
+
+4. **Build the Windows viewport** from any Linux host with
+   `cargo-xwin` installed:
+
+   ```sh
+   cd viewport/src-tauri
+   cargo xwin build --release --target x86_64-pc-windows-msvc \
+     --features custom-protocol
+   ```
+
+   Copy the resulting `klams-viewport.exe` to the Windows machine, set
+   the bearer once via the in-app config dialog (stored in the Windows
+   Credential Manager), and launch. Add `--debug` to open WebView
+   devtools and enable diagnostic logging.
+
+5. **Smoke-test** against the success criteria using
+   [specs/001-initial-mvp/quickstart.md §9](specs/001-initial-mvp/quickstart.md#9-smoke-test-the-user-stories).
+
+Architecture overview and component map:
+[docs/architecture.md](docs/architecture.md). Day-to-day operator
+recipes: [docs/usage.md](docs/usage.md).
 
 ## License
 
