@@ -2,6 +2,7 @@
 
 use figment::providers::{Env, Format, Toml};
 use figment::Figment;
+use klams_types::FactType;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -26,6 +27,8 @@ pub struct Config {
     pub embeddings: EmbeddingsConfig,
     pub queue: QueueConfig,
     pub logging: LoggingConfig,
+    #[serde(default)]
+    pub decay: DecayConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,6 +83,35 @@ pub struct LoggingConfig {
     pub level: String,
 }
 
+/// Background decay-task configuration (sprint 002). Re-export of
+/// the canonical type from `klams-types` so the runtime config and
+/// the decay task agree on field layout.
+pub use klams_types::DecayConfig;
+
+impl LogResolvedDecay for DecayConfig {
+    fn log_resolved(&self) {
+        for t in [FactType::UserFact, FactType::TaskFact, FactType::EnvFact] {
+            let lambda = self.lambda_for(t);
+            let overridden = self.lambda.contains_key(&t);
+            tracing::info!(
+                fact_type = t.as_str(),
+                lambda,
+                overridden,
+                task_interval_seconds = self.task_interval_seconds,
+                batch_size = self.batch_size,
+                "decay config resolved"
+            );
+        }
+    }
+}
+
+/// Local helper trait so `DecayConfig` (re-exported from
+/// `klams-types`) can keep its observability shim in the service
+/// crate without polluting the shared type.
+pub trait LogResolvedDecay {
+    fn log_resolved(&self);
+}
+
 impl Config {
     /// Load from a TOML file at `path`, with `KLAMS_` env overrides
     /// (double underscore separates nested keys, e.g.
@@ -120,5 +152,140 @@ mod tests {
         assert!(cfg.queue.capacity >= 1);
         assert!(cfg.queue.workers >= 1);
         assert_eq!(cfg.logging.format, "json");
+        // [decay] is commented out in the shipped example, so the
+        // defaults must apply.
+        assert_eq!(cfg.decay.task_interval_seconds, 3600);
+        assert_eq!(cfg.decay.batch_size, 500);
+        assert!(cfg.decay.lambda.is_empty());
+        assert!((cfg.decay.lambda_for(FactType::UserFact) - 1e-9).abs() < f32::EPSILON);
+        assert!((cfg.decay.lambda_for(FactType::TaskFact) - 1e-6).abs() < f32::EPSILON);
+        assert!((cfg.decay.lambda_for(FactType::EnvFact) - 1e-9).abs() < f32::EPSILON);
+    }
+
+    /// T012(a): a config with no `[decay]` block loads defaults.
+    #[test]
+    fn decay_defaults_when_block_missing() {
+        let toml = r#"
+            [server]
+            listen_addr = "127.0.0.1"
+            port = 7777
+            [auth]
+            bearer_token = "test"
+            [postgres]
+            url = "postgres://x/y"
+            [qdrant]
+            grpc_url = "http://127.0.0.1:6334"
+            [embeddings]
+            url = "http://127.0.0.1:7070"
+            model_id = "BAAI/bge-small-en-v1.5"
+            vector_dim = 384
+            [queue]
+            capacity = 64
+            workers = 1
+            [logging]
+            format = "json"
+            level = "info"
+        "#;
+        let cfg: Config = Figment::new()
+            .merge(Toml::string(toml))
+            .extract()
+            .expect("parse");
+        assert_eq!(cfg.decay.task_interval_seconds, 3600);
+        assert_eq!(cfg.decay.batch_size, 500);
+        assert!((cfg.decay.lambda_for(FactType::TaskFact) - 1e-6).abs() < f32::EPSILON);
+    }
+
+    /// T012(b): partial overrides keep defaults for unconfigured
+    /// types.
+    #[test]
+    fn decay_partial_override_preserves_other_defaults() {
+        let toml = r#"
+            [server]
+            listen_addr = "127.0.0.1"
+            port = 7777
+            [auth]
+            bearer_token = "test"
+            [postgres]
+            url = "postgres://x/y"
+            [qdrant]
+            grpc_url = "http://127.0.0.1:6334"
+            [embeddings]
+            url = "http://127.0.0.1:7070"
+            model_id = "BAAI/bge-small-en-v1.5"
+            vector_dim = 384
+            [queue]
+            capacity = 64
+            workers = 1
+            [logging]
+            format = "json"
+            level = "info"
+            [decay]
+            task_interval_seconds = 60
+            [decay.lambda]
+            TaskFact = 5.0e-5
+        "#;
+        let cfg: Config = Figment::new()
+            .merge(Toml::string(toml))
+            .extract()
+            .expect("parse");
+        assert_eq!(cfg.decay.task_interval_seconds, 60);
+        // batch_size still default.
+        assert_eq!(cfg.decay.batch_size, 500);
+        // Overridden type uses override.
+        assert!((cfg.decay.lambda_for(FactType::TaskFact) - 5.0e-5).abs() < 1e-9);
+        // Unconfigured types still get defaults.
+        assert!((cfg.decay.lambda_for(FactType::UserFact) - 1e-9).abs() < f32::EPSILON);
+        assert!((cfg.decay.lambda_for(FactType::EnvFact) - 1e-9).abs() < f32::EPSILON);
+    }
+
+    /// T012(c): full override roundtrips through serde without
+    /// dropping any per-type entry.
+    #[test]
+    fn decay_full_override_roundtrips() {
+        let toml = r#"
+            [server]
+            listen_addr = "127.0.0.1"
+            port = 7777
+            [auth]
+            bearer_token = "test"
+            [postgres]
+            url = "postgres://x/y"
+            [qdrant]
+            grpc_url = "http://127.0.0.1:6334"
+            [embeddings]
+            url = "http://127.0.0.1:7070"
+            model_id = "BAAI/bge-small-en-v1.5"
+            vector_dim = 384
+            [queue]
+            capacity = 64
+            workers = 1
+            [logging]
+            format = "json"
+            level = "info"
+            [decay]
+            task_interval_seconds = 120
+            batch_size = 200
+            [decay.lambda]
+            UserFact = 1.0e-8
+            TaskFact = 2.0e-5
+            EnvFact  = 3.0e-7
+        "#;
+        let cfg: Config = Figment::new()
+            .merge(Toml::string(toml))
+            .extract()
+            .expect("parse");
+        assert_eq!(cfg.decay.task_interval_seconds, 120);
+        assert_eq!(cfg.decay.batch_size, 200);
+        assert!((cfg.decay.lambda_for(FactType::UserFact) - 1.0e-8).abs() < 1e-12);
+        assert!((cfg.decay.lambda_for(FactType::TaskFact) - 2.0e-5).abs() < 1e-9);
+        assert!((cfg.decay.lambda_for(FactType::EnvFact) - 3.0e-7).abs() < 1e-11);
+        // Round-trip through TOML and back to confirm no entry is lost.
+        let serialised = toml::to_string(&cfg).expect("serialise");
+        let reparsed: Config = Figment::new()
+            .merge(Toml::string(&serialised))
+            .extract()
+            .expect("reparse");
+        assert_eq!(reparsed.decay.lambda.len(), 3);
+        assert!((reparsed.decay.lambda_for(FactType::TaskFact) - 2.0e-5).abs() < 1e-9);
     }
 }

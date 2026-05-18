@@ -89,4 +89,120 @@ describe('api wrappers', () => {
       args: { klams_url: 'http://x', refresh_interval_seconds: 30 }
     });
   });
+
+  it('listDissents wraps filter args', async () => {
+    await api.listDissents({ status: 'pending', limit: 10 });
+    expect(invokeMock).toHaveBeenCalledWith('list_dissents', {
+      args: { status: 'pending', limit: 10 }
+    });
+  });
+
+  it('listDissents defaults args to empty object', async () => {
+    await api.listDissents();
+    expect(invokeMock).toHaveBeenCalledWith('list_dissents', { args: {} });
+  });
+
+  it('getDissent passes id under {args.id}', async () => {
+    await api.getDissent('00000000-0000-0000-0000-000000000010');
+    expect(invokeMock).toHaveBeenCalledWith('get_dissent', {
+      args: { id: '00000000-0000-0000-0000-000000000010' }
+    });
+  });
+
+  it('promoteDissent wraps caller_source + expected_version', async () => {
+    await api.promoteDissent({
+      dissent_id: '00000000-0000-0000-0000-000000000020',
+      caller_source: 'User',
+      expected_version: 3
+    });
+    expect(invokeMock).toHaveBeenCalledWith('promote_dissent', {
+      args: {
+        dissent_id: '00000000-0000-0000-0000-000000000020',
+        caller_source: 'User',
+        expected_version: 3
+      }
+    });
+  });
+
+  it('promoteDissent surfaces 403 trust_required as a rejection', async () => {
+    invokeMock.mockRejectedValueOnce({ kind: 'server', status: 403, message: 'trust_required' });
+    await expect(
+      api.promoteDissent({
+        dissent_id: '00000000-0000-0000-0000-000000000020',
+        caller_source: 'AgentProposal',
+        expected_version: 1
+      })
+    ).rejects.toMatchObject({ kind: 'server', status: 403 });
+  });
+
+  it('discardDissent wraps caller_source', async () => {
+    await api.discardDissent({
+      dissent_id: '00000000-0000-0000-0000-000000000030',
+      caller_source: 'User'
+    });
+    expect(invokeMock).toHaveBeenCalledWith('discard_dissent', {
+      args: { dissent_id: '00000000-0000-0000-0000-000000000030', caller_source: 'User' }
+    });
+  });
+
+  it('upsertFact narrows on outcome=persisted', async () => {
+    invokeMock.mockResolvedValueOnce({
+      outcome: 'persisted',
+      fact: { id: 'abc', version: 1 }
+    });
+    const out = await api.upsertFact({
+      fact_type: 'UserFact',
+      payload: { k: 'v' },
+      source: 'User'
+    });
+    if (out.outcome === 'persisted') {
+      expect(out.fact.id).toBe('abc');
+    } else {
+      throw new Error(`expected persisted, got ${out.outcome}`);
+    }
+  });
+
+  it('upsertFact narrows on outcome=version_conflict', async () => {
+    invokeMock.mockResolvedValueOnce({
+      outcome: 'version_conflict',
+      current_version: 7,
+      fact_id: 'def'
+    });
+    const out = await api.upsertFact({
+      fact_type: 'UserFact',
+      payload: {},
+      source: 'User',
+      expected_version: 1
+    });
+    if (out.outcome === 'version_conflict') {
+      expect(out.current_version).toBe(7);
+    } else {
+      throw new Error(`expected version_conflict, got ${out.outcome}`);
+    }
+  });
+
+  it('editFact wraps id + expected_version', async () => {
+    invokeMock.mockResolvedValueOnce({ outcome: 'persisted', fact: { id: 'x' } });
+    await api.editFact({
+      id: '00000000-0000-0000-0000-000000000040',
+      fact_type: 'UserFact',
+      payload: { k: 'v2' },
+      expected_version: 2
+    });
+    expect(invokeMock).toHaveBeenCalledWith('edit_fact', {
+      args: {
+        id: '00000000-0000-0000-0000-000000000040',
+        fact_type: 'UserFact',
+        payload: { k: 'v2' },
+        expected_version: 2
+      }
+    });
+  });
+
+  it('deleteFact passes id under {args.id}', async () => {
+    await api.deleteFact('00000000-0000-0000-0000-000000000050');
+    expect(invokeMock).toHaveBeenCalledWith('delete_fact', {
+      args: { id: '00000000-0000-0000-0000-000000000050' }
+    });
+  });
 });

@@ -104,6 +104,7 @@ fn router_with(store: Arc<MockStore>) -> axum::Router {
             queue_capacity: 32,
             workers: 1,
             started_at: std::time::Instant::now(),
+            validators: std::sync::Arc::new(klams_core::ValidatorRegistry::with_defaults()),
         },
         "test-bearer",
     )

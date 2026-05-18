@@ -75,3 +75,78 @@ KLAMS_CONFIG=$KLAMS_ROOT/config/klams.toml \
 
 The compose file references `${KLAMS_DATA_ROOT}` for bind mounts, so
 the data volumes follow the override automatically.
+
+## Developer tooling
+
+Sprint 002 introduces a top-level `justfile` so every routine
+developer command (`gate`, `compose-up`, `run`, `verify`, …) is
+discoverable via `just --list` and is the same command CI invokes.
+Install [`just`](https://github.com/casey/just) once per developer
+machine before running any Phase 2+ workflow (this is the install
+referenced from sprint 002 task T001 and from
+[specs/002-safety-and-write-ops/quickstart.md §Prerequisites](../specs/002-safety-and-write-ops/quickstart.md#prerequisites)).
+
+```bash
+# Debian / Ubuntu (and WSL Ubuntu): use the cargo install path so
+# the binary lands on $PATH without a system package manager.
+cargo install just
+
+# Or, if you prefer the system package on a recent Debian/Ubuntu:
+sudo apt-get install -y just
+
+# Verify
+just --version
+```
+
+After installing, `just --list` from the repo root prints every
+recipe defined for this sprint. Run `just gate` before every
+commit — it executes the constitution's pre-commit gate
+(`cargo fmt --check`, `cargo clippy --workspace -- -D warnings`,
+`cargo test --workspace`).
+
+### `just --list` quick reference
+
+| Recipe            | What it does |
+|-------------------|--------------|
+| `default`         | Prints this menu (`just --list`). |
+| `compose-up`      | `docker compose -f deploy/docker-compose.yml up -d`. |
+| `compose-down`    | Tears the stack down (keeps volumes). |
+| `compose-rebuild` | `down` → `build --no-cache` → `up -d` for a clean image rebuild. |
+| `build`           | `cargo build -p klams-service --release`. |
+| `run`             | `cargo run -p klams-service`, logs to stderr. |
+| `test`            | `cargo test --workspace` (skips `#[ignore]`'d cases). |
+| `gate`            | Constitution pre-commit gate; what CI runs. |
+| `health`          | `/healthz` curl + `scripts/verify-mvp.sh --light`. |
+| `verify`          | Full `scripts/verify-mvp.sh` (SC-001..SC-009 smoke). |
+| `viewport-build`  | `cargo xwin` Windows cross-build of the viewport. |
+
+## Decay tuning (sprint 002)
+
+The background decay task in `klams-service` re-weights facts on a
+fixed interval so unused entries fall down the search ranking. The
+defaults are baked into the binary; expose them by uncommenting the
+`[decay]` block in `${KLAMS_ROOT}/config/klams.toml`:
+
+```toml
+[decay]
+# How often the decay worker scans facts. Larger = less churn,
+# slower convergence after a burst of writes.
+task_interval_seconds = 3600   # default: 1h
+
+# Facts updated per worker tick. Caps the DB transaction size so a
+# huge corpus never holds a long-running write lock.
+batch_size = 500               # default: 500
+
+# Per-FactType decay rate λ in the formula new_w = old_w * exp(-λ · Δt)
+# where Δt is seconds since last_used_at. Larger λ = decays faster.
+# Defaults reflect Working memory (TaskFact) draining ~1000× faster
+# than long-lived Machine/User facts.
+[decay.lambda]
+UserFact = 1e-9   # User memory — effectively permanent
+TaskFact = 1e-6   # Working memory — fades within days of disuse
+EnvFact  = 1e-9   # Machine memory — effectively permanent
+```
+
+The block is commented out in `deploy/config/klams.example.toml`;
+uncomment only the overrides you actually want — any missing key
+falls back to the baked-in default.

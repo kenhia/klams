@@ -72,6 +72,13 @@ fn main() {
             memory::get_knowledge_item,
             memory::get_config,
             memory::set_config,
+            memory::list_dissents,
+            memory::get_dissent,
+            memory::promote_dissent,
+            memory::discard_dissent,
+            memory::upsert_fact,
+            memory::edit_fact,
+            memory::delete_fact,
             health::get_health,
         ])
         .setup(|app| {

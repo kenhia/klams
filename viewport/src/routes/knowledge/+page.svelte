@@ -1,6 +1,19 @@
 <script lang="ts">
   import { api } from '$lib/api';
-  import type { KnowledgeItem, SearchResults } from '$lib/types';
+  import type { KnowledgeItem, ProvenanceBundle, SearchResults } from '$lib/types';
+  import ProvenancePanel from '$lib/ProvenancePanel.svelte';
+
+  function provenanceOf(k: KnowledgeItem): ProvenanceBundle {
+    return {
+      source: k.source,
+      confidence: k.confidence,
+      decay_weight: k.decay_weight,
+      use_count: k.use_count,
+      last_used_at: k.last_used_at,
+      created_at: k.created_at,
+      updated_at: k.updated_at
+    };
+  }
 
   let query = $state('');
   let topK = $state(10);
@@ -70,7 +83,7 @@
     <p><strong>id:</strong> {selected.id}</p>
     <p><strong>tags:</strong> {selected.tags.join(', ') || '—'}</p>
     <p><strong>repo:</strong> {selected.repo ?? '—'} · <strong>file:</strong> {selected.file ?? '—'} · <strong>machine:</strong> {selected.machine ?? '—'}</p>
-    <p><strong>confidence:</strong> {selected.confidence} · <strong>decay:</strong> {selected.decay_weight} · <strong>uses:</strong> {selected.use_count}</p>
+    <ProvenancePanel provenance={provenanceOf(selected)} />
     <pre>{selected.text}</pre>
   </aside>
 {/if}

@@ -9,10 +9,19 @@
 //! through `reqwest`. Concrete endpoint implementations land with
 //! their owning user-story handler tasks.
 
+// `ClientError::Api` carries the full `WireError` (extended with
+// `details` + `current_version` in sprint 002) so callers can render
+// structured field-level errors without a second hop. The variant is
+// ~130 bytes which trips `result_large_err`; we accept the size cost
+// here because every public method already returns `ClientResult`.
+#![allow(clippy::result_large_err)]
+
 use klams_types::{
-    AcceptedId, ApiError as WireError, AppendEventRequest, EventPage, Fact, FactPage,
-    HealthSnapshot, IndexKnowledgeRequest, IndexKnowledgeResponse, KnowledgeItem, ListEventsParams,
-    ListFactsParams, SearchRequest, SearchResults, SearchType, UpsertFactRequest,
+    AcceptedId, ApiError as WireError, AppendEventRequest, Dissent, DissentPage,
+    DissentSubmittedResponse, EventPage, Fact, FactPage, FactWriteOutcome, HealthSnapshot,
+    IndexKnowledgeRequest, IndexKnowledgeResponse, KnowledgeItem, ListDissentsParams,
+    ListEventsParams, ListFactsParams, SearchRequest, SearchResults, SearchType, Source,
+    UpsertFactRequest,
 };
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use reqwest::StatusCode;
@@ -115,6 +124,8 @@ impl Client {
                 message: format!("non-JSON body ({} bytes)", bytes.len()),
                 field: None,
                 request_id: None,
+                details: None,
+                current_version: None,
             });
             Err(ClientError::Api { status, body })
         }
@@ -137,6 +148,8 @@ impl Client {
                 message: format!("non-JSON body ({} bytes)", bytes.len()),
                 field: None,
                 request_id: None,
+                details: None,
+                current_version: None,
             });
             Err(ClientError::Api { status, body })
         }
@@ -147,8 +160,95 @@ impl Client {
         self.get_json("/healthz").await
     }
 
-    pub async fn upsert_fact(&self, req: &UpsertFactRequest) -> ClientResult<Fact> {
-        self.post_json("/memory/facts", req).await
+    pub async fn upsert_fact(&self, req: &UpsertFactRequest) -> ClientResult<FactWriteOutcome> {
+        let url = self.url("/memory/facts")?;
+        let resp = self
+            .http
+            .post(url)
+            .header(AUTHORIZATION, format!("Bearer {}", self.bearer))
+            .header(CONTENT_TYPE, "application/json")
+            .json(req)
+            .send()
+            .await?;
+        let status = resp.status();
+        let bytes = resp.bytes().await?;
+        match status {
+            StatusCode::OK => {
+                let fact: Fact = serde_json::from_slice(&bytes)
+                    .map_err(|e| ClientError::Decode(e.to_string()))?;
+                Ok(FactWriteOutcome::Persisted { fact })
+            }
+            StatusCode::ACCEPTED => {
+                let r: DissentSubmittedResponse = serde_json::from_slice(&bytes)
+                    .map_err(|e| ClientError::Decode(e.to_string()))?;
+                Ok(FactWriteOutcome::Dissented {
+                    dissent_id: r.dissent_id,
+                    fact_id: r.fact_id,
+                })
+            }
+            _ => {
+                let body: WireError = serde_json::from_slice(&bytes).unwrap_or(WireError {
+                    code: "decode_error".into(),
+                    message: format!("non-JSON body ({} bytes)", bytes.len()),
+                    field: None,
+                    request_id: None,
+                    details: None,
+                    current_version: None,
+                });
+                if status == StatusCode::CONFLICT {
+                    if let Some(current_version) = body.current_version {
+                        let fact_id = uuid::Uuid::nil();
+                        return Ok(FactWriteOutcome::VersionConflict {
+                            current_version,
+                            fact_id,
+                        });
+                    }
+                }
+                Err(ClientError::Api { status, body })
+            }
+        }
+    }
+
+    /// `GET /memory/dissents` with optional filters.
+    pub async fn list_dissents(&self, params: &ListDissentsParams) -> ClientResult<DissentPage> {
+        self.get_json_query("/memory/dissents", params).await
+    }
+
+    /// `GET /memory/dissents/{id}`.
+    pub async fn get_dissent(&self, id: uuid::Uuid) -> ClientResult<Dissent> {
+        self.get_json(&format!("/memory/dissents/{id}")).await
+    }
+
+    /// `POST /memory/dissents/{id}/promote`.
+    pub async fn promote_dissent(
+        &self,
+        id: uuid::Uuid,
+        source: Source,
+        expected_version: i32,
+    ) -> ClientResult<Fact> {
+        #[derive(Serialize)]
+        struct Body {
+            source: Source,
+            expected_version: i32,
+        }
+        self.post_json(
+            &format!("/memory/dissents/{id}/promote"),
+            &Body {
+                source,
+                expected_version,
+            },
+        )
+        .await
+    }
+
+    /// `POST /memory/dissents/{id}/discard`.
+    pub async fn discard_dissent(&self, id: uuid::Uuid, source: Source) -> ClientResult<Dissent> {
+        #[derive(Serialize)]
+        struct Body {
+            source: Source,
+        }
+        self.post_json(&format!("/memory/dissents/{id}/discard"), &Body { source })
+            .await
     }
 
     pub async fn append_event(&self, req: &AppendEventRequest) -> ClientResult<AcceptedId> {
@@ -193,6 +293,55 @@ impl Client {
 
     pub async fn get_knowledge(&self, id: uuid::Uuid) -> ClientResult<KnowledgeItem> {
         self.get_json(&format!("/memory/knowledge/{id}")).await
+    }
+
+    /// `GET /memory/facts/{id}` — single fact lookup including `dissent_count`.
+    pub async fn get_fact(&self, id: uuid::Uuid) -> ClientResult<Fact> {
+        self.get_json(&format!("/memory/facts/{id}")).await
+    }
+
+    /// `DELETE /memory/facts/{id}` — admin delete (`User`/`Controller`).
+    pub async fn delete_fact(&self, id: uuid::Uuid) -> ClientResult<()> {
+        let url = self.url(&format!("/memory/facts/{id}"))?;
+        let resp = self
+            .http
+            .delete(url)
+            .header(AUTHORIZATION, format!("Bearer {}", self.bearer))
+            .send()
+            .await?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let bytes = resp.bytes().await?;
+        let body: WireError = serde_json::from_slice(&bytes).unwrap_or(WireError {
+            code: "decode_error".into(),
+            message: format!("non-JSON body ({} bytes)", bytes.len()),
+            field: None,
+            request_id: None,
+            details: None,
+            current_version: None,
+        });
+        Err(ClientError::Api { status, body })
+    }
+
+    /// User-sourced edit through the canonical write path
+    /// ([`Self::upsert_fact`]) with `source = Source::User`.
+    pub async fn edit_fact(
+        &self,
+        id: uuid::Uuid,
+        fact_type: klams_types::FactType,
+        payload: serde_json::Value,
+        expected_version: i32,
+    ) -> ClientResult<FactWriteOutcome> {
+        let req = UpsertFactRequest {
+            fact_type,
+            source: Source::User,
+            payload,
+            explicit_id: Some(id),
+            expected_version: Some(expected_version),
+        };
+        self.upsert_fact(&req).await
     }
 }
 
@@ -273,9 +422,15 @@ mod tests {
             payload: serde_json::json!({"key": "value"}),
             source: klams_types::Source::User,
             explicit_id: None,
+            expected_version: None,
         };
-        let fact = c.upsert_fact(&req).await.unwrap();
-        assert_eq!(fact.id, id);
-        assert_eq!(fact.version, 1);
+        let outcome = c.upsert_fact(&req).await.unwrap();
+        match outcome {
+            klams_types::FactWriteOutcome::Persisted { fact } => {
+                assert_eq!(fact.id, id);
+                assert_eq!(fact.version, 1);
+            }
+            other => panic!("expected Persisted, got {other:?}"),
+        }
     }
 }

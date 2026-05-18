@@ -7,9 +7,16 @@
 mod common;
 
 use common::TestServer;
-use klams_types::{FactType, Source, UpsertFactRequest};
+use klams_types::{FactType, FactWriteOutcome, Source, UpsertFactRequest};
 use serde_json::json;
 use uuid::Uuid;
+
+fn fact(outcome: FactWriteOutcome) -> klams_types::Fact {
+    match outcome {
+        FactWriteOutcome::Persisted { fact } => fact,
+        other => panic!("expected Persisted, got {other:?}"),
+    }
+}
 
 #[tokio::test]
 #[ignore = "requires docker-compose.test.yml"]
@@ -19,11 +26,13 @@ async fn scenario_1_upsert_and_retrieve() {
 
     let req = UpsertFactRequest {
         fact_type: FactType::UserFact,
-        payload: json!({"key": "ram_gb", "machine": "kubs0", "nonce": nonce, "value": 64}),
+        // Schema requires `name`; extra fields are part of the dedupe payload.
+        payload: json!({"name": "Ken", "machine": "kubs0", "nonce": nonce, "ram_gb": 64}),
         source: Source::Controller,
         explicit_id: None,
+        expected_version: None,
     };
-    let persisted = server.client.upsert_fact(&req).await.expect("upsert");
+    let persisted = fact(server.client.upsert_fact(&req).await.expect("upsert"));
     assert_eq!(persisted.version, 1);
     assert_eq!(persisted.payload["nonce"], nonce);
 
@@ -46,19 +55,21 @@ async fn scenario_2_dedupe_by_canonical_payload() {
     // canonical sort, so version stays at 1).
     let req_a = UpsertFactRequest {
         fact_type: FactType::EnvFact,
-        payload: json!({"host": "kubs0", "nonce": nonce, "ram_gb": 64}),
+        payload: json!({"key": "RAM_GB", "value": "64", "host": "kubs0", "nonce": nonce}),
         source: Source::Controller,
         explicit_id: None,
+        expected_version: None,
     };
     let req_b = UpsertFactRequest {
         fact_type: FactType::EnvFact,
-        payload: json!({"ram_gb": 64, "host": "kubs0", "nonce": nonce}),
+        payload: json!({"host": "kubs0", "nonce": nonce, "value": "64", "key": "RAM_GB"}),
         source: Source::Controller,
         explicit_id: None,
+        expected_version: None,
     };
 
-    let first = server.client.upsert_fact(&req_a).await.expect("first");
-    let second = server.client.upsert_fact(&req_b).await.expect("second");
+    let first = fact(server.client.upsert_fact(&req_a).await.expect("first"));
+    let second = fact(server.client.upsert_fact(&req_b).await.expect("second"));
 
     assert_eq!(first.id, second.id, "dedupe must return the same id");
     assert_eq!(
@@ -73,16 +84,19 @@ async fn scenario_3_survives_restart() {
     let nonce = Uuid::now_v7().to_string();
     let (id_a, created_a) = {
         let server = TestServer::spawn().await;
-        let persisted = server
-            .client
-            .upsert_fact(&UpsertFactRequest {
-                fact_type: FactType::UserFact,
-                payload: json!({"key": "persistent", "nonce": nonce}),
-                source: Source::Controller,
-                explicit_id: None,
-            })
-            .await
-            .expect("upsert");
+        let persisted = fact(
+            server
+                .client
+                .upsert_fact(&UpsertFactRequest {
+                    fact_type: FactType::UserFact,
+                    payload: json!({"name": "Ken", "key": "persistent", "nonce": nonce}),
+                    source: Source::Controller,
+                    explicit_id: None,
+                    expected_version: None,
+                })
+                .await
+                .expect("upsert"),
+        );
         (persisted.id, persisted.created_at)
     };
 

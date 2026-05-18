@@ -35,3 +35,5 @@ uuid = { workspace = true }
 reqwest = { workspace = true }
 metrics = { workspace = true }
 metrics-exporter-prometheus = "0.15"
+sqlx = { workspace = true }
+time = { workspace = true }

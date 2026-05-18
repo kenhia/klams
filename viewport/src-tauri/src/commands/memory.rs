@@ -8,8 +8,9 @@
 use crate::commands::{AppState, ViewportError};
 use crate::config;
 use klams_types::{
-    EventPage, Fact, FactPage, KnowledgeItem, ListEventsParams, ListFactsParams, SearchRequest,
-    SearchResults, SearchType,
+    Dissent, DissentPage, EventPage, Fact, FactPage, FactType, FactWriteOutcome, KnowledgeItem,
+    ListDissentsParams, ListEventsParams, ListFactsParams, SearchRequest, SearchResults,
+    SearchType, Source, UpsertFactRequest,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -219,12 +220,154 @@ pub async fn set_config(
     Ok(summary)
 }
 
+// ---------------------------------------------------------------------------
+// Sprint 002: dissents + canonical writes (US4 viewport)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, Default)]
+pub struct ListDissentsArgs {
+    #[serde(default)]
+    pub fact_id: Option<Uuid>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub created_after: Option<String>,
+    #[serde(default)]
+    pub created_before: Option<String>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub cursor: Option<String>,
+}
+
+impl From<ListDissentsArgs> for ListDissentsParams {
+    fn from(a: ListDissentsArgs) -> Self {
+        ListDissentsParams {
+            fact_id: a.fact_id,
+            status: a.status,
+            source: a.source,
+            created_after: a.created_after,
+            created_before: a.created_before,
+            limit: a.limit,
+            cursor: a.cursor,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PromoteDissentArgs {
+    pub dissent_id: Uuid,
+    pub caller_source: Source,
+    pub expected_version: i32,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DiscardDissentArgs {
+    pub dissent_id: Uuid,
+    pub caller_source: Source,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpsertFactArgs {
+    pub fact_type: FactType,
+    pub payload: serde_json::Value,
+    pub source: Source,
+    #[serde(default)]
+    pub explicit_id: Option<Uuid>,
+    #[serde(default)]
+    pub expected_version: Option<i32>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EditFactArgs {
+    pub id: Uuid,
+    pub fact_type: FactType,
+    pub payload: serde_json::Value,
+    pub expected_version: i32,
+}
+
+#[tauri::command]
+pub async fn list_dissents(
+    state: tauri::State<'_, AppState>,
+    args: ListDissentsArgs,
+) -> Result<DissentPage, ViewportError> {
+    state.factory.list_dissents(args.into()).await
+}
+
+#[tauri::command]
+pub async fn get_dissent(
+    state: tauri::State<'_, AppState>,
+    args: ByIdArgs,
+) -> Result<Dissent, ViewportError> {
+    state.factory.get_dissent(args.id).await
+}
+
+#[tauri::command]
+pub async fn promote_dissent(
+    state: tauri::State<'_, AppState>,
+    args: PromoteDissentArgs,
+) -> Result<Fact, ViewportError> {
+    state
+        .factory
+        .promote_dissent(args.dissent_id, args.caller_source, args.expected_version)
+        .await
+}
+
+#[tauri::command]
+pub async fn discard_dissent(
+    state: tauri::State<'_, AppState>,
+    args: DiscardDissentArgs,
+) -> Result<Dissent, ViewportError> {
+    state
+        .factory
+        .discard_dissent(args.dissent_id, args.caller_source)
+        .await
+}
+
+#[tauri::command]
+pub async fn upsert_fact(
+    state: tauri::State<'_, AppState>,
+    args: UpsertFactArgs,
+) -> Result<FactWriteOutcome, ViewportError> {
+    let req = UpsertFactRequest {
+        fact_type: args.fact_type,
+        payload: args.payload,
+        source: args.source,
+        explicit_id: args.explicit_id,
+        expected_version: args.expected_version,
+    };
+    state.factory.upsert_fact(req).await
+}
+
+#[tauri::command]
+pub async fn edit_fact(
+    state: tauri::State<'_, AppState>,
+    args: EditFactArgs,
+) -> Result<FactWriteOutcome, ViewportError> {
+    state
+        .factory
+        .edit_fact(args.id, args.fact_type, args.payload, args.expected_version)
+        .await
+}
+
+#[tauri::command]
+pub async fn delete_fact(
+    state: tauri::State<'_, AppState>,
+    args: ByIdArgs,
+) -> Result<(), ViewportError> {
+    state.factory.delete_fact(args.id).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::commands::ClientFactory;
     use async_trait::async_trait;
-    use klams_types::{HealthSnapshot, HealthStatus, QueueStatus, SubsystemStatus};
+    use klams_types::{
+        DissentStatus, FactType, HealthSnapshot, HealthStatus, QueueStatus, SubsystemStatus,
+    };
     use std::sync::{Arc, Mutex};
 
     #[derive(Debug, Default)]
@@ -232,6 +375,12 @@ mod tests {
         last_facts: Mutex<Option<ListFactsParams>>,
         last_events: Mutex<Option<ListEventsParams>>,
         last_search: Mutex<Option<SearchRequest>>,
+        last_dissents: Mutex<Option<ListDissentsParams>>,
+        last_promote: Mutex<Option<(Uuid, Source, i32)>>,
+        last_discard: Mutex<Option<(Uuid, Source)>>,
+        last_upsert: Mutex<Option<UpsertFactRequest>>,
+        last_edit: Mutex<Option<(Uuid, FactType, serde_json::Value, i32)>>,
+        last_deleted: Mutex<Option<Uuid>>,
         fail: Mutex<Option<ViewportError>>,
     }
 
@@ -297,6 +446,101 @@ mod tests {
                 },
                 version: "test".into(),
                 uptime_seconds: 0,
+            })
+        }
+        async fn list_dissents(
+            &self,
+            p: ListDissentsParams,
+        ) -> Result<DissentPage, ViewportError> {
+            if let Some(e) = self.fail.lock().unwrap().clone() {
+                return Err(e);
+            }
+            *self.last_dissents.lock().unwrap() = Some(p);
+            Ok(DissentPage {
+                items: vec![],
+                next_cursor: None,
+            })
+        }
+        async fn get_dissent(&self, _id: Uuid) -> Result<Dissent, ViewportError> {
+            if let Some(e) = self.fail.lock().unwrap().clone() {
+                return Err(e);
+            }
+            Err(ViewportError::Server {
+                status: 404,
+                message: "no".into(),
+            })
+        }
+        async fn promote_dissent(
+            &self,
+            id: Uuid,
+            caller_source: Source,
+            expected_version: i32,
+        ) -> Result<Fact, ViewportError> {
+            if let Some(e) = self.fail.lock().unwrap().clone() {
+                return Err(e);
+            }
+            *self.last_promote.lock().unwrap() = Some((id, caller_source, expected_version));
+            Err(ViewportError::Server {
+                status: 404,
+                message: "no".into(),
+            })
+        }
+        async fn discard_dissent(
+            &self,
+            id: Uuid,
+            caller_source: Source,
+        ) -> Result<Dissent, ViewportError> {
+            if let Some(e) = self.fail.lock().unwrap().clone() {
+                return Err(e);
+            }
+            *self.last_discard.lock().unwrap() = Some((id, caller_source));
+            Ok(Dissent {
+                id,
+                fact_id: Uuid::nil(),
+                proposed_payload: serde_json::Value::Null,
+                source: caller_source,
+                status: DissentStatus::Discarded,
+                submitted_at: time::OffsetDateTime::UNIX_EPOCH,
+                last_seen_at: time::OffsetDateTime::UNIX_EPOCH,
+                submission_count: 1,
+                resolved_at: Some(time::OffsetDateTime::UNIX_EPOCH),
+                resolved_by_source: Some(caller_source),
+            })
+        }
+        async fn upsert_fact(
+            &self,
+            req: UpsertFactRequest,
+        ) -> Result<FactWriteOutcome, ViewportError> {
+            if let Some(e) = self.fail.lock().unwrap().clone() {
+                return Err(e);
+            }
+            *self.last_upsert.lock().unwrap() = Some(req);
+            Ok(FactWriteOutcome::VersionConflict {
+                current_version: 1,
+                fact_id: Uuid::nil(),
+            })
+        }
+        async fn delete_fact(&self, id: Uuid) -> Result<(), ViewportError> {
+            if let Some(e) = self.fail.lock().unwrap().clone() {
+                return Err(e);
+            }
+            *self.last_deleted.lock().unwrap() = Some(id);
+            Ok(())
+        }
+        async fn edit_fact(
+            &self,
+            id: Uuid,
+            fact_type: FactType,
+            payload: serde_json::Value,
+            expected_version: i32,
+        ) -> Result<FactWriteOutcome, ViewportError> {
+            if let Some(e) = self.fail.lock().unwrap().clone() {
+                return Err(e);
+            }
+            *self.last_edit.lock().unwrap() = Some((id, fact_type, payload, expected_version));
+            Ok(FactWriteOutcome::VersionConflict {
+                current_version: 1,
+                fact_id: id,
             })
         }
     }
@@ -385,6 +629,114 @@ mod tests {
         match err {
             ViewportError::Server { status, .. } => assert_eq!(status, 404),
             other => panic!("expected Server 404, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn list_dissents_forwards_filter_args() {
+        let mock = Arc::new(MockFactory::default());
+        let args = ListDissentsArgs {
+            status: Some("pending".into()),
+            source: Some("AgentProposal".into()),
+            limit: Some(20),
+            ..Default::default()
+        };
+        let _ = mock.list_dissents(args.into()).await.unwrap();
+        let captured = mock.last_dissents.lock().unwrap().clone().unwrap();
+        assert_eq!(captured.status.as_deref(), Some("pending"));
+        assert_eq!(captured.source.as_deref(), Some("AgentProposal"));
+        assert_eq!(captured.limit, Some(20));
+    }
+
+    #[tokio::test]
+    async fn promote_dissent_forwards_caller_source_and_version() {
+        let mock = Arc::new(MockFactory::default());
+        let id = Uuid::now_v7();
+        let _ = mock.promote_dissent(id, Source::User, 7).await;
+        let (cid, src, ver) = (*mock.last_promote.lock().unwrap()).unwrap();
+        assert_eq!(cid, id);
+        assert!(matches!(src, Source::User));
+        assert_eq!(ver, 7);
+    }
+
+    #[tokio::test]
+    async fn promote_dissent_surfaces_403_trust_required() {
+        let mock = Arc::new(MockFactory::default());
+        *mock.fail.lock().unwrap() = Some(ViewportError::Server {
+            status: 403,
+            message: "trust_required".into(),
+        });
+        let err = mock
+            .promote_dissent(Uuid::now_v7(), Source::AgentProposal, 1)
+            .await
+            .unwrap_err();
+        match err {
+            ViewportError::Server { status, .. } => assert_eq!(status, 403),
+            other => panic!("expected Server 403, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn discard_dissent_returns_discarded_row() {
+        let mock = Arc::new(MockFactory::default());
+        let id = Uuid::now_v7();
+        let out = mock.discard_dissent(id, Source::User).await.unwrap();
+        assert_eq!(out.id, id);
+        assert!(matches!(out.status, klams_types::DissentStatus::Discarded));
+    }
+
+    #[tokio::test]
+    async fn upsert_fact_returns_outcome_variant() {
+        let mock = Arc::new(MockFactory::default());
+        let req = UpsertFactRequest {
+            fact_type: FactType::UserFact,
+            payload: serde_json::json!({"k": "v"}),
+            source: Source::User,
+            explicit_id: None,
+            expected_version: Some(0),
+        };
+        let out = mock.upsert_fact(req).await.unwrap();
+        match out {
+            FactWriteOutcome::VersionConflict {
+                current_version, ..
+            } => assert_eq!(current_version, 1),
+            other => panic!("expected VersionConflict, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn edit_fact_records_id_and_version() {
+        let mock = Arc::new(MockFactory::default());
+        let id = Uuid::now_v7();
+        let _ = mock
+            .edit_fact(
+                id,
+                FactType::UserFact,
+                serde_json::json!({"k": "v2"}),
+                3,
+            )
+            .await
+            .unwrap();
+        let (cid, _ft, _p, ver) = mock.last_edit.lock().unwrap().clone().unwrap();
+        assert_eq!(cid, id);
+        assert_eq!(ver, 3);
+    }
+
+    #[tokio::test]
+    async fn delete_fact_records_id_and_propagates_410() {
+        let mock = Arc::new(MockFactory::default());
+        let id = Uuid::now_v7();
+        mock.delete_fact(id).await.unwrap();
+        assert_eq!(*mock.last_deleted.lock().unwrap(), Some(id));
+
+        *mock.fail.lock().unwrap() = Some(ViewportError::Server {
+            status: 410,
+            message: "gone".into(),
+        });
+        let err = mock.delete_fact(Uuid::now_v7()).await.unwrap_err();
+        match err {
+            ViewportError::Server { status, .. } => assert_eq!(status, 410),
+            other => panic!("expected Server 410, got {other:?}"),
         }
     }
 }

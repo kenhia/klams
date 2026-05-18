@@ -44,6 +44,7 @@ async fn search_p95_under_500ms_at_mvp_corpus() {
                 payload: json!({"note": format!("perf {run_id} fact {i} content")}),
                 source: Source::Controller,
                 explicit_id: None,
+                expected_version: None,
             })
             .await
             .expect("fact upsert");

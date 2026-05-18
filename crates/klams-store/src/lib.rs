@@ -6,7 +6,8 @@
 
 use async_trait::async_trait;
 use klams_types::{
-    AppendEvent, Event, Fact, FactType, IndexKnowledge, KnowledgeItem, Source, UpsertFact,
+    AppendEvent, Dissent, DissentStatus, Event, Fact, FactType, FactWriteOutcome, IndexKnowledge,
+    KnowledgeItem, Source, UpsertFact,
 };
 use std::error::Error;
 use std::fmt;
@@ -29,6 +30,15 @@ pub enum StoreError {
     Conflict(String),
     Embedding(String),
     Other(String),
+    /// Sprint-002 US2: optimistic-version mismatch on a canonical
+    /// fact write or dissent promote. Maps to HTTP 409 with the
+    /// current stored version in the response body.
+    VersionConflict {
+        current_version: i32,
+    },
+    /// Sprint-002 US2: the targeted dissent is no longer `pending`
+    /// (promoted / discarded / orphaned). Maps to HTTP 410 Gone.
+    Gone(String),
 }
 
 impl fmt::Display for StoreError {
@@ -38,6 +48,10 @@ impl fmt::Display for StoreError {
             StoreError::Conflict(m) => write!(f, "store conflict: {m}"),
             StoreError::Embedding(m) => write!(f, "embedding error: {m}"),
             StoreError::Other(m) => write!(f, "store error: {m}"),
+            StoreError::VersionConflict { current_version } => {
+                write!(f, "version conflict: current_version={current_version}")
+            }
+            StoreError::Gone(m) => write!(f, "gone: {m}"),
         }
     }
 }
@@ -66,6 +80,18 @@ pub struct EventQuery {
     pub cursor: Option<String>,
 }
 
+/// Filter set for `list_dissents`.
+#[derive(Debug, Clone, Default)]
+pub struct DissentQuery {
+    pub fact_id: Option<Uuid>,
+    pub status: Option<DissentStatus>,
+    pub source: Option<Source>,
+    pub created_after: Option<OffsetDateTime>,
+    pub created_before: Option<OffsetDateTime>,
+    pub limit: u32,
+    pub cursor: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct TextHit {
     pub id: Uuid,
@@ -77,6 +103,16 @@ pub struct TextHit {
 #[async_trait]
 pub trait Store: Send + Sync + 'static {
     async fn upsert_fact(&self, req: UpsertFact) -> StoreResult<Fact>;
+    /// Sprint-002 canonical write entry point. Returns a tagged
+    /// `FactWriteOutcome` so the handler can map persisted / dissented
+    /// / version-conflict to the right HTTP status. Default impl
+    /// delegates to `upsert_fact` and always returns `Persisted` for
+    /// mock stores; the real Postgres impl overrides this.
+    async fn upsert_fact_v2(&self, req: UpsertFact) -> StoreResult<FactWriteOutcome> {
+        self.upsert_fact(req)
+            .await
+            .map(|f| FactWriteOutcome::Persisted { fact: f })
+    }
     async fn append_event(&self, req: AppendEvent) -> StoreResult<Event>;
     async fn index_knowledge(&self, req: IndexKnowledge) -> StoreResult<KnowledgeItem>;
     async fn list_facts(&self, q: FactQuery) -> StoreResult<(Vec<Fact>, Option<String>)>;
@@ -98,6 +134,34 @@ pub trait Store: Send + Sync + 'static {
     /// delegate to the embedder; mock stores can return a zero vector.
     async fn embed_query(&self, query: &str) -> StoreResult<Vec<f32>>;
 
+    // Dissent operations (sprint 002 US2). Default impls return
+    // `Other` so mock stores need not implement them; the Postgres
+    // adapter overrides every one.
+    async fn list_dissents(&self, _q: DissentQuery) -> StoreResult<(Vec<Dissent>, Option<String>)> {
+        Err(StoreError::Other("list_dissents not implemented".into()))
+    }
+    async fn get_dissent(&self, _id: Uuid) -> StoreResult<Option<Dissent>> {
+        Err(StoreError::Other("get_dissent not implemented".into()))
+    }
+    /// Promote a pending dissent. Returns the updated canonical fact.
+    /// `expected_version` mirrors the optimistic-concurrency token on
+    /// `UpsertFact`; mismatches map to `StoreError::Conflict`.
+    async fn promote_dissent(
+        &self,
+        _dissent_id: Uuid,
+        _caller_source: Source,
+        _expected_version: i32,
+    ) -> StoreResult<Fact> {
+        Err(StoreError::Other("promote_dissent not implemented".into()))
+    }
+    async fn discard_dissent(
+        &self,
+        _dissent_id: Uuid,
+        _caller_source: Source,
+    ) -> StoreResult<Dissent> {
+        Err(StoreError::Other("discard_dissent not implemented".into()))
+    }
+
     /// Cheap liveness probe for the relational store. Default returns
     /// `Ok(())` so test mocks need not implement it.
     async fn health_postgres(&self) -> StoreResult<()> {
@@ -111,4 +175,27 @@ pub trait Store: Send + Sync + 'static {
     async fn health_embedder(&self) -> StoreResult<()> {
         Ok(())
     }
+}
+
+/// Narrow trait the decay task uses to interact with the store
+/// without pulling in the full `Store` surface. Implemented directly
+/// by `PostgresStore` so tests can run without the Qdrant/TEI side.
+#[async_trait]
+pub trait DecayStore: Send + Sync + 'static {
+    async fn select_decay_batch(
+        &self,
+        after_id: Option<Uuid>,
+        limit: u32,
+    ) -> StoreResult<Vec<DecayRow>>;
+    async fn apply_decay_batch(&self, updates: &[(Uuid, f32)]) -> StoreResult<u64>;
+    async fn apply_last_used_bumps(&self, ids: &[Uuid]) -> StoreResult<u64>;
+}
+
+/// Row returned by `select_decay_batch`. Held outside the trait so
+/// `klams-core::decay` does not import any sql plumbing.
+#[derive(Debug, Clone)]
+pub struct DecayRow {
+    pub id: Uuid,
+    pub fact_type: FactType,
+    pub age_seconds: f32,
 }

@@ -110,6 +110,90 @@ journalctl -u klams.service -f      # tail logs
 journalctl -u klams.service --since "1 hour ago"
 ```
 
+## Dissent lifecycle (sprint 002)
+
+A **dissent** is a lower-trust write (typically `AgentProposal`) that
+contradicts an existing higher-trust canonical fact (`User`,
+`Controller`). The service diverts these into a separate `dissents`
+table instead of overwriting, so an operator can review them.
+
+```text
+   POST /memory/facts                              POST /memory/dissents/{id}/promote
+   (AgentProposal vs User-owned (type, key))            │
+        │                                               ▼
+        ▼                                          canonical Fact replaced
+   202 { dissent_id, status: "pending" }           (version++, source = promoter)
+        │                                          dissent.status = "promoted"
+        │
+        ├──▶ GET /memory/dissents?status=pending   ─┐
+        │       (filter by fact_id, source, …)      │
+        │                                           │
+        └──▶ POST /memory/dissents/{id}/discard  ───┘
+                dissent.status = "discarded"
+                fact unchanged
+```
+
+Default fact reads (`GET /memory/facts/...`) expose a
+`dissent_count` so pending proposals are discoverable from any list
+or detail view.
+
+| Endpoint | Auth role | Effect |
+|----------|-----------|--------|
+| `GET  /memory/dissents` | any bearer | Paginated list; filterable by `status`, `source`, `fact_id`, `created_after`, `caller_source`. |
+| `GET  /memory/dissents/{id}` | any bearer | Single dissent (proposed payload, source, timestamps, dedupe count). |
+| `POST /memory/dissents/{id}/promote` | `User` or `Controller` | Replaces canonical fact, bumps `version`, sets `source` to promoter. Requires `expected_version`. 409 on stale version, 410 if dissent was already resolved, 403 if request `source` is below promote threshold. |
+| `POST /memory/dissents/{id}/discard` | `User` or `Controller` | Marks dissent `discarded`. Fact untouched. Same 403/410 rules. |
+
+The Phase 2 quickstart walks the full flow:
+[specs/002-safety-and-write-ops/quickstart.md §5](../specs/002-safety-and-write-ops/quickstart.md#5-story-2--dissent-on-lower-trust-contradiction-promote-later).
+
+## Viewport: provenance panel + Dissents page
+
+The Phase 2 viewport surfaces two new affordances on top of the
+existing read-only inspectors:
+
+- **Provenance panel** — on every fact / event / knowledge detail
+  view. Renders the eight provenance fields (`source`, `version`,
+  `created_at`, `updated_at`, `last_used_at`, `decay_weight`,
+  `confidence`, `dissent_count`) as a definition list. When
+  `dissent_count > 0` it links to `/dissents?fact_id=…` so the
+  operator can review the pending proposals.
+- **Dissents page** (`/dissents`, in the top nav) — paginated review
+  queue with filters (status, source, fact_id, created_after,
+  caller_source) and per-row diff between the canonical fact and the
+  proposed payload. Each row exposes **Promote** and **Discard**
+  buttons that call the endpoints above with optimistic UI rollback
+  on backend error.
+
+The Facts inspector also gains **Edit** and **Delete** actions
+(User-sourced) with optimistic application and rollback when the
+backend reports `409 version_conflict` or any error envelope. A
+mutation counter in the layout drives a pending-dissent badge in the
+nav bar so newly diverted writes show up without a manual refresh.
+
+## `just` recipe reference
+
+Sprint 002 introduces a top-level [`justfile`](../justfile); every
+common task is a one-liner that matches what CI runs.
+
+| Recipe            | What it does |
+|-------------------|--------------|
+| `default`         | Prints the menu (`just --list`). |
+| `compose-up`      | Bring `deploy/docker-compose.yml` up in the background. |
+| `compose-down`    | Tear the stack down (keeps volumes). |
+| `compose-rebuild` | `down` → `build --no-cache` → `up -d`. |
+| `build`           | `cargo build -p klams-service --release`. |
+| `run`             | `cargo run -p klams-service`, logs to stderr. |
+| `test`            | `cargo test --workspace`. |
+| `gate`            | Constitution pre-commit gate; identical to CI. |
+| `health`          | `/healthz` curl + `scripts/verify-mvp.sh --light`. |
+| `verify`          | Full `scripts/verify-mvp.sh` (SC-001..SC-009). |
+| `viewport-build`  | `cargo xwin` Windows cross-build of the viewport. |
+
+`KLAMS_URL` and `KLAMS_TOKEN` are read from the environment (with
+local-dev defaults) so the same `just health` and `just verify`
+work against a local stack or a remote `kubs0`.
+
 ## Reference
 
 - HTTP contract: [openapi.yaml](../specs/001-initial-mvp/contracts/openapi.yaml)

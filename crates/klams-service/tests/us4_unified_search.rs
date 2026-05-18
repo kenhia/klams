@@ -26,9 +26,10 @@ async fn scenario_1_mixed_results_with_all_types() {
         .client
         .upsert_fact(&UpsertFactRequest {
             fact_type: FactType::UserFact,
-            payload: json!({"note": format!("{needle} fact body")}),
+            payload: json!({"name": "us4-search-needle", "note": format!("{needle} fact body")}),
             source: Source::Controller,
             explicit_id: None,
+            expected_version: None,
         })
         .await
         .expect("fact");
@@ -108,9 +109,10 @@ async fn scenario_2_types_filter_excludes_other_kinds() {
         .client
         .upsert_fact(&UpsertFactRequest {
             fact_type: FactType::UserFact,
-            payload: json!({"note": format!("{needle} fact body")}),
+            payload: json!({"name": "us4-search-needle", "note": format!("{needle} fact body")}),
             source: Source::Controller,
             explicit_id: None,
+            expected_version: None,
         })
         .await
         .expect("fact");

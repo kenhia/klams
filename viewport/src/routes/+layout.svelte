@@ -1,6 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { health, config, startSubscriptions, refreshConfig } from '$lib/stores';
+  import {
+    health,
+    config,
+    startSubscriptions,
+    refreshConfig,
+    pendingDissentCount,
+    refreshPendingDissents,
+    mutationCounter
+  } from '$lib/stores';
   import { api } from '$lib/api';
 
   let { children } = $props();
@@ -12,6 +20,13 @@
 
   onMount(() => {
     void startSubscriptions();
+    void refreshPendingDissents();
+  });
+
+  // Re-poll dissent count whenever a mutation completes.
+  $effect(() => {
+    $mutationCounter;
+    void refreshPendingDissents();
   });
 
   $effect(() => {
@@ -54,6 +69,9 @@
     <a href="/facts">Facts</a>
     <a href="/events">Events</a>
     <a href="/knowledge">Knowledge</a>
+    <a href="/dissents" class="dissents-link">
+      Dissents{#if $pendingDissentCount > 0}<span class="badge">{$pendingDissentCount}</span>{/if}
+    </a>
   </nav>
   <div class="status">
     <span class="dot" style:background={dotColor}></span>
@@ -109,6 +127,17 @@
     margin-right: 1rem;
     text-decoration: none;
     color: #246;
+  }
+  .dissents-link .badge {
+    display: inline-block;
+    margin-left: 0.3rem;
+    background: #b35;
+    color: white;
+    border-radius: 9px;
+    padding: 0 0.4rem;
+    font-size: 0.75rem;
+    min-width: 1.2rem;
+    text-align: center;
   }
   .status {
     display: flex;

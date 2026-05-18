@@ -17,7 +17,9 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use klams_core::{metrics as m, WriteJob};
 use klams_store::{EventQuery, Store};
-use klams_types::{AcceptedId, AppendEvent, AppendEventRequest, EventPage, ListEventsParams};
+use klams_types::{
+    AcceptedId, AppendEvent, AppendEventRequest, EventPage, ListEventsParams, MemoryWrite,
+};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -30,13 +32,20 @@ pub async fn append<S: Store>(
     validate(&req)?;
     let _guard = m::LatencyGuard::with_type(m::WRITE_LATENCY, "event");
     let id = Uuid::now_v7();
-    let job = WriteJob::append_event(AppendEvent {
+    let append = AppendEvent {
         id,
         task_id: req.task_id,
         category: req.category,
         payload: req.payload,
         source: req.source,
-    });
+    };
+    let probe = MemoryWrite::AppendEvent(append.clone());
+    if let Err(details) = state.validators.validate_write(&probe) {
+        let rules: Vec<String> = details.iter().map(|d| d.rule.clone()).collect();
+        m::incr_validation_rejections_owned(&rules);
+        return Err(ApiError::validation_error(details));
+    }
+    let job = WriteJob::append_event(append);
     state.queue.try_enqueue(job).map_err(|_| {
         m::incr_writes_failed("event", "queue_full");
         ApiError::QueueFull { retry_after: 1 }

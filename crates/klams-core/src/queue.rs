@@ -7,7 +7,7 @@
 
 use klams_store::StoreError;
 use klams_types::{
-    AppendEvent, Event, Fact, IndexKnowledge, KnowledgeItem, MemoryWrite, UpsertFact,
+    AppendEvent, Event, FactWriteOutcome, IndexKnowledge, KnowledgeItem, MemoryWrite, UpsertFact,
 };
 use std::fmt;
 use tokio::sync::{mpsc, oneshot};
@@ -36,7 +36,7 @@ pub struct EnqueueOutcome {
 /// variant the producer enqueued.
 #[derive(Debug)]
 pub enum WriteReply {
-    Fact(Result<Fact, StoreError>),
+    Fact(Result<FactWriteOutcome, StoreError>),
     Event(Result<Event, StoreError>),
     Knowledge(Result<KnowledgeItem, StoreError>),
 }

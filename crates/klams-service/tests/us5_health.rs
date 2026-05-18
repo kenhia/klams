@@ -62,9 +62,10 @@ async fn metrics_endpoint_exposes_named_counters_after_a_write() {
     let server = TestServer::spawn().await;
     let req = UpsertFactRequest {
         fact_type: klams_types::FactType::UserFact,
-        payload: json!({"k": "v"}),
+        payload: json!({"name": "us5-metrics-smoke"}),
         source: klams_types::Source::User,
         explicit_id: None,
+        expected_version: None,
     };
     server.client.upsert_fact(&req).await.expect("upsert");
     let snap = server.client.health().await.expect("health");

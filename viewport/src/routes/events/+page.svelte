@@ -1,6 +1,22 @@
 <script lang="ts">
   import { api } from '$lib/api';
-  import type { EventPage, KlamsEvent } from '$lib/types';
+  import type { EventPage, KlamsEvent, ProvenanceBundle } from '$lib/types';
+  import ProvenancePanel from '$lib/ProvenancePanel.svelte';
+
+  function provenanceOf(e: KlamsEvent): ProvenanceBundle {
+    // Events are immutable and carry only source + created_at; we map
+    // the remaining provenance fields to neutral defaults so the panel
+    // renders consistently across all detail views (FR-019).
+    return {
+      source: e.source,
+      confidence: 1,
+      decay_weight: 1,
+      use_count: 0,
+      last_used_at: null,
+      created_at: e.created_at,
+      updated_at: e.created_at
+    };
+  }
 
   let taskId = $state('');
   let category = $state('');
@@ -75,7 +91,8 @@
       <button onclick={() => (selected = null)}>Close</button>
     </header>
     <p><strong>id:</strong> {selected.id}</p>
-    <p><strong>category:</strong> {selected.category} · <strong>source:</strong> {selected.source}</p>
+    <p><strong>category:</strong> {selected.category}</p>
+    <ProvenancePanel provenance={provenanceOf(selected)} />
     <pre>{JSON.stringify(selected.payload, null, 2)}</pre>
   </aside>
 {/if}

@@ -14,6 +14,11 @@ pub struct UpsertFactRequest {
     pub source: Source,
     #[serde(default)]
     pub explicit_id: Option<Uuid>,
+    /// Optimistic concurrency token (see `UpsertFact::expected_version`).
+    /// Required by validators when the `(type, payload_hash)` pair
+    /// already exists; new facts pass `0`.
+    #[serde(default)]
+    pub expected_version: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,6 +89,25 @@ pub struct ListEventsParams {
 pub struct ListFactsParams {
     #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
     pub fact_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_after: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_before: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+
+/// Query parameters for `GET /memory/dissents`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ListDissentsParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fact_id: Option<uuid::Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

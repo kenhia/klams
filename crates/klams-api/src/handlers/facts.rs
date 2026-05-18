@@ -4,13 +4,18 @@ use crate::router::ApiState;
 use crate::ApiError;
 use axum::{
     extract::{Query, State},
+    http::StatusCode,
+    response::{IntoResponse, Response},
     Json,
 };
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use klams_core::{metrics as m, WriteJob};
 use klams_store::{FactQuery, Store};
-use klams_types::{Fact, FactPage, FactType, Source, UpsertFact, UpsertFactRequest};
+use klams_types::{
+    DissentStatus, DissentSubmittedResponse, FactPage, FactType, FactWriteOutcome, MemoryWrite,
+    Source, UpsertFact, UpsertFactRequest,
+};
 use serde::Deserialize;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -20,16 +25,24 @@ use uuid::Uuid;
 pub async fn upsert<S: Store>(
     State(state): State<ApiState<S>>,
     Json(req): Json<UpsertFactRequest>,
-) -> Result<Json<Fact>, ApiError> {
+) -> Result<Response, ApiError> {
     validate_payload(&req.payload)?;
-    let _guard = m::LatencyGuard::with_type(m::WRITE_LATENCY, "fact");
-
-    let (job, rx) = WriteJob::upsert_fact_with_reply(UpsertFact {
+    let upsert = UpsertFact {
         fact_type: req.fact_type,
         payload: req.payload,
         source: req.source,
         explicit_id: req.explicit_id,
-    });
+        expected_version: req.expected_version,
+    };
+    let probe = MemoryWrite::UpsertFact(upsert.clone());
+    if let Err(details) = state.validators.validate_write(&probe) {
+        let rules: Vec<String> = details.iter().map(|d| d.rule.clone()).collect();
+        m::incr_validation_rejections_owned(&rules);
+        return Err(ApiError::validation_error(details));
+    }
+    let _guard = m::LatencyGuard::with_type(m::WRITE_LATENCY, "fact");
+
+    let (job, rx) = WriteJob::upsert_fact_with_reply(upsert);
     state.queue.try_enqueue(job).map_err(|_| {
         m::incr_writes_failed("fact", "queue_full");
         ApiError::QueueFull { retry_after: 1 }
@@ -38,7 +51,7 @@ pub async fn upsert<S: Store>(
     m::record_queue(state.queue.depth(), state.queue_capacity, state.workers);
 
     match rx.await {
-        Ok(klams_core::WriteReply::Fact(Ok(fact))) => Ok(Json(fact)),
+        Ok(klams_core::WriteReply::Fact(Ok(outcome))) => Ok(outcome_to_response(outcome)),
         Ok(klams_core::WriteReply::Fact(Err(e))) => {
             m::incr_writes_failed("fact", "store_error");
             Err(ApiError::Internal {
@@ -51,6 +64,35 @@ pub async fn upsert<S: Store>(
         Err(_) => Err(ApiError::Internal {
             request_id: "worker dropped reply channel".into(),
         }),
+    }
+}
+
+fn outcome_to_response(outcome: FactWriteOutcome) -> Response {
+    match outcome {
+        FactWriteOutcome::Persisted { fact } => Json(fact).into_response(),
+        FactWriteOutcome::Dissented {
+            dissent_id,
+            fact_id,
+        } => {
+            m::incr_dissent_outcome("accepted");
+            (
+                StatusCode::ACCEPTED,
+                Json(DissentSubmittedResponse {
+                    dissent_id,
+                    fact_id,
+                    status: DissentStatus::Pending,
+                    deduped: false,
+                }),
+            )
+                .into_response()
+        }
+        FactWriteOutcome::VersionConflict {
+            current_version,
+            fact_id,
+        } => {
+            m::incr_version_conflict();
+            ApiError::version_conflict(current_version, fact_id).into_response()
+        }
     }
 }
 

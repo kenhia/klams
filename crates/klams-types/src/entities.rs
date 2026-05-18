@@ -56,6 +56,11 @@ pub struct Fact {
     pub confidence: f32,
     pub decay_weight: f32,
     pub use_count: i32,
+    /// Count of dissents with status='pending' targeting this fact.
+    /// Maintained by Postgres triggers (see migration 0002).
+    /// New in sprint 002.
+    #[serde(default)]
+    pub dissent_count: i32,
     #[serde(with = "time::serde::rfc3339::option")]
     pub last_used_at: Option<OffsetDateTime>,
     #[serde(with = "time::serde::rfc3339")]
