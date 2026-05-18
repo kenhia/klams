@@ -1,0 +1,37 @@
+[package]
+name = "klams-service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "klams-service"
+path = "src/main.rs"
+
+[dependencies]
+klams-types = { workspace = true }
+klams-core = { workspace = true }
+klams-store = { workspace = true }
+klams-api = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+figment = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+klams-client = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+reqwest = { workspace = true }
+metrics = { workspace = true }
+metrics-exporter-prometheus = "0.15"

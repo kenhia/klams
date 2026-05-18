@@ -1,0 +1,125 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  service:
+    name: service (fmt + clippy + tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: service
+
+      - name: Bring up test stack
+        run: docker compose -f tests/docker-compose.test.yml up -d
+
+      - name: Wait for test stack
+        run: |
+          set -e
+          for i in $(seq 1 60); do
+            unhealthy=$(docker compose -f tests/docker-compose.test.yml ps --format json \
+              | jq -r '. | select(.Health != "" and .Health != "healthy") | .Name' || true)
+            if [ -z "$unhealthy" ]; then
+              echo "all healthy"; exit 0
+            fi
+            echo "waiting on: $unhealthy"
+            sleep 5
+          done
+          docker compose -f tests/docker-compose.test.yml ps
+          exit 1
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: cargo test (excludes #[ignore])
+        run: cargo test --workspace --all-features
+
+      - name: cargo test --ignored (integration)
+        env:
+          TEST_DATABASE_URL: postgres://klams:klams_test@127.0.0.1:55432/klams
+          TEST_QDRANT_URL: http://127.0.0.1:56334
+          TEST_TEI_URL: http://127.0.0.1:57070
+        run: cargo test --workspace -- --ignored --test-threads=1 --skip search_p95_under_500ms_at_mvp_corpus
+
+      - name: Tear down test stack
+        if: always()
+        run: docker compose -f tests/docker-compose.test.yml down -v
+
+  viewport:
+    name: viewport (svelte + tauri checks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo (viewport)
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: viewport
+          workspaces: viewport/src-tauri
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: viewport/pnpm-lock.yaml
+
+      - name: Install Tauri Linux deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: pnpm install
+        working-directory: viewport
+        run: pnpm install --frozen-lockfile
+
+      - name: pnpm check
+        working-directory: viewport
+        run: pnpm check
+
+      - name: Build SvelteKit (needed for tauri context)
+        working-directory: viewport
+        run: pnpm build
+
+      - name: cargo fmt --check (viewport)
+        working-directory: viewport/src-tauri
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy (viewport)
+        working-directory: viewport/src-tauri
+        run: cargo clippy --all-targets --features custom-protocol -- -D warnings
+
+      - name: cargo test (viewport)
+        working-directory: viewport/src-tauri
+        run: cargo test --features custom-protocol

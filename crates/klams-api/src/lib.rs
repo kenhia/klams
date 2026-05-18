@@ -1,0 +1,13 @@
+//! axum router, auth middleware, request validation, error mapping.
+//!
+//! Builds the `/memory/*`, `/healthz`, and `/metrics` routes consumed
+//! by the klams-service binary.
+
+pub mod auth;
+pub mod error;
+pub mod handlers;
+pub mod router;
+
+pub use auth::{require_bearer, AuthState};
+pub use error::ApiError;
+pub use router::{build_router, with_metrics, ApiState};

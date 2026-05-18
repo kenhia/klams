@@ -1,0 +1,14 @@
+# GPU override for TEI. Use on hosts with the NVIDIA Container Toolkit:
+#   docker compose --env-file $KLAMS_ROOT/config/compose.env \
+#     -f deploy/docker-compose.yml -f deploy/docker-compose.gpu.yml \
+#     up -d
+# Set TEI_IMAGE_TAG to a CUDA-enabled tag (e.g. `1.5`) in compose.env.
+services:
+  tei:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

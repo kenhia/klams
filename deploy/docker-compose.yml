@@ -1,0 +1,95 @@
+# klams production stack on kubs0.
+#
+# All services attach to the single user-defined bridge network
+# `klams-net` with DNS aliases matching the service name. See
+# specs/001-initial-mvp/research.md §13.
+#
+# All persistent data is bind-mounted under ${KLAMS_DATA_ROOT}
+# (default /ai/klams/data; provisioned by scripts/provision-storage-root.sh).
+# Image tags are pinned via compose.env so updates are an env-file change.
+#
+# klams-service itself runs under systemd; a commented-out service
+# block is provided below for developers who prefer a Compose-only loop.
+
+networks:
+  klams-net:
+    name: klams-net
+    driver: bridge
+
+services:
+  postgres:
+    image: postgres:${POSTGRES_IMAGE_TAG}
+    container_name: klams-postgres
+    restart: unless-stopped
+    networks:
+      klams-net:
+        aliases: [postgres]
+    environment:
+      POSTGRES_DB: klams
+      POSTGRES_USER: klams
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - ${KLAMS_DATA_ROOT}/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U klams -d klams"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  qdrant:
+    image: qdrant/qdrant:${QDRANT_IMAGE_TAG}
+    container_name: klams-qdrant
+    restart: unless-stopped
+    networks:
+      klams-net:
+        aliases: [qdrant]
+    ports:
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
+    volumes:
+      - ${KLAMS_DATA_ROOT}/qdrant:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/6333"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  tei:
+    image: ghcr.io/huggingface/text-embeddings-inference:${TEI_IMAGE_TAG}
+    container_name: klams-tei
+    restart: unless-stopped
+    networks:
+      klams-net:
+        aliases: [tei]
+    command: ["--model-id", "${TEI_MODEL_ID}", "--port", "80"]
+    ports:
+      - "127.0.0.1:7070:80"
+    volumes:
+      - ${KLAMS_DATA_ROOT}/tei:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1/health"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+
+  # --- klams-service (Compose-mode dev convenience; usually systemd) ---
+  # klams:
+  #   image: klams:dev
+  #   container_name: klams
+  #   restart: unless-stopped
+  #   networks:
+  #     klams-net:
+  #       aliases: [klams]
+  #   environment:
+  #     KLAMS_CONFIG: /etc/klams/klams.toml
+  #     KLAMS_LOG_FORMAT: json
+  #   volumes:
+  #     - ${KLAMS_ROOT}/config/klams.toml:/etc/klams/klams.toml:ro
+  #   ports:
+  #     - "127.0.0.1:7777:7777"
+  #   depends_on:
+  #     postgres: { condition: service_healthy }
+  #     qdrant:   { condition: service_healthy }
+  #     tei:      { condition: service_healthy }

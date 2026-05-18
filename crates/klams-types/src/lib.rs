@@ -1,0 +1,26 @@
+//! Shared DTOs and pipeline types for the klams memory service.
+//!
+//! Wire formats here are the source of truth; the `OpenAPI` contract is
+//! kept aligned manually. See `specs/001-initial-mvp/data-model.md`
+//! and `specs/001-initial-mvp/contracts/openapi.yaml`.
+
+pub mod entities;
+pub mod error;
+pub mod hash;
+pub mod health;
+pub mod pipeline;
+pub mod requests;
+pub mod responses;
+pub mod search;
+
+pub use entities::{Event, Fact, FactType, KnowledgeItem, Source};
+pub use error::ApiError;
+pub use hash::canonical_json_hash;
+pub use health::{HealthSnapshot, HealthStatus, QueueStatus, SubsystemStatus};
+pub use pipeline::{AppendEvent, IndexKnowledge, MemoryWrite, UpsertFact};
+pub use requests::{
+    AppendEventRequest, IndexKnowledgeRequest, ListEventsParams, ListFactsParams, SearchRequest,
+    UpsertFactRequest,
+};
+pub use responses::{AcceptedId, EventPage, FactPage, IndexKnowledgeResponse, SearchResults};
+pub use search::{SearchHit, SearchType};
