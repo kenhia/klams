@@ -66,6 +66,7 @@ fn router() -> axum::Router {
             queue_capacity: 8,
             workers: 2,
             started_at: std::time::Instant::now(),
+            validators: std::sync::Arc::new(klams_core::ValidatorRegistry::with_defaults()),
         },
         "test-token",
     )

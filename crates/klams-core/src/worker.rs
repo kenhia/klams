@@ -43,7 +43,7 @@ async fn process<S: Store>(job: WriteJob, store: &S) {
     let WriteJob { write, reply } = job;
     match write {
         MemoryWrite::UpsertFact(req) => {
-            let result = store.upsert_fact(req).await;
+            let result = store.upsert_fact_v2(req).await;
             if let Some(tx) = reply {
                 let _ = tx.send(WriteReply::Fact(result));
             } else if let Err(e) = result {

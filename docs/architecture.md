@@ -99,20 +99,36 @@ rationale in [research.md §13](../specs/001-initial-mvp/research.md#13-docker-n
 
 ```text
 controller ──HTTP POST /v1/facts──▶ klams-api
-                                       │ auth + validate
+                                       │ auth + per-type validators
+                                       │      + sanity rules
+                                       │      + optimistic-concurrency
+                                       │        (expected_version)
                                        ▼
                                     klams-core enqueue (bounded mpsc)
                                        │
                                        ▼
                                     worker pool ── dedupe hash ──▶ PostgresStore (sqlx)
-                                                                       │
-                                                                       ▼
-                                                                  202 Accepted (id)
+                                       │                              │
+                                       │                              ▼
+                                       │                       persisted Fact (version++)
+                                       │
+                                       │ lower-trust write against a higher-trust canonical?
+                                       └─▶ DissentStore.insert(payload, source, ts)
+                                                 │
+                                                 ▼
+                                          202 Accepted { dissent_id, status: "pending" }
+                                          (canonical fact unchanged;
+                                           fact.dissent_count incremented by trigger)
 ```
 
 Writes are durable before the queue acknowledges: facts and events are
 persisted to Postgres on the worker, and only durable writes increment
-the success counter (SC-004).
+the success counter (SC-004). Lower-trust writes that contradict a
+canonical fact are diverted to the `dissents` table rather than
+overwriting; operators resolve them via
+`POST /memory/dissents/{id}/{promote|discard}`. Stale-`version` writes
+return HTTP 409 with the current version in the body so retries can be
+mechanical.
 
 ### 2.2 Write path (knowledge item)
 
@@ -154,6 +170,68 @@ viewport ──invoke("search_unified", q)──▶ tauri command
   `KLAMS_LOG_FORMAT=json`; the systemd unit sets this in production.
 * The viewport polls `/healthz` on an exponential backoff (capped at
   60 s) and surfaces the result in the dashboard.
+
+### 2.5 Decay task
+
+```text
+┌──────────────────────────────────────────────────────────────┐
+│ klams-service                                                │
+│                                                              │
+│   tokio interval (decay.task_interval_seconds, default 3600) │
+│             │                                                │
+│             ▼                                                │
+│       DecayWorker.tick()                                     │
+│             │  SELECT id, fact_type, decay_weight,           │
+│             │         last_used_at FROM facts                │
+│             │  LIMIT decay.batch_size (default 500)          │
+│             ▼                                                │
+│       per-type λ from [decay.lambda] in klams.toml           │
+│             │  new_w = old_w * exp(-λ · Δt)                  │
+│             ▼                                                │
+│       PostgresStore.batch_update_decay(...)                  │
+│             │                                                │
+│             ▼                                                │
+│       /memory/search ranks by decay_weight × relevance       │
+└──────────────────────────────────────────────────────────────┘
+```
+
+The decay loop is in-process (no separate scheduler), bounded by
+`batch_size` per tick, and idempotent — a missed tick just means
+the next one covers a longer Δt. Defaults are baked into the binary;
+overrides live under `[decay]` in `klams.toml`.
+
+## 2a. Phase 2 deltas (sprint 002)
+
+Sprint 002 (`specs/002-safety-and-write-ops/`) layers safety, drift
+control, and viewport curation on top of the Phase 1 pipeline without
+changing the crate boundaries:
+
+* **Validation (FR-001..FR-007)** — per-type validators + universal
+  sanity rules run inside `klams-api` before the write reaches the
+  queue; malformed agent writes never touch Postgres or Qdrant
+  (SC-001).
+* **Dissents (FR-008..FR-013)** — new `dissents` table + 
+  `dissent_count` column on `facts` + BEFORE-DELETE orphan trigger.
+  Endpoints: `GET /memory/dissents`, `POST /memory/dissents/{id}/promote`,
+  `POST /memory/dissents/{id}/discard`. Lower-trust contradictions
+  divert to dissents instead of overwriting (SC-002).
+* **Optimistic concurrency (FR-014..FR-015)** — every fact carries a
+  monotonically increasing `version`; writes supply `expected_version`
+  and stale writes return HTTP 409 with `current_version` (SC-003).
+* **Decay-aware ranking (FR-016..FR-019)** — see §2.5; per-type λ
+  values configured via `[decay.lambda]` (SC-004).
+* **Viewport curation (FR-020..FR-023)** — provenance panel on every
+  inspector page, edit/delete with optimistic rollback, dedicated
+  `/dissents` page with diff + promote/discard, nav-bar pending-dissent
+  badge (SC-005).
+* **`just` inner loop (FR-024..FR-030)** — top-level `justfile` is the
+  single source of developer + CI commands; `just gate` runs the
+  constitution's fmt/clippy/test gate (SC-006, SC-007).
+
+Plan and spec live at
+[specs/002-safety-and-write-ops/plan.md](../specs/002-safety-and-write-ops/plan.md)
+and
+[specs/002-safety-and-write-ops/spec.md](../specs/002-safety-and-write-ops/spec.md).
 
 ## 3. Deployment topology on `kubs0`
 

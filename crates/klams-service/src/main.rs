@@ -8,11 +8,13 @@ pub mod logging;
 
 use anyhow::{Context, Result};
 use klams_api::{build_router, with_metrics, ApiState};
-use klams_core::{spawn_workers, MemoryQueue};
+use klams_core::{spawn_workers, DecayTask, LastUsedBumper, MemoryQueue, ValidatorRegistry};
 use klams_store::{CompositeStore, PostgresStore, QdrantStore, TeiEmbedder};
 use std::sync::Arc;
 use tokio::signal;
 use tracing::info;
+
+use crate::config::LogResolvedDecay;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -39,7 +41,13 @@ async fn main() -> Result<()> {
         cfg.embeddings.vector_dim as usize,
     )
     .context("building TEI client")?;
-    let store = Arc::new(CompositeStore::new(postgres, qdrant, embedder));
+    let (bumper, bumps_rx) = LastUsedBumper::channel();
+    let store =
+        Arc::new(CompositeStore::new(postgres, qdrant, embedder).with_bump_sender(bumper.sender()));
+
+    cfg.decay.log_resolved();
+    let decay_task = DecayTask::new(cfg.decay.clone(), Arc::clone(&store)).with_bumps_rx(bumps_rx);
+    let _decay_handle = tokio::spawn(decay_task.run());
 
     let (queue, rx) = MemoryQueue::new(cfg.queue.capacity);
     let _workers = spawn_workers(cfg.queue.workers, rx, Arc::clone(&store));
@@ -50,6 +58,7 @@ async fn main() -> Result<()> {
         queue_capacity: cfg.queue.capacity,
         workers: cfg.queue.workers,
         started_at: std::time::Instant::now(),
+        validators: Arc::new(ValidatorRegistry::with_defaults()),
     };
     let router = with_metrics(build_router(state, cfg.auth.bearer_token.clone()));
     klams_core::metrics::describe();

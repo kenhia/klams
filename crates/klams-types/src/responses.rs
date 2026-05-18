@@ -1,9 +1,17 @@
 //! Outbound API response DTOs.
 
+use crate::dissent::Dissent;
 use crate::entities::{Event, Fact};
 use crate::search::SearchHit;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DissentPage {
+    pub items: Vec<Dissent>,
+    #[serde(default)]
+    pub next_cursor: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FactPage {

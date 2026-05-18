@@ -10,8 +10,9 @@ pub mod memory;
 use async_trait::async_trait;
 use klams_client::{Client, ClientError};
 use klams_types::{
-    EventPage, Fact, FactPage, HealthSnapshot, KnowledgeItem, ListEventsParams, ListFactsParams,
-    SearchRequest, SearchResults,
+    Dissent, DissentPage, EventPage, Fact, FactPage, FactType, FactWriteOutcome, HealthSnapshot,
+    KnowledgeItem, ListDissentsParams, ListEventsParams, ListFactsParams, SearchRequest,
+    SearchResults, Source, UpsertFactRequest,
 };
 use serde::Serialize;
 use std::sync::Arc;
@@ -67,6 +68,36 @@ pub trait ClientFactory: Send + Sync + std::fmt::Debug {
     async fn search(&self, req: SearchRequest) -> Result<SearchResults, ViewportError>;
     async fn get_knowledge(&self, id: Uuid) -> Result<KnowledgeItem, ViewportError>;
     async fn health(&self) -> Result<HealthSnapshot, ViewportError>;
+
+    // -- Sprint 002: dissents + canonical writes ---------------------
+    async fn list_dissents(
+        &self,
+        params: ListDissentsParams,
+    ) -> Result<DissentPage, ViewportError>;
+    async fn get_dissent(&self, id: Uuid) -> Result<Dissent, ViewportError>;
+    async fn promote_dissent(
+        &self,
+        id: Uuid,
+        caller_source: Source,
+        expected_version: i32,
+    ) -> Result<Fact, ViewportError>;
+    async fn discard_dissent(
+        &self,
+        id: Uuid,
+        caller_source: Source,
+    ) -> Result<Dissent, ViewportError>;
+    async fn upsert_fact(
+        &self,
+        req: UpsertFactRequest,
+    ) -> Result<FactWriteOutcome, ViewportError>;
+    async fn delete_fact(&self, id: Uuid) -> Result<(), ViewportError>;
+    async fn edit_fact(
+        &self,
+        id: Uuid,
+        fact_type: FactType,
+        payload: serde_json::Value,
+        expected_version: i32,
+    ) -> Result<FactWriteOutcome, ViewportError>;
 
     /// Default impl walks pages of `/memory/facts` looking for `id`.
     /// Override in production once a `GET /memory/facts/{id}` lands.
@@ -148,6 +179,54 @@ impl ClientFactory for LiveClientFactory {
     }
     async fn health(&self) -> Result<HealthSnapshot, ViewportError> {
         Ok(self.client()?.health().await?)
+    }
+    async fn list_dissents(
+        &self,
+        params: ListDissentsParams,
+    ) -> Result<DissentPage, ViewportError> {
+        Ok(self.client()?.list_dissents(&params).await?)
+    }
+    async fn get_dissent(&self, id: Uuid) -> Result<Dissent, ViewportError> {
+        Ok(self.client()?.get_dissent(id).await?)
+    }
+    async fn promote_dissent(
+        &self,
+        id: Uuid,
+        caller_source: Source,
+        expected_version: i32,
+    ) -> Result<Fact, ViewportError> {
+        Ok(self
+            .client()?
+            .promote_dissent(id, caller_source, expected_version)
+            .await?)
+    }
+    async fn discard_dissent(
+        &self,
+        id: Uuid,
+        caller_source: Source,
+    ) -> Result<Dissent, ViewportError> {
+        Ok(self.client()?.discard_dissent(id, caller_source).await?)
+    }
+    async fn upsert_fact(
+        &self,
+        req: UpsertFactRequest,
+    ) -> Result<FactWriteOutcome, ViewportError> {
+        Ok(self.client()?.upsert_fact(&req).await?)
+    }
+    async fn delete_fact(&self, id: Uuid) -> Result<(), ViewportError> {
+        Ok(self.client()?.delete_fact(id).await?)
+    }
+    async fn edit_fact(
+        &self,
+        id: Uuid,
+        fact_type: FactType,
+        payload: serde_json::Value,
+        expected_version: i32,
+    ) -> Result<FactWriteOutcome, ViewportError> {
+        Ok(self
+            .client()?
+            .edit_fact(id, fact_type, payload, expected_version)
+            .await?)
     }
 }
 

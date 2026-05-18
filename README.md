@@ -74,6 +74,35 @@ quickstart. The short version:
 5. **Smoke-test** against the success criteria using
    [specs/001-initial-mvp/quickstart.md §9](specs/001-initial-mvp/quickstart.md#9-smoke-test-the-user-stories).
 
+### Sprint 002 quick reference
+
+Sprint 002 (`specs/002-safety-and-write-ops/`) adds a top-level
+[`justfile`](justfile) so every routine task — bringing the stack up,
+running the service, exercising the pre-commit gate, smoke-testing
+the API — is a single discoverable recipe and is the same command CI
+invokes. Install [`just`](https://github.com/casey/just) once
+(`cargo install just`), then:
+
+```sh
+$ just --list
+Available recipes:
+    build           # Release build of the service binary.
+    compose-down    # Stop and remove the stack (keeps volumes).
+    compose-rebuild # Force a clean rebuild of all compose images.
+    compose-up      # Bring the Postgres+Qdrant+TEI stack up in the background.
+    default         # Default recipe shows the menu so a bare `just` is friendly.
+    gate            # CI invokes exactly this recipe (no inline duplication).
+    health          # Quick liveness probe + light verification round-trip.
+    run             # Run the service in the foreground; logs go to stderr.
+    test            # Workspace-wide tests (excludes #[ignore]'d cases).
+    verify          # Full SC-001..SC-009 functional smoke (slower than `health`).
+    viewport-build  # Cross-compile the viewport for Windows (requires cargo-xwin).
+```
+
+The full sprint 002 walkthrough (validation, dissents, decay,
+viewport curation, `just gate`) lives at
+[specs/002-safety-and-write-ops/quickstart.md](specs/002-safety-and-write-ops/quickstart.md).
+
 Architecture overview and component map:
 [docs/architecture.md](docs/architecture.md). Day-to-day operator
 recipes: [docs/usage.md](docs/usage.md).

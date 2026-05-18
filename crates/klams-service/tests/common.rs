@@ -67,6 +67,7 @@ impl TestServer {
             queue_capacity: 256,
             workers: 2,
             started_at: std::time::Instant::now(),
+            validators: Arc::new(klams_core::ValidatorRegistry::with_defaults()),
         };
         let router = build_router(state, bearer.clone());
 

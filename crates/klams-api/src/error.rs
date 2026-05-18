@@ -7,12 +7,25 @@
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use klams_types::ApiError as WireApiError;
+use klams_types::{ApiError as WireApiError, ErrorDetail};
+use uuid::Uuid;
+
+/// Stable wire-level `code` values. These appear in the `OpenAPI`
+/// contract and clients match on them.
+pub const VALIDATION_ERROR: &str = "validation_error";
+pub const VERSION_CONFLICT: &str = "version_conflict";
+pub const TRUST_REQUIRED: &str = "trust_required";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
     #[error("validation error on field `{field}`: {message}")]
     Validation { field: String, message: String },
+    #[error("validation error: {} field(s)", .details.len())]
+    ValidationDetailed { details: Vec<ErrorDetail> },
+    #[error("version conflict on fact {fact_id} (current_version={current_version})")]
+    VersionConflict { fact_id: Uuid, current_version: i32 },
+    #[error("trust required: {message}")]
+    TrustRequired { message: String },
     #[error("unauthorized")]
     Unauthorized,
     #[error("payload too large")]
@@ -21,59 +34,150 @@ pub enum ApiError {
     QueueFull { retry_after: u32 },
     #[error("not found: {resource}")]
     NotFound { resource: String },
+    #[error("gone: {what}")]
+    Gone { what: String },
     #[error("internal server error (request {request_id})")]
     Internal { request_id: String },
+    #[error("not implemented: {what}")]
+    NotImplemented { what: String },
 }
 
 impl ApiError {
+    /// Build a `validation_error` response from a list of structured
+    /// `ErrorDetail`s. Used by the per-type validator registry.
+    #[must_use]
+    pub fn validation_error(details: Vec<ErrorDetail>) -> Self {
+        ApiError::ValidationDetailed { details }
+    }
+
+    /// Build a `version_conflict` response. The wire body will carry
+    /// `current_version` so the caller can retry against the latest
+    /// state.
+    #[must_use]
+    pub fn version_conflict(current_version: i32, fact_id: Uuid) -> Self {
+        ApiError::VersionConflict {
+            fact_id,
+            current_version,
+        }
+    }
+
+    /// Build a `trust_required` (HTTP 403) response — used by
+    /// promote/discard endpoints that require `User` or `Controller`
+    /// trust.
+    #[must_use]
+    pub fn trust_required(message: impl Into<String>) -> Self {
+        ApiError::TrustRequired {
+            message: message.into(),
+        }
+    }
+
     fn status(&self) -> StatusCode {
         match self {
             ApiError::Validation { .. } => StatusCode::BAD_REQUEST,
+            ApiError::ValidationDetailed { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+            ApiError::VersionConflict { .. } => StatusCode::CONFLICT,
+            ApiError::TrustRequired { .. } => StatusCode::FORBIDDEN,
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
             ApiError::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             ApiError::QueueFull { .. } => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::NotFound { .. } => StatusCode::NOT_FOUND,
+            ApiError::Gone { .. } => StatusCode::GONE,
             ApiError::Internal { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+            ApiError::NotImplemented { .. } => StatusCode::NOT_IMPLEMENTED,
         }
     }
 
     fn wire(&self) -> WireApiError {
         match self {
             ApiError::Validation { field, message } => WireApiError {
-                code: "validation_error".into(),
+                code: VALIDATION_ERROR.into(),
                 message: message.clone(),
                 field: Some(field.clone()),
                 request_id: None,
+                details: None,
+                current_version: None,
+            },
+            ApiError::ValidationDetailed { details } => WireApiError {
+                code: VALIDATION_ERROR.into(),
+                message: "request failed validation".into(),
+                field: details.first().map(|d| d.field.clone()),
+                request_id: None,
+                details: Some(details.clone()),
+                current_version: None,
+            },
+            ApiError::VersionConflict {
+                current_version, ..
+            } => WireApiError {
+                code: VERSION_CONFLICT.into(),
+                message: "expected_version does not match the current stored version".into(),
+                field: Some("expected_version".into()),
+                request_id: None,
+                details: None,
+                current_version: Some(*current_version),
+            },
+            ApiError::TrustRequired { message } => WireApiError {
+                code: TRUST_REQUIRED.into(),
+                message: message.clone(),
+                field: None,
+                request_id: None,
+                details: None,
+                current_version: None,
             },
             ApiError::Unauthorized => WireApiError {
                 code: "unauthorized".into(),
                 message: "missing or invalid bearer token".into(),
                 field: None,
                 request_id: None,
+                details: None,
+                current_version: None,
             },
             ApiError::TooLarge => WireApiError {
                 code: "payload_too_large".into(),
                 message: "request payload exceeds configured limit".into(),
                 field: None,
                 request_id: None,
+                details: None,
+                current_version: None,
             },
             ApiError::QueueFull { .. } => WireApiError {
                 code: "queue_full".into(),
                 message: "write queue at capacity; retry later".into(),
                 field: None,
                 request_id: None,
+                details: None,
+                current_version: None,
             },
             ApiError::NotFound { resource } => WireApiError {
                 code: "not_found".into(),
                 message: format!("no such {resource}"),
                 field: None,
                 request_id: None,
+                details: None,
+                current_version: None,
+            },
+            ApiError::Gone { what } => WireApiError {
+                code: "gone".into(),
+                message: what.clone(),
+                field: None,
+                request_id: None,
+                details: None,
+                current_version: None,
             },
             ApiError::Internal { request_id } => WireApiError {
                 code: "internal_error".into(),
                 message: "internal server error".into(),
                 field: None,
                 request_id: Some(request_id.clone()),
+                details: None,
+                current_version: None,
+            },
+            ApiError::NotImplemented { what } => WireApiError {
+                code: "not_implemented".into(),
+                message: format!("{what} is not implemented yet"),
+                field: None,
+                request_id: None,
+                details: None,
+                current_version: None,
             },
         }
     }

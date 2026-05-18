@@ -19,6 +19,13 @@ pub struct UpsertFact {
     pub payload: serde_json::Value,
     pub source: Source,
     pub explicit_id: Option<Uuid>,
+    /// Optimistic concurrency token. `Some(0)` indicates the caller
+    /// expects this write to create a brand-new canonical fact;
+    /// `Some(n)` for `n > 0` asserts the stored row is at version
+    /// `n` before the upsert proceeds. `None` is rejected by US1
+    /// validation when a canonical fact already exists (FR-008 / A1).
+    #[serde(default)]
+    pub expected_version: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

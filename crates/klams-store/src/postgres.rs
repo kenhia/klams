@@ -3,8 +3,12 @@
 //! Uses runtime-checked `sqlx::query` queries; integration tests in
 //! user-story phases validate every statement against a real Postgres.
 
-use crate::{EventQuery, FactQuery, StoreError, StoreResult, TextHit};
-use klams_types::{canonical_json_hash, AppendEvent, Event, Fact, FactType, Source, UpsertFact};
+use crate::{DissentQuery, EventQuery, FactQuery, StoreError, StoreResult, TextHit};
+use async_trait::async_trait;
+use klams_types::{
+    canonical_json_hash, AppendEvent, Dissent, DissentStatus, Event, Fact, FactType,
+    FactWriteOutcome, Source, UpsertFact,
+};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
@@ -174,7 +178,10 @@ impl PostgresStore {
         let fact_rows = sqlx::query(
             r"
             SELECT id, payload,
-                   ts_rank_cd(tsv, plainto_tsquery('english', $1)) AS score
+                   (ts_rank_cd(tsv, plainto_tsquery('english', $1))
+                    * decay_weight
+                    * confidence
+                    * (1.0 + ln(1.0 + use_count)))::float4 AS score
             FROM facts
             WHERE tsv @@ plainto_tsquery('english', $1)
             ORDER BY score DESC, id ASC LIMIT $2
@@ -258,6 +265,7 @@ fn row_to_fact(row: &sqlx::postgres::PgRow) -> StoreResult<Fact> {
         confidence: row.try_get("confidence").map_err(map_decode)?,
         decay_weight: row.try_get("decay_weight").map_err(map_decode)?,
         use_count: row.try_get("use_count").map_err(map_decode)?,
+        dissent_count: row.try_get::<i32, _>("dissent_count").unwrap_or(0),
         last_used_at: row.try_get("last_used_at").map_err(map_decode)?,
         created_at: row.try_get("created_at").map_err(map_decode)?,
         updated_at: row.try_get("updated_at").map_err(map_decode)?,
@@ -274,6 +282,483 @@ fn row_to_event(row: &sqlx::postgres::PgRow) -> StoreResult<Event> {
         source: parse_source(&source_str)?,
         created_at: row.try_get("created_at").map_err(map_decode)?,
     })
+}
+
+fn parse_dissent_status(s: &str) -> StoreResult<DissentStatus> {
+    Ok(match s {
+        "pending" => DissentStatus::Pending,
+        "promoted" => DissentStatus::Promoted,
+        "discarded" => DissentStatus::Discarded,
+        "orphaned" => DissentStatus::Orphaned,
+        other => {
+            return Err(StoreError::Other(format!(
+                "unknown DissentStatus `{other}`"
+            )))
+        }
+    })
+}
+
+fn row_to_dissent(row: &sqlx::postgres::PgRow) -> StoreResult<Dissent> {
+    let status_str: String = row.try_get("status").map_err(map_decode)?;
+    let source_str: String = row.try_get("source").map_err(map_decode)?;
+    let resolved_by_source: Option<String> =
+        row.try_get("resolved_by_source").map_err(map_decode)?;
+    let resolved_by_source = match resolved_by_source {
+        Some(s) => Some(parse_source(&s)?),
+        None => None,
+    };
+    Ok(Dissent {
+        id: row.try_get("id").map_err(map_decode)?,
+        fact_id: row.try_get("fact_id").map_err(map_decode)?,
+        proposed_payload: row.try_get("proposed_payload").map_err(map_decode)?,
+        source: parse_source(&source_str)?,
+        status: parse_dissent_status(&status_str)?,
+        submitted_at: row.try_get("submitted_at").map_err(map_decode)?,
+        last_seen_at: row.try_get("last_seen_at").map_err(map_decode)?,
+        submission_count: row.try_get("submission_count").map_err(map_decode)?,
+        resolved_at: row.try_get("resolved_at").map_err(map_decode)?,
+        resolved_by_source,
+    })
+}
+
+/// Trust ordering used by US2 routing. Higher is more authoritative.
+fn trust_rank(s: Source) -> i32 {
+    match s {
+        Source::User => 4,
+        Source::Controller => 3,
+        Source::Task => 2,
+        Source::AgentProposal => 1,
+    }
+}
+
+impl PostgresStore {
+    /// Sprint-002 canonical write path. Returns a tagged outcome so
+    /// the handler maps directly to HTTP 200 / 202 / 409.
+    ///
+    /// Semantics:
+    /// - If `(type, payload_hash)` already exists (same payload), the
+    ///   write is idempotent: `expected_version` must match the
+    ///   stored version (else `VersionConflict`); otherwise it bumps
+    ///   `updated_at` and returns `Persisted`.
+    /// - If `explicit_id` targets an existing canonical fact from a
+    ///   strictly higher-trust `source`, the contradicting payload
+    ///   lands in `dissents` (deduped per FR-013) and returns
+    ///   `Dissented`.
+    /// - Otherwise the write is a brand-new canonical row.
+    #[allow(clippy::too_many_lines)]
+    pub async fn upsert_fact_v2(&self, req: UpsertFact) -> StoreResult<FactWriteOutcome> {
+        let hash = canonical_json_hash(req.fact_type.as_str(), &req.payload);
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StoreError::Backend(format!("upsert_fact_v2 begin: {e}")))?;
+
+        // 1) Same (type, payload_hash) idempotent path.
+        let existing_same: Option<(Uuid, i32, String)> = sqlx::query_as(
+            "SELECT id, version, source FROM facts WHERE type=$1 AND payload_hash=$2 FOR UPDATE",
+        )
+        .bind(req.fact_type.as_str())
+        .bind(&hash[..])
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| StoreError::Backend(format!("upsert_fact_v2 select-same: {e}")))?;
+
+        if let Some((id, version, _source)) = existing_same {
+            if let Some(ev) = req.expected_version {
+                if ev != version {
+                    return Ok(FactWriteOutcome::VersionConflict {
+                        current_version: version,
+                        fact_id: id,
+                    });
+                }
+            }
+            // Touch updated_at, no payload change since hashes match.
+            let row = sqlx::query(
+                r"UPDATE facts SET updated_at = now() WHERE id = $1
+                  RETURNING id, type, payload, version, source,
+                            confidence, decay_weight, use_count, dissent_count,
+                            last_used_at, created_at, updated_at",
+            )
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| StoreError::Backend(format!("upsert_fact_v2 touch: {e}")))?;
+            let fact = row_to_fact(&row)?;
+            tx.commit()
+                .await
+                .map_err(|e| StoreError::Backend(format!("upsert_fact_v2 commit: {e}")))?;
+            return Ok(FactWriteOutcome::Persisted { fact });
+        }
+
+        // 2) explicit_id targets an existing canonical fact: dissent
+        //    or version-bumped amendment depending on trust.
+        if let Some(id) = req.explicit_id {
+            let existing: Option<(i32, String)> =
+                sqlx::query_as("SELECT version, source FROM facts WHERE id=$1 FOR UPDATE")
+                    .bind(id)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(|e| StoreError::Backend(format!("upsert_fact_v2 select-id: {e}")))?;
+            if let Some((version, source_str)) = existing {
+                let canonical_source = parse_source(&source_str)?;
+                if trust_rank(req.source) < trust_rank(canonical_source) {
+                    // Dissent path.
+                    let dissent_hash = canonical_json_hash(req.fact_type.as_str(), &req.payload);
+                    let row = sqlx::query(
+                        r"INSERT INTO dissents
+                            (id, fact_id, proposed_payload, payload_hash, source)
+                          VALUES ($1, $2, $3, $4, $5)
+                          ON CONFLICT (fact_id, payload_hash) WHERE status='pending'
+                          DO UPDATE SET
+                            submission_count = dissents.submission_count + 1,
+                            last_seen_at = now()
+                          RETURNING id",
+                    )
+                    .bind(Uuid::now_v7())
+                    .bind(id)
+                    .bind(&req.payload)
+                    .bind(&dissent_hash[..])
+                    .bind(req.source.as_str())
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(|e| {
+                        StoreError::Backend(format!("upsert_fact_v2 dissent insert: {e}"))
+                    })?;
+                    let dissent_id: Uuid = row.try_get("id").map_err(map_decode)?;
+                    tx.commit()
+                        .await
+                        .map_err(|e| StoreError::Backend(format!("upsert_fact_v2 commit: {e}")))?;
+                    return Ok(FactWriteOutcome::Dissented {
+                        dissent_id,
+                        fact_id: id,
+                    });
+                }
+                // Same / higher trust amendment: optimistic version check.
+                if let Some(ev) = req.expected_version {
+                    if ev != version {
+                        return Ok(FactWriteOutcome::VersionConflict {
+                            current_version: version,
+                            fact_id: id,
+                        });
+                    }
+                }
+                let row = sqlx::query(
+                    r"UPDATE facts SET
+                        payload = $2,
+                        payload_hash = $3,
+                        source = $4,
+                        version = version + 1,
+                        updated_at = now()
+                      WHERE id = $1
+                      RETURNING id, type, payload, version, source,
+                                confidence, decay_weight, use_count, dissent_count,
+                                last_used_at, created_at, updated_at",
+                )
+                .bind(id)
+                .bind(&req.payload)
+                .bind(&hash[..])
+                .bind(req.source.as_str())
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|e| StoreError::Backend(format!("upsert_fact_v2 amend: {e}")))?;
+                let fact = row_to_fact(&row)?;
+                tx.commit()
+                    .await
+                    .map_err(|e| StoreError::Backend(format!("upsert_fact_v2 commit: {e}")))?;
+                return Ok(FactWriteOutcome::Persisted { fact });
+            }
+        }
+
+        // 3) Brand new canonical fact.
+        let id = req.explicit_id.unwrap_or_else(Uuid::now_v7);
+        let row = sqlx::query(
+            r"INSERT INTO facts (id, type, payload, payload_hash, source, version)
+              VALUES ($1, $2, $3, $4, $5, 1)
+              RETURNING id, type, payload, version, source,
+                        confidence, decay_weight, use_count, dissent_count,
+                        last_used_at, created_at, updated_at",
+        )
+        .bind(id)
+        .bind(req.fact_type.as_str())
+        .bind(&req.payload)
+        .bind(&hash[..])
+        .bind(req.source.as_str())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| StoreError::Backend(format!("upsert_fact_v2 insert: {e}")))?;
+        let fact = row_to_fact(&row)?;
+        tx.commit()
+            .await
+            .map_err(|e| StoreError::Backend(format!("upsert_fact_v2 commit: {e}")))?;
+        Ok(FactWriteOutcome::Persisted { fact })
+    }
+
+    pub async fn list_dissents(
+        &self,
+        q: DissentQuery,
+    ) -> StoreResult<(Vec<Dissent>, Option<String>)> {
+        let limit = i64::from(q.limit.clamp(1, 500));
+        let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
+            "SELECT id, fact_id, proposed_payload, source, status,
+                    submitted_at, last_seen_at, submission_count,
+                    resolved_at, resolved_by_source
+             FROM dissents WHERE 1=1",
+        );
+        if let Some(fid) = q.fact_id {
+            qb.push(" AND fact_id = ").push_bind(fid);
+        }
+        if let Some(st) = q.status {
+            qb.push(" AND status = ").push_bind(st.as_str().to_string());
+        }
+        if let Some(s) = q.source {
+            qb.push(" AND source = ").push_bind(s.as_str().to_string());
+        }
+        if let Some(t) = q.created_after {
+            qb.push(" AND submitted_at > ").push_bind(t);
+        }
+        if let Some(t) = q.created_before {
+            qb.push(" AND submitted_at < ").push_bind(t);
+        }
+        qb.push(" ORDER BY submitted_at DESC, id DESC LIMIT ")
+            .push_bind(limit);
+        let rows = qb
+            .build()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StoreError::Backend(format!("list_dissents: {e}")))?;
+        let mut items = Vec::with_capacity(rows.len());
+        for r in &rows {
+            items.push(row_to_dissent(r)?);
+        }
+        Ok((items, q.cursor))
+    }
+
+    pub async fn get_dissent(&self, id: Uuid) -> StoreResult<Option<Dissent>> {
+        let row = sqlx::query(
+            "SELECT id, fact_id, proposed_payload, source, status,
+                    submitted_at, last_seen_at, submission_count,
+                    resolved_at, resolved_by_source
+             FROM dissents WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| StoreError::Backend(format!("get_dissent: {e}")))?;
+        match row {
+            Some(r) => Ok(Some(row_to_dissent(&r)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Promote a pending dissent. Atomically (a) re-asserts the
+    /// dissent is still pending (else `Gone`), (b) checks the
+    /// canonical fact's `version` against `expected_version` (else
+    /// `VersionConflict`), (c) overwrites canonical payload/source,
+    /// (d) marks the dissent resolved.
+    pub async fn promote_dissent(
+        &self,
+        dissent_id: Uuid,
+        caller_source: Source,
+        expected_version: i32,
+    ) -> StoreResult<Fact> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StoreError::Backend(format!("promote begin: {e}")))?;
+
+        let d_row = sqlx::query(
+            "SELECT id, fact_id, proposed_payload, payload_hash, source, status
+             FROM dissents WHERE id = $1 FOR UPDATE",
+        )
+        .bind(dissent_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| StoreError::Backend(format!("promote select dissent: {e}")))?;
+        let d_row =
+            d_row.ok_or_else(|| StoreError::Other(format!("dissent {dissent_id} not found")))?;
+        let status: String = d_row.try_get("status").map_err(map_decode)?;
+        if status != "pending" {
+            return Err(StoreError::Gone(format!(
+                "dissent {dissent_id} already resolved (status={status})"
+            )));
+        }
+        let fact_id: Uuid = d_row.try_get("fact_id").map_err(map_decode)?;
+        let proposed_payload: serde_json::Value =
+            d_row.try_get("proposed_payload").map_err(map_decode)?;
+        let payload_hash: Vec<u8> = d_row.try_get("payload_hash").map_err(map_decode)?;
+
+        let f_row = sqlx::query("SELECT version FROM facts WHERE id = $1 FOR UPDATE")
+            .bind(fact_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| StoreError::Backend(format!("promote select fact: {e}")))?;
+        let f_row = f_row
+            .ok_or_else(|| StoreError::Other(format!("canonical fact {fact_id} not found")))?;
+        let current_version: i32 = f_row.try_get("version").map_err(map_decode)?;
+        if current_version != expected_version {
+            return Err(StoreError::VersionConflict { current_version });
+        }
+
+        let row = sqlx::query(
+            r"UPDATE facts SET
+                payload = $2,
+                payload_hash = $3,
+                source = $4,
+                version = version + 1,
+                updated_at = now()
+              WHERE id = $1
+              RETURNING id, type, payload, version, source,
+                        confidence, decay_weight, use_count, dissent_count,
+                        last_used_at, created_at, updated_at",
+        )
+        .bind(fact_id)
+        .bind(&proposed_payload)
+        .bind(&payload_hash[..])
+        .bind(caller_source.as_str())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| StoreError::Backend(format!("promote update fact: {e}")))?;
+
+        sqlx::query(
+            "UPDATE dissents SET status='promoted', resolved_at=now(),
+                                  resolved_by_source=$2
+             WHERE id=$1",
+        )
+        .bind(dissent_id)
+        .bind(caller_source.as_str())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StoreError::Backend(format!("promote update dissent: {e}")))?;
+
+        let fact = row_to_fact(&row)?;
+        tx.commit()
+            .await
+            .map_err(|e| StoreError::Backend(format!("promote commit: {e}")))?;
+        Ok(fact)
+    }
+
+    /// Discard a pending dissent. Returns the resolved row.
+    pub async fn discard_dissent(
+        &self,
+        dissent_id: Uuid,
+        caller_source: Source,
+    ) -> StoreResult<Dissent> {
+        let row = sqlx::query(
+            r"UPDATE dissents SET status='discarded', resolved_at=now(),
+                                  resolved_by_source=$2
+              WHERE id=$1 AND status='pending'
+              RETURNING id, fact_id, proposed_payload, source, status,
+                        submitted_at, last_seen_at, submission_count,
+                        resolved_at, resolved_by_source",
+        )
+        .bind(dissent_id)
+        .bind(caller_source.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| StoreError::Backend(format!("discard_dissent: {e}")))?;
+        match row {
+            Some(r) => row_to_dissent(&r),
+            None => Err(StoreError::Gone(format!(
+                "dissent {dissent_id} not pending"
+            ))),
+        }
+    }
+
+    /// Select up to `limit` facts past `after_id` ordered by `id ASC`,
+    /// projecting (id, type, `age_seconds`) for the decay task to
+    /// compute new weights against.
+    pub async fn select_decay_batch(
+        &self,
+        after_id: Option<Uuid>,
+        limit: u32,
+    ) -> StoreResult<Vec<crate::DecayRow>> {
+        let limit = i64::from(limit.clamp(1, 5_000));
+        let after = after_id.unwrap_or(Uuid::nil());
+        let rows = sqlx::query(
+            r"SELECT id, type,
+                     EXTRACT(EPOCH FROM (now() - COALESCE(last_used_at, created_at)))::float4
+                         AS age_seconds
+              FROM facts
+              WHERE id > $1
+              ORDER BY id ASC
+              LIMIT $2",
+        )
+        .bind(after)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StoreError::Backend(format!("select_decay_batch: {e}")))?;
+        let mut out = Vec::with_capacity(rows.len());
+        for r in &rows {
+            let ft_str: String = r.try_get("type").map_err(map_decode)?;
+            out.push(crate::DecayRow {
+                id: r.try_get("id").map_err(map_decode)?,
+                fact_type: parse_fact_type(&ft_str)?,
+                age_seconds: r.try_get("age_seconds").map_err(map_decode)?,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Apply a batch of `(id, decay_weight)` updates in one round
+    /// trip via `UPDATE … FROM UNNEST(...)`.
+    pub async fn apply_decay_batch(&self, updates: &[(Uuid, f32)]) -> StoreResult<u64> {
+        if updates.is_empty() {
+            return Ok(0);
+        }
+        let ids: Vec<Uuid> = updates.iter().map(|(i, _)| *i).collect();
+        let weights: Vec<f32> = updates.iter().map(|(_, w)| *w).collect();
+        let res = sqlx::query(
+            r"UPDATE facts AS f
+              SET decay_weight = u.w
+              FROM UNNEST($1::uuid[], $2::real[]) AS u(id, w)
+              WHERE f.id = u.id",
+        )
+        .bind(&ids[..])
+        .bind(&weights[..])
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StoreError::Backend(format!("apply_decay_batch: {e}")))?;
+        Ok(res.rows_affected())
+    }
+
+    /// Coalesced `last_used_at` bumps. Increments `use_count` per
+    /// flushed id (one increment per unique id per flush).
+    pub async fn apply_last_used_bumps(&self, ids: &[Uuid]) -> StoreResult<u64> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let res = sqlx::query(
+            r"UPDATE facts
+              SET last_used_at = now(),
+                  use_count = use_count + 1
+              WHERE id = ANY($1::uuid[])",
+        )
+        .bind(ids)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StoreError::Backend(format!("apply_last_used_bumps: {e}")))?;
+        Ok(res.rows_affected())
+    }
+}
+
+#[async_trait]
+impl crate::DecayStore for PostgresStore {
+    async fn select_decay_batch(
+        &self,
+        after_id: Option<Uuid>,
+        limit: u32,
+    ) -> StoreResult<Vec<crate::DecayRow>> {
+        PostgresStore::select_decay_batch(self, after_id, limit).await
+    }
+    async fn apply_decay_batch(&self, updates: &[(Uuid, f32)]) -> StoreResult<u64> {
+        PostgresStore::apply_decay_batch(self, updates).await
+    }
+    async fn apply_last_used_bumps(&self, ids: &[Uuid]) -> StoreResult<u64> {
+        PostgresStore::apply_last_used_bumps(self, ids).await
+    }
 }
 
 #[cfg(test)]

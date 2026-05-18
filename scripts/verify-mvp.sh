@@ -6,12 +6,30 @@
 #   KLAMS_URL     base URL of the running service   (default http://127.0.0.1:7777)
 #   KLAMS_TOKEN   bearer token                       (required)
 #
+# Flags:
+#   --light    Run only /healthz + a single fact write/read round-trip
+#              (skips SC-002 knowledge indexing, SC-003 perf seeding,
+#              SC-007/008/009 doc + dependency walks). Intended for
+#              the `just health` recipe and CI smoke after compose-up.
+#
 # This is a thin functional smoke test, NOT a load/perf benchmark.
 # Perf claims (SC-002 10s p95, SC-003 500ms p95) are covered by the
 # #[ignore]-gated perf_smoke integration test (T088).
 
 set -u
 set -o pipefail
+
+LIGHT=0
+for arg in "$@"; do
+  case "$arg" in
+    --light) LIGHT=1 ;;
+    -h|--help)
+      sed -n '2,18p' "$0"
+      exit 0
+      ;;
+    *) echo "unknown arg: $arg" >&2; exit 2 ;;
+  esac
+done
 
 URL="${KLAMS_URL:-http://127.0.0.1:7777}"
 TOKEN="${KLAMS_TOKEN:-}"
@@ -63,8 +81,18 @@ curl_api() {
   cat /tmp/verify-mvp.body 2>/dev/null || true
 }
 
-echo "klams MVP verification against $URL"
+echo "klams MVP verification against $URL${LIGHT:+ (light mode)}"
 echo
+
+# ---------------------------------------------------------------------- /healthz
+# Always run a fast liveness check first so a misconfigured stack fails
+# loudly before we spend time on writes.
+hcode=$(curl -sS -o /tmp/verify-mvp.health -w '%{http_code}' "$URL/healthz" || echo 000)
+if [[ "$hcode" =~ ^2 ]]; then
+  record HEALTHZ pass "/healthz $hcode"
+else
+  record HEALTHZ fail "/healthz status=$hcode"
+fi
 
 # ---------------------------------------------------------------------- SC-001
 # A controller can record a new user fact and find it again via unified
@@ -101,6 +129,29 @@ fi
 
 # ---------------------------------------------------------------------- SC-002
 # Knowledge chunk searchable within 10s p95. Functional check only.
+if (( LIGHT )); then
+  record SC-002 skip "skipped (--light)"
+  record SC-003 skip "skipped (--light)"
+  record SC-004 skip "skipped (--light)"
+  record SC-005 skip "skipped (--light)"
+  record SC-006 skip "skipped (--light)"
+  record SC-007 skip "skipped (--light)"
+  record SC-008 skip "skipped (--light)"
+  record SC-009 skip "skipped (--light)"
+  echo
+  echo "Summary:"
+  printf '  %s %d passed   %s %d failed   %s %d skipped\n' \
+    "$(color pass '✓')" "${#PASS[@]}" \
+    "$(color fail '✗')" "${#FAIL[@]}" \
+    "$(color skip '·')" "${#SKIP[@]}"
+  if (( ${#FAIL[@]} > 0 )); then
+    printf '\nFailed:\n'
+    for f in "${FAIL[@]}"; do printf '  - %s\n' "$f"; done
+    exit 1
+  fi
+  exit 0
+fi
+
 chunk_id="verify-mvp-knowledge-$$"
 ts=$(date +%s%N)
 kbody=$(cat <<JSON

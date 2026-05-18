@@ -41,3 +41,18 @@ workers = 4
 # "pretty" is intended for dev.
 format = "json"
 level = "info"
+
+# [decay]
+# Background decay task (sprint 002). Defaults are baked into the
+# binary; this block exists so operators can see the knobs without
+# spelunking through code. Uncomment and edit to override.
+#
+# task_interval_seconds = 3600   # how often the decay task ticks
+# batch_size            = 500    # facts updated per transaction
+#
+# Per-FactType lambda values (decay rate). Larger = decays faster.
+# Defaults: UserFact = 1e-9, TaskFact = 1e-6, EnvFact = 1e-9.
+# [decay.lambda]
+# UserFact = 1e-9
+# TaskFact = 1e-6
+# EnvFact  = 1e-9

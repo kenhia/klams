@@ -4,16 +4,20 @@
 export type Source = 'User' | 'Controller' | 'Task' | 'AgentProposal';
 export type FactType = 'UserFact' | 'TaskFact' | 'EnvFact';
 export type HealthState = 'Ok' | 'Degraded' | 'Down';
+export type DissentStatus = 'pending' | 'promoted' | 'discarded' | 'orphaned';
 
 export interface Fact {
   id: string;
   fact_type: FactType;
   payload: unknown;
   payload_hash: string;
+  version: number;
   source: Source;
   confidence: number;
   decay_weight: number;
   use_count: number;
+  /** Pending-dissent count maintained by Postgres triggers (sprint 002). */
+  dissent_count: number;
   last_used_at: string | null;
   created_at: string;
   updated_at: string;
@@ -53,6 +57,44 @@ export interface KnowledgeItem {
   last_used_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface Dissent {
+  id: string;
+  fact_id: string;
+  proposed_payload: unknown;
+  source: Source;
+  status: DissentStatus;
+  submitted_at: string;
+  last_seen_at: string;
+  submission_count: number;
+  resolved_at: string | null;
+  resolved_by_source: Source | null;
+}
+
+export interface DissentPage {
+  items: Dissent[];
+  next_cursor: string | null;
+}
+
+/** Discriminated union mirroring `klams_types::FactWriteOutcome`.
+ *  Serde tag is `outcome`, variants are snake_case. */
+export type UpsertResult =
+  | { outcome: 'persisted'; fact: Fact }
+  | { outcome: 'dissented'; dissent_id: string; fact_id: string }
+  | { outcome: 'version_conflict'; current_version: number; fact_id: string };
+
+/** Provenance fields surfaced by [`ProvenancePanel`](./ProvenancePanel.svelte).
+ *  Derivable from a `Fact` or `KnowledgeItem`. */
+export interface ProvenanceBundle {
+  source: Source;
+  confidence: number;
+  decay_weight: number;
+  use_count: number;
+  last_used_at: string | null;
+  created_at: string;
+  updated_at: string;
+  version?: number;
 }
 
 export interface SearchHit {

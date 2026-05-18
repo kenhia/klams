@@ -54,3 +54,22 @@ disruptive.
 Optional sync of `gratch` backup artifacts to off-site cloud storage. Depends
 on the existing gratch backup chain.
 
+## Usefulness-signal decay boost
+
+The Phase 2 decay model uses `last_used_at` + `use_count`, which only tell us
+that *something touched* a fact, not whether the consumer found it useful.
+Add an explicit "this helped" signal that boosts a fact's effective weight
+(or slows its decay) when a human or agent confirms the fact resolved an
+issue. Avoid forced voting on every retrieval — favor opt-in feedback paths:
+
+- A viewport "this was useful" action on a fact in a recent search result.
+- An MCP tool (e.g. `memory.acknowledge_useful`) the agent can call after a
+  successful task resolution citing the fact.
+- A controller hook that, on successful task completion, boosts every fact
+  read during that task's context window.
+
+Store the boosts as a separate per-fact counter (`useful_count`) plus
+`last_useful_at`, with their own contribution term in the scoring formula
+so the existing decay math stays clean. Decide whether boosts decay
+themselves or persist indefinitely as part of this work.
+

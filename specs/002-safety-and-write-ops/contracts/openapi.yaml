@@ -1,0 +1,806 @@
+openapi: 3.0.3
+info:
+  title: klams HTTP API (Phase 2 — Safety, Drift Control, and the User View)
+  version: 0.2.0
+  description: |
+    Phase 2 contract. This is the **full** API surface as of this
+    sprint; it supersedes
+    [001-initial-mvp/contracts/openapi.yaml](../../001-initial-mvp/contracts/openapi.yaml).
+
+    Deltas vs 0.1.0:
+
+    - `POST /memory/facts` may now return `202 Dissented` when the
+      caller's source is strictly lower trust than the stored fact's
+      source and the payload contradicts the canonical fact, or `409
+      VersionConflict` when the caller's `expected_version` does not
+      match the stored fact's `version`.
+    - All `Fact` responses (list, single, search hit) now carry a
+      `dissent_count` field.
+    - New endpoints under `/memory/dissents` to list, fetch, promote,
+      and discard pending dissents.
+    - `ApiError` envelope extends with an optional `details` array
+      and an optional `current_version` field. New error codes:
+      `version_conflict`, `trust_required`.
+
+    All `/memory/*` endpoints require a bearer token via
+    `Authorization: Bearer <token>`. `/healthz` and `/metrics` are
+    unauthenticated.
+
+servers:
+  - url: http://kubs0:7777
+    description: kubs0 production
+  - url: http://127.0.0.1:7777
+    description: local dev
+
+security:
+  - bearerAuth: []
+
+paths:
+  /memory/facts:
+    post:
+      summary: Create, upsert, or propose a fact
+      description: |
+        Three terminal outcomes:
+
+        - **200 Persisted** — canonical write succeeded; the returned
+          `Fact` is the post-write state.
+        - **202 Dissented** — the request's `source` is strictly
+          lower trust than the stored fact's `source` and the
+          submitted `payload` contradicts the canonical payload. The
+          submission is persisted as a dissent; the canonical fact is
+          unchanged. The response body identifies the new (or
+          deduplicated existing) dissent.
+        - **409 VersionConflict** — the request supplied
+          `expected_version` and it does not match the stored
+          `version`. The response body reports `current_version` so
+          the caller can retry against the latest state. Returned for
+          same-trust and higher-trust writes; lower-trust writes
+          producing a contradiction become dissents per the rule
+          above, not version-conflict errors.
+      operationId: upsertFact
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpsertFactRequest"
+      responses:
+        "200":
+          description: Fact persisted (or matched existing canonical).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Fact"
+        "202":
+          description: |
+            Persisted as a dissent. Canonical fact unchanged. The
+            response identifies the dissent and the canonical fact it
+            targets.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DissentSubmittedResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/VersionConflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "503": { $ref: "#/components/responses/QueueFull" }
+    get:
+      summary: List facts
+      description: |
+        Default list does not include dissents but every returned
+        `Fact` carries a `dissent_count` so curators can see at a
+        glance which canonical facts have pending proposals.
+      operationId: listFacts
+      parameters:
+        - in: query
+          name: type
+          schema: { type: string }
+        - in: query
+          name: source
+          schema: { type: string }
+        - in: query
+          name: has_dissents
+          schema: { type: boolean }
+          description: When true, returns only facts with `dissent_count > 0`.
+        - in: query
+          name: created_after
+          schema: { type: string, format: date-time }
+        - in: query
+          name: created_before
+          schema: { type: string, format: date-time }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 50, maximum: 500 }
+        - in: query
+          name: cursor
+          schema: { type: string }
+      responses:
+        "200":
+          description: Page of facts.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FactPage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /memory/facts/{id}:
+    get:
+      summary: Fetch a single fact by id
+      operationId: getFact
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The fact, including `dissent_count`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Fact" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: No fact with that id.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+
+  /memory/events:
+    post:
+      summary: Append an event
+      operationId: appendEvent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AppendEventRequest" }
+      responses:
+        "202":
+          description: Event enqueued (immutable once persisted).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id]
+                properties:
+                  id: { type: string, format: uuid }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "503": { $ref: "#/components/responses/QueueFull" }
+    get:
+      summary: List events
+      operationId: listEvents
+      parameters:
+        - in: query
+          name: task_id
+          schema: { type: string, format: uuid }
+        - in: query
+          name: category
+          schema: { type: string }
+        - in: query
+          name: created_after
+          schema: { type: string, format: date-time }
+        - in: query
+          name: created_before
+          schema: { type: string, format: date-time }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 50, maximum: 500 }
+        - in: query
+          name: cursor
+          schema: { type: string }
+      responses:
+        "200":
+          description: Page of events (ascending by created_at).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EventPage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /memory/knowledge/index:
+    post:
+      summary: Index a knowledge chunk
+      operationId: indexKnowledge
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IndexKnowledgeRequest" }
+      responses:
+        "202":
+          description: Indexing enqueued or matched existing.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [knowledge_id, deduped]
+                properties:
+                  knowledge_id: { type: string, format: uuid }
+                  deduped:      { type: boolean }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "503": { $ref: "#/components/responses/QueueFull" }
+
+  /memory/knowledge/{id}:
+    get:
+      summary: Fetch a single knowledge item by id
+      operationId: getKnowledgeItem
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The knowledge item.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KnowledgeItem" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: No knowledge item with that id.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+
+  /memory/search:
+    post:
+      summary: Unified search across memory types
+      description: |
+        Default search excludes dissents. Every `SearchHit` whose
+        `type = fact` carries a `dissent_count`. Decay-aware ranking
+        (Phase 2 §FR-017) is applied to results; callers do not need
+        to opt in.
+      operationId: search
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SearchRequest" }
+      responses:
+        "200":
+          description: Merged ranked results.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SearchResults" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503":
+          description: Knowledge search unavailable (Qdrant degraded). Fact/event-only fallback returned with `degraded: true`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SearchResults" }
+
+  /memory/dissents:
+    get:
+      summary: List pending dissents
+      description: |
+        Default view returns only `status = pending` dissents. Use
+        the `status` query parameter to retrieve historical
+        (`promoted`, `discarded`, `orphaned`) records.
+      operationId: listDissents
+      parameters:
+        - in: query
+          name: fact_id
+          schema: { type: string, format: uuid }
+          description: Filter to dissents targeting this canonical fact.
+        - in: query
+          name: source
+          schema: { $ref: "#/components/schemas/Source" }
+          description: Filter by proposing source.
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [pending, promoted, discarded, orphaned, all]
+            default: pending
+        - in: query
+          name: submitted_after
+          schema: { type: string, format: date-time }
+        - in: query
+          name: submitted_before
+          schema: { type: string, format: date-time }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 50, maximum: 500 }
+        - in: query
+          name: cursor
+          schema: { type: string }
+      responses:
+        "200":
+          description: Page of dissents.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DissentPage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /memory/dissents/{id}:
+    get:
+      summary: Fetch a single dissent
+      operationId: getDissent
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The dissent.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Dissent" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: No dissent with that id.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+
+  /memory/dissents/{id}/promote:
+    post:
+      summary: Promote a dissent to canonical
+      description: |
+        Restricted to `User` and `Controller` trust. The promoting
+        actor's source is recorded on both the canonical fact's
+        `source` field and the dissent's `resolved_by_source`. Uses
+        the same optimistic-concurrency `expected_version` contract
+        as `POST /memory/facts`; a stale `expected_version` returns
+        `409 VersionConflict`.
+      operationId: promoteDissent
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PromoteDissentRequest" }
+      responses:
+        "200":
+          description: Dissent promoted; canonical fact updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Fact" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: Caller's source lacks the required trust.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "404":
+          description: No dissent with that id.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "409": { $ref: "#/components/responses/VersionConflict" }
+        "410":
+          description: Dissent is no longer pending (already promoted, discarded, or orphaned).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+
+  /memory/dissents/{id}/discard:
+    post:
+      summary: Discard a dissent without changing the canonical fact
+      description: Restricted to `User` and `Controller` trust.
+      operationId: discardDissent
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DiscardDissentRequest" }
+      responses:
+        "200":
+          description: Dissent discarded; canonical fact unchanged.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Dissent" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: Caller's source lacks the required trust.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "404":
+          description: No dissent with that id.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "410":
+          description: Dissent is no longer pending.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+
+  /healthz:
+    get:
+      summary: Service health
+      security: []
+      operationId: health
+      responses:
+        "200":
+          description: All subsystems Ok.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HealthSnapshot" }
+        "503":
+          description: At least one required subsystem is Down.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HealthSnapshot" }
+
+  /metrics:
+    get:
+      summary: Prometheus metrics
+      security: []
+      operationId: metrics
+      responses:
+        "200":
+          description: Prometheus exposition format.
+          content:
+            text/plain:
+              schema: { type: string }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+
+  responses:
+    BadRequest:
+      description: Malformed request (parse error, missing required envelope field).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    Unauthorized:
+      description: Missing or invalid bearer token.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    TooLarge:
+      description: Payload exceeds the configured limit.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    QueueFull:
+      description: Write queue at capacity; retry later.
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    ValidationError:
+      description: |
+        Payload failed per-type schema validation or a universal
+        sanity rule. The response carries a `details` array with one
+        entry per violation.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    VersionConflict:
+      description: |
+        The caller's `expected_version` does not match the stored
+        fact's `version`. The response body carries `current_version`.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+
+  schemas:
+    ApiError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          example: "validation_error"
+          description: |
+            Machine-readable error category. Known values:
+            `validation_error`, `unauthorized`, `payload_too_large`,
+            `queue_full`, `not_found`, `internal_error`,
+            `version_conflict` (new in 0.2.0),
+            `trust_required` (new in 0.2.0).
+        message:    { type: string }
+        field:      { type: string, nullable: true, description: Shortcut for single-field errors. }
+        request_id: { type: string, nullable: true }
+        details:
+          type: array
+          nullable: true
+          description: Populated for `validation_error`; one entry per violated rule.
+          items: { $ref: "#/components/schemas/ErrorDetail" }
+        current_version:
+          type: integer
+          nullable: true
+          description: Populated for `version_conflict`; the stored fact's current version.
+
+    ErrorDetail:
+      type: object
+      required: [field, rule, message]
+      properties:
+        field:   { type: string, description: Dotted path into the payload. }
+        rule:    { type: string, description: Machine-readable rule id. }
+        message: { type: string }
+        value:
+          description: Offending value when safe to echo (omitted for opaque/PII fields).
+          nullable: true
+
+    FactType:
+      type: string
+      enum: [UserFact, TaskFact, EnvFact]
+
+    Source:
+      type: string
+      enum: [User, Controller, Task, AgentProposal]
+
+    DissentStatus:
+      type: string
+      enum: [pending, promoted, discarded, orphaned]
+
+    UpsertFactRequest:
+      type: object
+      required: [type, payload, source]
+      properties:
+        type:        { $ref: "#/components/schemas/FactType" }
+        payload:     { type: object, additionalProperties: true }
+        source:      { $ref: "#/components/schemas/Source" }
+        explicit_id: { type: string, format: uuid, nullable: true }
+        expected_version:
+          type: integer
+          nullable: true
+          description: |
+            Optimistic-concurrency token. Required when amending an
+            existing fact (i.e. when `explicit_id` is set or the
+            payload would replace an existing canonical row). When
+            omitted on a write that targets an existing fact, the
+            server returns `422 ValidationError` with
+            `details[0].field = "expected_version"` and
+            `details[0].rule = "expected_version_required"` so
+            callers can distinguish "you forgot the token" from
+            "your token is stale". A stale-but-present token returns
+            `409 VersionConflict` with `current_version`. Pass
+            `expected_version: 0` for a new fact to make the new-vs-amend
+            intent explicit.
+
+    Fact:
+      type: object
+      required:
+        - id
+        - type
+        - payload
+        - version
+        - source
+        - confidence
+        - decay_weight
+        - use_count
+        - dissent_count
+        - created_at
+        - updated_at
+      properties:
+        id:            { type: string, format: uuid }
+        type:          { $ref: "#/components/schemas/FactType" }
+        payload:       { type: object, additionalProperties: true }
+        version:       { type: integer }
+        source:        { $ref: "#/components/schemas/Source" }
+        confidence:    { type: number, format: float }
+        decay_weight:  { type: number, format: float }
+        use_count:     { type: integer }
+        dissent_count:
+          type: integer
+          description: |
+            Count of dissents with status='pending' targeting this
+            fact. New in 0.2.0.
+        last_used_at:  { type: string, format: date-time, nullable: true }
+        created_at:    { type: string, format: date-time }
+        updated_at:    { type: string, format: date-time }
+
+    FactPage:
+      type: object
+      required: [items]
+      properties:
+        items:       { type: array, items: { $ref: "#/components/schemas/Fact" } }
+        next_cursor: { type: string, nullable: true }
+
+    AppendEventRequest:
+      type: object
+      required: [category, payload, source]
+      properties:
+        task_id:  { type: string, format: uuid, nullable: true }
+        category: { type: string, minLength: 1, maxLength: 64 }
+        payload:  { type: object, additionalProperties: true }
+        source:   { $ref: "#/components/schemas/Source" }
+
+    Event:
+      type: object
+      required: [id, category, payload, source, created_at]
+      properties:
+        id:         { type: string, format: uuid }
+        task_id:    { type: string, format: uuid, nullable: true }
+        category:   { type: string }
+        payload:    { type: object, additionalProperties: true }
+        source:     { $ref: "#/components/schemas/Source" }
+        created_at: { type: string, format: date-time }
+
+    EventPage:
+      type: object
+      required: [items]
+      properties:
+        items:       { type: array, items: { $ref: "#/components/schemas/Event" } }
+        next_cursor: { type: string, nullable: true }
+
+    IndexKnowledgeRequest:
+      type: object
+      required: [text, source]
+      properties:
+        text:    { type: string, minLength: 1, maxLength: 8192 }
+        source:  { $ref: "#/components/schemas/Source" }
+        tags:    { type: array, items: { type: string, maxLength: 64 }, maxItems: 32 }
+        repo:    { type: string, nullable: true }
+        file:    { type: string, nullable: true }
+        machine: { type: string, nullable: true }
+
+    KnowledgeItem:
+      type: object
+      required: [id, text, content_hash, source, created_at, updated_at]
+      properties:
+        id:           { type: string, format: uuid }
+        text:         { type: string }
+        content_hash: { type: string }
+        source:       { $ref: "#/components/schemas/Source" }
+        tags:         { type: array, items: { type: string } }
+        repo:         { type: string, nullable: true }
+        file:         { type: string, nullable: true }
+        machine:      { type: string, nullable: true }
+        confidence:   { type: number, format: float }
+        decay_weight: { type: number, format: float }
+        use_count:    { type: integer }
+        last_used_at: { type: string, format: date-time, nullable: true }
+        created_at:   { type: string, format: date-time }
+        updated_at:   { type: string, format: date-time }
+
+    SearchRequest:
+      type: object
+      required: [query]
+      properties:
+        query:   { type: string, minLength: 1, maxLength: 1024 }
+        types:
+          type: array
+          items: { type: string, enum: [fact, event, knowledge] }
+        filters:
+          type: object
+          additionalProperties: true
+        top_k:   { type: integer, default: 10, minimum: 1, maximum: 100 }
+
+    SearchHit:
+      type: object
+      required: [type, id, score, preview, payload]
+      properties:
+        type:    { type: string, enum: [fact, event, knowledge] }
+        id:      { type: string, format: uuid }
+        score:   { type: number, format: float }
+        preview: { type: string }
+        payload: { type: object, additionalProperties: true }
+        dissent_count:
+          type: integer
+          nullable: true
+          description: |
+            Present and non-null for hits whose `type = fact`;
+            omitted (or null) for events and knowledge hits. New in
+            0.2.0.
+
+    SearchResults:
+      type: object
+      required: [query, results, total]
+      properties:
+        query:    { type: string }
+        results:  { type: array, items: { $ref: "#/components/schemas/SearchHit" } }
+        total:    { type: integer }
+        degraded: { type: boolean, default: false }
+
+    DissentSubmittedResponse:
+      type: object
+      required: [dissent_id, fact_id, status]
+      properties:
+        dissent_id: { type: string, format: uuid }
+        fact_id:    { type: string, format: uuid }
+        status:     { $ref: "#/components/schemas/DissentStatus" }
+        deduped:
+          type: boolean
+          description: |
+            True when the submission matched an existing pending
+            dissent (FR-013); in that case the existing dissent's
+            `submission_count` was incremented and `last_seen_at` was
+            updated rather than a new row being created.
+
+    Dissent:
+      type: object
+      required:
+        - id
+        - fact_id
+        - proposed_payload
+        - source
+        - submitted_at
+        - last_seen_at
+        - submission_count
+        - status
+      properties:
+        id:                 { type: string, format: uuid }
+        fact_id:            { type: string, format: uuid }
+        proposed_payload:   { type: object, additionalProperties: true }
+        source:             { $ref: "#/components/schemas/Source" }
+        submitted_at:       { type: string, format: date-time }
+        last_seen_at:       { type: string, format: date-time }
+        submission_count:   { type: integer }
+        status:             { $ref: "#/components/schemas/DissentStatus" }
+        resolved_at:        { type: string, format: date-time, nullable: true }
+        resolved_by_source: { $ref: "#/components/schemas/Source", nullable: true }
+
+    DissentPage:
+      type: object
+      required: [items]
+      properties:
+        items:       { type: array, items: { $ref: "#/components/schemas/Dissent" } }
+        next_cursor: { type: string, nullable: true }
+
+    PromoteDissentRequest:
+      type: object
+      required: [source, expected_version]
+      properties:
+        source:
+          $ref: "#/components/schemas/Source"
+          description: Must be `User` or `Controller`; otherwise `403 trust_required`.
+        expected_version:
+          type: integer
+          description: |
+            The version of the canonical fact the caller expects to
+            replace. Mismatch returns `409 VersionConflict` with the
+            current version in the body.
+
+    DiscardDissentRequest:
+      type: object
+      required: [source]
+      properties:
+        source:
+          $ref: "#/components/schemas/Source"
+          description: Must be `User` or `Controller`; otherwise `403 trust_required`.
+
+    SubsystemState:
+      type: string
+      enum: [Ok, Degraded, Down]
+
+    SubsystemStatus:
+      type: object
+      required: [state]
+      properties:
+        state:   { $ref: "#/components/schemas/SubsystemState" }
+        message: { type: string, nullable: true }
+
+    QueueStatus:
+      type: object
+      required: [depth, capacity, workers]
+      properties:
+        depth:    { type: integer }
+        capacity: { type: integer }
+        workers:  { type: integer }
+
+    HealthSnapshot:
+      type: object
+      required: [status, postgres, qdrant, embeddings, queue, version, uptime_seconds]
+      properties:
+        status:         { $ref: "#/components/schemas/SubsystemState" }
+        postgres:       { $ref: "#/components/schemas/SubsystemStatus" }
+        qdrant:         { $ref: "#/components/schemas/SubsystemStatus" }
+        embeddings:     { $ref: "#/components/schemas/SubsystemStatus" }
+        queue:          { $ref: "#/components/schemas/QueueStatus" }
+        version:        { type: string }
+        uptime_seconds: { type: integer }

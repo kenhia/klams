@@ -12,7 +12,7 @@ use axum::{
     Router,
 };
 use axum_prometheus::PrometheusMetricLayer;
-use klams_core::MemoryQueue;
+use klams_core::{MemoryQueue, ValidatorRegistry};
 use klams_store::Store;
 use std::sync::Arc;
 use tower_http::trace::TraceLayer;
@@ -24,6 +24,7 @@ pub struct ApiState<S: Store> {
     pub queue_capacity: usize,
     pub workers: usize,
     pub started_at: std::time::Instant,
+    pub validators: Arc<ValidatorRegistry>,
 }
 
 impl<S: Store> Clone for ApiState<S> {
@@ -34,6 +35,7 @@ impl<S: Store> Clone for ApiState<S> {
             queue_capacity: self.queue_capacity,
             workers: self.workers,
             started_at: self.started_at,
+            validators: Arc::clone(&self.validators),
         }
     }
 }
@@ -46,7 +48,7 @@ impl<S: Store> std::fmt::Debug for ApiState<S> {
             .field("queue_capacity", &self.queue_capacity)
             .field("workers", &self.workers)
             .field("started_at", &self.started_at)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -72,6 +74,16 @@ pub fn build_router<S: Store>(state: ApiState<S>, bearer_token: impl Into<String
         )
         .route("/memory/knowledge/:id", get(handlers::knowledge::get::<S>))
         .route("/memory/search", post(handlers::search::search::<S>))
+        .route("/memory/dissents", get(handlers::dissents::list))
+        .route("/memory/dissents/:id", get(handlers::dissents::get))
+        .route(
+            "/memory/dissents/:id/promote",
+            post(handlers::dissents::promote),
+        )
+        .route(
+            "/memory/dissents/:id/discard",
+            post(handlers::dissents::discard),
+        )
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(
             auth_state,

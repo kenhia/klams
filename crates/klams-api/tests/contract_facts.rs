@@ -32,6 +32,7 @@ impl Store for MockStore {
             confidence: 1.0,
             decay_weight: 1.0,
             use_count: 0,
+            dissent_count: 0,
             last_used_at: None,
             created_at: now,
             updated_at: now,
@@ -82,6 +83,7 @@ fn router() -> axum::Router {
             queue_capacity: 32,
             workers: 1,
             started_at: std::time::Instant::now(),
+            validators: std::sync::Arc::new(klams_core::ValidatorRegistry::with_defaults()),
         },
         "test-bearer",
     )
@@ -92,7 +94,7 @@ async fn post_facts_returns_persisted_fact_shape() {
     let app = router();
     let body = serde_json::json!({
         "type": "UserFact",
-        "payload": {"k": "v"},
+        "payload": {"name": "Ada"},
         "source": "Controller"
     });
     let resp = app
@@ -195,4 +197,86 @@ async fn malformed_json_is_validation_error() {
         "got status {}",
         resp.status()
     );
+}
+
+// ---- T013: 422 validation_error wire-shape coverage -------------
+
+async fn post_facts_v(body: serde_json::Value) -> (StatusCode, serde_json::Value) {
+    let app = router();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/memory/facts")
+                .header(header::AUTHORIZATION, "Bearer test-bearer")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = to_bytes(resp.into_body(), 16 * 1024).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    (status, v)
+}
+
+fn assert_validation_detail(v: &serde_json::Value, rule: &str) {
+    assert_eq!(v["code"], "validation_error", "wire body: {v}");
+    let details = v["details"].as_array().expect("details array");
+    assert!(
+        details.iter().any(|d| d["rule"].as_str() == Some(rule)
+            && d.get("field").is_some()
+            && d.get("message").is_some()),
+        "expected a detail with rule=`{rule}`; got {v}"
+    );
+}
+
+#[tokio::test]
+async fn validation_missing_required_field() {
+    let (status, v) = post_facts_v(serde_json::json!({
+        "type": "UserFact",
+        "payload": {},
+        "source": "Controller"
+    }))
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_validation_detail(&v, "required");
+}
+
+#[tokio::test]
+async fn validation_hostname_shape_rejected_for_user_source() {
+    // FR-006: sanity rules apply to every source.
+    let (status, v) = post_facts_v(serde_json::json!({
+        "type": "UserFact",
+        "payload": {"name": "Ada", "hostname": "BAD_HOST!!"},
+        "source": "User"
+    }))
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_validation_detail(&v, "hostname_shape");
+}
+
+#[tokio::test]
+async fn validation_far_future_timestamp_rejected() {
+    let (status, v) = post_facts_v(serde_json::json!({
+        "type": "UserFact",
+        "payload": {"name": "Ada", "noticed_at": "3030-01-01T00:00:00Z"},
+        "source": "Controller"
+    }))
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_validation_detail(&v, "timestamp_range");
+}
+
+#[tokio::test]
+async fn validation_task_status_enum_rejected() {
+    let (status, v) = post_facts_v(serde_json::json!({
+        "type": "TaskFact",
+        "payload": {"task_id": "550e8400-e29b-41d4-a716-446655440000", "status": "nope"},
+        "source": "Controller"
+    }))
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_validation_detail(&v, "enum");
 }

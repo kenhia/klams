@@ -266,6 +266,9 @@ Deliverables:
 5. Viewport: write operations (delete / override) and provenance panel
    added to the memory inspector; see
    [viewport.md §5](viewport.md#5-phase-2-write-operations-and-provenance).
+6. `justfile` at repo root with recipes for compose up/down/rebuild,
+   build/run `klams-service` (foreground for debugging), health check,
+   and the constitution pre-commit gate.
 
 Exit criteria: a malformed agent write is rejected with an actionable
 error; user-set facts survive agent proposals; viewport can delete a
@@ -285,6 +288,11 @@ Deliverables:
 4. Controller execution traces flow into `events`.
 5. Per-source write policy enforced (trusted sources skip the proposal
    path).
+6. Install `deploy/klams-service.service` as a systemd unit on `kubs0`;
+   switch the day-to-day workflow from `just run` to `systemctl`
+   management, retaining `just run` for foreground debugging. (Must
+   land before Phase 6 so the MCP server has a reliably-running
+   backend.)
 
 Exit criteria: provisioning a new machine via Ansible automatically
 populates its user-memory facts in klams; a new note in the Obsidian vault
