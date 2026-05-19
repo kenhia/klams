@@ -35,21 +35,21 @@ oriented counterpart to the formal design records in
 │   │   │ klams-store   Postgres (sqlx) | Qdrant (gRPC) |       │  │  │
 │   │   │               TEI HTTP embedding adapter              │  │  │
 │   │   └───────────────────────────────────────────────────────┘  │  │
-│   └───────┬──────────────────────┬──────────────────────┬───────┘  │
-│           │                      │                      │          │
-│           │ TCP 5432             │ gRPC 6334            │ HTTP 7070│
-│           ▼                      ▼                      ▼          │
-│   ┌──────────────┐        ┌──────────────┐       ┌──────────────┐  │
-│   │ postgres     │        │ qdrant       │       │ tei          │  │
-│   │ (Compose)    │        │ (Compose)    │       │ (Compose)    │  │
-│   │ facts,events │        │ knowledge    │       │ embeddings,  │  │
-│   │              │        │ vectors      │       │ optional GPU │  │
-│   └──────┬───────┘        └──────┬───────┘       └──────┬───────┘  │
-│          │                       │                      │          │
-│          └────── all three on user-defined bridge `klams-net` ─────┘
-│          │                       │                      │          │
-│          ▼                       ▼                      ▼          │
-│   ${KLAMS_DATA_ROOT}/postgres   /qdrant                /tei        │
+│   └───────┬──────────────────────┬──────────────────────┬────────┘  │
+│           │                      │                      │           │
+│           │ TCP 5432             │ gRPC 6334            │ HTTP 7070 │
+│           ▼                      ▼                      ▼           │
+│   ┌──────────────┐        ┌──────────────┐       ┌──────────────┐   │
+│   │ postgres     │        │ qdrant       │       │ tei          │   │
+│   │ (Compose)    │        │ (Compose)    │       │ (Compose)    │   │
+│   │ facts,events │        │ knowledge    │       │ embeddings,  │   │
+│   │              │        │ vectors      │       │ optional GPU │   │
+│   └──────┬───────┘        └──────┬───────┘       └──────┬───────┘   │
+│          │                       │                      │           │
+│          └────── all three on user-defined bridge `klams-net` ──────┘
+│          │                       │                      │           │
+│          ▼                       ▼                      ▼           │
+│   ${KLAMS_DATA_ROOT}/postgres   /qdrant                /tei         │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 

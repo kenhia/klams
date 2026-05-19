@@ -62,3 +62,30 @@ verify:
 # Cross-compile the viewport for Windows (requires cargo-xwin).
 viewport-build:
     cd viewport/src-tauri && cargo xwin build --release --target x86_64-pc-windows-msvc
+
+# sprint-003 T046 — systemd lifecycle helpers.
+install-systemd:
+    cargo build --release --bin klams-service --bin klams-scanner --bin klams-monitor
+    sudo deploy/install-systemd.sh
+
+scanner-once:
+    KLAMS_URL={{klams_url}} KLAMS_TOKEN={{klams_token}} \
+        cargo run --release --bin klams-scanner -- --once
+
+monitor-once:
+    KLAMS_URL={{klams_url}} KLAMS_TOKEN={{klams_token}} \
+        cargo run --release --bin klams-monitor -- --once
+
+# Atomic rollback: swap *.prev back into place for each klams binary,
+# then restart the live services. No-op when no .prev exists.
+rollback:
+    set -eu; for bin in klams-service klams-scanner klams-monitor; do \
+        if [[ -f /usr/local/bin/$bin.prev ]]; then \
+            sudo mv -f /usr/local/bin/$bin /usr/local/bin/$bin.broken; \
+            sudo mv -f /usr/local/bin/$bin.prev /usr/local/bin/$bin; \
+            echo "rolled back $bin"; \
+        else \
+            echo "no .prev for $bin, skipping"; \
+        fi; \
+    done; \
+    sudo systemctl restart klams-service klams-monitor || true
