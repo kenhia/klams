@@ -81,14 +81,14 @@ Rust workspace at repo root. New binary crates land under `crates/klams-scanner/
 
 ### Tests for US1 (write FIRST)
 
-- [ ] T016 [P] [US1] Add a failing unit test to `klams-core/src/validate/facts.rs` (file already exists from sprint 002): `ansible_task_id_uuid_or_prefixed_run_id_passes`, `ansible_task_id_too_long_rejected_422`. Validates the regex from [data-model.md §1](data-model.md).
-- [ ] T017 [P] [US1] Add an integration test [crates/klams-service/tests/us3b_ansible_facts.rs](crates/klams-service/tests/us3b_ansible_facts.rs) covering the three US1 acceptance scenarios using the test docker stack. Mirror sprint-002's `us2_dissents.rs` setup. Tests MUST fail initially (validator changes not yet in place).
+- [X] T016 [P] [US1] Add a failing unit test to `klams-core/src/validate/facts.rs` (file already exists from sprint 002): `ansible_task_id_uuid_or_prefixed_run_id_passes`, `ansible_task_id_too_long_rejected_422`. Validates the regex from [data-model.md §1](data-model.md).
+- [X] T017 [P] [US1] Add an integration test [crates/klams-service/tests/us3b_ansible_facts.rs](crates/klams-service/tests/us3b_ansible_facts.rs) covering the three US1 acceptance scenarios using the test docker stack. Mirror sprint-002's `us2_dissents.rs` setup. Tests MUST fail initially (validator changes not yet in place).
 
 ### Implementation for US1
 
-- [ ] T018 [US1] Extend `klams-core::validate::facts::TaskFactValidator` and `EnvFactValidator` to recognize the optional `task_id` field, apply the regex from [data-model.md §1](data-model.md), and length-cap at 64. Unchanged behavior when `task_id` is absent (Phase 1 controller traces keep working). Re-run T016 — green.
-- [ ] T019 [US1] In the dispatcher (modified in T007), ensure `source=Task` with `task_id` traverses the canonical path against same-or-lower-trust rows and diverts against higher-trust (User) rows. Verify by re-running T017 — green.
-- [ ] T020 [US1] Include `task_id` (when present) in the canonical-hash key used for Phase 1 dedupe (`klams-core/src/dedupe.rs` or equivalent). Add a regression unit test asserting two requests with identical payload but different `task_id` produce different canonical hashes — and conversely, two requests with identical payload **and** identical `task_id` produce the same hash (which is what enables the play-rerun-no-new-version behavior).
+- [X] T018 [US1] Extend `klams-core::validate::facts::TaskFactValidator` and `EnvFactValidator` to recognize the optional `task_id` field, apply the regex from [data-model.md §1](data-model.md), and length-cap at 64. Unchanged behavior when `task_id` is absent (Phase 1 controller traces keep working). Re-run T016 — green.
+- [X] T019 [US1] In the dispatcher (modified in T007), ensure `source=Task` with `task_id` traverses the canonical path against same-or-lower-trust rows and diverts against higher-trust (User) rows. Verify by re-running T017 — green.
+- [X] T020 [US1] Include `task_id` (when present) in the canonical-hash key used for Phase 1 dedupe (`klams-core/src/dedupe.rs` or equivalent). Add a regression unit test asserting two requests with identical payload but different `task_id` produce different canonical hashes — and conversely, two requests with identical payload **and** identical `task_id` produce the same hash (which is what enables the play-rerun-no-new-version behavior).
 
 **Checkpoint**: `us3b_ansible_facts.rs` green; SC-001 testable end-to-end once the ansible-k handoff is implemented in sprint US6.
 
