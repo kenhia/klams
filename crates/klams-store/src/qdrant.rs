@@ -14,7 +14,8 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-const KEYWORD_INDEX_FIELDS: &[&str] = &["content_hash", "source", "tags", "repo", "machine"];
+const KEYWORD_INDEX_FIELDS: &[&str] =
+    &["content_hash", "source", "tags", "repo", "machine", "file"];
 
 #[derive(Clone)]
 pub struct QdrantStore {
@@ -56,17 +57,17 @@ impl QdrantStore {
                 )
                 .await
                 .map_err(|e| StoreError::Backend(format!("qdrant create: {e}")))?;
-            for field in KEYWORD_INDEX_FIELDS {
-                let _ = client
-                    .create_field_index(
-                        qdrant_client::qdrant::CreateFieldIndexCollectionBuilder::new(
-                            collection.to_string(),
-                            (*field).to_string(),
-                            FieldType::Keyword,
-                        ),
-                    )
-                    .await;
-            }
+        }
+        for field in KEYWORD_INDEX_FIELDS {
+            let _ = client
+                .create_field_index(
+                    qdrant_client::qdrant::CreateFieldIndexCollectionBuilder::new(
+                        collection.to_string(),
+                        (*field).to_string(),
+                        FieldType::Keyword,
+                    ),
+                )
+                .await;
         }
 
         Ok(Self {
@@ -209,7 +210,7 @@ impl QdrantStore {
     /// deleted points via a `scroll`-then-`delete` round trip
     /// (Qdrant's `delete` RPC does not report a count).
     pub async fn delete_by_source_file(&self, source_file: &str) -> StoreResult<u64> {
-        let filter = Filter::must([Condition::matches("source_file", source_file.to_string())]);
+        let filter = Filter::must([Condition::matches("file", source_file.to_string())]);
 
         // Count first (paged scroll, ids only).
         let mut deleted: u64 = 0;

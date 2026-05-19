@@ -29,3 +29,10 @@ ignore = "0.4"
 rusqlite = { version = "0.32", features = ["bundled"] }
 anyhow = { workspace = true }
 time = { workspace = true }
+metrics = { workspace = true }
+metrics-exporter-prometheus = "0.15"
+shellexpand = "3"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }

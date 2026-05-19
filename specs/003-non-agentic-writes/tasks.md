@@ -130,19 +130,19 @@ Rust workspace at repo root. New binary crates land under `crates/klams-scanner/
 
 ### Tests for US2 (write FIRST)
 
-- [ ] T030 [P] [US2] Add unit tests in [crates/klams-scanner/tests/walk_diff.rs](crates/klams-scanner/tests/walk_diff.rs) covering: gitignore respected, `.klamsignore` respected, `target/` and `.git/` always skipped, mtime-pre-filter avoids hashing unchanged files, vanished files trigger deletion.
-- [ ] T031 [P] [US2] Add unit tests in `crates/klams-scanner/src/chunk.rs` covering: paragraph bounds ≈ 800 chars w/ 200 overlap, markdown heading is a hard break, sha256 stable across whitespace normalization.
-- [ ] T032 [P] [US2] Add unit tests in `crates/klams-scanner/src/cursor.rs` covering: upsert/select round-trip, mid-walk crash leaves prior progress intact (test by partial-commit then re-open), delete-on-missing logic.
-- [ ] T033 [P] [US2] Add integration test [crates/klams-service/tests/us3d_scanner_e2e.rs](crates/klams-service/tests/us3d_scanner_e2e.rs) (`#[ignore]`-gated) covering the three US2 acceptance scenarios end-to-end against the test docker stack, using a `tempfile::TempDir` as the scanner root.
+- [X] T030 [P] [US2] Add unit tests in [crates/klams-scanner/tests/walk_diff.rs](crates/klams-scanner/tests/walk_diff.rs) covering: gitignore respected, `.klamsignore` respected, `target/` and `.git/` always skipped, mtime-pre-filter avoids hashing unchanged files, vanished files trigger deletion.
+- [X] T031 [P] [US2] Add unit tests in `crates/klams-scanner/src/chunk.rs` covering: paragraph bounds ≈ 800 chars w/ 200 overlap, markdown heading is a hard break, sha256 stable across whitespace normalization.
+- [X] T032 [P] [US2] Add unit tests in `crates/klams-scanner/src/cursor.rs` covering: upsert/select round-trip, mid-walk crash leaves prior progress intact (test by partial-commit then re-open), delete-on-missing logic.
+- [X] T033 [P] [US2] Add integration test [crates/klams-service/tests/us3d_scanner_e2e.rs](crates/klams-service/tests/us3d_scanner_e2e.rs) (`#[ignore]`-gated) covering the three US2 acceptance scenarios end-to-end against the test docker stack, using a `tempfile::TempDir` as the scanner root.
 
 ### Implementation for US2
 
-- [ ] T034 [P] [US2] Implement `crates/klams-scanner/src/walk.rs` using the `ignore` crate: builder honors `.klamsignore`, always skips `target/`, `node_modules/`, `.git/`, `__pycache__/`, `.venv/`, returns an iterator of `(absolute_path, mtime_ns, file_size)`.
-- [ ] T035 [P] [US2] Implement `crates/klams-scanner/src/chunk.rs`: read file, normalize whitespace, split on paragraph boundaries with markdown-heading hard breaks, target ~800 chars w/ 200 overlap, sha256 each chunk.
-- [ ] T036 [P] [US2] Implement `crates/klams-scanner/src/cursor.rs` per [data-model.md §6](data-model.md): rusqlite-bundled, single-table schema, atomic per-file transaction, `upsert/get/delete/list_all` API.
-- [ ] T037 [US2] Implement `crates/klams-scanner/src/publish.rs`: reuse `klams-client` to POST `ScannedKnowledgeChunk` payloads (shape from [data-model.md §2](data-model.md)) to `/memory/knowledge/index`; POST deletes to the `/memory/knowledge/delete?source_file=<abs_path>` endpoint added in T010b for vanished files.
-- [ ] T038 [US2] Implement `crates/klams-scanner/src/main.rs`: clap (`--config <toml>`, `--once`, `--root <path>` for ad-hoc), config TOML `{ url, token, roots = ["~/src", "~/obsidian"], interval_secs = 3600, state_dir = "~/.local/state/klams" }`, main loop: walk → diff against cursor → chunk → publish → upsert cursor → handle deletions.
-- [ ] T039 [US2] Add Prometheus metrics in `klams-scanner` per FR-007: `klams_scanner_files_processed_total`, `klams_scanner_files_skipped_total{reason}`, `klams_scanner_chunks_indexed_total`, `klams_scanner_last_run_timestamp_seconds`. Bind to a `--metrics-listen <addr>` flag so the systemd unit can scrape it.
+- [X] T034 [P] [US2] Implement `crates/klams-scanner/src/walk.rs` using the `ignore` crate: builder honors `.klamsignore`, always skips `target/`, `node_modules/`, `.git/`, `__pycache__/`, `.venv/`, returns an iterator of `(absolute_path, mtime_ns, file_size)`.
+- [X] T035 [P] [US2] Implement `crates/klams-scanner/src/chunk.rs`: read file, normalize whitespace, split on paragraph boundaries with markdown-heading hard breaks, target ~800 chars w/ 200 overlap, sha256 each chunk.
+- [X] T036 [P] [US2] Implement `crates/klams-scanner/src/cursor.rs` per [data-model.md §6](data-model.md): rusqlite-bundled, single-table schema, atomic per-file transaction, `upsert/get/delete/list_all` API.
+- [X] T037 [US2] Implement `crates/klams-scanner/src/publish.rs`: reuse `klams-client` to POST `ScannedKnowledgeChunk` payloads (shape from [data-model.md §2](data-model.md)) to `/memory/knowledge/index`; POST deletes to the `/memory/knowledge/delete?source_file=<abs_path>` endpoint added in T010b for vanished files.
+- [X] T038 [US2] Implement `crates/klams-scanner/src/main.rs`: clap (`--config <toml>`, `--once`, `--root <path>` for ad-hoc), config TOML `{ url, token, roots = ["~/src", "~/obsidian"], interval_secs = 3600, state_dir = "~/.local/state/klams" }`, main loop: walk → diff against cursor → chunk → publish → upsert cursor → handle deletions.
+- [X] T039 [US2] Add Prometheus metrics in `klams-scanner` per FR-007: `klams_scanner_files_processed_total`, `klams_scanner_files_skipped_total{reason}`, `klams_scanner_chunks_indexed_total`, `klams_scanner_last_run_timestamp_seconds`. Bind to a `--metrics-listen <addr>` flag so the systemd unit can scrape it.
 
 **Checkpoint**: `us3d_scanner_e2e.rs` green; one-shot `klams-scanner --once --root <tempdir>` indexes a fresh file, re-runs are idempotent, deletes propagate; SC-002 testable on kubs0.
 
