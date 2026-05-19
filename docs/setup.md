@@ -150,3 +150,85 @@ EnvFact  = 1e-9   # Machine memory — effectively permanent
 The block is commented out in `deploy/config/klams.example.toml`;
 uncomment only the overrides you actually want — any missing key
 falls back to the baked-in default.
+
+## Sprint 003 — systemd deployment
+
+After `cargo build --release` produces all three binaries, install
+them with the helper:
+
+```sh
+just install-systemd          # builds + invokes deploy/install-systemd.sh
+# or, to preview the actions without touching the system:
+sudo deploy/install-systemd.sh --dry-run
+```
+
+The script is **idempotent** and:
+
+1. Creates the `klams` system user (`useradd --system
+   --no-create-home --shell /usr/sbin/nologin`) on first run.
+2. Ensures `/var/lib/klams` and `/etc/klams` exist, owned by `klams`.
+3. Stages `klams-service`, `klams-scanner`, `klams-monitor` into
+   `/tmp/klams-stage-$$`, rotates any existing binary to
+   `<bin>.prev`, then `mv -f`s the new one into `/usr/local/bin/`
+   atomically. The `.prev` copy backs `just rollback`.
+4. Installs `klams-service.service`, `klams-scanner.service`,
+   `klams-scanner.timer`, and `klams-monitor.service` into
+   `/etc/systemd/system/`.
+5. `systemctl daemon-reload` then `enable --now` the service, timer,
+   and monitor units.
+
+Required preconditions (the script aborts loudly if any are
+missing):
+
+* `postgresql.service` is known to systemd on the host.
+* Release binaries exist at `target/release/klams-{service,scanner,monitor}`.
+* All four unit files exist under `deploy/`.
+
+### Scanner config
+
+`klams-scanner` reads `/etc/klams/scanner.toml` (override with
+`KLAMS_CONFIG`):
+
+```toml
+url = "http://127.0.0.1:7777"
+token = "<bearer from /etc/klams/klams.toml>"
+roots = ["/home/ken/src", "/home/ken/obsidian"]
+interval_secs = 3600            # ignored when running with --once
+state_dir = "/var/lib/klams"    # SQLite cursor lives here
+```
+
+For ad-hoc runs (outside the timer): `just scanner-once`.
+
+### Monitor config
+
+`klams-monitor` reads `/etc/klams/monitor.toml`:
+
+```toml
+url = "http://127.0.0.1:7777"
+token = "<bearer>"
+poll_interval_secs = 30
+services = [
+    "klams-service.service",
+    "postgresql.service",
+    "docker.service",
+]
+```
+
+The monitor only POSTs **edge transitions** — steady-state polls
+generate zero traffic. For a one-off probe: `just monitor-once`.
+
+### Logs
+
+All three units log to the journal. Tail with:
+
+```sh
+journalctl -u klams-service -f
+journalctl -u klams-scanner --since today
+journalctl -u klams-monitor -f
+```
+
+### Rollback
+
+`just rollback` swaps every `/usr/local/bin/<bin>` with its `.prev`
+copy (created by `install-systemd.sh` on the previous upgrade) and
+restarts the long-running units. No-op when no `.prev` exists.

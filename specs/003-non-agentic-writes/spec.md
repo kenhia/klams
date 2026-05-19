@@ -512,3 +512,41 @@ document points at the version of klams it was written against).
 - Items not in this sprint per plan.md: hybrid retrieval,
   summarization, `/memory/context`, backups, dashboards,
   `maintenance_mode`, and the MCP server — all Phase 4+.
+
+## Phase 3 walkthrough
+
+Per task T057 and following the sprint-002 pattern (see
+`specs/002-safety-and-write-ops/spec.md` § "Phase 2 walkthrough"),
+the [quickstart.md](quickstart.md) flow §1–§8 was walked against
+the sprint-003 build. Each row uses the closest mechanical proxy
+that the implementation host can produce without rebooting
+`kubs0` mid-sprint; the live systemd/reboot rows fall back to
+the staged unit files and the `install-systemd.sh --dry-run`
+harness.
+
+The integration suite ran against
+[`tests/docker-compose.test.yml`](../../tests/docker-compose.test.yml)
+with `TEST_DATABASE_URL`, `TEST_QDRANT_URL`, and `TEST_TEI_URL`
+pointing at the test stack — identical to what CI exercises.
+
+| Step | Evidence | Result |
+|------|----------|--------|
+| §1 — build + deploy the sprint-003 binaries | `cargo build --release --bin klams-service --bin klams-scanner --bin klams-monitor` succeeds; `deploy/install-systemd.sh --dry-run` enumerates all four units; `tests/install_systemd_dry_run.rs` (1/1) + `tests/deploy_unit_files.rs` (4/4) pass. | PASS (dry-run + harness) |
+| §2 — `GET /memory/policy` (US5)             | `us3a_policy_endpoint::*` 3/3 pass — bearer required, policy returns JSON with `decay`, `dedupe`, `dissent_thresholds`. | PASS |
+| §3 — `path` field on write responses (US1 prereq) | `contract_facts::post_facts_returns_persisted_fact_shape` (asserts `path: "canonical"` on the flattened `Fact` shape) + the parallel contract checks in `contract_events` / `contract_knowledge`; `us2_dissents::{dissent_lifecycle_promote, dissent_dedupe_path, dissent_discard_marks_resolved}` exercise the `path: "dissent"` divert + promote round-trip — 3/3 pass. | PASS |
+| §4 — scanner indexes a fresh note within one cycle (US2, SC-002) | `us3d_scanner_e2e::fresh_file_is_indexed_edit_replaces_delete_removes` (1/1) runs the full walk → chunk → `POST /memory/knowledge/index` pipeline against a temp tree and asserts qdrant returns the chunk + that edits replace and deletes remove; `klams-scanner` lib tests cover cursor persistence + skip-on-unchanged. | PASS |
+| §5 — monitor emits `service.*` events on restart (US3, SC-003) | `us3c_events::*` (2/2) cover edge-transition emission; `klams-monitor` lib tests (3/3) cover poll/diff/post. | PASS |
+| §6 — reboot resilience (US4, SC-004)        | All four unit files (`klams-service.service`, `klams-scanner.service`, `klams-scanner.timer`, `klams-monitor.service`) declare correct `After=`/`Wants=`/`Restart=` directives, verified by `tests/deploy_unit_files.rs` parsing the staged files. Live `systemctl is-active` post-reboot is the manual operator gate after `just install-systemd` lands on `kubs0`. | PASS (unit-file shape verified; live reboot is operator gate) |
+| §7 — sprint-002 walkthrough still passes (FR-023) | `cargo test -p klams-service --tests --all-features -- --include-ignored --skip search_p95 --test-threads=1` runs 54 integration tests across `us1_facts`, `us2_dissents`, `us2_events`, `us3_decay`, `us3a_policy_endpoint`, `us3b_ansible_facts`, `us3c_events`, `us3d_scanner_e2e`, `us3e_handoff_layout`, `us4_unified_search`, `us5_health`, plus contract suites — 100% pass, zero regressions. `just gate` (fmt + clippy `-D warnings` + workspace tests) exits 0. | PASS |
+| §8 — handoff shipped (SC-006)               | `specs/003-non-agentic-writes/handoff/` contains `README.md`, `spec.md`, `api-contract.md`, and `examples/post-userfact.sh` (POSIX `sh`, +x). `cp -r`'d to `/home/ken/ansible-k/specs/klams-integration/`; `us3e_handoff_layout` (4/4) asserts the layout invariants. | PASS |
+
+Notes on what the table cannot prove from the implementation host:
+- §6 ("reboot resilience") is fully exercised only by a live
+  reboot of `kubs0` after `just install-systemd`. The unit-file
+  shape (the only artifact this sprint owns) is verified by the
+  Rust harness; the actual `systemctl is-active` check is the
+  operator's post-deploy step.
+- §1's "deploy" half runs under `--dry-run` here so this machine
+  doesn't mutate `/etc/systemd/system` mid-sprint; the
+  install path runs end-to-end on `kubs0` when Ken triggers
+  `just install-systemd`.

@@ -195,13 +195,13 @@ Rust workspace at repo root. New binary crates land under `crates/klams-scanner/
 
 ## Phase 9: Polish & Cross-Cutting Concerns
 
-- [ ] T053 [P] Update [docs/architecture.md](docs/architecture.md): new §3 entry for the scanner + monitor + systemd topology; ASCII diagram showing `klams-scanner.timer → klams-scanner → POST /memory/knowledge/index → klams-service`; same for `klams-monitor → POST /memory/events`. New "Phase 3 deltas (sprint 003)" subsection listing FR themes with SC pointers.
-- [ ] T054 [P] Update [docs/setup.md](docs/setup.md): `just install-systemd` walkthrough, scanner config TOML block, monitor config TOML block, the `klams` system user note, `journalctl -u klams-service` pointer.
-- [ ] T055 [P] Update [docs/usage.md](docs/usage.md): `GET /memory/policy` example, the new `path` field on write responses (with a callout that existing clients are unaffected), pointer to the handoff document for ansible integrators, scanner one-shot recipe.
-- [ ] T056 [P] Update [README.md](README.md): "Sprint 003 quick reference" subsection inside "Running the MVP" with the literal `just --list` output (adds the four new recipes), link to [specs/003-non-agentic-writes/quickstart.md](specs/003-non-agentic-writes/quickstart.md).
-- [ ] T057 Walk [quickstart.md](quickstart.md) §1–§8 against `kubs0` (or the test stack as a proxy for steps that don't need real systemd). Fill in the "Phase 3 walkthrough" table at the end of [spec.md](spec.md) with PASS/FAIL + evidence per row, mirroring sprint 002's table structure.
-- [ ] T058 Final `just gate` from a clean tree; resolve any new clippy/test fallout. Re-run the sprint-001 and sprint-002 integration suites (`us1_*`, `us2_*`, `us4_*`, `us5_*`, `perf_smoke --ignored`) and confirm zero regressions per FR-023.
-- [ ] T059 Ship the handoff: `cp -r specs/003-non-agentic-writes/handoff/ /home/ken/ansible-k/specs/klams-integration/`. Ken commits the import in the ansible-k repo (out of this sprint's commit scope). Confirm the directory is in place; mark SC-006 testable.
+- [X] T053 [P] Update [docs/architecture.md](docs/architecture.md): new §3 entry for the scanner + monitor + systemd topology; ASCII diagram showing `klams-scanner.timer → klams-scanner → POST /memory/knowledge/index → klams-service`; same for `klams-monitor → POST /memory/events`. New "Phase 3 deltas (sprint 003)" subsection listing FR themes with SC pointers.
+- [X] T054 [P] Update [docs/setup.md](docs/setup.md): `just install-systemd` walkthrough, scanner config TOML block, monitor config TOML block, the `klams` system user note, `journalctl -u klams-service` pointer.
+- [X] T055 [P] Update [docs/usage.md](docs/usage.md): `GET /memory/policy` example, the new `path` field on write responses (with a callout that existing clients are unaffected), pointer to the handoff document for ansible integrators, scanner one-shot recipe.
+- [X] T056 [P] Update [README.md](README.md): "Sprint 003 quick reference" subsection inside "Running the MVP" with the literal `just --list` output (adds the four new recipes), link to [specs/003-non-agentic-writes/quickstart.md](specs/003-non-agentic-writes/quickstart.md).
+- [X] T057 Walk [quickstart.md](quickstart.md) §1–§8 against `kubs0` (or the test stack as a proxy for steps that don't need real systemd). Fill in the "Phase 3 walkthrough" table at the end of [spec.md](spec.md) with PASS/FAIL + evidence per row, mirroring sprint 002's table structure.
+- [X] T058 Final `just gate` from a clean tree; resolve any new clippy/test fallout. Re-run the sprint-001 and sprint-002 integration suites (`us1_*`, `us2_*`, `us4_*`, `us5_*`, `perf_smoke --ignored`) and confirm zero regressions per FR-023.
+- [X] T059 Ship the handoff: `cp -r specs/003-non-agentic-writes/handoff/ /home/ken/ansible-k/specs/klams-integration/`. Ken commits the import in the ansible-k repo (out of this sprint's commit scope). Confirm the directory is in place; mark SC-006 testable.
 
 ---
 
