@@ -17,15 +17,15 @@
 //! ```
 
 use klams_types::Source;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PolicyEntry {
     pub rank: u8,
     pub description: String,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PolicyTable {
     #[serde(rename = "User")]
     pub user: PolicyEntry,

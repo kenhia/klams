@@ -58,14 +58,14 @@ Rust workspace at repo root. New binary crates land under `crates/klams-scanner/
 
 ### Tests for US5 (write FIRST, ensure RED)
 
-- [ ] T011 [P] [US5] Create [crates/klams-api/tests/contract_policy.rs](crates/klams-api/tests/contract_policy.rs) with the four contract tests listed in [contracts/memory_policy.md § Contract tests](contracts/memory_policy.md#contract-tests): `policy_endpoint_returns_all_four_sources`, `policy_endpoint_ranks_are_strictly_descending`, `policy_endpoint_requires_bearer`, `policy_endpoint_matches_dispatcher`. All four MUST fail at this point (handler does not exist yet).
+- [X] T011 [P] [US5] Create [crates/klams-api/tests/contract_policy.rs](crates/klams-api/tests/contract_policy.rs) with the four contract tests listed in [contracts/memory_policy.md § Contract tests](contracts/memory_policy.md#contract-tests): `policy_endpoint_returns_all_four_sources`, `policy_endpoint_ranks_are_strictly_descending`, `policy_endpoint_requires_bearer`, `policy_endpoint_matches_dispatcher`. All four MUST fail at this point (handler does not exist yet).
 
 ### Implementation for US5
 
-- [ ] T012 [US5] Add `pub async fn policy_handler(State(app): State<AppState>) -> Json<PolicyTable>` in [crates/klams-api/src/handlers/mod.rs](crates/klams-api/src/handlers/mod.rs) (or a new `handlers/policy.rs` — implementer's choice; keep one file per logical group). The handler reads `app.policy_table.clone()` (an `Arc<PolicyTable>` added to `AppState` in this task).
-- [ ] T013 [US5] Wire the route `.route("/memory/policy", get(policy_handler))` into [crates/klams-api/src/router.rs](crates/klams-api/src/router.rs), behind the existing bearer middleware layer. Re-run T011 tests — all green.
-- [ ] T014 [US5] Add `pub fn policy(&self) -> Result<PolicyTable>` to [crates/klams-client/src/lib.rs](crates/klams-client/src/lib.rs) so non-Rust callers and integration tests have a typed handle. Cover with one unit test that uses `wiremock` to stub the endpoint and parse the response.
-- [ ] T015 [US5] Add `crates/klams-service/tests/us3a_policy_endpoint.rs` (`#[ignore]`-gated against the test docker stack) covering: (a) policy endpoint returns the right table, (b) `klams_writes_total{path="canonical"}` increments after one successful fact write, (c) `klams_writes_total{path="dissent"}` increments after one diverted write. Mirrors the structure of existing `us2_dissents.rs`.
+- [X] T012 [US5] Add `pub async fn policy_handler(State(app): State<AppState>) -> Json<PolicyTable>` in [crates/klams-api/src/handlers/mod.rs](crates/klams-api/src/handlers/mod.rs) (or a new `handlers/policy.rs` — implementer's choice; keep one file per logical group). The handler reads `app.policy_table.clone()` (an `Arc<PolicyTable>` added to `AppState` in this task).
+- [X] T013 [US5] Wire the route `.route("/memory/policy", get(policy_handler))` into [crates/klams-api/src/router.rs](crates/klams-api/src/router.rs), behind the existing bearer middleware layer. Re-run T011 tests — all green.
+- [X] T014 [US5] Add `pub fn policy(&self) -> Result<PolicyTable>` to [crates/klams-client/src/lib.rs](crates/klams-client/src/lib.rs) so non-Rust callers and integration tests have a typed handle. Cover with one unit test that uses `wiremock` to stub the endpoint and parse the response.
+- [X] T015 [US5] Add `crates/klams-service/tests/us3a_policy_endpoint.rs` (`#[ignore]`-gated against the test docker stack) covering: (a) policy endpoint returns the right table, (b) `klams_writes_total{path="canonical"}` increments after one successful fact write, (c) `klams_writes_total{path="dissent"}` increments after one diverted write. Mirrors the structure of existing `us2_dissents.rs`.
 
 **Checkpoint**: `GET /memory/policy` live; every write response carries `path`; SC-005 evidenced by `us3a_policy_endpoint.rs` running green.
 

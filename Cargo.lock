@@ -1428,6 +1428,7 @@ dependencies = [
 name = "klams-client"
 version = "0.1.0"
 dependencies = [
+ "klams-core",
  "klams-types",
  "reqwest",
  "serde",

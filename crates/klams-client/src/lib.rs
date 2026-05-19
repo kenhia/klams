@@ -16,6 +16,7 @@
 // here because every public method already returns `ClientResult`.
 #![allow(clippy::result_large_err)]
 
+use klams_core::PolicyTable;
 use klams_types::{
     AcceptedId, ApiError as WireError, AppendEventRequest, Dissent, DissentPage,
     DissentSubmittedResponse, EventPage, Fact, FactPage, FactWriteOutcome, HealthSnapshot,
@@ -158,6 +159,12 @@ impl Client {
     #[deprecated(note = "use `health` which tolerates 503")]
     pub async fn healthz(&self) -> ClientResult<HealthSnapshot> {
         self.get_json("/healthz").await
+    }
+
+    /// Fetch the source-trust policy table (`GET /memory/policy`).
+    /// Mirrors `contracts/memory_policy.md`.
+    pub async fn policy(&self) -> ClientResult<PolicyTable> {
+        self.get_json("/memory/policy").await
     }
 
     pub async fn upsert_fact(&self, req: &UpsertFactRequest) -> ClientResult<FactWriteOutcome> {
@@ -432,5 +439,23 @@ mod tests {
             }
             other => panic!("expected Persisted, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn policy_returns_default_table() {
+        let server = MockServer::start().await;
+        let expected = PolicyTable::default();
+        Mock::given(method("GET"))
+            .and(path("/memory/policy"))
+            .and(header("authorization", "Bearer tok"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::to_value(&expected).unwrap()),
+            )
+            .mount(&server)
+            .await;
+
+        let c = Client::new(&server.uri(), "tok").unwrap();
+        let got = c.policy().await.unwrap();
+        assert_eq!(got, expected);
     }
 }
