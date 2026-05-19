@@ -73,7 +73,11 @@ pub struct FactQuery {
 #[derive(Debug, Clone, Default)]
 pub struct EventQuery {
     pub task_id: Option<Uuid>,
+    /// Raw `task_id` string for `payload->>'task_id'` matching (sprint 003 index).
+    pub payload_task_id: Option<String>,
     pub category: Option<String>,
+    /// Filter on `payload->>'service'`.
+    pub service: Option<String>,
     pub created_after: Option<OffsetDateTime>,
     pub created_before: Option<OffsetDateTime>,
     pub limit: u32,

@@ -137,10 +137,23 @@ impl PostgresStore {
              FROM events WHERE 1=1",
         );
         if let Some(task_id) = q.task_id {
-            qb.push(" AND task_id = ").push_bind(task_id);
+            if let Some(s) = &q.payload_task_id {
+                qb.push(" AND (task_id = ")
+                    .push_bind(task_id)
+                    .push(" OR payload->>'task_id' = ")
+                    .push_bind(s.clone())
+                    .push(")");
+            } else {
+                qb.push(" AND task_id = ").push_bind(task_id);
+            }
+        } else if let Some(s) = q.payload_task_id {
+            qb.push(" AND payload->>'task_id' = ").push_bind(s);
         }
         if let Some(c) = q.category {
             qb.push(" AND category = ").push_bind(c);
+        }
+        if let Some(s) = q.service {
+            qb.push(" AND payload->>'service' = ").push_bind(s);
         }
         if let Some(t) = q.created_after {
             qb.push(" AND created_at > ").push_bind(t);

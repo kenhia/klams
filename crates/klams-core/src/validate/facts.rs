@@ -258,7 +258,7 @@ fn finalize(acc: Vec<ErrorDetail>) -> ValidationResult {
 /// any parseable UUID OR a string of the shape `ansible-<32-hex>`
 /// (controller-prefixed run-ids accepted by the same rule). Hard
 /// length cap of 64 chars regardless of shape.
-fn check_ansible_task_id(v: &serde_json::Value, acc: &mut Vec<ErrorDetail>) {
+pub(crate) fn check_ansible_task_id(v: &serde_json::Value, acc: &mut Vec<ErrorDetail>) {
     let Some(s) = v.as_str() else {
         acc.push(detail(
             "payload.task_id",

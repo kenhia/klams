@@ -71,10 +71,17 @@ pub async fn list<S: Store>(
     Query(params): Query<ListEventsParams>,
 ) -> Result<Json<EventPage>, ApiError> {
     let limit = params.limit.unwrap_or(50).clamp(1, 500);
+    let task_id_uuid = params
+        .task_id
+        .as_deref()
+        .and_then(|s| Uuid::parse_str(s).ok());
+    let created_after = params.created_after.or(params.since);
     let q = EventQuery {
-        task_id: params.task_id,
+        task_id: task_id_uuid,
+        payload_task_id: params.task_id.clone(),
         category: params.category.clone(),
-        created_after: params.created_after,
+        service: params.service.clone(),
+        created_after,
         created_before: params.created_before,
         limit,
         cursor: params.cursor.clone(),

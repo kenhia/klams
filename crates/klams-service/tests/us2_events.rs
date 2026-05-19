@@ -146,7 +146,7 @@ async fn poll_events(
         let page = server
             .client
             .list_events(&ListEventsParams {
-                task_id: Some(task_id),
+                task_id: Some(task_id.to_string()),
                 ..Default::default()
             })
             .await

@@ -1,7 +1,8 @@
 //! klams-monitor library surface.
-//!
-//! Modules land incrementally: T026 poll, T027 state, T028 publish.
-//! At T002 scaffold time the crate exposes only its banner.
+
+pub mod poll;
+pub mod publish;
+pub mod state;
 
 #[must_use]
 pub fn banner() -> &'static str {

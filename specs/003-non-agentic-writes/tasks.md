@@ -102,21 +102,21 @@ Rust workspace at repo root. New binary crates land under `crates/klams-scanner/
 
 ### Tests for US3 (write FIRST)
 
-- [ ] T021 [P] [US3] Add unit tests to a new module `crates/klams-core/src/validate/events.rs` for `ServiceEventValidator` and `ExecutionTraceEventValidator`: required-field checks, enum constraint on `event` and `phase`, unknown-value rejection. Mirrors the Phase 2 facts validators.
-- [ ] T022 [P] [US3] Add unit tests in [crates/klams-monitor/tests/state_diff.rs](crates/klams-monitor/tests/state_diff.rs) covering the state-diff table in [data-model.md §7](data-model.md): transitions produce the expected event; steady-state polls produce nothing; version-change detection.
-- [ ] T023 [P] [US3] Add integration test [crates/klams-service/tests/us3c_events.rs](crates/klams-service/tests/us3c_events.rs) (`#[ignore]`-gated): posts a `category=Service` event and a `category=Execution` event with the same `task_id`, then queries `events` by `task_id` and asserts the per-task query uses the new index (verify with `EXPLAIN` over sqlx — or simply assert response time is sub-10ms on a 10k-row table).
+- [X] T021 [P] [US3] Add unit tests to a new module `crates/klams-core/src/validate/events.rs` for `ServiceEventValidator` and `ExecutionTraceEventValidator`: required-field checks, enum constraint on `event` and `phase`, unknown-value rejection. Mirrors the Phase 2 facts validators.
+- [X] T022 [P] [US3] Add unit tests in [crates/klams-monitor/tests/state_diff.rs](crates/klams-monitor/tests/state_diff.rs) covering the state-diff table in [data-model.md §7](data-model.md): transitions produce the expected event; steady-state polls produce nothing; version-change detection.
+- [X] T023 [P] [US3] Add integration test [crates/klams-service/tests/us3c_events.rs](crates/klams-service/tests/us3c_events.rs) (`#[ignore]`-gated): posts a `category=Service` event and a `category=Execution` event with the same `task_id`, then queries `events` by `task_id` and asserts the per-task query uses the new index (verify with `EXPLAIN` over sqlx — or simply assert response time is sub-10ms on a 10k-row table).
 
 ### Implementation for US3 — validators and index
 
-- [ ] T024 [US3] Implement `ServiceEventValidator` and `ExecutionTraceEventValidator` in `crates/klams-core/src/validate/events.rs` per [data-model.md §3](data-model.md) and [§4](data-model.md). Wire them into the existing `EventDispatcher` validate switch.
-- [ ] T025 [US3] Add `GET /memory/events?category=&service=&task_id=&since=` query params to the existing events handler in [crates/klams-api/src/handlers/events.rs](crates/klams-api/src/handlers/events.rs). Filter by the new index. Add a contract test row.
+- [X] T024 [US3] Implement `ServiceEventValidator` and `ExecutionTraceEventValidator` in `crates/klams-core/src/validate/events.rs` per [data-model.md §3](data-model.md) and [§4](data-model.md). Wire them into the existing `EventDispatcher` validate switch.
+- [X] T025 [US3] Add `GET /memory/events?category=&service=&task_id=&since=` query params to the existing events handler in [crates/klams-api/src/handlers/events.rs](crates/klams-api/src/handlers/events.rs). Filter by the new index. Add a contract test row.
 
 ### Implementation for US3 — klams-monitor binary
 
-- [ ] T026 [P] [US3] Implement `crates/klams-monitor/src/poll.rs`: `pub async fn is_active(unit: &str) -> Result<UnitState>` shelling out to `systemctl is-active <unit>` via `tokio::process::Command`. Map exit code 0 → `Active`, non-zero → `Inactive`. Add unit test that uses `which` to verify `systemctl` is on `PATH` and otherwise skips.
-- [ ] T027 [P] [US3] Implement `crates/klams-monitor/src/state.rs`: `PreviousState` cache + `pub fn diff(prev: &PreviousState, current: &UnitState) -> Option<ServiceEventPayload>` per [data-model.md §7](data-model.md). Covers T022's tests.
-- [ ] T028 [US3] Implement `crates/klams-monitor/src/publish.rs`: `reqwest` client posting the diff payloads to `POST /memory/events`. Reuse `klams-client` (extend it if needed; do not duplicate the http wiring).
-- [ ] T029 [US3] Implement `crates/klams-monitor/src/main.rs`: clap config (`--config <toml>`, `--once`, `--interval-secs <u64>`), config TOML shape `{ url, token, units = ["qdrant", "postgresql", "klams-service", ...], interval_secs = 15 }`, main loop calling `poll → diff → publish` on each tick. Structured `tracing` per poll.
+- [X] T026 [P] [US3] Implement `crates/klams-monitor/src/poll.rs`: `pub async fn is_active(unit: &str) -> Result<UnitState>` shelling out to `systemctl is-active <unit>` via `tokio::process::Command`. Map exit code 0 → `Active`, non-zero → `Inactive`. Add unit test that uses `which` to verify `systemctl` is on `PATH` and otherwise skips.
+- [X] T027 [P] [US3] Implement `crates/klams-monitor/src/state.rs`: `PreviousState` cache + `pub fn diff(prev: &PreviousState, current: &UnitState) -> Option<ServiceEventPayload>` per [data-model.md §7](data-model.md). Covers T022's tests.
+- [X] T028 [US3] Implement `crates/klams-monitor/src/publish.rs`: `reqwest` client posting the diff payloads to `POST /memory/events`. Reuse `klams-client` (extend it if needed; do not duplicate the http wiring).
+- [X] T029 [US3] Implement `crates/klams-monitor/src/main.rs`: clap config (`--config <toml>`, `--once`, `--interval-secs <u64>`), config TOML shape `{ url, token, units = ["qdrant", "postgresql", "klams-service", ...], interval_secs = 15 }`, main loop calling `poll → diff → publish` on each tick. Structured `tracing` per poll.
 
 **Checkpoint**: `us3c_events.rs` green; `klams-monitor --once` against a running klams successfully posts on a hand-triggered state change; SC-003 testable.
 

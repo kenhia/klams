@@ -60,7 +60,7 @@ impl ValidatorRegistry {
         );
         self.per_event_category.insert(
             "execution".into(),
-            vec![Box::new(events::ExecutionEventValidator)],
+            vec![Box::new(events::ExecutionTraceEventValidator)],
         );
     }
 

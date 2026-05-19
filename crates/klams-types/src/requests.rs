@@ -62,16 +62,31 @@ fn default_top_k() -> u32 {
 /// Query parameters for `GET /memory/events`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ListEventsParams {
+    /// Filters by `events.task_id` column (typed `Uuid`) when parseable
+    /// AND by `payload->>'task_id'` (raw string, hits the new
+    /// `events_task_id_created_at_idx` from sprint 003). Either match is
+    /// returned (logical OR) so both controller-prefixed and column-stored
+    /// task ids resolve from one query.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task_id: Option<Uuid>,
+    pub task_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
+    /// Filter by `payload->>'service'` — used by US3 monitor queries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         with = "time::serde::rfc3339::option"
     )]
     pub created_after: Option<OffsetDateTime>,
+    /// Alias for `created_after`. When both are set, `created_after` wins.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "time::serde::rfc3339::option"
+    )]
+    pub since: Option<OffsetDateTime>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
