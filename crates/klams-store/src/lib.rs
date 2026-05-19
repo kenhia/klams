@@ -73,7 +73,11 @@ pub struct FactQuery {
 #[derive(Debug, Clone, Default)]
 pub struct EventQuery {
     pub task_id: Option<Uuid>,
+    /// Raw `task_id` string for `payload->>'task_id'` matching (sprint 003 index).
+    pub payload_task_id: Option<String>,
     pub category: Option<String>,
+    /// Filter on `payload->>'service'`.
+    pub service: Option<String>,
     pub created_after: Option<OffsetDateTime>,
     pub created_before: Option<OffsetDateTime>,
     pub limit: u32,
@@ -129,6 +133,15 @@ pub trait Store: Send + Sync + 'static {
     ) -> StoreResult<(Vec<TextHit>, Vec<TextHit>)>;
     async fn find_knowledge_by_content_hash(&self, hash: &str) -> StoreResult<Option<Uuid>>;
     async fn get_knowledge(&self, id: Uuid) -> StoreResult<Option<KnowledgeItem>>;
+    /// Sprint 003 T010b: delete every knowledge point whose payload
+    /// `source_file` matches `source_file`. Returns the number of
+    /// points removed. Used by the scanner's vanished-file cleanup
+    /// (FR-008). Default returns `Other` so mocks need not implement.
+    async fn delete_knowledge_by_source_file(&self, _source_file: &str) -> StoreResult<u64> {
+        Err(StoreError::Other(
+            "delete_knowledge_by_source_file not implemented".into(),
+        ))
+    }
     /// Embed a free-text query into a vector compatible with
     /// [`search_knowledge`]. Implementations backed by Qdrant + TEI
     /// delegate to the embedder; mock stores can return a zero vector.

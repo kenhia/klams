@@ -7,6 +7,8 @@ members = [
     "crates/klams-api",
     "crates/klams-service",
     "crates/klams-client",
+    "crates/klams-scanner",
+    "crates/klams-monitor",
 ]
 
 [workspace.package]

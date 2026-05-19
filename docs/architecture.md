@@ -35,21 +35,21 @@ oriented counterpart to the formal design records in
 │   │   │ klams-store   Postgres (sqlx) | Qdrant (gRPC) |       │  │  │
 │   │   │               TEI HTTP embedding adapter              │  │  │
 │   │   └───────────────────────────────────────────────────────┘  │  │
-│   └───────┬──────────────────────┬──────────────────────┬───────┘  │
-│           │                      │                      │          │
-│           │ TCP 5432             │ gRPC 6334            │ HTTP 7070│
-│           ▼                      ▼                      ▼          │
-│   ┌──────────────┐        ┌──────────────┐       ┌──────────────┐  │
-│   │ postgres     │        │ qdrant       │       │ tei          │  │
-│   │ (Compose)    │        │ (Compose)    │       │ (Compose)    │  │
-│   │ facts,events │        │ knowledge    │       │ embeddings,  │  │
-│   │              │        │ vectors      │       │ optional GPU │  │
-│   └──────┬───────┘        └──────┬───────┘       └──────┬───────┘  │
-│          │                       │                      │          │
-│          └────── all three on user-defined bridge `klams-net` ─────┘
-│          │                       │                      │          │
-│          ▼                       ▼                      ▼          │
-│   ${KLAMS_DATA_ROOT}/postgres   /qdrant                /tei        │
+│   └───────┬──────────────────────┬──────────────────────┬────────┘  │
+│           │                      │                      │           │
+│           │ TCP 5432             │ gRPC 6334            │ HTTP 7070 │
+│           ▼                      ▼                      ▼           │
+│   ┌──────────────┐        ┌──────────────┐       ┌──────────────┐   │
+│   │ postgres     │        │ qdrant       │       │ tei          │   │
+│   │ (Compose)    │        │ (Compose)    │       │ (Compose)    │   │
+│   │ facts,events │        │ knowledge    │       │ embeddings,  │   │
+│   │              │        │ vectors      │       │ optional GPU │   │
+│   └──────┬───────┘        └──────┬───────┘       └──────┬───────┘   │
+│          │                       │                      │           │
+│          └────── all three on user-defined bridge `klams-net` ──────┘
+│          │                       │                      │           │
+│          ▼                       ▼                      ▼           │
+│   ${KLAMS_DATA_ROOT}/postgres   /qdrant                /tei         │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -233,6 +233,72 @@ Plan and spec live at
 and
 [specs/002-safety-and-write-ops/spec.md](../specs/002-safety-and-write-ops/spec.md).
 
+## 2b. Phase 3 deltas (sprint 003)
+
+Sprint 003 (`specs/003-non-agentic-writes/`) adds **non-agentic
+writers** (a filesystem scanner, a systemd-state monitor) that feed
+klams without an LLM in the write path, plus a deployment story to
+land all three klams binaries under systemd on `kubs0`. The crate
+boundaries do not change; two new binaries live under `crates/`.
+
+```text
++----------------------+        POST /memory/knowledge/index
+| klams-scanner.timer  |  --->  +-----------------+  ----------------->  +---------------+
+|   (systemd OnUnit-   |        |  klams-scanner  |  POST /knowledge/    | klams-service |
+|    ActiveSec=1h)     |        |   (--once run)  |  delete?source_file= |  (axum + pg + |
++----------------------+        +-----------------+  -----------------> |   qdrant)     |
+                                                                         +---------------+
+                                                                                 ^
++----------------------+        POST /memory/events                              |
+|  klams-monitor.svc   |  --->  +----------------+   --------------------------- +
+|  (Type=simple,       |        |  klams-monitor |   (Service/Execution events,
+|   Restart=on-fail)   |        |   sd-poll loop |    sd-bus / systemctl is-active)
++----------------------+        +----------------+
+```
+
+* **Write paths (FR-001..FR-006)** — every write response now carries
+  a `path: "canonical" | "dissent"` field (additive — flattened into
+  the existing `Fact` shape so pre-sprint-003 clients ignoring unknown
+  fields keep working). `MemoryPolicy` is exposed at
+  `GET /memory/policy` so callers can introspect dedupe + decay rules
+  without reading the TOML (SC-001, SC-005).
+* **Scanner (FR-007..FR-012)** — `klams-scanner` walks `~/src` and
+  `~/obsidian` (configurable), honours `.gitignore` + `.klamsignore`,
+  always skips `target/`, `node_modules/`, `.git/`, chunks every file
+  to ≈800 chars with 200-char overlap, and POSTs to
+  `/memory/knowledge/index`. A local SQLite cursor at
+  `~/.local/state/klams/scanner.sqlite` short-circuits unchanged files
+  on `mtime`, then on content hash. Vanished files trigger
+  `/memory/knowledge/delete?source_file=<abs>` (SC-002).
+* **Monitor (FR-013..FR-016)** — `klams-monitor` polls `systemctl
+  is-active <service>` for a TOML-configured list of units, diffs
+  state against the last poll, and POSTs only **edge transitions**
+  (`active↔inactive`, `version changed`) as `Event(category=Service)`.
+  Steady-state polls emit zero traffic (SC-003).
+* **systemd integration (FR-017..FR-018)** — `klams-service` runs as a
+  `Type=simple` unit with `After=postgresql.service qdrant.service`;
+  `klams-scanner.timer` fires the scanner hourly via a `Type=oneshot`
+  unit; `klams-monitor.service` is `Type=simple` with
+  `Restart=on-failure`. All three units use the same hardening profile
+  (`NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`). The
+  `install-systemd.sh` helper is idempotent, supports `--dry-run`, and
+  rotates the previous binary to `<bin>.prev` so `just rollback`
+  works (SC-004).
+* **ansible-k handoff (FR-019..FR-022)** — self-contained directory at
+  `specs/003-non-agentic-writes/handoff/` (README + spec + api-contract
+  + example script) ready to `cp -r` to
+  `/home/ken/ansible-k/specs/klams-integration/`. The pinned-version
+  header references `GET /healthz?contract=v1` as the drift-detection
+  handshake (SC-006).
+* **Backwards compatibility (FR-023)** — every sprint-001 and sprint-002
+  integration test still passes against the post-sprint-003 binary;
+  the `path` field is additive and `MemoryPolicy` is a new endpoint.
+
+Plan and spec live at
+[specs/003-non-agentic-writes/plan.md](../specs/003-non-agentic-writes/plan.md)
+and
+[specs/003-non-agentic-writes/spec.md](../specs/003-non-agentic-writes/spec.md).
+
 ## 3. Deployment topology on `kubs0`
 
 ```text
@@ -246,7 +312,10 @@ kubs0
 │   └── logs/                               optional spool
 │
 ├── systemd
-│   └── klams.service                       runs the klams-service binary
+│   ├── klams-service.service               (Type=simple, After=postgresql qdrant)
+│   ├── klams-scanner.service               (Type=oneshot, runs `klams-scanner --once`)
+│   ├── klams-scanner.timer                 (OnBootSec=5min, OnUnitActiveSec=1h)
+│   └── klams-monitor.service               (Type=simple, Restart=on-failure)
 │
 └── docker (compose project: klams)
     └── network: klams-net (bridge)

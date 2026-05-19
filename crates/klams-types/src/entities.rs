@@ -42,6 +42,20 @@ impl Source {
             Source::AgentProposal => "AgentProposal",
         }
     }
+
+    /// Trust rank for this source. Higher = more authoritative.
+    /// Single source of truth for both the write dispatcher
+    /// (`klams-store::postgres`) and the `PolicyTable` exposed via
+    /// `GET /memory/policy` (`klams-core::policy`).
+    #[must_use]
+    pub fn trust_rank(self) -> u8 {
+        match self {
+            Source::User => 4,
+            Source::Controller => 3,
+            Source::Task => 2,
+            Source::AgentProposal => 1,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

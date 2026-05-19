@@ -137,10 +137,23 @@ impl PostgresStore {
              FROM events WHERE 1=1",
         );
         if let Some(task_id) = q.task_id {
-            qb.push(" AND task_id = ").push_bind(task_id);
+            if let Some(s) = &q.payload_task_id {
+                qb.push(" AND (task_id = ")
+                    .push_bind(task_id)
+                    .push(" OR payload->>'task_id' = ")
+                    .push_bind(s.clone())
+                    .push(")");
+            } else {
+                qb.push(" AND task_id = ").push_bind(task_id);
+            }
+        } else if let Some(s) = q.payload_task_id {
+            qb.push(" AND payload->>'task_id' = ").push_bind(s);
         }
         if let Some(c) = q.category {
             qb.push(" AND category = ").push_bind(c);
+        }
+        if let Some(s) = q.service {
+            qb.push(" AND payload->>'service' = ").push_bind(s);
         }
         if let Some(t) = q.created_after {
             qb.push(" AND created_at > ").push_bind(t);
@@ -322,13 +335,10 @@ fn row_to_dissent(row: &sqlx::postgres::PgRow) -> StoreResult<Dissent> {
 }
 
 /// Trust ordering used by US2 routing. Higher is more authoritative.
+/// Delegates to [`Source::trust_rank`] (klams-types) so the
+/// dispatcher and the `GET /memory/policy` endpoint cannot drift.
 fn trust_rank(s: Source) -> i32 {
-    match s {
-        Source::User => 4,
-        Source::Controller => 3,
-        Source::Task => 2,
-        Source::AgentProposal => 1,
-    }
+    i32::from(s.trust_rank())
 }
 
 impl PostgresStore {

@@ -103,6 +103,39 @@ The full sprint 002 walkthrough (validation, dissents, decay,
 viewport curation, `just gate`) lives at
 [specs/002-safety-and-write-ops/quickstart.md](specs/002-safety-and-write-ops/quickstart.md).
 
+### Sprint 003 quick reference
+
+Sprint 003 (`specs/003-non-agentic-writes/`) ships two new binaries —
+`klams-scanner` (filesystem indexer, hourly via a systemd timer) and
+`klams-monitor` (systemd-state edge-transition poller) — plus the
+unit files + `install-systemd.sh` helper to land all three klams
+binaries under systemd on `kubs0`. The `justfile` gains four
+recipes:
+
+```sh
+$ just --list
+Available recipes:
+    build           # Release build of the service binary.
+    compose-down    # Stop and remove the stack (keeps volumes).
+    compose-rebuild # Force a clean rebuild of all compose images.
+    compose-up      # Bring the Postgres+Qdrant+TEI stack up in the background.
+    default         # Default recipe shows the menu so a bare `just` is friendly.
+    gate            # CI invokes exactly this recipe (no inline duplication).
+    health          # Quick liveness probe + light verification round-trip.
+    install-systemd # sprint-003 — build + run deploy/install-systemd.sh.
+    monitor-once    # sprint-003 — ad-hoc systemd-state probe.
+    rollback        # sprint-003 — swap *.prev binaries back into place.
+    run             # Run the service in the foreground; logs go to stderr.
+    scanner-once    # sprint-003 — ad-hoc scan of the configured roots.
+    test            # Workspace-wide tests (excludes #[ignore]'d cases).
+    verify          # Full SC-001..SC-009 functional smoke (slower than `health`).
+    viewport-build  # Cross-compile the viewport for Windows (requires cargo-xwin).
+```
+
+The full sprint 003 walkthrough (scanner, monitor, systemd install,
+rollback path, ansible-k handoff) lives at
+[specs/003-non-agentic-writes/quickstart.md](specs/003-non-agentic-writes/quickstart.md).
+
 Architecture overview and component map:
 [docs/architecture.md](docs/architecture.md). Day-to-day operator
 recipes: [docs/usage.md](docs/usage.md).

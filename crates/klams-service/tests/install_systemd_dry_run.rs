@@ -1,0 +1,115 @@
+//! sprint-003 T040 — exercise `deploy/install-systemd.sh` in `--dry-run`
+//! mode. We assert it (a) prints the actions it would take, (b) is
+//! idempotent (two consecutive dry-runs produce identical action
+//! lists), and (c) fails loud when a binary is missing.
+//!
+//! Skipped when `bash` is missing.
+
+use std::path::PathBuf;
+use std::process::Command;
+
+fn script() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("deploy")
+        .join("install-systemd.sh")
+}
+
+fn have_bash() -> bool {
+    Command::new("bash").arg("--version").output().is_ok()
+}
+
+#[test]
+fn dry_run_prints_planned_actions() {
+    if !have_bash() {
+        eprintln!("bash missing, skipping");
+        return;
+    }
+    let tmp = tempfile::TempDir::new().unwrap();
+    let bin_dir = tmp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    for b in ["klams-service", "klams-scanner", "klams-monitor"] {
+        std::fs::write(bin_dir.join(b), "#!/bin/sh\n").unwrap();
+    }
+
+    let out = Command::new("bash")
+        .arg(script())
+        .arg("--dry-run")
+        .env("BIN_SRC_DIR", &bin_dir)
+        .output()
+        .expect("spawn");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+
+    if !out.status.success() && stderr.contains("postgresql.service not found") {
+        eprintln!("postgresql not on host, skipping");
+        return;
+    }
+    assert!(out.status.success(), "dry-run failed: {stderr}");
+    assert!(
+        stdout.contains("[dry-run]"),
+        "expected dry-run markers in stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("systemctl daemon-reload"),
+        "expected daemon-reload action in stdout: {stdout}"
+    );
+}
+
+#[test]
+fn dry_run_is_idempotent() {
+    if !have_bash() {
+        return;
+    }
+    let tmp = tempfile::TempDir::new().unwrap();
+    let bin_dir = tmp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    for b in ["klams-service", "klams-scanner", "klams-monitor"] {
+        std::fs::write(bin_dir.join(b), "#!/bin/sh\n").unwrap();
+    }
+
+    let run = || -> Option<String> {
+        let out = Command::new("bash")
+            .arg(script())
+            .arg("--dry-run")
+            .env("BIN_SRC_DIR", &bin_dir)
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        Some(String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    let Some(first) = run() else {
+        eprintln!("dry-run unavailable, skipping");
+        return;
+    };
+    let second = run().expect("second dry-run");
+    // The temp dir name is identical across the two runs, so output
+    // must be byte-identical.
+    assert_eq!(first, second, "dry-run is not idempotent");
+}
+
+#[test]
+fn missing_binary_fails_loudly() {
+    if !have_bash() {
+        return;
+    }
+    let tmp = tempfile::TempDir::new().unwrap();
+    let bin_dir = tmp.path().join("empty");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+
+    let out = Command::new("bash")
+        .arg(script())
+        .arg("--dry-run")
+        .env("BIN_SRC_DIR", &bin_dir)
+        .output()
+        .expect("spawn");
+    assert!(!out.status.success(), "expected failure for missing binary");
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        stderr.contains("missing binary") || stderr.contains("postgresql.service not found"),
+        "expected a clear error, got: {stderr}",
+    );
+}

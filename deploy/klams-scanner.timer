@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodic klams filesystem scan
+Documentation=https://github.com/kenhia/klams
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+Persistent=true
+Unit=klams-scanner.service
+
+[Install]
+WantedBy=timers.target

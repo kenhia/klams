@@ -1,0 +1,26 @@
+[Unit]
+Description=klams filesystem scanner (one-shot)
+Documentation=https://github.com/kenhia/klams
+After=klams-service.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=klams
+Group=klams
+ExecStart=/usr/local/bin/klams-scanner --once
+Environment=KLAMS_CONFIG=/etc/klams/scanner.toml
+StateDirectory=klams
+StandardOutput=journal
+StandardError=journal
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true

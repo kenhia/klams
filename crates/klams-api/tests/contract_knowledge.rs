@@ -80,6 +80,18 @@ impl Store for MockStore {
     async fn get_knowledge(&self, id: Uuid) -> StoreResult<Option<KnowledgeItem>> {
         Ok(self.by_id.lock().unwrap().get(&id).cloned())
     }
+    async fn delete_knowledge_by_source_file(&self, sf: &str) -> StoreResult<u64> {
+        let mut by_id = self.by_id.lock().unwrap();
+        let ids: Vec<Uuid> = by_id
+            .iter()
+            .filter(|(_, it)| it.file.as_deref() == Some(sf))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in &ids {
+            by_id.remove(id);
+        }
+        Ok(ids.len() as u64)
+    }
     async fn embed_query(&self, _query: &str) -> StoreResult<Vec<f32>> {
         Ok(vec![0.0; 384])
     }
@@ -172,6 +184,7 @@ async fn post_index_returns_accepted_with_id() {
         body.get("deduped").and_then(serde_json::Value::as_bool),
         Some(false)
     );
+    assert_eq!(body["path"], "canonical");
 }
 
 #[tokio::test]
@@ -275,4 +288,92 @@ async fn get_knowledge_returns_404_for_unknown_id() {
     let (status, body) = get(&app, &format!("/memory/knowledge/{}", Uuid::now_v7())).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(body["code"], "not_found");
+}
+
+#[tokio::test]
+async fn knowledge_delete_requires_bearer() {
+    let store = Arc::new(MockStore::default());
+    let app = router_with_store(store);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/memory/knowledge/delete?source_file=%2Ftmp%2Fx")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn knowledge_delete_removes_matching_chunks() {
+    let store = Arc::new(MockStore::default());
+    let app = router_with_store(Arc::clone(&store));
+    // Seed two items with the same `file` value directly in the mock.
+    let id1 = Uuid::now_v7();
+    let id2 = Uuid::now_v7();
+    let now = OffsetDateTime::now_utc();
+    let mk = |id: Uuid| KnowledgeItem {
+        id,
+        text: "x".into(),
+        content_hash: id.to_string(),
+        source: klams_types::Source::Controller,
+        tags: vec![],
+        repo: None,
+        file: Some("/abs/path/note.md".into()),
+        machine: None,
+        confidence: 1.0,
+        decay_weight: 1.0,
+        use_count: 0,
+        last_used_at: None,
+        created_at: now,
+        updated_at: now,
+    };
+    {
+        let mut by_id = store.by_id.lock().unwrap();
+        by_id.insert(id1, mk(id1));
+        by_id.insert(id2, mk(id2));
+    }
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/memory/knowledge/delete?source_file=%2Fabs%2Fpath%2Fnote.md")
+                .header(header::AUTHORIZATION, "Bearer test-bearer")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = to_bytes(resp.into_body(), 4096).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(v["deleted"], 2);
+    assert_eq!(v["path"], "canonical");
+    assert!(store.by_id.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn knowledge_delete_missing_source_file_returns_zero() {
+    let store = Arc::new(MockStore::default());
+    let app = router_with_store(store);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/memory/knowledge/delete?source_file=%2Fno%2Fsuch%2Fpath")
+                .header(header::AUTHORIZATION, "Bearer test-bearer")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = to_bytes(resp.into_body(), 4096).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(v["deleted"], 0);
+    assert_eq!(v["path"], "canonical");
 }

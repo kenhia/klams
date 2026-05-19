@@ -36,23 +36,7 @@ impl Validator for TaskFactValidator {
             return required(vec!["task_id".into(), "status".into()], None);
         };
         if let Some(v) = obj.get("task_id") {
-            if let Some(s) = v.as_str() {
-                if Uuid::parse_str(s).is_err() {
-                    acc.push(detail(
-                        "payload.task_id",
-                        "uuid",
-                        "task_id must be a UUID",
-                        Some(v.clone()),
-                    ));
-                }
-            } else {
-                acc.push(detail(
-                    "payload.task_id",
-                    "uuid",
-                    "task_id must be a UUID string",
-                    Some(v.clone()),
-                ));
-            }
+            check_ansible_task_id(v, &mut acc);
         } else {
             acc.push(detail(
                 "payload.task_id",
@@ -139,6 +123,9 @@ impl Validator for EnvFactValidator {
                 "value is required",
                 None,
             )),
+        }
+        if let Some(v) = obj.get("task_id") {
+            check_ansible_task_id(v, &mut acc);
         }
         finalize(acc)
     }
@@ -264,5 +251,82 @@ fn finalize(acc: Vec<ErrorDetail>) -> ValidationResult {
         Ok(())
     } else {
         Err(acc)
+    }
+}
+
+/// Validate the `payload.task_id` field per data-model.md §1:
+/// any parseable UUID OR a string of the shape `ansible-<32-hex>`
+/// (controller-prefixed run-ids accepted by the same rule). Hard
+/// length cap of 64 chars regardless of shape.
+pub(crate) fn check_ansible_task_id(v: &serde_json::Value, acc: &mut Vec<ErrorDetail>) {
+    let Some(s) = v.as_str() else {
+        acc.push(detail(
+            "payload.task_id",
+            "type",
+            "task_id must be a string",
+            Some(v.clone()),
+        ));
+        return;
+    };
+    if s.len() > 64 {
+        acc.push(detail(
+            "payload.task_id",
+            "length",
+            "task_id must be <= 64 chars",
+            Some(v.clone()),
+        ));
+        return;
+    }
+    if Uuid::parse_str(s).is_ok() {
+        return;
+    }
+    if let Some(rest) = s.strip_prefix("ansible-") {
+        if rest.len() == 32 && rest.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return;
+        }
+    }
+    acc.push(detail(
+        "payload.task_id",
+        "shape",
+        "task_id must be a UUID or `ansible-<32-hex>` run-id",
+        Some(v.clone()),
+    ));
+}
+
+#[cfg(test)]
+mod ansible_task_id_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn env_payload_with_task_id(task_id: &str) -> serde_json::Value {
+        json!({"key": "GPU_COUNT", "value": "2", "task_id": task_id})
+    }
+
+    #[test]
+    fn ansible_task_id_uuid_or_prefixed_run_id_passes() {
+        let v = EnvFactValidator;
+        // UUID (v7 — existing controller traces still validate)
+        assert!(v
+            .validate(&env_payload_with_task_id(
+                "01900000-0000-7000-8000-000000000000"
+            ))
+            .is_ok());
+        // ansible- prefixed 32-char hex run-id (total length = 40)
+        assert!(v
+            .validate(&env_payload_with_task_id(
+                "ansible-0123456789abcdef0123456789abcdef"
+            ))
+            .is_ok());
+    }
+
+    #[test]
+    fn ansible_task_id_too_long_rejected_422() {
+        let v = EnvFactValidator;
+        let long_id = format!("ansible-{}", "a".repeat(60)); // 8 + 60 = 68 > 64
+        let err = v.validate(&env_payload_with_task_id(&long_id)).unwrap_err();
+        assert!(
+            err.iter().any(|d| d.field == "payload.task_id"),
+            "expected task_id error, got {err:?}"
+        );
     }
 }

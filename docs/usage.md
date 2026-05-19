@@ -200,3 +200,72 @@ work against a local stack or a remote `kubs0`.
 - Spec: [spec.md](../specs/001-initial-mvp/spec.md) (US5 — Observability & Operations)
 - Functional requirements FR-017..FR-020 cover `/healthz`, `/metrics`,
   exit codes, and journal output.
+
+## Sprint 003 — write-path additions
+
+### `path` field on write responses
+
+Every write endpoint that previously returned a `Fact` or an event
+shape now also returns a `path` field whose value is `"canonical"`
+when the write landed on the canonical row and `"dissent"` when it
+was diverted to the dissents queue (only possible for
+`source: "AgentProposal"` writes contradicting a higher-trust row).
+
+The field is **additive**. Pre-sprint-003 clients that ignored
+unknown fields keep working — the `Fact` shape is flattened so
+`response.id`, `response.version`, etc. still appear at the top
+level.
+
+```jsonc
+// POST /memory/facts response (200)
+{
+  "id": "019e3e02-ff6e-75d1-b6d4-c821277539dc",
+  "type": "UserFact",
+  "version": 1,
+  "payload": {"name": "Ken", "host": "kubs0"},
+  "source": "User",
+  // ... rest of Fact ...
+  "path": "canonical"
+}
+```
+
+### `GET /memory/policy`
+
+Returns the runtime `MemoryPolicy` (dedupe rules, decay λ per
+`FactType`, dissent thresholds) so callers can introspect server
+behaviour without parsing the TOML:
+
+```sh
+curl -sS -H "Authorization: Bearer $KLAMS_TOKEN" \
+    "$KLAMS_URL/memory/policy" | jq .
+```
+
+### Scanner one-shot
+
+To trigger an ad-hoc scan of the configured roots without waiting
+for the timer:
+
+```sh
+just scanner-once
+# or directly:
+sudo systemctl start klams-scanner.service
+```
+
+The scanner is idempotent: rerunning it on an unchanged tree posts
+zero chunks.
+
+### ansible-k handoff
+
+The sprint-003 handoff document for the ansible-k integrator lives
+at [specs/003-non-agentic-writes/handoff/](../specs/003-non-agentic-writes/handoff/).
+It is self-contained markdown + a runnable POSIX `sh` example, ready
+to `cp -r` to `/home/ken/ansible-k/specs/klams-integration/`.
+
+## Sprint 003 — `just` recipe additions
+
+| Recipe              | What it does |
+|---------------------|--------------|
+| `install-systemd`   | Build the three release binaries and run `deploy/install-systemd.sh` (idempotent; rotates `<bin>.prev`). |
+| `scanner-once`      | `cargo run --release --bin klams-scanner -- --once`. |
+| `monitor-once`      | `cargo run --release --bin klams-monitor -- --once`. |
+| `rollback`          | Swap every `/usr/local/bin/<bin>` with its `.prev` and restart the long-running units. |

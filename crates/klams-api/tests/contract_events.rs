@@ -111,6 +111,7 @@ async fn post_events_returns_202_with_id() {
         v.get("id").and_then(|x| x.as_str()).is_some(),
         "must contain id: string"
     );
+    assert_eq!(v["path"], "canonical");
 }
 
 #[tokio::test]
@@ -184,4 +185,23 @@ async fn get_events_returns_event_page_shape() {
 #[allow(dead_code)]
 fn _source_use() -> Source {
     Source::Controller
+}
+
+#[tokio::test]
+async fn get_events_accepts_service_task_id_and_since() {
+    // T025 — `?category=&service=&task_id=&since=` must parse and 200.
+    let app = router();
+    let uri = "/memory/events?category=Service&service=qdrant&task_id=ansible-00000000000000000000000000000000&since=2024-01-01T00:00:00Z";
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(uri)
+                .header(header::AUTHORIZATION, "Bearer test-bearer")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
 }

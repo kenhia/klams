@@ -58,3 +58,29 @@ fn write_canonical(hasher: &mut Sha256, v: &serde_json::Value) {
         }
     }
 }
+
+#[cfg(test)]
+mod task_id_dedupe_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn identical_payload_and_task_id_hashes_equal() {
+        let a = json!({"key": "GPU_COUNT", "value": "2", "task_id": "ansible-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"});
+        let b = json!({"task_id": "ansible-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "value": "2", "key": "GPU_COUNT"});
+        assert_eq!(
+            canonical_json_hash("EnvFact", &a),
+            canonical_json_hash("EnvFact", &b)
+        );
+    }
+
+    #[test]
+    fn different_task_id_changes_hash() {
+        let a = json!({"key": "GPU_COUNT", "value": "2", "task_id": "ansible-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"});
+        let b = json!({"key": "GPU_COUNT", "value": "2", "task_id": "ansible-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"});
+        assert_ne!(
+            canonical_json_hash("EnvFact", &a),
+            canonical_json_hash("EnvFact", &b)
+        );
+    }
+}

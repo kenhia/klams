@@ -5,6 +5,7 @@
 //! the worker pool call into the constants below to keep label
 //! cardinality fixed.
 
+use klams_types::{Source, WritePath};
 use metrics::{counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram};
 use std::time::Instant;
 
@@ -13,6 +14,7 @@ pub const QUEUE_CAPACITY: &str = "klams_queue_capacity";
 pub const WORKERS_ACTIVE: &str = "klams_workers_active";
 pub const WRITES_ACCEPTED: &str = "klams_writes_accepted_total";
 pub const WRITES_FAILED: &str = "klams_writes_failed_total";
+pub const WRITES_TOTAL: &str = "klams_writes_total";
 pub const WRITE_LATENCY: &str = "klams_write_latency_seconds";
 pub const SEARCH_LATENCY: &str = "klams_search_latency_seconds";
 pub const EMBEDDING_LATENCY: &str = "klams_embedding_latency_seconds";
@@ -31,6 +33,10 @@ pub fn describe() {
     describe_gauge!(WORKERS_ACTIVE, "Number of active worker tasks");
     describe_counter!(WRITES_ACCEPTED, "Total writes accepted onto the queue");
     describe_counter!(WRITES_FAILED, "Total writes that failed at the store");
+    describe_counter!(
+        WRITES_TOTAL,
+        "Sprint 003 (FR-017): every write tagged by type, source, and routing path"
+    );
     describe_histogram!(WRITE_LATENCY, "End-to-end write latency in seconds");
     describe_histogram!(SEARCH_LATENCY, "End-to-end search latency in seconds");
     describe_histogram!(EMBEDDING_LATENCY, "Embedding call latency in seconds");
@@ -72,6 +78,29 @@ pub fn incr_writes_accepted(kind: &'static str) {
 
 pub fn incr_writes_failed(kind: &'static str, reason: &'static str) {
     counter!(WRITES_FAILED, "type" => kind, "reason" => reason).increment(1);
+}
+
+/// Sprint 003 (FR-017): one tick per durable write attempt, labelled
+/// with the API endpoint type, the request `source`, and the routing
+/// `path` (canonical/dissent). Call this exactly once at the
+/// success/divert site of every write endpoint.
+pub fn incr_writes_total(kind: &'static str, source: Source, path: WritePath) {
+    counter!(
+        WRITES_TOTAL,
+        "type" => kind,
+        "source" => source_label(source),
+        "path" => path.as_str(),
+    )
+    .increment(1);
+}
+
+fn source_label(s: Source) -> &'static str {
+    match s {
+        Source::User => "user",
+        Source::Controller => "controller",
+        Source::Task => "task",
+        Source::AgentProposal => "agent_proposal",
+    }
 }
 
 pub fn incr_validation_rejection(rule: &'static str) {

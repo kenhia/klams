@@ -1,0 +1,38 @@
+[package]
+name = "klams-scanner"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "klams-scanner"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+klams-types = { workspace = true }
+klams-client = { workspace = true }
+tokio = { workspace = true }
+clap = { version = "4", features = ["derive", "env"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+reqwest = { workspace = true }
+sha2 = { workspace = true }
+ignore = "0.4"
+rusqlite = { version = "0.32", features = ["bundled"] }
+anyhow = { workspace = true }
+time = { workspace = true }
+metrics = { workspace = true }
+metrics-exporter-prometheus = "0.15"
+shellexpand = "3"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }

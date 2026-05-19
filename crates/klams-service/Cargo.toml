@@ -30,6 +30,9 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 klams-client = { workspace = true }
+klams-scanner = { path = "../klams-scanner" }
+tempfile = "3"
+filetime = "0.2"
 serde_json = { workspace = true }
 uuid = { workspace = true }
 reqwest = { workspace = true }

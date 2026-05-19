@@ -13,8 +13,8 @@ use base64::Engine as _;
 use klams_core::{metrics as m, WriteJob};
 use klams_store::{FactQuery, Store};
 use klams_types::{
-    DissentStatus, DissentSubmittedResponse, FactPage, FactType, FactWriteOutcome, MemoryWrite,
-    Source, UpsertFact, UpsertFactRequest,
+    DissentStatus, DissentSubmittedResponse, FactPage, FactType, FactWriteOutcome,
+    FactWriteResponse, MemoryWrite, Source, UpsertFact, UpsertFactRequest, WritePath,
 };
 use serde::Deserialize;
 use time::OffsetDateTime;
@@ -42,6 +42,7 @@ pub async fn upsert<S: Store>(
     }
     let _guard = m::LatencyGuard::with_type(m::WRITE_LATENCY, "fact");
 
+    let req_source = upsert.source;
     let (job, rx) = WriteJob::upsert_fact_with_reply(upsert);
     state.queue.try_enqueue(job).map_err(|_| {
         m::incr_writes_failed("fact", "queue_full");
@@ -51,7 +52,9 @@ pub async fn upsert<S: Store>(
     m::record_queue(state.queue.depth(), state.queue_capacity, state.workers);
 
     match rx.await {
-        Ok(klams_core::WriteReply::Fact(Ok(outcome))) => Ok(outcome_to_response(outcome)),
+        Ok(klams_core::WriteReply::Fact(Ok(outcome))) => {
+            Ok(outcome_to_response(outcome, req_source))
+        }
         Ok(klams_core::WriteReply::Fact(Err(e))) => {
             m::incr_writes_failed("fact", "store_error");
             Err(ApiError::Internal {
@@ -67,14 +70,23 @@ pub async fn upsert<S: Store>(
     }
 }
 
-fn outcome_to_response(outcome: FactWriteOutcome) -> Response {
+fn outcome_to_response(outcome: FactWriteOutcome, req_source: Source) -> Response {
     match outcome {
-        FactWriteOutcome::Persisted { fact } => Json(fact).into_response(),
+        FactWriteOutcome::Persisted { fact } => {
+            m::incr_writes_total("fact", fact.source, WritePath::Canonical);
+            Json(FactWriteResponse {
+                fact,
+                path: WritePath::Canonical,
+                dissent_id: None,
+            })
+            .into_response()
+        }
         FactWriteOutcome::Dissented {
             dissent_id,
             fact_id,
         } => {
             m::incr_dissent_outcome("accepted");
+            m::incr_writes_total("fact", req_source, WritePath::Dissent);
             (
                 StatusCode::ACCEPTED,
                 Json(DissentSubmittedResponse {
@@ -82,6 +94,7 @@ fn outcome_to_response(outcome: FactWriteOutcome) -> Response {
                     fact_id,
                     status: DissentStatus::Pending,
                     deduped: false,
+                    path: WritePath::Dissent,
                 }),
             )
                 .into_response()

@@ -72,8 +72,13 @@ pub fn build_router<S: Store>(state: ApiState<S>, bearer_token: impl Into<String
             "/memory/knowledge/index",
             post(handlers::knowledge::index::<S>),
         )
+        .route(
+            "/memory/knowledge/delete",
+            post(handlers::knowledge::delete::<S>),
+        )
         .route("/memory/knowledge/:id", get(handlers::knowledge::get::<S>))
         .route("/memory/search", post(handlers::search::search::<S>))
+        .route("/memory/policy", get(handlers::policy::get_policy))
         .route("/memory/dissents", get(handlers::dissents::list))
         .route("/memory/dissents/:id", get(handlers::dissents::get))
         .route(
