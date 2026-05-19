@@ -108,3 +108,33 @@ async fn healthz_is_unauthenticated() {
     let resp = app.oneshot(req).await.unwrap();
     assert_ne!(resp.status(), StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn healthz_with_contract_v1_includes_contract_field() {
+    let app = router();
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/healthz?contract=v1")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["contract"], "v1");
+}
+
+#[tokio::test]
+async fn healthz_without_contract_query_unchanged() {
+    let app = router();
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/healthz")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(v.get("contract").is_none());
+}

@@ -132,6 +132,9 @@ async fn post_facts_returns_persisted_fact_shape() {
     assert_eq!(v["type"], "UserFact");
     assert_eq!(v["source"], "Controller");
     assert_eq!(v["version"], 1);
+    // Sprint 003 FR-016: every write response carries `path`.
+    assert_eq!(v["path"], "canonical");
+    assert!(v.get("dissent_id").is_none());
 }
 
 #[tokio::test]

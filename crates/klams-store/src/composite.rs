@@ -109,6 +109,10 @@ impl Store for CompositeStore {
         self.qdrant.get_knowledge(id).await
     }
 
+    async fn delete_knowledge_by_source_file(&self, source_file: &str) -> StoreResult<u64> {
+        self.qdrant.delete_by_source_file(source_file).await
+    }
+
     async fn embed_query(&self, query: &str) -> StoreResult<Vec<f32>> {
         let start = std::time::Instant::now();
         let out = self.embedder.embed(query).await;

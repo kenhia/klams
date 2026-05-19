@@ -32,4 +32,9 @@ pub struct HealthSnapshot {
     pub queue: QueueStatus,
     pub version: String,
     pub uptime_seconds: u64,
+    /// Sprint 003 T010a: when the client requests `?contract=v1`, the
+    /// handler echoes the contract version back so callers can pin
+    /// the response shape they depend on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract: Option<String>,
 }

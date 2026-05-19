@@ -111,6 +111,7 @@ async fn post_events_returns_202_with_id() {
         v.get("id").and_then(|x| x.as_str()).is_some(),
         "must contain id: string"
     );
+    assert_eq!(v["path"], "canonical");
 }
 
 #[tokio::test]

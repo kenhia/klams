@@ -18,7 +18,8 @@ use base64::Engine as _;
 use klams_core::{metrics as m, WriteJob};
 use klams_store::{EventQuery, Store};
 use klams_types::{
-    AcceptedId, AppendEvent, AppendEventRequest, EventPage, ListEventsParams, MemoryWrite,
+    AppendEvent, AppendEventRequest, EventPage, EventWriteResponse, ListEventsParams, MemoryWrite,
+    WritePath,
 };
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -28,7 +29,7 @@ use uuid::Uuid;
 pub async fn append<S: Store>(
     State(state): State<ApiState<S>>,
     Json(req): Json<AppendEventRequest>,
-) -> Result<(StatusCode, Json<AcceptedId>), ApiError> {
+) -> Result<(StatusCode, Json<EventWriteResponse>), ApiError> {
     validate(&req)?;
     let _guard = m::LatencyGuard::with_type(m::WRITE_LATENCY, "event");
     let id = Uuid::now_v7();
@@ -39,6 +40,7 @@ pub async fn append<S: Store>(
         payload: req.payload,
         source: req.source,
     };
+    let req_source = append.source;
     let probe = MemoryWrite::AppendEvent(append.clone());
     if let Err(details) = state.validators.validate_write(&probe) {
         let rules: Vec<String> = details.iter().map(|d| d.rule.clone()).collect();
@@ -51,8 +53,15 @@ pub async fn append<S: Store>(
         ApiError::QueueFull { retry_after: 1 }
     })?;
     m::incr_writes_accepted("event");
+    m::incr_writes_total("event", req_source, WritePath::Canonical);
     m::record_queue(state.queue.depth(), state.queue_capacity, state.workers);
-    Ok((StatusCode::ACCEPTED, Json(AcceptedId { id })))
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(EventWriteResponse {
+            id,
+            path: WritePath::Canonical,
+        }),
+    ))
 }
 
 /// `GET /memory/events` — paginated listing with optional filters.
@@ -106,5 +115,5 @@ fn encode_cursor(ts: OffsetDateTime, id: Uuid) -> String {
 #[allow(dead_code, clippy::used_underscore_items)]
 fn _assert_into_response() {
     fn _f<T: IntoResponse>() {}
-    _f::<(StatusCode, Json<AcceptedId>)>();
+    _f::<(StatusCode, Json<EventWriteResponse>)>();
 }

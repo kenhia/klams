@@ -12,13 +12,14 @@
 
 use crate::router::ApiState;
 use axum::{
-    extract::State,
+    extract::{Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     Json,
 };
 use klams_store::Store;
 use klams_types::{HealthSnapshot, HealthStatus, QueueStatus, SubsystemStatus};
+use serde::Deserialize;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -109,7 +110,10 @@ fn aggregate(parts: &[&SubsystemStatus]) -> HealthStatus {
     }
 }
 
-pub async fn healthz<S: Store>(State(state): State<ApiState<S>>) -> Response {
+pub async fn healthz<S: Store>(
+    State(state): State<ApiState<S>>,
+    Query(params): Query<HealthzParams>,
+) -> Response {
     let (pg, qd, tei) = tokio::join!(
         probe_pg(state.store.as_ref()),
         probe_qdrant(state.store.as_ref()),
@@ -129,6 +133,7 @@ pub async fn healthz<S: Store>(State(state): State<ApiState<S>>) -> Response {
         },
         version: env!("CARGO_PKG_VERSION").to_string(),
         uptime_seconds: state.started_at.elapsed().as_secs(),
+        contract: params.contract.filter(|v| v == "v1"),
     };
 
     let code = match agg {
@@ -136,6 +141,12 @@ pub async fn healthz<S: Store>(State(state): State<ApiState<S>>) -> Response {
         _ => StatusCode::SERVICE_UNAVAILABLE,
     };
     (code, Json(snapshot)).into_response()
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct HealthzParams {
+    #[serde(default)]
+    pub contract: Option<String>,
 }
 
 #[cfg(test)]

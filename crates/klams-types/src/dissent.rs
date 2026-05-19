@@ -57,6 +57,13 @@ pub struct DissentSubmittedResponse {
     /// dissent's `payload_hash` and bumped its `submission_count`
     /// instead of creating a new row.
     pub deduped: bool,
+    /// Sprint 003 FR-016: every write-endpoint response carries the
+    /// routing path. For this struct it is always
+    /// `WritePath::Dissent`; the field is serialised explicitly so
+    /// clients can match on `path` without checking the response
+    /// type.
+    #[serde(default = "crate::responses::default_dissent_path")]
+    pub path: crate::responses::WritePath,
 }
 
 /// Terminal outcome of a canonical fact write at the worker layer.

@@ -11,13 +11,17 @@
 use crate::router::ApiState;
 use crate::ApiError;
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     Json,
 };
 use klams_core::{metrics as m, WriteJob};
 use klams_store::Store;
-use klams_types::{IndexKnowledge, IndexKnowledgeRequest, IndexKnowledgeResponse, KnowledgeItem};
+use klams_types::{
+    IndexKnowledge, IndexKnowledgeRequest, IndexKnowledgeResponse, KnowledgeDeleteResponse,
+    KnowledgeItem, WritePath,
+};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
@@ -51,11 +55,13 @@ pub async fn index<S: Store>(
             request_id: format!("store-error: {e}"),
         })?
     {
+        m::incr_writes_total("knowledge", req.source, WritePath::Canonical);
         return Ok((
             StatusCode::ACCEPTED,
             Json(IndexKnowledgeResponse {
                 knowledge_id: existing,
                 deduped: true,
+                path: WritePath::Canonical,
             }),
         ));
     }
@@ -76,6 +82,7 @@ pub async fn index<S: Store>(
         ApiError::QueueFull { retry_after: 1 }
     })?;
     m::incr_writes_accepted("knowledge");
+    m::incr_writes_total("knowledge", req.source, WritePath::Canonical);
     m::record_queue(state.queue.depth(), state.queue_capacity, state.workers);
 
     Ok((
@@ -83,6 +90,41 @@ pub async fn index<S: Store>(
         Json(IndexKnowledgeResponse {
             knowledge_id: id,
             deduped: false,
+            path: WritePath::Canonical,
+        }),
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeleteParams {
+    pub source_file: String,
+}
+
+/// `POST /memory/knowledge/delete?source_file=<abs_path>` — remove
+/// every chunk whose payload `source_file` matches. Used by the
+/// scanner's vanished-file cleanup (FR-008).
+pub async fn delete<S: Store>(
+    State(state): State<ApiState<S>>,
+    Query(params): Query<DeleteParams>,
+) -> Result<(StatusCode, Json<KnowledgeDeleteResponse>), ApiError> {
+    if params.source_file.trim().is_empty() {
+        return Err(ApiError::Validation {
+            field: "source_file".into(),
+            message: "source_file must be non-empty".into(),
+        });
+    }
+    let deleted = state
+        .store
+        .delete_knowledge_by_source_file(&params.source_file)
+        .await
+        .map_err(|e| ApiError::Internal {
+            request_id: format!("store-error: {e}"),
+        })?;
+    Ok((
+        StatusCode::OK,
+        Json(KnowledgeDeleteResponse {
+            deleted,
+            path: WritePath::Canonical,
         }),
     ))
 }

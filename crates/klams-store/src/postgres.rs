@@ -322,13 +322,10 @@ fn row_to_dissent(row: &sqlx::postgres::PgRow) -> StoreResult<Dissent> {
 }
 
 /// Trust ordering used by US2 routing. Higher is more authoritative.
+/// Delegates to [`Source::trust_rank`] (klams-types) so the
+/// dispatcher and the `GET /memory/policy` endpoint cannot drift.
 fn trust_rank(s: Source) -> i32 {
-    match s {
-        Source::User => 4,
-        Source::Controller => 3,
-        Source::Task => 2,
-        Source::AgentProposal => 1,
-    }
+    i32::from(s.trust_rank())
 }
 
 impl PostgresStore {

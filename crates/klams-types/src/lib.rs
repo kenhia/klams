@@ -28,7 +28,8 @@ pub use requests::{
     ListFactsParams, SearchRequest, UpsertFactRequest,
 };
 pub use responses::{
-    AcceptedId, DissentPage, EventPage, FactPage, IndexKnowledgeResponse, SearchResults,
+    AcceptedId, DissentPage, EventPage, EventWriteResponse, FactPage, FactWriteResponse,
+    IndexKnowledgeResponse, KnowledgeDeleteResponse, SearchResults, WritePath,
 };
 pub use search::{SearchHit, SearchType};
 pub use validation::{ErrorDetail, ValidationError, ValidationResult};
