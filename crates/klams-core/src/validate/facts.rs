@@ -67,6 +67,11 @@ impl Validator for TaskFactValidator {
 #[derive(Debug)]
 pub struct EnvFactValidator;
 
+/// Maximum serialized size (in bytes) of `EnvFact.payload.value`.
+/// Sprint 004: relaxed from 4096-char string-only to any JSON value
+/// up to this cap.
+pub const ENV_FACT_VALUE_MAX_BYTES: usize = 16 * 1024;
+
 impl Validator for EnvFactValidator {
     fn validate(&self, payload: &serde_json::Value) -> ValidationResult {
         let mut acc = Vec::new();
@@ -101,22 +106,23 @@ impl Validator for EnvFactValidator {
             None => acc.push(detail("payload.key", "required", "key is required", None)),
         }
         match obj.get("value") {
-            Some(serde_json::Value::String(s)) => {
-                if s.len() > 4096 {
+            Some(v) => {
+                // Sprint 004: `value` is any JSON; cap on serialized
+                // bytes so consumers and indexes have a known ceiling.
+                // 16 KiB comfortably fits a full host-facts category
+                // blob (~5 KB observed for kubs0 storage / network)
+                // with headroom; revisit when host counts or array
+                // depths grow.
+                let serialized_len = serde_json::to_string(v).map(|s| s.len()).unwrap_or(0);
+                if serialized_len > ENV_FACT_VALUE_MAX_BYTES {
                     acc.push(detail(
                         "payload.value",
-                        "length",
-                        "value must be <= 4096 chars",
+                        "size",
+                        &format!("value must be <= {ENV_FACT_VALUE_MAX_BYTES} serialized bytes"),
                         None,
                     ));
                 }
             }
-            Some(v) => acc.push(detail(
-                "payload.value",
-                "type",
-                "value must be a string",
-                Some(v.clone()),
-            )),
             None => acc.push(detail(
                 "payload.value",
                 "required",
@@ -328,5 +334,98 @@ mod ansible_task_id_tests {
             err.iter().any(|d| d.field == "payload.task_id"),
             "expected task_id error, got {err:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod env_fact_value_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn scalar_string_value_passes() {
+        let v = EnvFactValidator;
+        let payload = json!({"key": "GPU_COUNT", "value": "4"});
+        assert!(v.validate(&payload).is_ok());
+    }
+
+    #[test]
+    fn dict_value_passes() {
+        let v = EnvFactValidator;
+        let payload = json!({
+            "key": "STORAGE",
+            "value": {
+                "mounts": [
+                    {"mount": "/ai", "fstype": "btrfs", "size_gb": 1863.0},
+                    {"mount": "/", "fstype": "ext4", "size_gb": 97.9}
+                ]
+            },
+            "host": "kubs0"
+        });
+        assert!(v.validate(&payload).is_ok());
+    }
+
+    #[test]
+    fn array_value_passes() {
+        let v = EnvFactValidator;
+        let payload = json!({
+            "key": "DNS_NAMESERVERS",
+            "value": ["127.0.0.53"]
+        });
+        assert!(v.validate(&payload).is_ok());
+    }
+
+    #[test]
+    fn numeric_value_passes() {
+        let v = EnvFactValidator;
+        let payload = json!({"key": "MEMORY_MB", "value": 128_620});
+        assert!(v.validate(&payload).is_ok());
+    }
+
+    #[test]
+    fn null_value_passes() {
+        // Explicit null is a JSON value; agent push roles emit
+        // `cuda_toolkit_version: null` for non-GPU hosts.
+        let v = EnvFactValidator;
+        let payload = json!({"key": "CUDA_TOOLKIT_VERSION", "value": null});
+        assert!(v.validate(&payload).is_ok());
+    }
+
+    #[test]
+    fn missing_value_rejected() {
+        let v = EnvFactValidator;
+        let payload = json!({"key": "OS_VERSION"});
+        let err = v.validate(&payload).unwrap_err();
+        assert!(
+            err.iter()
+                .any(|d| d.field == "payload.value" && d.rule == "required"),
+            "expected required error on payload.value, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn oversize_value_rejected() {
+        let v = EnvFactValidator;
+        // 16 KiB cap — push a string that comfortably exceeds it once
+        // serialized (quotes add 2 bytes).
+        let huge = "x".repeat(ENV_FACT_VALUE_MAX_BYTES + 1);
+        let payload = json!({"key": "BIG", "value": huge});
+        let err = v.validate(&payload).unwrap_err();
+        assert!(
+            err.iter()
+                .any(|d| d.field == "payload.value" && d.rule == "size"),
+            "expected size error on payload.value, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn at_cap_value_passes() {
+        let v = EnvFactValidator;
+        // Construct a value whose JSON serialization is exactly the
+        // cap: a string of length cap-2 plus the two surrounding
+        // quotes.
+        let s = "x".repeat(ENV_FACT_VALUE_MAX_BYTES - 2);
+        let payload = json!({"key": "BIG", "value": s});
+        assert!(v.validate(&payload).is_ok());
     }
 }
