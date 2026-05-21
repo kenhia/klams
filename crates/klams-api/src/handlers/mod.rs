@@ -1,5 +1,6 @@
 //! HTTP request handlers, grouped by domain.
 
+pub mod context;
 pub mod dissents;
 pub mod events;
 pub mod facts;

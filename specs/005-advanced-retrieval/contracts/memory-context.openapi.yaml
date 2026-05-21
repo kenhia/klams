@@ -1,0 +1,157 @@
+openapi: 3.0.3
+info:
+  title: klams memory/context endpoint
+  version: 0.5.0
+  description: |
+    Phase 4 / sprint 005 contract for the new "retrieve for agent"
+    endpoint. Existing endpoints (/memory/facts, /memory/events,
+    /memory/knowledge/index, /memory/search, /healthz, /metrics) are
+    unchanged and not described here; see sprint 003 contracts.
+
+servers:
+  - url: http://kubs0.lan:7777
+    description: production (LAN bind)
+  - url: http://127.0.0.1:7777
+    description: local development
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: hex32
+
+  schemas:
+    ContextRequest:
+      type: object
+      required: [query, token_budget]
+      properties:
+        query:
+          type: string
+          minLength: 1
+          example: "kubs0 GPU and CUDA toolkit"
+        token_budget:
+          type: integer
+          minimum: 0
+          example: 4000
+        filters:
+          $ref: "#/components/schemas/RetrievalFilters"
+
+    RetrievalFilters:
+      type: object
+      additionalProperties: false
+      properties:
+        host: { type: string }
+        type: { type: string, enum: [UserFact, TaskFact, EnvFact] }
+        tag: { type: string }
+        repo: { type: string }
+        file: { type: string }
+        source: { type: string, enum: [User, Controller, Task, AgentProposal] }
+        since: { type: string, format: date-time }
+        until: { type: string, format: date-time }
+
+    ContextBundle:
+      type: object
+      required: [facts, knowledge, events, total_spent, truncated, token_encoder, sections]
+      properties:
+        facts:
+          type: array
+          items: { $ref: "#/components/schemas/ContextItem" }
+        knowledge:
+          type: array
+          items: { $ref: "#/components/schemas/ContextItem" }
+        events:
+          type: array
+          items: { $ref: "#/components/schemas/ContextItem" }
+        total_spent: { type: integer, minimum: 0 }
+        truncated: { type: boolean }
+        token_encoder:
+          type: string
+          enum: [cl100k_base, chars_div4]
+        sections:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/SectionMeta"
+
+    ContextItem:
+      type: object
+      required: [kind, id, score, tokens, payload]
+      properties:
+        kind: { type: string, enum: [raw, summary, digest] }
+        id: { type: string, format: uuid }
+        score: { type: number, format: float }
+        tokens: { type: integer, minimum: 0 }
+        payload: { type: object, additionalProperties: true }
+        source_ids:
+          type: array
+          items: { type: string, format: uuid }
+
+    SectionMeta:
+      type: object
+      required: [count, tokens_spent, source, status]
+      properties:
+        count: { type: integer, minimum: 0 }
+        tokens_spent: { type: integer, minimum: 0 }
+        source: { type: string, enum: [raw, summary, mixed] }
+        status: { type: string, enum: [ok, degraded, unavailable] }
+        degraded_reason: { type: string }
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+        rule: { type: string }
+        message: { type: string }
+        offending_key: { type: string }
+
+security:
+  - bearerAuth: []
+
+paths:
+  /memory/context:
+    post:
+      summary: Build a budget-respecting context bundle for a query.
+      description: |
+        Returns ranked, deduped facts/knowledge/events for the supplied
+        query under the supplied token budget. The response is
+        guaranteed to satisfy `total_spent <= token_budget`. When a
+        store dependency is unavailable, the corresponding section's
+        status is `unavailable` and `degraded_reason` is set; the
+        rest of the bundle still builds (FR-011).
+      operationId: postMemoryContext
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ContextRequest" }
+            examples:
+              gpu_query:
+                value:
+                  query: "kubs0 GPU and CUDA toolkit"
+                  token_budget: 4000
+                  filters:
+                    host: "kubs0"
+                    since: "2026-05-01T00:00:00Z"
+              empty_probe:
+                value:
+                  query: "is there anything to know"
+                  token_budget: 0
+      responses:
+        "200":
+          description: Bundle built (possibly truncated).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContextBundle" }
+        "400":
+          description: Bad request (empty query, unknown filter key, invalid token_budget).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Missing or invalid bearer token.
+        "503":
+          description: Service unavailable — queue saturated or all stores unavailable.
+          headers:
+            Retry-After:
+              schema: { type: integer }
