@@ -73,3 +73,37 @@ Store the boosts as a separate per-fact counter (`useful_count`) plus
 so the existing decay math stays clean. Decide whether boosts decay
 themselves or persist indefinitely as part of this work.
 
+
+## Viewport surfaces `source` and computed trust rank
+
+The viewport currently renders fact rows without showing the `source`
+field (`User` / `Controller` / `Task` / `AgentProposal`). Trust is
+derived from `source` via the `MemoryPolicy` table returned by
+`GET /memory/policy`, so a viewer who can't see `source` can't tell
+why one row beat another in a contradiction, can't spot a misattributed
+write (e.g. ansible-k posting as `User` instead of `Task`), and can't
+sort/filter facts by their writer class.
+
+Concrete asks:
+
+1. Add a `source` column (or badge) to the facts list view. Color-code
+   by trust tier or include the numeric rank.
+2. On the fact detail pane, show both `source` (the literal) and the
+   resolved trust rank from `/memory/policy`, with a one-line
+   description from the policy entry (the same `description` field
+   the policy endpoint returns).
+3. Filter affordance: "show facts written by [source...]" multi-select
+   so operators can audit "what did ansible push?" or "what did the
+   agent propose?" without dropping to SQL.
+
+Touch points: `viewport/src-tauri` memory commands already return the
+full `Fact` shape (which includes `source`); the gap is purely on the
+SvelteKit render side.
+
+## Viewport surfaces dedupe / decay weights
+
+Related to the source/trust ask above: facts have `confidence`,
+`decay_weight`, `use_count`, and `last_used_at` that no viewport
+surface currently exposes. These are the inputs to ranking and the
+operator's only window into why a fact has drifted down the search
+list. Worth at least a tooltip on the detail pane.

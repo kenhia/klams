@@ -64,17 +64,56 @@ working. `path` is the only field added by this sprint.
 
 ### `EnvFact` (POST `/memory/facts`)
 
+`EnvFact.payload` is a `{key, value, host?, task_id?}` object:
+
+- `key` (required) — uppercase identifier matching `^[A-Z][A-Z0-9_]*$`,
+  1..=256 chars (e.g. `GPU_COUNT`, `STORAGE`, `OS`).
+- `value` (required) — **any JSON value** (string, number, bool, null,
+  array, object). Capped at 16 KiB serialized. Sprint 004 relaxed this
+  from string-only.
+- `host` (optional) — hostname the fact pertains to. Use this rather
+  than encoding it in `key`.
+- `task_id` (optional) — UUID or `ansible-<32-hex>` run-id when the
+  fact originates from an Ansible play.
+
+Scalar value example:
+
+```json
+{
+  "type": "EnvFact",
+  "payload": {"key": "GPU_COUNT", "value": 4, "host": "kubs0"},
+  "source": "User"
+}
+```
+
+Structured value example (one fact per `ansible_facts` category, full
+host-facts blob carried directly — no JSON-string encoding required):
+
 ```json
 {
   "type": "EnvFact",
   "payload": {
+    "key": "STORAGE",
+    "value": {
+      "mounts": [
+        {"mount": "/ai", "fstype": "btrfs", "size_gb": 1863.0},
+        {"mount": "/", "fstype": "ext4", "size_gb": 97.9}
+      ],
+      "block_devices": [
+        {"name": "nvme0n1", "model": "Samsung SSD 970 EVO Plus 2TB", "size": "1.82 TB"}
+      ]
+    },
     "host": "kubs0",
-    "kernel": "6.8.0-40-generic",
-    "distro": "ubuntu-24.04"
+    "task_id": "ansible-0123456789abcdef0123456789abcdef"
   },
-  "source": "User"
+  "source": "Task"
 }
 ```
+
+Storing the value as a JSONB tree (rather than `to_json(...)` into a
+string) lets consumers query it natively with PostgreSQL JSONB
+operators — `payload->'value'->'mounts'` returns an array, no
+intermediate `::jsonb` cast required.
 
 ### `Event(category=Service)` (POST `/memory/events`)
 

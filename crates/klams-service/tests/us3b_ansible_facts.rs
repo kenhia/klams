@@ -127,3 +127,47 @@ async fn ansible_task_write_diverts_against_user_canonical() {
         other => panic!("expected Dissented, got {other:?}"),
     }
 }
+
+// Sprint 004: EnvFact `value` accepts any JSON, capped at 16 KiB
+// serialized. End-to-end exercise — covers validator + store
+// round-trip + JSONB persistence.
+#[tokio::test]
+#[ignore = "requires docker-compose.test.yml"]
+async fn ansible_env_fact_with_dict_value_round_trips() {
+    let server = TestServer::spawn().await;
+    let host = format!("kubs-{}", Uuid::now_v7().simple());
+    let run_id = format!("ansible-{}", "3".repeat(32));
+    let nonce = Uuid::now_v7().to_string();
+    let req = UpsertFactRequest {
+        fact_type: FactType::EnvFact,
+        payload: json!({
+            "key": "STORAGE",
+            "value": {
+                "mounts": [
+                    {"mount": "/ai", "fstype": "btrfs", "size_gb": 1863.0},
+                    {"mount": "/", "fstype": "ext4", "size_gb": 97.9}
+                ]
+            },
+            "host": host,
+            "task_id": run_id,
+            "nonce": nonce,
+        }),
+        source: Source::Task,
+        explicit_id: None,
+        expected_version: None,
+    };
+    let fact = match server.client.upsert_fact(&req).await.expect("upsert") {
+        FactWriteOutcome::Persisted { fact } => fact,
+        other => panic!("expected Persisted, got {other:?}"),
+    };
+    assert_eq!(fact.source, Source::Task);
+    assert!(
+        fact.payload["value"].is_object(),
+        "value persisted as JSON object, not re-encoded string"
+    );
+    assert_eq!(
+        fact.payload["value"]["mounts"][0]["fstype"], "btrfs",
+        "structured value lost shape on round-trip: {:?}",
+        fact.payload
+    );
+}

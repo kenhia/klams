@@ -283,3 +283,47 @@ async fn validation_task_status_enum_rejected() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_validation_detail(&v, "enum");
 }
+
+// Sprint 004: EnvFact `value` accepts any JSON, capped at 16 KiB
+// serialized.
+
+#[tokio::test]
+async fn envfact_dict_value_accepted() {
+    let (status, v) = post_facts_v(serde_json::json!({
+        "type": "EnvFact",
+        "payload": {
+            "key": "STORAGE",
+            "value": {
+                "mounts": [
+                    {"mount": "/ai", "fstype": "btrfs", "size_gb": 1863.0}
+                ]
+            },
+            "host": "kubs0"
+        },
+        "source": "Task"
+    }))
+    .await;
+    assert_eq!(status, StatusCode::OK, "wire body: {v}");
+    assert_eq!(v["type"], "EnvFact");
+    assert_eq!(v["path"], "canonical");
+    // Round-trip preserves structure (dict, not a re-encoded string).
+    assert!(v["payload"]["value"].is_object());
+    assert_eq!(
+        v["payload"]["value"]["mounts"][0]["fstype"], "btrfs",
+        "structured value lost shape on round-trip"
+    );
+}
+
+#[tokio::test]
+async fn envfact_oversized_value_rejected() {
+    // Cap is 16 KiB serialized; a 17 KiB string blows it.
+    let huge = "x".repeat(17 * 1024);
+    let (status, v) = post_facts_v(serde_json::json!({
+        "type": "EnvFact",
+        "payload": {"key": "BIG", "value": huge},
+        "source": "Task"
+    }))
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_validation_detail(&v, "size");
+}
