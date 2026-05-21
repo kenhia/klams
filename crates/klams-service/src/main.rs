@@ -64,6 +64,27 @@ async fn main() -> Result<()> {
         cfg.retrieval.per_source_top_k,
     ));
 
+    // Sprint 005 (T040) — spawn the summarization task.
+    {
+        use klams_core::summarize::{
+            StoreEventSource, SummarizationConfig as SCfg, SummarizationTask,
+        };
+        let scfg = SCfg {
+            enabled: cfg.summarization.enabled,
+            event_cluster_min: cfg.summarization.event_cluster_min,
+            llm_fallback: cfg.summarization.llm_fallback,
+            task_interval: std::time::Duration::from_secs(cfg.summarization.task_interval_seconds),
+            ollama_url: cfg.summarization.ollama_url.clone(),
+            ollama_model: cfg.summarization.ollama_model.clone(),
+        };
+        let task = SummarizationTask::new(
+            scfg,
+            Arc::new(StoreEventSource::new(Arc::clone(&store))),
+            Arc::clone(&store) as Arc<dyn klams_store::SummaryStore>,
+        );
+        let _ = task.spawn();
+    }
+
     let state = ApiState {
         store: Arc::clone(&store),
         queue,

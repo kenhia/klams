@@ -208,6 +208,30 @@ pub fn incr_hybrid_source_contribution(source: &'static str, count: u64) {
     counter!(HYBRID_SOURCE_CONTRIBUTION, "source" => source).increment(count);
 }
 
+/// Sprint 005 (FR-014): tick per summary written, labelled by
+/// generation mechanism (`extractive` | `llm`). Cardinality is
+/// fixed.
+pub fn incr_summarization_runs(mechanism: &str) {
+    let label = match mechanism {
+        "llm" => "llm",
+        _ => "extractive",
+    };
+    counter!(SUMMARIZATION_RUNS, "mechanism" => label).increment(1);
+}
+
+/// Sprint 005 (FR-014): wall-seconds since the last successful
+/// summarization cycle. Set every cycle; alerting threshold lives
+/// in the dashboards.
+pub fn record_summarization_lag(seconds: f64) {
+    gauge!(SUMMARIZATION_LAG).set(seconds);
+}
+
+/// Sprint 005 (FR-014): tick once when decay config is loaded
+/// successfully at service startup.
+pub fn incr_decay_config_reloads() {
+    counter!(DECAY_CONFIG_RELOADS).increment(1);
+}
+
 /// RAII guard that records elapsed seconds into a histogram on drop.
 pub struct LatencyGuard {
     name: &'static str,
