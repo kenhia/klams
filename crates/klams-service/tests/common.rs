@@ -68,6 +68,7 @@ impl TestServer {
             workers: 2,
             started_at: std::time::Instant::now(),
             validators: Arc::new(klams_core::ValidatorRegistry::with_defaults()),
+            context_builder: Arc::new(klams_core::context::ContextBuilder::new(klams_core::tokens::TokenCounter::new(klams_core::tokens::TokenMode::CharsDiv4), 100)),
         };
         let router = build_router(state, bearer.clone());
 

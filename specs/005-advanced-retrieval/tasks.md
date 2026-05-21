@@ -58,18 +58,18 @@ Single Rust workspace at repo root. Crates under `crates/`, viewport under `view
 
 ### Tests for User Story 1 (TDD — write first, watch fail) ⚠️
 
-- [ ] T013 [P] [US1] Contract test in `crates/klams-api/tests/contract_context.rs` validating request/response against `specs/005-advanced-retrieval/contracts/memory-context.openapi.yaml`. Cover: happy path; empty-budget probe; missing query → 4xx with `query_required`; **unknown filter key → 4xx with the offending key named** (edge-case bullet from spec); unhealthy-store → 200 with degraded section.
-- [ ] T014 [P] [US1] Unit tests in `crates/klams-core/src/context.rs` for the budget-fitter: minimum-floor-per-section rule, dedupe precedence (fact > knowledge > event for structured attrs; knowledge > events for prose), `truncated` bookkeeping, single-item-larger-than-budget edge case.
-- [ ] T015 [P] [US1] Unit tests in `crates/klams-core/src/tokens.rs` for the `TokenCounter`: cl100k_base path, fallback path, `which_encoder()` reports active mode, large-payload safety.
+- [X] T013 [P] [US1] Contract test in `crates/klams-api/tests/contract_context.rs` validating request/response against `specs/005-advanced-retrieval/contracts/memory-context.openapi.yaml`. Cover: happy path; empty-budget probe; missing query → 4xx with `query_required`; **unknown filter key → 4xx with the offending key named** (edge-case bullet from spec); unhealthy-store → 200 with degraded section.
+- [X] T014 [P] [US1] Unit tests in `crates/klams-core/src/context.rs` for the budget-fitter: minimum-floor-per-section rule, dedupe precedence (fact > knowledge > event for structured attrs; knowledge > events for prose), `truncated` bookkeeping, single-item-larger-than-budget edge case.
+- [X] T015 [P] [US1] Unit tests in `crates/klams-core/src/tokens.rs` for the `TokenCounter`: cl100k_base path, fallback path, `which_encoder()` reports active mode, large-payload safety.
 - [ ] T016 [US1] Integration test in `crates/klams-service/tests/phase4_context_bundle.rs` exercising the full HTTP path against `docker-compose.test.yml` — uses a known fixture set, asserts items per the Independent Test above.
 
 ### Implementation for User Story 1
 
-- [ ] T017 [P] [US1] Implement `TokenCounter` in `crates/klams-core/src/tokens.rs`: `cl100k_base` via `tiktoken-rs::cl100k_base()`; fallback `chars / 4`; mode selected by `[tokens] mode`; expose `count(&str) -> u32` and `encoder_id() -> TokenEncoderId`.
-- [ ] T018 [US1] Implement `ContextBuilder` in `crates/klams-core/src/context.rs`: takes a `ContextRequest`, calls a (single-source for now — vector-only) `HybridStore`, applies dedupe rules (FR-004) and budget allocation (FR-003), produces a `ContextBundle`. Per-section status reflects store availability (FR-011).
-- [ ] T019 [P] [US1] Implement vector-only `HybridStore` impl in `crates/klams-store/src/qdrant.rs` so US1 can ship before US2 lands the full hybrid path. Returns ranked items with placeholder source attribution.
-- [ ] T020 [US1] Wire `POST /memory/context` handler in `crates/klams-api/src/routes/context.rs`: deserialize `ContextRequest`, enforce auth (existing bearer middleware), invoke `ContextBuilder`, serialize `ContextBundle`. Return 4xx with `query_required` on empty query; 503 with `Retry-After` only when *all* sources are unavailable.
-- [ ] T021 [US1] Add `klams_context_request_seconds` histogram and `klams_context_section_items_total` counter in the handler (FR-014).
+- [X] T017 [P] [US1] Implement `TokenCounter` in `crates/klams-core/src/tokens.rs`: `cl100k_base` via `tiktoken-rs::cl100k_base()`; fallback `chars / 4`; mode selected by `[tokens] mode`; expose `count(&str) -> u32` and `encoder_id() -> TokenEncoderId`.
+- [X] T018 [US1] Implement `ContextBuilder` in `crates/klams-core/src/context.rs`: takes a `ContextRequest`, calls a (single-source for now — vector-only) `HybridStore`, applies dedupe rules (FR-004) and budget allocation (FR-003), produces a `ContextBundle`. Per-section status reflects store availability (FR-011).
+- [X] T019 [P] [US1] Implement vector-only `HybridStore` impl in `crates/klams-store/src/qdrant.rs` so US1 can ship before US2 lands the full hybrid path. Returns ranked items with placeholder source attribution.
+- [X] T020 [US1] Wire `POST /memory/context` handler in `crates/klams-api/src/routes/context.rs`: deserialize `ContextRequest`, enforce auth (existing bearer middleware), invoke `ContextBuilder`, serialize `ContextBundle`. Return 4xx with `query_required` on empty query; 503 with `Retry-After` only when *all* sources are unavailable.
+- [X] T021 [US1] Add `klams_context_request_seconds` histogram and `klams_context_section_items_total` counter in the handler (FR-014).
 
 **Checkpoint**: US1 contract test green; manual `curl` of `/memory/context` returns a populated bundle within budget.
 

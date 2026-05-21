@@ -9,6 +9,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ContextRequest {
     pub query: String,
     pub token_budget: u32,
@@ -17,6 +18,7 @@ pub struct ContextRequest {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RetrievalFilters {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,

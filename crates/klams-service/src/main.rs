@@ -52,6 +52,18 @@ async fn main() -> Result<()> {
     let (queue, rx) = MemoryQueue::new(cfg.queue.capacity);
     let _workers = spawn_workers(cfg.queue.workers, rx, Arc::clone(&store));
 
+    let token_mode = klams_core::tokens::TokenMode::from_config_str(&cfg.tokens.mode);
+    let token_counter = klams_core::tokens::TokenCounter::new(token_mode);
+    info!(
+        encoder = token_counter.encoder_id().as_str(),
+        configured_mode = %cfg.tokens.mode,
+        "context token counter ready"
+    );
+    let context_builder = Arc::new(klams_core::context::ContextBuilder::new(
+        token_counter,
+        cfg.retrieval.per_source_top_k,
+    ));
+
     let state = ApiState {
         store: Arc::clone(&store),
         queue,
@@ -59,6 +71,7 @@ async fn main() -> Result<()> {
         workers: cfg.queue.workers,
         started_at: std::time::Instant::now(),
         validators: Arc::new(ValidatorRegistry::with_defaults()),
+        context_builder,
     };
     let router = with_metrics(build_router(state, cfg.auth.bearer_token.clone()));
     klams_core::metrics::describe();

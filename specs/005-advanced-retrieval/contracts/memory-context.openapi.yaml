@@ -144,7 +144,12 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ContextBundle" }
         "400":
-          description: Bad request (empty query, unknown filter key, invalid token_budget).
+          description: Bad request (empty query, malformed JSON, invalid token_budget).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422":
+          description: Unknown filter key or other schema violation.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }

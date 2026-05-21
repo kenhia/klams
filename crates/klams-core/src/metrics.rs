@@ -25,6 +25,14 @@ pub const LAST_USED_BUMPS_DROPPED: &str = "klams_last_used_bumps_dropped_total";
 pub const DECAY_RUNS: &str = "klams_decay_runs_total";
 pub const DECAY_FACTS_UPDATED: &str = "klams_decay_facts_updated_total";
 
+// Sprint 005 (FR-014): `/memory/context` surface metrics.
+pub const CONTEXT_REQUEST_LATENCY: &str = "klams_context_request_seconds";
+pub const CONTEXT_SECTION_ITEMS: &str = "klams_context_section_items_total";
+pub const HYBRID_SOURCE_CONTRIBUTION: &str = "klams_hybrid_source_contribution_total";
+pub const SUMMARIZATION_RUNS: &str = "klams_summarization_runs_total";
+pub const SUMMARIZATION_LAG: &str = "klams_summarization_lag_seconds";
+pub const DECAY_CONFIG_RELOADS: &str = "klams_decay_config_reloads_total";
+
 /// Register descriptions with the global recorder. Safe to call
 /// repeatedly; the metrics crate dedupes.
 pub fn describe() {
@@ -60,6 +68,30 @@ pub fn describe() {
     describe_counter!(
         DECAY_FACTS_UPDATED,
         "Facts updated by the decay task (sprint 002 US3)"
+    );
+    describe_histogram!(
+        CONTEXT_REQUEST_LATENCY,
+        "End-to-end /memory/context latency in seconds (sprint 005 FR-014)"
+    );
+    describe_counter!(
+        CONTEXT_SECTION_ITEMS,
+        "Items returned per /memory/context section, labelled by section name (sprint 005 FR-014)"
+    );
+    describe_counter!(
+        HYBRID_SOURCE_CONTRIBUTION,
+        "Hybrid retrieval per-source row contribution before fusion (sprint 005 FR-014)"
+    );
+    describe_counter!(
+        SUMMARIZATION_RUNS,
+        "Summarization task runs by kind and outcome (sprint 005 FR-014)"
+    );
+    describe_gauge!(
+        SUMMARIZATION_LAG,
+        "Seconds since the last successful summarization task run (sprint 005 FR-014)"
+    );
+    describe_counter!(
+        DECAY_CONFIG_RELOADS,
+        "Decay config reload events at startup (sprint 005 FR-014)"
     );
 }
 
@@ -159,6 +191,21 @@ pub fn incr_decay_run() {
 
 pub fn incr_decay_facts_updated(n: u64) {
     counter!(DECAY_FACTS_UPDATED).increment(n);
+}
+
+/// Sprint 005 (FR-014): one tick per /memory/context section
+/// returned, with the section name as the label. Labels are a
+/// fixed enum (`facts`/`knowledge`/`events`) so cardinality stays
+/// bounded.
+pub fn incr_context_section_items(section: &'static str, count: u64) {
+    counter!(CONTEXT_SECTION_ITEMS, "section" => section).increment(count);
+}
+
+/// Sprint 005 (FR-014): per-source contribution counter for the
+/// hybrid retrieval path. Labels: `source` ∈
+/// {`vector`,`fts`,`metadata`}.
+pub fn incr_hybrid_source_contribution(source: &'static str, count: u64) {
+    counter!(HYBRID_SOURCE_CONTRIBUTION, "source" => source).increment(count);
 }
 
 /// RAII guard that records elapsed seconds into a histogram on drop.
