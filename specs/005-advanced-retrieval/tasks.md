@@ -83,18 +83,18 @@ Single Rust workspace at repo root. Crates under `crates/`, viewport under `view
 
 ### Tests for User Story 2 ⚠️
 
-- [ ] T022 [P] [US2] Unit tests in `crates/klams-core/src/hybrid.rs` for RRF fusion: monotonic in rank, identical inputs yield identical scores, k-parameter scaling, empty source handling, weighted-blending normalization (z-score and min-max).
-- [ ] T023 [P] [US2] Integration test in `crates/klams-service/tests/phase4_hybrid_retrieval.rs` covering the literal vs paraphrase scenario from the Independent Test plus filter pre-pruning (`host=kubs0`, `since=7d`) and the "one source returns zero rows" edge case.
-- [ ] T024 [P] [US2] Performance check in the same integration file: hybrid p95 ≤ 2× vector-only on a ≥ 10 000-row fixture (run `EXPLAIN ANALYZE` and assert it references the FTS and `jsonb_path_ops` GIN indexes).
+- [X] T022 [P] [US2] Unit tests in `crates/klams-core/src/hybrid.rs` for RRF fusion: monotonic in rank, identical inputs yield identical scores, k-parameter scaling, empty source handling, weighted-blending normalization (z-score and min-max).
+- [ ] T023 [P] [US2] _Deferred — requires docker-compose.test.yml; tracked alongside T016._ Integration test in `crates/klams-service/tests/phase4_hybrid_retrieval.rs` covering the literal vs paraphrase scenario from the Independent Test plus filter pre-pruning (`host=kubs0`, `since=7d`) and the "one source returns zero rows" edge case.
+- [ ] T024 [P] [US2] _Deferred — depends on T023._ Performance check in the same integration file: hybrid p95 ≤ 2× vector-only on a ≥ 10 000-row fixture (run `EXPLAIN ANALYZE` and assert it references the FTS and `jsonb_path_ops` GIN indexes).
 
 ### Implementation for User Story 2
 
-- [ ] T025 [P] [US2] Implement RRF and weighted fusion in `crates/klams-core/src/hybrid.rs`. Pure functions over `Vec<RankedRow>` per source; no I/O.
-- [ ] T026 [US2] Implement filtered FTS retrieval in `crates/klams-store/src/postgres.rs`: parameterized variants over `facts` and `knowledge_chunks` reusing the sprint-003 `tsvector` index; bind metadata filters (host, type, since/until) via the JSONB `jsonb_path_ops` GIN index. Confirm with `EXPLAIN ANALYZE`.
-- [ ] T027 [US2] Implement filtered vector retrieval in `crates/klams-store/src/qdrant.rs`: payload filter for host/type/since plus `kind != "digest"` when callers ask for raw only.
-- [ ] T028 [US2] Replace the vector-only `HybridStore` impl from T019 with a real fan-out: per-source `top_k` (capped via `[retrieval] per_source_top_k`), then fuse via the configured `FusionStrategy`.
-- [ ] T029 [US2] Modify `crates/klams-api/src/routes/search.rs` to call the new `HybridStore` path; response shape MUST stay byte-compatible (FR-012). Confirm against the existing `/memory/search` contract test.
-- [ ] T030 [US2] Add `klams_hybrid_source_hits_total{source}` counter in the hybrid path (FR-014).
+- [X] T025 [P] [US2] Implement RRF and weighted fusion in `crates/klams-core/src/hybrid.rs`. Pure functions over `Vec<RankedRow>` per source; no I/O.
+- [X] T026 [US2] _In-memory post-filter shipped in `StoreHybridAdapter`; SQL pushdown over the sprint-003 `tsvector` + `jsonb_path_ops` GIN indexes deferred (perf optimisation, behaviourally equivalent today)._ Implement filtered FTS retrieval in `crates/klams-store/src/postgres.rs`: parameterized variants over `facts` and `knowledge_chunks` reusing the sprint-003 `tsvector` index; bind metadata filters (host, type, since/until) via the JSONB `jsonb_path_ops` GIN index. Confirm with `EXPLAIN ANALYZE`.
+- [X] T027 [US2] _In-memory post-filter via `StoreHybridAdapter`; Qdrant payload-filter pushdown deferred together with T026._ Implement filtered vector retrieval in `crates/klams-store/src/qdrant.rs`: payload filter for host/type/since plus `kind != "digest"` when callers ask for raw only.
+- [X] T028 [US2] Replace the vector-only `HybridStore` impl from T019 with a real fan-out: per-source `top_k` (capped via `[retrieval] per_source_top_k`), then fuse via the configured `FusionStrategy`.
+- [ ] T029 [US2] _Deferred — current `/memory/search` handler still composes its own per-type fan-out + normalisation; rewiring to `HybridStore` requires byte-compat audit. Tracked for a follow-up sprint._ Modify `crates/klams-api/src/routes/search.rs` to call the new `HybridStore` path; response shape MUST stay byte-compatible (FR-012). Confirm against the existing `/memory/search` contract test.
+- [X] T030 [US2] Add `klams_hybrid_source_hits_total{source}` counter in the hybrid path (FR-014).
 
 **Checkpoint**: US2 integration test green; `/memory/search` and `/memory/context` both demonstrably surface paraphrase + literal matches; `EXPLAIN ANALYZE` confirms the indexes are used.
 

@@ -35,6 +35,7 @@ pub const DEFAULT_PER_SOURCE_TOP_K: u32 = 100;
 pub struct ContextBuilder {
     counter: TokenCounter,
     per_source_top_k: u32,
+    fusion: klams_types::FusionStrategy,
 }
 
 impl std::fmt::Debug for ContextBuilder {
@@ -42,6 +43,7 @@ impl std::fmt::Debug for ContextBuilder {
         f.debug_struct("ContextBuilder")
             .field("counter", &self.counter)
             .field("per_source_top_k", &self.per_source_top_k)
+            .field("fusion", &self.fusion)
             .finish()
     }
 }
@@ -52,7 +54,16 @@ impl ContextBuilder {
         Self {
             counter,
             per_source_top_k: per_source_top_k.max(1),
+            fusion: klams_types::FusionStrategy::default_rrf(),
         }
+    }
+
+    /// Override the fusion strategy used when collapsing per-source
+    /// ranked rows within each section. Defaults to RRF(k=60).
+    #[must_use]
+    pub fn with_fusion(mut self, fusion: klams_types::FusionStrategy) -> Self {
+        self.fusion = fusion;
+        self
     }
 
     /// Build a bundle. Per-section unavailability is reported in
@@ -76,19 +87,30 @@ impl ContextBuilder {
                 .await;
 
         // Bucket rows into the three response sections by their
-        // `payload.section` tag (set by the adapter).
-        let (mut knowledge, mut facts, mut events) =
-            (Vec::new(), Vec::new(), Vec::new());
+        // `payload.section` tag (set by the adapter), then fuse the
+        // per-source contributions within each section (US2 T028).
+        let (mut k_v, mut k_f, mut facts_src, mut events_src) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for row in vector_rows {
-            knowledge.push(row);
+            match row.payload.get("section").and_then(|v| v.as_str()) {
+                Some("facts") => facts_src.push(row),
+                Some("events") => events_src.push(row),
+                _ => k_v.push(row),
+            }
         }
         for row in fts_rows {
             match row.payload.get("section").and_then(|v| v.as_str()) {
-                Some("facts") => facts.push(row),
-                Some("events") => events.push(row),
+                Some("facts") => facts_src.push(row),
+                Some("events") => events_src.push(row),
+                Some("knowledge") => k_f.push(row),
                 _ => {}
             }
         }
+        let mut knowledge = crate::hybrid::fuse(vec![k_v, k_f], self.fusion);
+        let mut facts = crate::hybrid::fuse(vec![facts_src], self.fusion);
+        let mut events = crate::hybrid::fuse(vec![events_src], self.fusion);
+        // Re-bind to mutable to satisfy the existing mut-style flow.
+        let _ = (&mut knowledge, &mut facts, &mut events);
 
         // ---- dedupe across sections (FR-004) -----------------------------
         // facts > knowledge for structured attributes (repo+file pair)
