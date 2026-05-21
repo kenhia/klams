@@ -46,6 +46,19 @@ async fn main() -> Result<()> {
         Arc::new(CompositeStore::new(postgres, qdrant, embedder).with_bump_sender(bumper.sender()));
 
     cfg.decay.log_resolved();
+    if let Err(err) = cfg.decay.validate() {
+        tracing::error!(error = %err, "invalid [decay] config; refusing to start");
+        std::process::exit(2);
+    }
+    klams_core::metrics::incr_decay_config_reloads();
+    info!(
+        task_fact_lambda = cfg.decay.lambda_for(klams_types::FactType::TaskFact),
+        user_fact_lambda = cfg.decay.lambda_for(klams_types::FactType::UserFact),
+        env_fact_lambda = cfg.decay.lambda_for(klams_types::FactType::EnvFact),
+        interval = cfg.decay.task_interval_seconds,
+        batch = cfg.decay.batch_size,
+        "decay config loaded"
+    );
     let decay_task = DecayTask::new(cfg.decay.clone(), Arc::clone(&store)).with_bumps_rx(bumps_rx);
     let _decay_handle = tokio::spawn(decay_task.run());
 
