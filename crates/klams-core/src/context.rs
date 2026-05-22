@@ -10,12 +10,13 @@
 //! three sources without changing this builder's surface.
 
 use crate::tokens::TokenCounter;
-use klams_store::{HybridStore, RankedRow, StoreError};
+use klams_store::{summary_to_context_item, HybridStore, RankedRow, StoreError, SummaryStore};
 use klams_types::{
     ContextBundle, ContextItem, ContextRequest, ItemKind, RetrievalFilters, RetrievalSource,
     SectionMeta, SectionSource, SectionStatus,
 };
 use std::collections::{BTreeMap, HashSet};
+use std::sync::Arc;
 use tracing::warn;
 
 /// Per-section soft minimum floor expressed as a fraction of the
@@ -36,6 +37,8 @@ pub struct ContextBuilder {
     counter: TokenCounter,
     per_source_top_k: u32,
     fusion: klams_types::FusionStrategy,
+    summary_store: Option<Arc<dyn SummaryStore>>,
+    summary_limit: u32,
 }
 
 impl std::fmt::Debug for ContextBuilder {
@@ -44,6 +47,11 @@ impl std::fmt::Debug for ContextBuilder {
             .field("counter", &self.counter)
             .field("per_source_top_k", &self.per_source_top_k)
             .field("fusion", &self.fusion)
+            .field(
+                "summary_store",
+                &self.summary_store.as_ref().map(|_| "<dyn SummaryStore>"),
+            )
+            .field("summary_limit", &self.summary_limit)
             .finish()
     }
 }
@@ -55,6 +63,8 @@ impl ContextBuilder {
             counter,
             per_source_top_k: per_source_top_k.max(1),
             fusion: klams_types::FusionStrategy::default_rrf(),
+            summary_store: None,
+            summary_limit: 50,
         }
     }
 
@@ -66,10 +76,21 @@ impl ContextBuilder {
         self
     }
 
+    /// Wire a [`SummaryStore`] so the builder can substitute the
+    /// raw events section with active `EventSummary` rows when the
+    /// raw rows would consume more than half of the caller's
+    /// `token_budget` (sprint 005 — T039 / FR-009).
+    #[must_use]
+    pub fn with_summary_store(mut self, store: Arc<dyn SummaryStore>) -> Self {
+        self.summary_store = Some(store);
+        self
+    }
+
     /// Build a bundle. Per-section unavailability is reported in
     /// `sections[*].status` rather than failing the whole call
     /// (FR-011). The only error condition is "all sources
     /// unavailable", which the handler maps to a 503.
+    #[allow(clippy::too_many_lines)]
     pub async fn build<H: HybridStore + ?Sized>(
         &self,
         hybrid: &H,
@@ -125,6 +146,43 @@ impl ContextBuilder {
         let mut knowledge_items = score_rows_to_items(&self.counter, knowledge);
         let mut events_items = score_rows_to_items(&self.counter, events);
 
+        // ---- summary substitution (T039 / FR-009) ------------------------
+        // When the raw events would consume more than half of the
+        // caller's `token_budget`, swap them for the active
+        // `EventSummary` rows from the `summaries` table. The
+        // substitution preserves `source_count` + `source_ids`
+        // provenance and is invisible to downstream dedupe (summaries
+        // have no `repo`/`file` keys).
+        let mut events_substituted = false;
+        if let Some(store) = self.summary_store.as_ref() {
+            let raw_events_tokens: u32 = events_items.iter().map(|i| i.tokens).sum();
+            let half_budget = req.token_budget / 2;
+            if raw_events_tokens > half_budget {
+                match store
+                    .list_event_summaries(&filters, self.summary_limit)
+                    .await
+                {
+                    Ok(summaries) if !summaries.is_empty() => {
+                        events_items = summaries
+                            .into_iter()
+                            .map(|s| {
+                                let mut item = summary_to_context_item(&s);
+                                item.tokens = self.counter.count_json(&item.payload);
+                                item.score = 1.0;
+                                item
+                            })
+                            .collect();
+                        events_substituted = true;
+                    }
+                    Ok(_) => {}
+                    Err(err) => warn!(
+                        error = %err,
+                        "summary substitution: list_event_summaries failed; keeping raw events"
+                    ),
+                }
+            }
+        }
+
         // ---- budget allocation (FR-003) ----------------------------------
         let budget = req.token_budget;
         let (facts_keep, knowledge_keep, events_keep, total_spent, truncated) = allocate_budget(
@@ -156,6 +214,11 @@ impl ContextBuilder {
             vector_status_combine(fts_status.clone()),
             tokens_in(&events_keep),
         );
+        if events_substituted {
+            if let Some(meta) = sections.get_mut("events") {
+                meta.source = SectionSource::Summary;
+            }
+        }
 
         // All sources unavailable → 503.
         if matches!(vector_status, SourceStatus::Unavailable(_))
@@ -560,5 +623,184 @@ mod tests {
         };
         assert_eq!(payload_key(&r1).as_deref(), Some("klams::src/lib.rs"));
         assert!(payload_key(&r2).is_none());
+    }
+
+    // ---- T039 summary substitution tests --------------------------------
+
+    use async_trait::async_trait;
+    use klams_store::StoreResult;
+    use klams_types::{EventSummary, SummaryMechanism};
+    use time::{Date, Month, OffsetDateTime};
+
+    struct FakeHybrid {
+        events_payload: Vec<serde_json::Value>,
+    }
+    #[async_trait]
+    impl HybridStore for FakeHybrid {
+        async fn retrieve(
+            &self,
+            source: RetrievalSource,
+            _query: &str,
+            _filters: &RetrievalFilters,
+            _per_source_top_k: u32,
+        ) -> StoreResult<Vec<RankedRow>> {
+            // Return events only on the FTS source so the rows
+            // land in the events bucket.
+            if matches!(source, RetrievalSource::Fts) {
+                Ok(self
+                    .events_payload
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| RankedRow {
+                        source: RetrievalSource::Fts,
+                        id: Uuid::new_v4(),
+                        score: 1.0 - f32::from(u16::try_from(i).unwrap_or(0)) * 0.01,
+                        payload: p.clone(),
+                    })
+                    .collect())
+            } else {
+                Ok(Vec::new())
+            }
+        }
+    }
+
+    struct FakeSummaries {
+        rows: Vec<EventSummary>,
+    }
+    #[async_trait]
+    impl SummaryStore for FakeSummaries {
+        async fn upsert_event_summary(&self, _s: &EventSummary) -> StoreResult<()> {
+            Ok(())
+        }
+        async fn invalidate_event_summaries(
+            &self,
+            _host: &str,
+            _category: &str,
+            _day_bucket: Date,
+        ) -> StoreResult<u64> {
+            Ok(0)
+        }
+        async fn get_event_summary(
+            &self,
+            _host: &str,
+            _category: &str,
+            _day_bucket: Date,
+        ) -> StoreResult<Option<EventSummary>> {
+            Ok(None)
+        }
+        async fn list_event_summaries(
+            &self,
+            _filters: &RetrievalFilters,
+            _limit: u32,
+        ) -> StoreResult<Vec<EventSummary>> {
+            Ok(self.rows.clone())
+        }
+    }
+
+    fn raw_event_payload(i: usize) -> serde_json::Value {
+        // Each event ~80+ chars so the token count is non-trivial.
+        serde_json::json!({
+            "section": "events",
+            "host": "alpha",
+            "category": "syslog",
+            "text": format!("event #{i}: the quick brown fox jumps over the lazy dog repeatedly with much enthusiasm"),
+        })
+    }
+
+    fn one_summary() -> EventSummary {
+        EventSummary {
+            id: Uuid::new_v4(),
+            host: "alpha".into(),
+            category: "syslog".into(),
+            day_bucket: Date::from_calendar_date(2025, Month::January, 1).unwrap(),
+            source_count: 200,
+            source_ids: (0..3).map(|_| Uuid::new_v4()).collect(),
+            summary_text: "200 syslog events on alpha".into(),
+            mechanism: SummaryMechanism::Extractive,
+            generated_at: OffsetDateTime::now_utc(),
+            invalidated_at: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn substitutes_events_with_summary_when_raw_exceeds_half_budget() {
+        let hybrid = FakeHybrid {
+            events_payload: (0..50).map(raw_event_payload).collect(),
+        };
+        let summaries = Arc::new(FakeSummaries {
+            rows: vec![one_summary()],
+        });
+        let builder = ContextBuilder::new(
+            crate::tokens::TokenCounter::new(crate::tokens::TokenMode::CharsDiv4),
+            100,
+        )
+        .with_summary_store(summaries);
+
+        let req = ContextRequest {
+            query: "anything".into(),
+            token_budget: 200,
+            filters: None,
+        };
+        let bundle = builder.build(&hybrid, &req).await.expect("build ok");
+        assert_eq!(
+            bundle.events.len(),
+            1,
+            "raw events should be replaced by one summary"
+        );
+        assert!(matches!(bundle.events[0].kind, ItemKind::Summary));
+        let evt_meta = bundle.sections.get("events").expect("events section");
+        assert!(matches!(evt_meta.source, SectionSource::Summary));
+    }
+
+    #[tokio::test]
+    async fn keeps_raw_events_when_summary_store_returns_empty() {
+        let hybrid = FakeHybrid {
+            events_payload: (0..50).map(raw_event_payload).collect(),
+        };
+        let summaries = Arc::new(FakeSummaries { rows: vec![] });
+        let builder = ContextBuilder::new(
+            crate::tokens::TokenCounter::new(crate::tokens::TokenMode::CharsDiv4),
+            100,
+        )
+        .with_summary_store(summaries);
+        let req = ContextRequest {
+            query: "anything".into(),
+            token_budget: 200,
+            filters: None,
+        };
+        let bundle = builder.build(&hybrid, &req).await.expect("build ok");
+        // No substitution; events bucket should still hold raw rows
+        // (some may have been truncated by the budget allocator).
+        assert!(bundle
+            .events
+            .iter()
+            .all(|i| matches!(i.kind, ItemKind::Raw)));
+        let evt_meta = bundle.sections.get("events").expect("events section");
+        assert!(matches!(evt_meta.source, SectionSource::Raw));
+    }
+
+    #[tokio::test]
+    async fn keeps_raw_events_when_below_half_budget() {
+        let hybrid = FakeHybrid {
+            events_payload: vec![raw_event_payload(0)],
+        };
+        let summaries = Arc::new(FakeSummaries {
+            rows: vec![one_summary()],
+        });
+        let builder = ContextBuilder::new(
+            crate::tokens::TokenCounter::new(crate::tokens::TokenMode::CharsDiv4),
+            100,
+        )
+        .with_summary_store(summaries);
+        let req = ContextRequest {
+            query: "anything".into(),
+            token_budget: 10_000,
+            filters: None,
+        };
+        let bundle = builder.build(&hybrid, &req).await.expect("build ok");
+        assert!(bundle
+            .events
+            .iter()
+            .all(|i| matches!(i.kind, ItemKind::Raw)));
     }
 }

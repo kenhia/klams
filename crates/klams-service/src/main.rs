@@ -72,10 +72,10 @@ async fn main() -> Result<()> {
         configured_mode = %cfg.tokens.mode,
         "context token counter ready"
     );
-    let context_builder = Arc::new(klams_core::context::ContextBuilder::new(
-        token_counter,
-        cfg.retrieval.per_source_top_k,
-    ));
+    let context_builder = Arc::new(
+        klams_core::context::ContextBuilder::new(token_counter, cfg.retrieval.per_source_top_k)
+            .with_summary_store(Arc::clone(&store) as Arc<dyn klams_store::SummaryStore>),
+    );
 
     // Sprint 005 (T040) — spawn the summarization task.
     {
