@@ -217,11 +217,7 @@ impl SummarizationTask {
             - start.elapsed().as_secs_f64();
         m::record_summarization_lag(lag.max(0.0));
         let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-        info!(
-            written,
-            elapsed_ms,
-            "summarization cycle finished"
-        );
+        info!(written, elapsed_ms, "summarization cycle finished");
         Ok(written)
     }
 }
@@ -274,8 +270,8 @@ impl<S: klams_store::Store> EventSource for StoreEventSource<S> {
             let (events, next) = self.store.list_events(q).await?;
             for e in events {
                 let host = payload_str(&e.payload, &["host", "machine"]).unwrap_or("(unknown)");
-                let sub = payload_str(&e.payload, &["sub_category", "service", "type"])
-                    .unwrap_or("");
+                let sub =
+                    payload_str(&e.payload, &["sub_category", "service", "type"]).unwrap_or("");
                 out.push(EventRecord {
                     id: e.id,
                     host: host.to_string(),
@@ -311,8 +307,8 @@ mod tests {
     use super::*;
 
     fn rec(host: &str, category: &str, sub: &str, day: i32) -> EventRecord {
-        let at = OffsetDateTime::from_unix_timestamp(1_700_000_000 + i64::from(day) * 86_400)
-            .unwrap();
+        let at =
+            OffsetDateTime::from_unix_timestamp(1_700_000_000 + i64::from(day) * 86_400).unwrap();
         EventRecord {
             id: Uuid::now_v7(),
             host: host.into(),

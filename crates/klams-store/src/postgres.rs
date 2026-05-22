@@ -777,10 +777,7 @@ impl crate::DecayStore for PostgresStore {
 
 #[async_trait]
 impl crate::SummaryStore for PostgresStore {
-    async fn upsert_event_summary(
-        &self,
-        summary: &klams_types::EventSummary,
-    ) -> StoreResult<()> {
+    async fn upsert_event_summary(&self, summary: &klams_types::EventSummary) -> StoreResult<()> {
         sqlx::query(
             r"
             INSERT INTO summaries

@@ -126,10 +126,7 @@ fn matches_filters(payload: &serde_json::Value, f: &RetrievalFilters) -> bool {
         let has = obj
             .get("tags")
             .and_then(serde_json::Value::as_array)
-            .is_some_and(|arr| {
-                arr.iter()
-                    .any(|v| v.as_str().is_some_and(|s| s == want))
-            });
+            .is_some_and(|arr| arr.iter().any(|v| v.as_str().is_some_and(|s| s == want)));
         if !has {
             return false;
         }
@@ -228,10 +225,7 @@ use uuid::Uuid;
 /// kept from whichever source emitted the row last (caller picks
 /// vector first then fts last for "fts wins on duplicate metadata").
 #[must_use]
-pub fn fuse(
-    sources: Vec<Vec<RankedRow>>,
-    strategy: FusionStrategy,
-) -> Vec<RankedRow> {
+pub fn fuse(sources: Vec<Vec<RankedRow>>, strategy: FusionStrategy) -> Vec<RankedRow> {
     match strategy {
         FusionStrategy::Rrf { k } => rrf(sources, k),
         FusionStrategy::Weighted {
@@ -252,7 +246,9 @@ fn rrf(sources: Vec<Vec<RankedRow>>, k: u32) -> Vec<RankedRow> {
             let r = (rank as f32) + 1.0;
             let inc = 1.0 / (k_f + r);
             *score.entry(row.id).or_insert(0.0) += inc;
-            acc.entry(row.id).and_modify(|r| r.score = 0.0).or_insert(row);
+            acc.entry(row.id)
+                .and_modify(|r| r.score = 0.0)
+                .or_insert(row);
         }
     }
     finalize(acc, &score)
@@ -275,7 +271,9 @@ fn weighted(
                 klams_types::RetrievalSource::MetadataOnly => 0.0,
             };
             *score.entry(row.id).or_insert(0.0) += ns * w;
-            acc.entry(row.id).and_modify(|r| r.score = 0.0).or_insert(row);
+            acc.entry(row.id)
+                .and_modify(|r| r.score = 0.0)
+                .or_insert(row);
         }
     }
     finalize(acc, &score)
@@ -322,10 +320,7 @@ fn normalise_scores(rows: &[RankedRow], norm: WeightedNorm) -> Vec<f32> {
     }
 }
 
-fn finalize(
-    mut acc: HashMap<Uuid, RankedRow>,
-    score: &HashMap<Uuid, f32>,
-) -> Vec<RankedRow> {
+fn finalize(mut acc: HashMap<Uuid, RankedRow>, score: &HashMap<Uuid, f32>) -> Vec<RankedRow> {
     for (id, s) in score {
         if let Some(row) = acc.get_mut(id) {
             row.score = *s;
@@ -458,4 +453,3 @@ mod tests {
         assert_eq!(zs.len(), 5);
     }
 }
-

@@ -178,10 +178,7 @@ impl crate::DecayStore for CompositeStore {
 // Sprint 005 T037 — delegate the SummaryStore surface to Postgres.
 #[async_trait]
 impl crate::SummaryStore for CompositeStore {
-    async fn upsert_event_summary(
-        &self,
-        summary: &klams_types::EventSummary,
-    ) -> StoreResult<()> {
+    async fn upsert_event_summary(&self, summary: &klams_types::EventSummary) -> StoreResult<()> {
         crate::SummaryStore::upsert_event_summary(&self.postgres, summary).await
     }
     async fn invalidate_event_summaries(

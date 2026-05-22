@@ -84,7 +84,10 @@ fn router() -> axum::Router {
             workers: 1,
             started_at: std::time::Instant::now(),
             validators: std::sync::Arc::new(klams_core::ValidatorRegistry::with_defaults()),
-            context_builder: std::sync::Arc::new(klams_core::context::ContextBuilder::new(klams_core::tokens::TokenCounter::new(klams_core::tokens::TokenMode::CharsDiv4), 100)),
+            context_builder: std::sync::Arc::new(klams_core::context::ContextBuilder::new(
+                klams_core::tokens::TokenCounter::new(klams_core::tokens::TokenMode::CharsDiv4),
+                100,
+            )),
         },
         "test-bearer",
     )

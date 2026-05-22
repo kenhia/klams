@@ -79,12 +79,12 @@ impl ContextBuilder {
         let mut sections: BTreeMap<String, SectionMeta> = BTreeMap::new();
 
         // ---- retrieval ----------------------------------------------------
-        let (vector_rows, vector_status) =
-            self.retrieve_one(hybrid, RetrievalSource::Vector, &req.query, &filters)
-                .await;
-        let (fts_rows, fts_status) =
-            self.retrieve_one(hybrid, RetrievalSource::Fts, &req.query, &filters)
-                .await;
+        let (vector_rows, vector_status) = self
+            .retrieve_one(hybrid, RetrievalSource::Vector, &req.query, &filters)
+            .await;
+        let (fts_rows, fts_status) = self
+            .retrieve_one(hybrid, RetrievalSource::Fts, &req.query, &filters)
+            .await;
 
         // Bucket rows into the three response sections by their
         // `payload.section` tag (set by the adapter), then fuse the
@@ -267,14 +267,23 @@ fn score_rows_to_items(counter: &TokenCounter, rows: Vec<RankedRow>) -> Vec<Cont
 ///    anywhere and the highest-scoring item across all sections has
 ///    `tokens > budget`, keep that one item with `truncated: true`
 ///    (FR / acceptance scenario 3).
+#[allow(clippy::too_many_lines)]
 fn allocate_budget(
     facts: &mut Vec<ContextItem>,
     knowledge: &mut Vec<ContextItem>,
     events: &mut Vec<ContextItem>,
     budget: u32,
-) -> (Vec<ContextItem>, Vec<ContextItem>, Vec<ContextItem>, u32, bool) {
+) -> (
+    Vec<ContextItem>,
+    Vec<ContextItem>,
+    Vec<ContextItem>,
+    u32,
+    bool,
+) {
     let by_score_desc = |a: &ContextItem, b: &ContextItem| {
-        b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal)
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
     };
     facts.sort_by(by_score_desc);
     knowledge.sort_by(by_score_desc);
@@ -286,7 +295,11 @@ fn allocate_budget(
         return (Vec::new(), Vec::new(), Vec::new(), 0, truncated);
     }
 
-    #[allow(clippy::cast_sign_loss, clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+    #[allow(
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation
+    )]
     let floor = ((budget as f32) * SECTION_FLOOR_FRACTION) as u32;
 
     // Capture the single highest-score candidate per section up
@@ -304,9 +317,30 @@ fn allocate_budget(
     let mut rest_know: Vec<ContextItem> = Vec::new();
     let mut rest_events: Vec<ContextItem> = Vec::new();
 
-    take_floor(facts, &mut keep_facts, &mut rest_facts, floor, &mut spent, budget);
-    take_floor(knowledge, &mut keep_know, &mut rest_know, floor, &mut spent, budget);
-    take_floor(events, &mut keep_events, &mut rest_events, floor, &mut spent, budget);
+    take_floor(
+        facts,
+        &mut keep_facts,
+        &mut rest_facts,
+        floor,
+        &mut spent,
+        budget,
+    );
+    take_floor(
+        knowledge,
+        &mut keep_know,
+        &mut rest_know,
+        floor,
+        &mut spent,
+        budget,
+    );
+    take_floor(
+        events,
+        &mut keep_events,
+        &mut rest_events,
+        floor,
+        &mut spent,
+        budget,
+    );
 
     // Pool remaining and greedy-fill.
     let mut pool: Vec<(usize, ContextItem)> = Vec::new();
@@ -320,7 +354,9 @@ fn allocate_budget(
         pool.push((2, it));
     }
     pool.sort_by(|a, b| {
-        b.1.score.partial_cmp(&a.1.score).unwrap_or(std::cmp::Ordering::Equal)
+        b.1.score
+            .partial_cmp(&a.1.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
 
     let mut dropped = false;
@@ -341,11 +377,7 @@ fn allocate_budget(
     // surface that item with `truncated: true` (acceptance #3).
     let total_kept = keep_facts.len() + keep_know.len() + keep_events.len();
     if total_kept == 0 {
-        let cand = [
-            (0usize, top_facts),
-            (1, top_know),
-            (2, top_events),
-        ];
+        let cand = [(0usize, top_facts), (1, top_know), (2, top_events)];
         let best = cand
             .into_iter()
             .filter_map(|(i, o)| o.map(|it| (i, it)))

@@ -116,7 +116,9 @@ mod tests {
 
     #[test]
     fn defaults_validate_ok() {
-        DecayConfig::default().validate().expect("defaults must validate");
+        DecayConfig::default()
+            .validate()
+            .expect("defaults must validate");
     }
 
     #[test]

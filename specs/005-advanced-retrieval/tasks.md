@@ -173,13 +173,13 @@ Single Rust workspace at repo root. Crates under `crates/`, viewport under `view
 
 **Purpose**: Documentation, the SC-001/SC-003/SC-004 benchmarks, and the quickstart pass.
 
-- [ ] T052 [P] Update `docs/architecture.md` with hybrid-retrieval, summarization, and `/memory/context` sections (FR-015).
-- [ ] T053 [P] Update `docs/usage.md` with `/memory/context` request/response examples and a decay-tuning recipe (FR-015).
-- [ ] T054 [P] Update `docs/viewport.md` §6 with the new context-preview pane.
-- [ ] T055 Run the SC-001 / SC-003 benchmark on a populated fixture (≥ 1 000 facts, ≥ 5 000 knowledge chunks, ≥ 10 000 events). Record p95 latencies and budget-conformance numbers in `specs/005-advanced-retrieval/quickstart.md` "Validation" section.
-- [ ] T056 Run the SC-004 summarization benchmark (1 000-event cluster, 100-chunk cluster, single cycle, no lap). Record numbers in the quickstart.
-- [ ] T057 [P] Run `just check` (fmt, clippy `-D warnings`, test workspace, viewport build) — must be green before merge.
-- [ ] T058 Run end-to-end through `specs/005-advanced-retrieval/quickstart.md`. Tick each acceptance bullet.
+- [X] T052 [P] Update `docs/architecture.md` with hybrid-retrieval, summarization, and `/memory/context` sections (FR-015).
+- [X] T053 [P] Update `docs/usage.md` with `/memory/context` request/response examples and a decay-tuning recipe (FR-015).
+- [X] T054 [P] Update `specs/planning/viewport.md` §6 with the new context-preview pane. _(No `docs/viewport.md` exists; the canonical viewport doc lives under `specs/planning/`.)_
+- [ ] T055 _Deferred — SC-001/SC-003 latency benchmark requires a populated fixture (≥ 1 000 facts, ≥ 5 000 knowledge chunks, ≥ 10 000 events) plus a benchmark harness; tracked separately from this sprint's code drop._ Run the SC-001 / SC-003 benchmark on a populated fixture (≥ 1 000 facts, ≥ 5 000 knowledge chunks, ≥ 10 000 events). Record p95 latencies and budget-conformance numbers in `specs/005-advanced-retrieval/quickstart.md` "Validation" section.
+- [ ] T056 _Deferred — SC-004 summarization benchmark needs the same fixture set + a real Ollama instance; tracked separately._ Run the SC-004 summarization benchmark (1 000-event cluster, 100-chunk cluster, single cycle, no lap). Record numbers in the quickstart.
+- [X] T057 [P] Run `just check` (fmt, clippy `-D warnings`, test workspace, viewport build) — must be green before merge. _(Recipe is named `just gate`; runs `cargo fmt --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace`. All green.)_
+- [ ] T058 _Deferred — end-to-end walkthrough needs a populated klams-service against live Postgres/Qdrant/Ollama; tracked alongside T055/T056._ Run end-to-end through `specs/005-advanced-retrieval/quickstart.md`. Tick each acceptance bullet.
 
 ---
 

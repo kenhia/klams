@@ -164,7 +164,15 @@ async fn happy_path_returns_bundle_shape() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
-    for field in ["facts", "knowledge", "events", "total_spent", "truncated", "token_encoder", "sections"] {
+    for field in [
+        "facts",
+        "knowledge",
+        "events",
+        "total_spent",
+        "truncated",
+        "token_encoder",
+        "sections",
+    ] {
         assert!(body.get(field).is_some(), "missing field {field} in {body}");
     }
     assert!(body["token_encoder"].as_str().is_some());

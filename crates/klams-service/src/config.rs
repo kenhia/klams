@@ -16,7 +16,9 @@ pub enum ConfigError {
     DecayLambdaNonFinite { type_: String },
     #[error("decay config references unknown FactType `{type_}`")]
     DecayUnknownType { type_: String },
-    #[error("retrieval fusion strategy `{value}` is not recognized (expected \"rrf\" or \"weighted\")")]
+    #[error(
+        "retrieval fusion strategy `{value}` is not recognized (expected \"rrf\" or \"weighted\")"
+    )]
     RetrievalFusionUnknown { value: String },
     #[error("summarization.ollama_url `{value}` is not a valid URL: {source}")]
     SummarizationOllamaUrlInvalid {

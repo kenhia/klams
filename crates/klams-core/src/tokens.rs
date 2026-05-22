@@ -27,7 +27,10 @@ impl TokenMode {
             "tiktoken" => TokenMode::Tiktoken,
             "chars_div4" => TokenMode::CharsDiv4,
             other => {
-                warn!(value = other, "unknown [tokens] mode; falling back to chars_div4");
+                warn!(
+                    value = other,
+                    "unknown [tokens] mode; falling back to chars_div4"
+                );
                 TokenMode::CharsDiv4
             }
         }
@@ -147,10 +150,7 @@ mod tests {
             TokenMode::from_config_str("chars_div4"),
             TokenMode::CharsDiv4
         );
-        assert_eq!(
-            TokenMode::from_config_str("bogus"),
-            TokenMode::CharsDiv4
-        );
+        assert_eq!(TokenMode::from_config_str("bogus"), TokenMode::CharsDiv4);
     }
 
     #[test]

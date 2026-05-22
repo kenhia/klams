@@ -299,6 +299,104 @@ Plan and spec live at
 and
 [specs/003-non-agentic-writes/spec.md](../specs/003-non-agentic-writes/spec.md).
 
+## 2c. Phase 5 deltas (sprint 005 — advanced retrieval)
+
+Sprint 005 adds **hybrid retrieval, summarization, and a unified
+`/memory/context` bundler** so an agent can ask "give me the most
+useful context for this query under N tokens" instead of paging
+through raw rows. The wire contract lives at
+[specs/005-advanced-retrieval/contracts/memory-context.openapi.yaml](../specs/005-advanced-retrieval/contracts/memory-context.openapi.yaml).
+
+### 2c.1 Hybrid retrieval (US2)
+
+`klams_core::hybrid` introduces two primitives:
+
+* `StoreHybridAdapter<S: Store>` — wraps a `Store` and exposes a
+  `retrieve(plan)` that over-fetches each configured `RetrievalSource`
+  (`Vector`, `Fts`) by 3× and post-filters payloads against
+  `RetrievalFilters` (host / type / tag / repo / file / source /
+  since / until).
+* `fuse(sources, FusionStrategy)` — pure rank fusion. Two strategies:
+  - `Rrf { k }` — reciprocal-rank fusion (default `k=60`).
+  - `Weighted { vector, fts, normalization }` — score-weighted with
+    `MinMax` or `ZScore` normalization (handles constant
+    distributions by collapsing to uniform contribution).
+
+### 2c.2 Context bundler (US1)
+
+`klams_core::context::ContextBuilder` orchestrates retrieval +
+token budgeting:
+
+1. Calls the hybrid adapter once per section (facts / knowledge /
+   events).
+2. Buckets returned rows by `payload.section` and fuses per-section
+   with the configured `FusionStrategy`.
+3. Token-counts each item via `klams_core::tokens` (currently
+   `cl100k_base` via `tiktoken-rs`, with a `chars_div4` fallback
+   advertised in `TokenEncoderId`).
+4. Greedy-fills each section under the caller's `token_budget`,
+   marking `ContextBundle.truncated = true` when the budget was hit.
+
+`POST /memory/context` (handler at
+[crates/klams-api/src/handlers/context.rs](../crates/klams-api/src/handlers/context.rs))
+returns a `ContextBundle { facts, knowledge, events, total_spent,
+truncated, token_encoder, sections }` with per-section
+`SectionMeta { status, source, degraded_reason }`. Per-section
+degradation is reported in-band; only when **every** source is
+unavailable does the endpoint surface `503 Service Unavailable +
+Retry-After: 5` (FR-011).
+
+### 2c.3 Summarization (US3)
+
+`klams_core::summarize::SummarizationTask` runs at
+`[summarization].task_interval` (default 60 s), guarded by a
+`tokio::sync::Mutex` so cycles never lap:
+
+* Reads a 7-day window of events via the `EventSource` trait
+  (`StoreEventSource` pages in chunks of 500, capped at 50k).
+* Clusters by `(host, category, day_bucket)` and emits an
+  extractive headline ("3x compile, 2x test, 1x lint") via
+  `summarize::extractive::event_headline()`.
+* Probes Ollama (`GET /api/tags`) at the configured `ollama_url`;
+  on success, marks the summary mechanism `Llm` (the LLM call
+  itself is wired through `OllamaClient::generate()`); on failure,
+  records `Extractive` and the digest still ships.
+* Upserts active summaries via `SummaryStore::upsert_event_summary`
+  into the new `summaries` table (migration `0004_summaries.sql`).
+
+### 2c.4 Decay-config validation (US4)
+
+`DecayConfig::validate()` (in `klams-types/src/decay.rs`) rejects
+non-finite or negative λ, zero `task_interval_seconds`, or zero
+`batch_size`, naming the first offending key. The service exits
+with status 2 before binding the listener if validation fails
+(FR-013). On success, a single `INFO` line records the resolved
+per-`FactType` λs and the `klams_decay_config_reload_total`
+counter is bumped (FR-014). SIGHUP-style hot-reload is out of
+scope for this sprint (D-007).
+
+### 2c.5 Viewport context preview (US5)
+
+A new pane at `/preview` calls `POST /memory/context` and renders
+the bundle with per-section status pills, a 250 ms-debounced
+token-budget slider (D-009), and a raw-vs-summarized toggle.
+See [`viewport.md` §6](../specs/planning/viewport.md#6-phase-4--context-preview).
+
+### 2c.6 Metrics added
+
+| Metric | Type | Use |
+|---|---|---|
+| `klams_context_request_latency_seconds` | histogram | `/memory/context` end-to-end |
+| `klams_context_section_items_total{section}` | counter | items returned per section |
+| `klams_summarization_runs_total{mechanism}` | counter | `extractive` vs `llm` cycles |
+| `klams_summarization_lag_seconds` | gauge | wall-clock lag of the most recent cycle |
+| `klams_decay_config_reload_total` | counter | successful config loads at startup |
+
+Plan and spec for this delta live at
+[specs/005-advanced-retrieval/plan.md](../specs/005-advanced-retrieval/plan.md)
+and
+[specs/005-advanced-retrieval/spec.md](../specs/005-advanced-retrieval/spec.md).
+
 ## 3. Deployment topology on `kubs0`
 
 ```text

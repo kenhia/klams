@@ -163,6 +163,22 @@ Deliverables:
 Exit criteria: a representative query shows a coherent, budget-respecting
 context bundle.
 
+**Sprint 005 delivery (US5):** Available at the `/preview` route,
+backed by:
+
+- `viewport/src/lib/api/context.ts` — typed `contextApi.fetch()`
+  wrapper over the Tauri `memory_context` command (which proxies
+  `klams_client::Client::memory_context`, reusing the existing
+  bearer/base-URL plumbing).
+- `viewport/src/lib/components/ContextPreview.svelte` — query
+  box, 250 ms-debounced token-budget slider
+  (specs/005-advanced-retrieval/research.md D-009), per-section
+  status pills (`ok` / `degraded` / `unavailable`), and a
+  raw-vs-summarized toggle that re-fetches without losing
+  query/budget state.
+- 503 + `Retry-After` from `/memory/context` (all retrieval sources
+  unavailable, FR-011) surfaces as a banner above the bundle.
+
 ## 7. Phase 6 — agent activity panel
 
 **Goal:** Surface agent proposals and outcomes.

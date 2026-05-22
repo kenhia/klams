@@ -269,3 +269,109 @@ to `cp -r` to `/home/ken/ansible-k/specs/klams-integration/`.
 | `scanner-once`      | `cargo run --release --bin klams-scanner -- --once`. |
 | `monitor-once`      | `cargo run --release --bin klams-monitor -- --once`. |
 | `rollback`          | Swap every `/usr/local/bin/<bin>` with its `.prev` and restart the long-running units. |
+
+## Sprint 005 — `/memory/context` and decay tuning
+
+### `POST /memory/context`
+
+Returns a single token-budgeted bundle of facts + knowledge + events
+that an agent can drop straight into a prompt. The wire shape is
+defined in
+[specs/005-advanced-retrieval/contracts/memory-context.openapi.yaml](../specs/005-advanced-retrieval/contracts/memory-context.openapi.yaml).
+
+```sh
+curl -fsS https://kubs0:7777/memory/context \
+  -H "authorization: bearer $KLAMS_TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{
+        "query": "how is GPU driver state tracked on kai?",
+        "token_budget": 2048,
+        "filters": { "host": "kai", "type": "EnvFact" }
+      }' | jq .
+```
+
+Response sketch:
+
+```json
+{
+  "facts":     [{ "kind": "raw",     "id": "...", "score": 0.91, "tokens": 142, "payload": {...} }],
+  "knowledge": [{ "kind": "digest",  "id": "...", "score": 0.74, "tokens": 220, "payload": {...} }],
+  "events":    [{ "kind": "summary", "id": "...", "score": 0.66, "tokens":  88, "payload": {...} }],
+  "total_spent": 1880,
+  "truncated": false,
+  "token_encoder": "cl100k_base",
+  "sections": {
+    "facts":     { "count": 4, "tokens_spent":  568, "source": "raw",     "status": "ok" },
+    "knowledge": { "count": 3, "tokens_spent": 1224, "source": "mixed",   "status": "ok" },
+    "events":    { "count": 1, "tokens_spent":   88, "source": "summary", "status": "degraded",
+                   "degraded_reason": "ollama unreachable; fell back to extractive" }
+  }
+}
+```
+
+**Filter keys** (all optional, all AND-ed): `host`, `type`, `tag`,
+`repo`, `file`, `source`, `since` (RFC 3339), `until` (RFC 3339).
+Unknown filter keys return `400` naming the offending key. If
+**every** retrieval source is unavailable the endpoint responds
+`503 Service Unavailable + Retry-After: 5` (FR-011); a per-section
+backend outage instead surfaces in-band as
+`sections[*].status = "degraded"`.
+
+### Decay-config tuning recipe
+
+Each fact type has its own decay constant λ, applied as
+`decay_weight = exp(-λ · age_seconds)`. Defaults (suitable for a
+new install) live in `klams_types::DecayConfig::default`:
+
+| FactType   | default λ | half-life     |
+|------------|-----------|---------------|
+| `TaskFact` | `1e-6`    | ≈ 8.0 days    |
+| `UserFact` | `1e-9`    | ≈ 22.0 years  |
+| `EnvFact`  | `1e-9`    | ≈ 22.0 years  |
+
+To rebalance recall against staleness, override under `[decay.lambda]`
+in `klams.toml`:
+
+```toml
+[decay]
+task_interval_seconds = 60       # decay sweep cadence
+batch_size            = 256
+
+[decay.lambda]
+TaskFact = 2e-6                  # halve the half-life of task chatter (~4d)
+UserFact = 5e-10                 # double the half-life of user facts  (~44y)
+EnvFact  = 1e-9                  # leave defaults
+```
+
+`klams-service` validates the config **before** binding the listener:
+
+- Non-finite, negative, or unknown-`FactType` λ → exit code `2`
+  with the offending key in stderr.
+- `task_interval_seconds == 0` or `batch_size == 0` → exit code `2`.
+- On success: one `INFO` line `decay config loaded: task_fact_lambda=…`
+  is emitted and `klams_decay_config_reload_total` increments.
+
+There is **no** SIGHUP-style hot-reload; restart the service to
+apply a new `[decay]` block.
+
+### Summarization knobs
+
+`[summarization]` controls the background task that maintains the
+`summaries` table (migration `0004`). Used by the events section of
+`/memory/context` when raw rows would blow the token budget.
+
+```toml
+[summarization]
+enabled              = true
+task_interval        = "60s"   # also accepts "5m", "1h"
+event_cluster_min    = 3       # only summarize ≥ N events
+llm_fallback         = true    # try Ollama; on failure use extractive
+ollama_url           = "http://kubs0:11434"
+ollama_model         = "phi3:medium"
+```
+
+When Ollama is unreachable, the task records `mechanism = "extractive"`
+and `klams_summarization_runs_total{mechanism="extractive"}` increments;
+the events section in `/memory/context` keeps shipping headlines
+("3x compile, 2x test"). Watch `klams_summarization_lag_seconds` for
+the wall-clock age of the most recent successful cycle.
