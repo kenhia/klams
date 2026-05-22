@@ -66,9 +66,7 @@ impl TestServer {
         let postgres = PostgresStore::connect(&pg_url, 4)
             .await
             .expect("postgres connect");
-        // Per-test Qdrant collection so parallel tests do not race.
-        let collection = format!("knowledge_items_test_{}", uuid::Uuid::new_v4().simple());
-        let qdrant = QdrantStore::connect(&qdrant_url, &collection, 384)
+        let qdrant = QdrantStore::connect(&qdrant_url, "knowledge_items_test", 384)
             .await
             .expect("qdrant connect");
         let embedder = TeiEmbedder::new(tei_url, 384).expect("tei client");

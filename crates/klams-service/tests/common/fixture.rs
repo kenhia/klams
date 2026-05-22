@@ -3,6 +3,11 @@
 //! Builds facts, knowledge chunks, and events from a seeded RNG so
 //! every test run produces the same data. Scale presets cover quick
 //! smoke runs through summarization/perf-grade volumes.
+//!
+//! Every payload includes the [`MARKER_TERM`] so an FTS query for
+//! that token deterministically returns at least one hit from each
+//! section (facts/knowledge/events). Tests can rely on it for
+//! "section is populated" assertions.
 
 #![allow(
     clippy::cast_possible_truncation,
@@ -14,6 +19,11 @@ use klams_types::{AppendEvent, FactType, IndexKnowledge, Source, UpsertFact};
 use serde_json::json;
 use time::OffsetDateTime;
 use uuid::Uuid;
+
+/// Token appearing in every fact, knowledge chunk, and event payload
+/// so an FTS query for it deterministically returns matches from
+/// each section.
+pub const MARKER_TERM: &str = "klamsfixturemarker";
 
 const HOSTS: &[&str] = &["alpha", "beta", "kubs0", "kai", "webproxy"];
 const CATEGORIES: &[&str] = &["syslog", "pod", "systemd", "ssh", "cron"];
@@ -95,20 +105,34 @@ pub struct Fixture {
 
 #[must_use]
 pub fn generate(scale: FixtureScale) -> Fixture {
-    generate_with_seed(scale, 0x0050_05C0_DEC0_FFEE_u64)
+    // Per-invocation seed so independent tests (and reruns against a
+    // persistent test stack) do not collide on UUID primary keys. Use
+    // `generate_with_seed` when a stable seed is needed for repro.
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos() as u64)
+        ^ u64::from(std::process::id());
+    generate_with_seed(scale, seed)
 }
 
 #[must_use]
 pub fn generate_with_seed(scale: FixtureScale, seed: u64) -> Fixture {
     let mut rng = Lcg::new(seed);
+    // Mix a fresh 64-bit salt into every UUID derived for this fixture
+    // so independent fixtures never collide on primary keys even when
+    // they share an `i`.
+    let id_salt = (u128::from(rng.next_u64()) << 64) | u128::from(rng.next_u64());
     Fixture {
-        facts: gen_facts(&mut rng, scale.facts),
-        knowledge: gen_knowledge(&mut rng, scale.knowledge),
-        events: gen_events(&mut rng, scale.events, scale.event_days),
+        facts: gen_facts(&mut rng, scale.facts, id_salt),
+        knowledge: gen_knowledge(&mut rng, scale.knowledge, id_salt),
+        events: gen_events(&mut rng, scale.events, scale.event_days, id_salt),
     }
 }
 
-fn gen_facts(rng: &mut Lcg, n: usize) -> Vec<UpsertFact> {
+fn gen_facts(rng: &mut Lcg, n: usize, id_salt: u128) -> Vec<UpsertFact> {
+    // Tag every payload with the per-fixture salt so its canonical
+    // hash never collides with a sibling fixture's hash.
+    let fixture_tag = format!("{id_salt:032x}");
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
         let fact_type = match i % 3 {
@@ -122,16 +146,22 @@ fn gen_facts(rng: &mut Lcg, n: usize) -> Vec<UpsertFact> {
                 "user": format!("user{:04}", i % 200),
                 "email": format!("user{:04}@example.com", i % 200),
                 "host": host,
+                "fixture": fixture_tag,
+                "marker": MARKER_TERM,
             }),
             FactType::TaskFact => json!({
                 "task_id": format!("T-{:05}", i),
-                "title": format!("task {} on {host}", EVENT_PHRASES[rng.pick(EVENT_PHRASES.len())]),
+                "title": format!("task {} on {host} {MARKER_TERM}", EVENT_PHRASES[rng.pick(EVENT_PHRASES.len())]),
                 "host": host,
+                "fixture": fixture_tag,
+                "marker": MARKER_TERM,
             }),
             FactType::EnvFact => json!({
                 "host": host,
                 "kernel": format!("6.{}.{}-klams", i % 9, i % 50),
                 "service": SERVICES[rng.pick(SERVICES.len())],
+                "fixture": fixture_tag,
+                "marker": MARKER_TERM,
             }),
         };
         out.push(UpsertFact {
@@ -139,7 +169,9 @@ fn gen_facts(rng: &mut Lcg, n: usize) -> Vec<UpsertFact> {
             payload,
             source: Source::User,
             explicit_id: Some(Uuid::from_u128(
-                0x1111_0000_0000_0000_0000_0000_0000_0000 | i as u128,
+                id_salt
+                    .wrapping_add(0x1111_0000_0000_0000_u128 << 64)
+                    .wrapping_add(i as u128),
             )),
             expected_version: Some(0),
         });
@@ -147,7 +179,7 @@ fn gen_facts(rng: &mut Lcg, n: usize) -> Vec<UpsertFact> {
     out
 }
 
-fn gen_knowledge(rng: &mut Lcg, n: usize) -> Vec<IndexKnowledge> {
+fn gen_knowledge(rng: &mut Lcg, n: usize, id_salt: u128) -> Vec<IndexKnowledge> {
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
         let repo = REPOS[rng.pick(REPOS.len())];
@@ -156,11 +188,15 @@ fn gen_knowledge(rng: &mut Lcg, n: usize) -> Vec<IndexKnowledge> {
         let phrase = EVENT_PHRASES[rng.pick(EVENT_PHRASES.len())];
         let text = format!(
             "{topic}. section {i}: this chunk discusses {phrase} \
-             along with operational notes specific to the {repo} repository.",
+             along with operational notes specific to the {repo} repository. {MARKER_TERM}",
         );
-        let content_hash = format!("hash-{i:08x}");
+        let content_hash = format!("hash-{:032x}", id_salt ^ i as u128);
         out.push(IndexKnowledge {
-            id: Uuid::from_u128(0x2222_0000_0000_0000_0000_0000_0000_0000 | i as u128),
+            id: Uuid::from_u128(
+                id_salt
+                    .wrapping_add(0x2222_0000_0000_0000_u128 << 64)
+                    .wrapping_add(i as u128),
+            ),
             text,
             content_hash,
             source: Source::User,
@@ -173,7 +209,7 @@ fn gen_knowledge(rng: &mut Lcg, n: usize) -> Vec<IndexKnowledge> {
     out
 }
 
-fn gen_events(rng: &mut Lcg, n: usize, days: i64) -> Vec<AppendEvent> {
+fn gen_events(rng: &mut Lcg, n: usize, days: i64, id_salt: u128) -> Vec<AppendEvent> {
     let mut out = Vec::with_capacity(n);
     let now = OffsetDateTime::now_utc();
     for i in 0..n {
@@ -189,9 +225,14 @@ fn gen_events(rng: &mut Lcg, n: usize, days: i64) -> Vec<AppendEvent> {
             "event": phrase,
             "observed_at": observed_at.format(&time::format_description::well_known::Rfc3339).unwrap(),
             "seq": i,
+            "marker": MARKER_TERM,
         });
         out.push(AppendEvent {
-            id: Uuid::from_u128(0x3333_0000_0000_0000_0000_0000_0000_0000 | i as u128),
+            id: Uuid::from_u128(
+                id_salt
+                    .wrapping_add(0x3333_0000_0000_0000_u128 << 64)
+                    .wrapping_add(i as u128),
+            ),
             task_id: None,
             category: category.to_string(),
             payload,

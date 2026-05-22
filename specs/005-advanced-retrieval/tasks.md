@@ -61,7 +61,7 @@ Single Rust workspace at repo root. Crates under `crates/`, viewport under `view
 - [X] T013 [P] [US1] Contract test in `crates/klams-api/tests/contract_context.rs` validating request/response against `specs/005-advanced-retrieval/contracts/memory-context.openapi.yaml`. Cover: happy path; empty-budget probe; missing query → 4xx with `query_required`; **unknown filter key → 4xx with the offending key named** (edge-case bullet from spec); unhealthy-store → 200 with degraded section.
 - [X] T014 [P] [US1] Unit tests in `crates/klams-core/src/context.rs` for the budget-fitter: minimum-floor-per-section rule, dedupe precedence (fact > knowledge > event for structured attrs; knowledge > events for prose), `truncated` bookkeeping, single-item-larger-than-budget edge case.
 - [X] T015 [P] [US1] Unit tests in `crates/klams-core/src/tokens.rs` for the `TokenCounter`: cl100k_base path, fallback path, `which_encoder()` reports active mode, large-payload safety.
-- [ ] T016 [US1] Integration test in `crates/klams-service/tests/phase4_context_bundle.rs` exercising the full HTTP path against `docker-compose.test.yml` — uses a known fixture set, asserts items per the Independent Test above.
+- [X] T016 [US1] Integration test in `crates/klams-service/tests/phase4_context_bundle.rs` exercising the full HTTP path against `docker-compose.test.yml` — uses a known fixture set, asserts items per the Independent Test above.
 
 ### Implementation for User Story 1
 
