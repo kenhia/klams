@@ -1,11 +1,14 @@
 //! Qdrant adapter (knowledge items).
 
 use crate::{StoreError, StoreResult};
-use klams_types::{IndexKnowledge, KnowledgeItem, Source};
+use klams_types::{
+    DigestCluster, IndexKnowledge, KnowledgeDigest, KnowledgeItem, Source, SummaryMechanism,
+};
 use qdrant_client::qdrant::{
-    point_id::PointIdOptions, value::Kind as ValueKind, Condition, CreateCollectionBuilder,
-    DeletePointsBuilder, Distance, FieldType, Filter, ListValue, PointId, PointStruct,
-    ScrollPointsBuilder, SearchPointsBuilder, UpsertPointsBuilder, Value, VectorParamsBuilder,
+    point_id::PointIdOptions, points_selector::PointsSelectorOneOf, value::Kind as ValueKind,
+    Condition, CreateCollectionBuilder, DeletePointsBuilder, Distance, FieldType, Filter,
+    ListValue, PointId, PointStruct, PointsIdsList, ScrollPointsBuilder, SearchPointsBuilder,
+    SetPayloadPointsBuilder, UpsertPointsBuilder, Value, VectorParamsBuilder,
 };
 use qdrant_client::Qdrant;
 use std::collections::HashMap;
@@ -134,11 +137,19 @@ impl QdrantStore {
         query_vector: Vec<f32>,
         top_k: u32,
     ) -> StoreResult<Vec<(KnowledgeItem, f32)>> {
+        // Exclude digest points from the default raw-knowledge search
+        // (sprint 005 T038). Existing knowledge items have no `kind`
+        // payload field, so the `must_not` is a no-op for them.
+        let filter = Filter {
+            must_not: vec![Condition::matches("kind", "digest".to_string())],
+            ..Default::default()
+        };
         let resp = self
             .client
             .search_points(
                 SearchPointsBuilder::new(self.collection.clone(), query_vector, u64::from(top_k))
-                    .with_payload(true),
+                    .with_payload(true)
+                    .filter(filter),
             )
             .await
             .map_err(|e| StoreError::Backend(format!("qdrant search: {e}")))?;
@@ -147,6 +158,101 @@ impl QdrantStore {
             let payload = sp.payload;
             if let Some(item) = payload_to_item(&payload) {
                 out.push((item, sp.score));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Upsert a knowledge digest point (sprint 005 T038). Writes a
+    /// point with `kind = "digest"` in its payload so the default
+    /// raw search ignores it. The caller supplies an embedding of
+    /// the summary text.
+    pub async fn upsert_digest(
+        &self,
+        digest: &KnowledgeDigest,
+        embedding: Vec<f32>,
+    ) -> StoreResult<()> {
+        if embedding.len() as u64 != self.vector_dim {
+            return Err(StoreError::Other(format!(
+                "embedding dim {} != collection dim {}",
+                embedding.len(),
+                self.vector_dim
+            )));
+        }
+        let payload = digest_to_payload(digest);
+        let point = PointStruct::new(
+            PointId {
+                point_id_options: Some(PointIdOptions::Uuid(digest.id.to_string())),
+            },
+            embedding,
+            payload,
+        );
+        self.client
+            .upsert_points(
+                UpsertPointsBuilder::new(self.collection.clone(), vec![point]).wait(true),
+            )
+            .await
+            .map_err(|e| StoreError::Backend(format!("qdrant upsert digest: {e}")))?;
+        Ok(())
+    }
+
+    /// Mark a digest point invalidated (sprint 005 T038). Sets the
+    /// `invalidated_at` payload field to "now"; subsequent calls to
+    /// [`Self::search_digests`] will skip it.
+    pub async fn invalidate_digest(&self, id: Uuid) -> StoreResult<()> {
+        let mut payload = HashMap::new();
+        payload.insert(
+            "invalidated_at".into(),
+            Value::from(
+                OffsetDateTime::now_utc()
+                    .format(&Rfc3339)
+                    .unwrap_or_default(),
+            ),
+        );
+        let selector = PointsSelectorOneOf::Points(PointsIdsList {
+            ids: vec![PointId {
+                point_id_options: Some(PointIdOptions::Uuid(id.to_string())),
+            }],
+        });
+        self.client
+            .set_payload(
+                SetPayloadPointsBuilder::new(self.collection.clone(), payload)
+                    .points_selector(selector)
+                    .wait(true),
+            )
+            .await
+            .map_err(|e| StoreError::Backend(format!("qdrant set_payload: {e}")))?;
+        Ok(())
+    }
+
+    /// Vector search restricted to active digest points (sprint 005
+    /// T038). Filters `kind = "digest"` and skips any point whose
+    /// `invalidated_at` field is non-empty.
+    pub async fn search_digests(
+        &self,
+        query_vector: Vec<f32>,
+        top_k: u32,
+    ) -> StoreResult<Vec<(KnowledgeDigest, f32)>> {
+        let filter = Filter {
+            must: vec![
+                Condition::matches("kind", "digest".to_string()),
+                Condition::is_empty("invalidated_at"),
+            ],
+            ..Default::default()
+        };
+        let resp = self
+            .client
+            .search_points(
+                SearchPointsBuilder::new(self.collection.clone(), query_vector, u64::from(top_k))
+                    .with_payload(true)
+                    .filter(filter),
+            )
+            .await
+            .map_err(|e| StoreError::Backend(format!("qdrant search digest: {e}")))?;
+        let mut out = Vec::with_capacity(resp.result.len());
+        for sp in resp.result {
+            if let Some(d) = payload_to_digest(&sp.payload) {
+                out.push((d, sp.score));
             }
         }
         Ok(out)
@@ -358,4 +464,154 @@ fn payload_to_item(payload: &HashMap<String, Value>) -> Option<KnowledgeItem> {
         created_at,
         updated_at,
     })
+}
+
+fn digest_to_payload(d: &KnowledgeDigest) -> HashMap<String, Value> {
+    let mut p = HashMap::new();
+    p.insert("kind".into(), Value::from("digest"));
+    p.insert("id".into(), Value::from(d.id.to_string()));
+    p.insert("text".into(), Value::from(d.text.clone()));
+    p.insert(
+        "mechanism".into(),
+        Value::from(d.mechanism.as_str().to_string()),
+    );
+    p.insert(
+        "source_ids".into(),
+        Value {
+            kind: Some(ValueKind::ListValue(ListValue {
+                values: d
+                    .source_ids
+                    .iter()
+                    .map(|u| Value::from(u.to_string()))
+                    .collect(),
+            })),
+        },
+    );
+    p.insert(
+        "source_count".into(),
+        Value::from(i64::from(d.source_count)),
+    );
+    p.insert("repo".into(), Value::from(d.cluster.repo.clone()));
+    p.insert(
+        "file_prefix".into(),
+        Value::from(d.cluster.file_prefix.clone()),
+    );
+    p.insert(
+        "generated_at".into(),
+        Value::from(d.generated_at.format(&Rfc3339).unwrap_or_default()),
+    );
+    // `invalidated_at` is intentionally omitted when active so the
+    // `is_empty` filter in `search_digests` matches.
+    p
+}
+
+fn payload_to_digest(payload: &HashMap<String, Value>) -> Option<KnowledgeDigest> {
+    if payload
+        .get("kind")
+        .and_then(|v| v.as_str())
+        .map(String::as_str)
+        != Some("digest")
+    {
+        return None;
+    }
+    let id = Uuid::parse_str(payload.get("id")?.as_str()?).ok()?;
+    let text = payload.get("text")?.as_str()?.clone();
+    let mechanism = match payload.get("mechanism")?.as_str()?.as_str() {
+        "extractive" => SummaryMechanism::Extractive,
+        "llm" => SummaryMechanism::Llm,
+        _ => return None,
+    };
+    let source_ids: Vec<Uuid> = payload
+        .get("source_ids")
+        .and_then(|v| match &v.kind {
+            Some(ValueKind::ListValue(lv)) => Some(
+                lv.values
+                    .iter()
+                    .filter_map(|x| x.as_str().and_then(|s| Uuid::parse_str(s).ok()))
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let source_count = u32::try_from(
+        payload
+            .get("source_count")
+            .and_then(qdrant_client::qdrant::Value::as_integer)
+            .unwrap_or(0),
+    )
+    .unwrap_or(0);
+    let repo = payload
+        .get("repo")
+        .and_then(|v| v.as_str().cloned())
+        .unwrap_or_default();
+    let file_prefix = payload
+        .get("file_prefix")
+        .and_then(|v| v.as_str().cloned())
+        .unwrap_or_default();
+    let generated_at = payload
+        .get("generated_at")
+        .and_then(|v| v.as_str())
+        .and_then(|s| OffsetDateTime::parse(s, &Rfc3339).ok())
+        .unwrap_or_else(OffsetDateTime::now_utc);
+    let invalidated_at = payload
+        .get("invalidated_at")
+        .and_then(|v| v.as_str())
+        .and_then(|s| OffsetDateTime::parse(s, &Rfc3339).ok());
+    Some(KnowledgeDigest {
+        id,
+        text,
+        mechanism,
+        source_ids,
+        source_count,
+        cluster: DigestCluster { repo, file_prefix },
+        generated_at,
+        invalidated_at,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use time::macros::datetime;
+
+    fn sample_digest() -> KnowledgeDigest {
+        KnowledgeDigest {
+            id: Uuid::nil(),
+            text: "summary text".into(),
+            mechanism: SummaryMechanism::Extractive,
+            source_ids: vec![Uuid::nil()],
+            source_count: 7,
+            cluster: DigestCluster {
+                repo: "klams".into(),
+                file_prefix: "docs/".into(),
+            },
+            generated_at: datetime!(2025-01-02 03:04:05 UTC),
+            invalidated_at: None,
+        }
+    }
+
+    #[test]
+    fn digest_payload_round_trip() {
+        let d = sample_digest();
+        let payload = digest_to_payload(&d);
+        assert_eq!(
+            payload.get("kind").and_then(|v| v.as_str()),
+            Some(&"digest".to_string())
+        );
+        assert!(!payload.contains_key("invalidated_at"));
+        let back = payload_to_digest(&payload).expect("round-trip");
+        assert_eq!(back.id, d.id);
+        assert_eq!(back.text, d.text);
+        assert_eq!(back.source_count, d.source_count);
+        assert_eq!(back.cluster.repo, d.cluster.repo);
+        assert_eq!(back.cluster.file_prefix, d.cluster.file_prefix);
+        assert!(back.invalidated_at.is_none());
+    }
+
+    #[test]
+    fn payload_without_kind_digest_is_rejected() {
+        let mut payload = digest_to_payload(&sample_digest());
+        payload.remove("kind");
+        assert!(payload_to_digest(&payload).is_none());
+    }
 }
