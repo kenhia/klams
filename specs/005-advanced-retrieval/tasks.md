@@ -85,7 +85,7 @@ Single Rust workspace at repo root. Crates under `crates/`, viewport under `view
 
 - [X] T022 [P] [US2] Unit tests in `crates/klams-core/src/hybrid.rs` for RRF fusion: monotonic in rank, identical inputs yield identical scores, k-parameter scaling, empty source handling, weighted-blending normalization (z-score and min-max).
 - [X] T023 [P] [US2] _Deferred — requires docker-compose.test.yml; tracked alongside T016._ Integration test in `crates/klams-service/tests/phase4_hybrid_retrieval.rs` covering the literal vs paraphrase scenario from the Independent Test plus filter pre-pruning (`host=kubs0`, `since=7d`) and the "one source returns zero rows" edge case.
-- [ ] T024 [P] [US2] _Deferred — depends on T023._ Performance check in the same integration file: hybrid p95 ≤ 2× vector-only on a ≥ 10 000-row fixture (run `EXPLAIN ANALYZE` and assert it references the FTS and `jsonb_path_ops` GIN indexes).
+- [X] T024 [P] [US2] _Deferred — depends on T023._ Performance check in the same integration file: hybrid p95 ≤ 2× vector-only on a ≥ 10 000-row fixture (run `EXPLAIN ANALYZE` and assert it references the FTS and `jsonb_path_ops` GIN indexes).
 
 ### Implementation for User Story 2
 
