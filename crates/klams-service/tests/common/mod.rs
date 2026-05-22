@@ -23,10 +23,16 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
+pub mod fixture;
+pub mod seed;
+
+pub type TestStore = CompositeStore;
+
 pub struct TestServer {
     pub client: Client,
     pub addr: SocketAddr,
     pub bearer_token: String,
+    pub store: Arc<TestStore>,
 }
 
 impl std::fmt::Debug for TestServer {
@@ -35,12 +41,20 @@ impl std::fmt::Debug for TestServer {
             .field("addr", &self.addr)
             .field("bearer_token", &"<redacted>")
             .field("client", &"<klams_client>")
+            .field("store", &"<CompositeStore>")
             .finish()
     }
 }
 
 impl TestServer {
     pub async fn spawn() -> Self {
+        Self::spawn_with_summary_store(false).await
+    }
+
+    /// Like `spawn`, but wires `SummaryStore` into `ContextBuilder`
+    /// so the events section can substitute raw rows for summaries
+    /// (sprint 005 T039 + T033).
+    pub async fn spawn_with_summary_store(with_summary_store: bool) -> Self {
         let pg_url = std::env::var("TEST_DATABASE_URL")
             .unwrap_or_else(|_| "postgres://klams:klams_test@127.0.0.1:55432/klams".into());
         let qdrant_url =
@@ -52,7 +66,9 @@ impl TestServer {
         let postgres = PostgresStore::connect(&pg_url, 4)
             .await
             .expect("postgres connect");
-        let qdrant = QdrantStore::connect(&qdrant_url, "knowledge_items_test", 384)
+        // Per-test Qdrant collection so parallel tests do not race.
+        let collection = format!("knowledge_items_test_{}", uuid::Uuid::new_v4().simple());
+        let qdrant = QdrantStore::connect(&qdrant_url, &collection, 384)
             .await
             .expect("qdrant connect");
         let embedder = TeiEmbedder::new(tei_url, 384).expect("tei client");
@@ -61,6 +77,15 @@ impl TestServer {
         let (queue, rx) = MemoryQueue::new(256);
         let _workers = spawn_workers(2, rx, Arc::clone(&store));
 
+        let mut builder = klams_core::context::ContextBuilder::new(
+            klams_core::tokens::TokenCounter::new(klams_core::tokens::TokenMode::CharsDiv4),
+            100,
+        );
+        if with_summary_store {
+            builder = builder
+                .with_summary_store(Arc::clone(&store) as Arc<dyn klams_store::SummaryStore>);
+        }
+
         let state = ApiState {
             store: Arc::clone(&store),
             queue,
@@ -68,10 +93,7 @@ impl TestServer {
             workers: 2,
             started_at: std::time::Instant::now(),
             validators: Arc::new(klams_core::ValidatorRegistry::with_defaults()),
-            context_builder: Arc::new(klams_core::context::ContextBuilder::new(
-                klams_core::tokens::TokenCounter::new(klams_core::tokens::TokenMode::CharsDiv4),
-                100,
-            )),
+            context_builder: Arc::new(builder),
         };
         let router = build_router(state, bearer.clone());
 
@@ -86,6 +108,7 @@ impl TestServer {
             client,
             addr,
             bearer_token: bearer,
+            store,
         }
     }
 }
