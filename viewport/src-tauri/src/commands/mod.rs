@@ -10,9 +10,9 @@ pub mod memory;
 use async_trait::async_trait;
 use klams_client::{Client, ClientError};
 use klams_types::{
-    Dissent, DissentPage, EventPage, Fact, FactPage, FactType, FactWriteOutcome, HealthSnapshot,
-    KnowledgeItem, ListDissentsParams, ListEventsParams, ListFactsParams, SearchRequest,
-    SearchResults, Source, UpsertFactRequest,
+    ContextBundle, ContextRequest, Dissent, DissentPage, EventPage, Fact, FactPage, FactType,
+    FactWriteOutcome, HealthSnapshot, KnowledgeItem, ListDissentsParams, ListEventsParams,
+    ListFactsParams, SearchRequest, SearchResults, Source, UpsertFactRequest,
 };
 use serde::Serialize;
 use std::sync::Arc;
@@ -68,6 +68,12 @@ pub trait ClientFactory: Send + Sync + std::fmt::Debug {
     async fn search(&self, req: SearchRequest) -> Result<SearchResults, ViewportError>;
     async fn get_knowledge(&self, id: Uuid) -> Result<KnowledgeItem, ViewportError>;
     async fn health(&self) -> Result<HealthSnapshot, ViewportError>;
+
+    /// Sprint 005 — `POST /memory/context` typed call.
+    async fn memory_context(
+        &self,
+        req: ContextRequest,
+    ) -> Result<ContextBundle, ViewportError>;
 
     // -- Sprint 002: dissents + canonical writes ---------------------
     async fn list_dissents(
@@ -179,6 +185,12 @@ impl ClientFactory for LiveClientFactory {
     }
     async fn health(&self) -> Result<HealthSnapshot, ViewportError> {
         Ok(self.client()?.health().await?)
+    }
+    async fn memory_context(
+        &self,
+        req: ContextRequest,
+    ) -> Result<ContextBundle, ViewportError> {
+        Ok(self.client()?.memory_context(&req).await?)
     }
     async fn list_dissents(
         &self,
