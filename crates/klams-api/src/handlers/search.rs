@@ -1,21 +1,25 @@
 //! HTTP handler for `POST /memory/search`.
 //!
-//! Unified search across facts, events, and knowledge. For each
-//! requested type (all three when `types` is omitted) the handler
-//! issues the appropriate `Store` query in parallel, normalizes
-//! per-type scores into `[0,1]`, and interleaves the results by
-//! per-type rank up to `top_k`.
+//! Sprint 005 (T029): the per-type fan-out now runs through the
+//! `HybridStore` adapter (`StoreHybridAdapter`) so search shares the
+//! same retrieval plumbing as `/memory/context`. The response shape
+//! (`SearchResults` + `SearchHit`) is preserved; knowledge hits now
+//! carry the slimmer hybrid payload (`{kind, section, text, file,
+//! tags, repo}`) instead of the full `KnowledgeItem` row.
 //!
-//! Degraded mode: if the knowledge backend (Qdrant or the embedder)
-//! returns an error we omit knowledge hits, set `degraded: true`,
-//! log a warning, and still return 200 with the fact/event results.
+//! Degraded mode: if the vector retrieve fails (Qdrant or the
+//! embedder) we omit knowledge hits, set `degraded: true`, log a
+//! warning, and still return 200 with the fact/event results.
 
 use crate::router::ApiState;
 use crate::ApiError;
 use axum::{extract::State, Json};
+use klams_core::hybrid::StoreHybridAdapter;
 use klams_core::metrics as m;
-use klams_store::{Store, TextHit};
-use klams_types::{KnowledgeItem, SearchHit, SearchRequest, SearchResults, SearchType};
+use klams_store::{HybridStore, RankedRow, Store};
+use klams_types::{
+    RetrievalFilters, RetrievalSource, SearchHit, SearchRequest, SearchResults, SearchType,
+};
 use std::sync::Arc;
 use tracing::warn;
 
@@ -38,62 +42,64 @@ pub async fn search<S: Store>(
     let want_events = wants(req.types.as_ref(), SearchType::Event);
     let want_knowledge = wants(req.types.as_ref(), SearchType::Knowledge);
 
-    let store = Arc::clone(&state.store);
-    let q_text = query.clone();
-    let text_fut = async move {
-        if want_facts || want_events {
-            store.search_text(&q_text, top_k).await
-        } else {
-            Ok((Vec::<TextHit>::new(), Vec::<TextHit>::new()))
-        }
-    };
+    let adapter = StoreHybridAdapter::new(Arc::clone(&state.store));
+    let filters = RetrievalFilters::default();
 
-    let store2 = Arc::clone(&state.store);
-    let q_vec = query.clone();
-    let knowledge_fut = async move {
+    let vector_fut = async {
         if want_knowledge {
-            let vec = store2.embed_query(&q_vec).await?;
-            store2.search_knowledge(vec, top_k).await
+            adapter
+                .retrieve(RetrievalSource::Vector, &query, &filters, top_k)
+                .await
         } else {
-            Ok(Vec::new())
+            Ok(Vec::<RankedRow>::new())
         }
     };
-
-    let (text_res, knowledge_res) = tokio::join!(text_fut, knowledge_fut);
+    let fts_fut = async {
+        if want_facts || want_events {
+            adapter
+                .retrieve(RetrievalSource::Fts, &query, &filters, top_k)
+                .await
+        } else {
+            Ok(Vec::<RankedRow>::new())
+        }
+    };
+    let (vector_res, fts_res) = tokio::join!(vector_fut, fts_fut);
 
     let mut degraded = false;
-    let (facts_hits, events_hits) = match text_res {
-        Ok((f, e)) => (f, e),
+    let vector_rows = match vector_res {
+        Ok(v) => v,
         Err(err) => {
-            warn!(error = %err, "search_text failed; continuing without text hits");
+            warn!(error = %err, "knowledge retrieve failed; degrading");
             degraded = true;
-            (Vec::new(), Vec::new())
+            Vec::new()
         }
     };
-    let knowledge_hits: Vec<(KnowledgeItem, f32)> = if want_knowledge {
-        match knowledge_res {
-            Ok(v) => v,
-            Err(err) => {
-                warn!(error = %err, "knowledge search failed; degrading");
-                degraded = true;
-                Vec::new()
-            }
+    let fts_rows = match fts_res {
+        Ok(v) => v,
+        Err(err) => {
+            warn!(error = %err, "fts retrieve failed; continuing without text hits");
+            degraded = true;
+            Vec::new()
         }
-    } else {
-        Vec::new()
     };
 
-    let facts_ranked = if want_facts {
-        text_hits_to_search_hits(facts_hits, SearchType::Fact)
-    } else {
-        Vec::new()
-    };
-    let events_ranked = if want_events {
-        text_hits_to_search_hits(events_hits, SearchType::Event)
-    } else {
-        Vec::new()
-    };
-    let knowledge_ranked = knowledge_hits_to_search_hits(knowledge_hits);
+    let mut facts_rows: Vec<RankedRow> = Vec::new();
+    let mut events_rows: Vec<RankedRow> = Vec::new();
+    for r in fts_rows {
+        match r.payload.get("section").and_then(|v| v.as_str()) {
+            Some("facts") if want_facts => facts_rows.push(r),
+            Some("events") if want_events => events_rows.push(r),
+            _ => {}
+        }
+    }
+
+    let facts_ranked = ranked_to_hits(
+        facts_rows,
+        SearchType::Fact,
+        /*from_payload_text=*/ false,
+    );
+    let events_ranked = ranked_to_hits(events_rows, SearchType::Event, false);
+    let knowledge_ranked = ranked_to_hits(vector_rows, SearchType::Knowledge, true);
 
     let merged = interleave(
         &[facts_ranked, events_ranked, knowledge_ranked],
@@ -115,33 +121,28 @@ fn wants(types: Option<&Vec<SearchType>>, t: SearchType) -> bool {
     }
 }
 
-fn text_hits_to_search_hits(hits: Vec<TextHit>, kind: SearchType) -> Vec<SearchHit> {
-    let max = hits.iter().map(|h| h.score).fold(0.0_f32, f32::max);
-    hits.into_iter()
-        .map(|h| {
-            let norm = if max > 0.0 { h.score / max } else { 0.0 };
-            let preview = preview_from_payload(&h.payload);
+fn ranked_to_hits(
+    rows: Vec<RankedRow>,
+    kind: SearchType,
+    text_from_payload: bool,
+) -> Vec<SearchHit> {
+    rows.into_iter()
+        .map(|r| {
+            let preview = if text_from_payload {
+                r.payload
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.chars().take(PREVIEW_MAX).collect::<String>())
+                    .unwrap_or_default()
+            } else {
+                preview_from_payload(&r.payload)
+            };
             SearchHit {
                 kind,
-                id: h.id,
-                score: norm,
+                id: r.id,
+                score: r.score.clamp(0.0, 1.0),
                 preview,
-                payload: h.payload,
-            }
-        })
-        .collect()
-}
-
-fn knowledge_hits_to_search_hits(hits: Vec<(KnowledgeItem, f32)>) -> Vec<SearchHit> {
-    hits.into_iter()
-        .map(|(item, score)| {
-            let preview = item.text.chars().take(PREVIEW_MAX).collect::<String>();
-            SearchHit {
-                kind: SearchType::Knowledge,
-                id: item.id,
-                score: score.clamp(0.0, 1.0),
-                preview,
-                payload: serde_json::to_value(&item).unwrap_or(serde_json::Value::Null),
+                payload: r.payload,
             }
         })
         .collect()
