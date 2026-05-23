@@ -283,6 +283,8 @@ fn orchestrator_deps_from_config(
         same_day_strategy: cfg.backup.same_day_strategy,
         drop_remote_qdrant_snapshot: true,
         state,
+        status_hook: cfg.backup.status_hook.clone(),
+        status_hook_timeout: cfg.backup.status_hook_timeout,
     }
 }
 

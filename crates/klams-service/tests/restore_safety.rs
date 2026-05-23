@@ -65,6 +65,8 @@ fn deps_for(dir: &std::path::Path, state: &MaintenanceState) -> OrchestratorDeps
         same_day_strategy: SameDayStrategy::Suffix,
         drop_remote_qdrant_snapshot: false,
         state: state.clone(),
+        status_hook: None,
+        status_hook_timeout: std::time::Duration::from_secs(10),
     }
 }
 

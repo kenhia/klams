@@ -114,6 +114,8 @@ async fn restore_roundtrip_reproduces_counts_and_sample() {
         same_day_strategy: SameDayStrategy::Suffix,
         drop_remote_qdrant_snapshot: false,
         state: state.clone(),
+        status_hook: None,
+        status_hook_timeout: std::time::Duration::from_secs(10),
     };
     let run = run_once(&deps).await.expect("backup ran");
     assert_eq!(run.ok, Some(true), "backup run must be ok");

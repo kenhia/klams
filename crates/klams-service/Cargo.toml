@@ -44,6 +44,7 @@ metrics = { workspace = true }
 reqwest = { workspace = true }
 sqlx = { workspace = true }
 ulid = "1"
+nix = { version = "0.29", features = ["signal"] }
 
 [dev-dependencies]
 klams-client = { workspace = true }
@@ -57,3 +58,5 @@ metrics = { workspace = true }
 metrics-exporter-prometheus = "0.15"
 sqlx = { workspace = true }
 time = { workspace = true }
+jsonschema = { version = "0.18", default-features = false }
+ulid = "1"

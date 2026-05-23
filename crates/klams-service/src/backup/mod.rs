@@ -34,6 +34,11 @@ pub struct OrchestratorDeps {
     pub same_day_strategy: SameDayStrategy,
     pub drop_remote_qdrant_snapshot: bool,
     pub state: MaintenanceState,
+    /// Optional executable invoked at `started` / `finished` /
+    /// `failed`. `None` disables the feature.
+    pub status_hook: Option<PathBuf>,
+    /// Wall-clock timeout for each `status_hook` invocation.
+    pub status_hook_timeout: std::time::Duration,
 }
 
 /// Errors raised by [`run_once`].
@@ -71,6 +76,14 @@ pub async fn run_once(deps: &OrchestratorDeps) -> Result<BackupRun, Orchestrator
     deps.state.mark_active(snapshot);
     metrics::set_maintenance_active(true);
 
+    // Fire `started` hook before any artifact work begins.
+    let _ = hook::invoke(
+        deps.status_hook.as_deref(),
+        deps.status_hook_timeout,
+        &hook::BackupHookEvent::started(&run),
+    )
+    .await;
+
     // Use a guard so the maintenance flag + lockfile are always cleared.
     let result = run_once_inner(deps, &mut run, &date_str).await;
 
@@ -96,6 +109,20 @@ pub async fn run_once(deps: &OrchestratorDeps) -> Result<BackupRun, Orchestrator
         let secs = u64::try_from(Utc::now().timestamp().max(0)).unwrap_or(0);
         metrics::record_last_success(secs);
     }
+
+    // Fire `finished` or `failed` regardless of whether `started`
+    // succeeded — hook failure is observability, not control flow.
+    let terminal = if ok {
+        hook::BackupHookEvent::finished(&run)
+    } else {
+        hook::BackupHookEvent::failed(&run)
+    };
+    let _ = hook::invoke(
+        deps.status_hook.as_deref(),
+        deps.status_hook_timeout,
+        &terminal,
+    )
+    .await;
 
     result.map(|()| run.clone()).or(Ok(run))
 }

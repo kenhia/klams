@@ -53,6 +53,8 @@ async fn run_once_produces_both_artifacts_and_clears_state() {
         same_day_strategy: SameDayStrategy::Suffix,
         drop_remote_qdrant_snapshot: true,
         state: state.clone(),
+        status_hook: None,
+        status_hook_timeout: std::time::Duration::from_secs(10),
     };
 
     // Pre-condition: maintenance flag clear, no lockfile.
