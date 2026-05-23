@@ -4,6 +4,7 @@
 //! Qdrant / TEI, spawns the worker pool, and serves the HTTP API.
 //! Module bodies live in the sibling library crate (`src/lib.rs`).
 
+use klams_service::backup::{self as service_backup, MaintenanceState, OrchestratorDeps};
 use klams_service::{config, logging};
 
 use anyhow::{Context, Result};
@@ -16,6 +17,7 @@ use tracing::info;
 
 use klams_service::config::LogResolvedDecay;
 
+#[allow(clippy::too_many_lines)]
 #[tokio::main]
 async fn main() -> Result<()> {
     let config_path =
@@ -29,11 +31,28 @@ async fn main() -> Result<()> {
         validate_backup_config_cli(&config_path);
     }
 
+    // Sprint 006 (T028) — `--run-backup-now` ad-hoc trigger. Loads
+    // the config and runs one backup synchronously without starting
+    // the HTTP server or the scheduler. Used by `just backup-once`.
+    let run_now = args.iter().any(|a| a == "--run-backup-now");
+
     let cfg = config::Config::from_path(&config_path)
         .with_context(|| format!("loading config from {config_path}"))?;
 
     logging::init(&cfg.logging.format, &cfg.logging.level);
     info!(config = %config_path, "klams-service starting");
+
+    if let Err(err) = cfg.backup.validate() {
+        tracing::error!(error = %err, "invalid [backup] config; refusing to start");
+        std::process::exit(2);
+    }
+    service_backup::metrics::describe();
+    service_backup::metrics::set_maintenance_active(false);
+    let maintenance_state = MaintenanceState::new();
+
+    if run_now {
+        run_backup_now_cli(&cfg, &maintenance_state).await;
+    }
 
     let postgres = PostgresStore::connect(&cfg.postgres.url, cfg.postgres.max_connections)
         .await
@@ -119,6 +138,36 @@ async fn main() -> Result<()> {
     let router = with_metrics(build_router(state, cfg.auth.bearer_token.clone()));
     klams_core::metrics::describe();
 
+    // Sprint 006 (T024/T027) — stale-lockfile recovery + scheduler.
+    if cfg.backup.enabled {
+        if let Some(dir) = cfg.backup.backup_dir.clone() {
+            match service_backup::lifecycle::recover_stale_lock(&dir).await {
+                Ok(Some(recovered)) => {
+                    tracing::warn!(
+                        pid = recovered.pid,
+                        run_id = %recovered.run_id,
+                        "recovered stale backup lockfile (service_restarted_mid_backup)"
+                    );
+                    service_backup::metrics::incr_runs_total(false);
+                }
+                Ok(None) => {}
+                Err(e) => tracing::error!(error = %e, "stale lockfile recovery failed"),
+            }
+            let deps = orchestrator_deps_from_config(&cfg, dir.clone(), maintenance_state.clone());
+            let window = cfg.backup.window_start_utc;
+            tokio::spawn(async move {
+                service_backup::scheduler::run(deps, window).await;
+            });
+            info!(
+                window = %window,
+                backup_dir = %dir.display(),
+                "backup scheduler started"
+            );
+        }
+    } else {
+        info!("backup feature disabled ([backup].enabled=false)");
+    }
+
     let addr = format!("{}:{}", cfg.server.listen_addr, cfg.server.port);
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
@@ -188,6 +237,73 @@ fn validate_backup_config_cli(config_path: &str) -> ! {
         }
         Err(e) => {
             eprintln!("[backup] config invalid: {e}");
+            std::process::exit(2);
+        }
+    }
+}
+
+/// Derive a Qdrant REST URL from the configured gRPC URL. Qdrant
+/// places its REST API on the gRPC port minus 1 by default
+/// (6334 gRPC ↔ 6333 REST). Returns the original URL if the port
+/// can't be parsed.
+fn derive_qdrant_rest_url(grpc_url: &str) -> String {
+    match url::Url::parse(grpc_url) {
+        Ok(mut u) => {
+            if let Some(p) = u.port() {
+                let _ = u.set_port(Some(p.saturating_sub(1)));
+            }
+            u.to_string().trim_end_matches('/').to_string()
+        }
+        Err(_) => grpc_url.to_string(),
+    }
+}
+
+fn orchestrator_deps_from_config(
+    cfg: &config::Config,
+    backup_dir: std::path::PathBuf,
+    state: MaintenanceState,
+) -> OrchestratorDeps {
+    OrchestratorDeps {
+        backup_dir,
+        pg_url: cfg.postgres.url.clone(),
+        qdrant_rest_url: derive_qdrant_rest_url(&cfg.qdrant.grpc_url),
+        qdrant_collection: cfg.qdrant.collection.clone(),
+        daily_count: cfg.backup.daily_count,
+        weekly_count: cfg.backup.weekly_count,
+        same_day_strategy: cfg.backup.same_day_strategy,
+        drop_remote_qdrant_snapshot: true,
+        state,
+    }
+}
+
+/// Sprint 006 (T028) — `klams-service --run-backup-now`.
+///
+/// Runs one backup synchronously and exits 0 on success / 2 on
+/// failure. Used by `just backup-once`. Never returns.
+async fn run_backup_now_cli(cfg: &config::Config, state: &MaintenanceState) -> ! {
+    let Some(dir) = cfg.backup.backup_dir.clone() else {
+        eprintln!("[backup] cannot --run-backup-now: backup_dir is unset");
+        std::process::exit(2);
+    };
+    if !cfg.backup.enabled {
+        eprintln!("[backup] note: enabled=false, but running ad-hoc anyway (--run-backup-now)");
+    }
+    service_backup::metrics::describe();
+    let deps = orchestrator_deps_from_config(cfg, dir, state.clone());
+    match service_backup::run_once(&deps).await {
+        Ok(run) => {
+            let ok = run.ok.unwrap_or(false);
+            println!(
+                "{} run_id={} duration_ms={} artifacts={}",
+                if ok { "OK" } else { "FAIL" },
+                run.run_id,
+                run.duration_ms().unwrap_or(0),
+                run.artifacts.len()
+            );
+            std::process::exit(if ok { 0 } else { 2 });
+        }
+        Err(e) => {
+            eprintln!("[backup] run_once error: {e}");
             std::process::exit(2);
         }
     }

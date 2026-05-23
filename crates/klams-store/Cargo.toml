@@ -24,3 +24,7 @@ sqlx = { workspace = true }
 qdrant-client = { workspace = true }
 reqwest = { workspace = true }
 sha2 = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

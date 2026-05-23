@@ -91,8 +91,7 @@ monitor-once:
 # so callers fail loudly instead of silently no-op'ing.
 
 backup-once:
-    @echo "backup-once: not yet implemented (sprint 006 T028)" >&2
-    @exit 1
+    cargo run --quiet -p klams-service -- --run-backup-now
 
 restore-from date *force:
     @echo "restore-from {{date}} {{force}}: not yet implemented (sprint 006 T034)" >&2
