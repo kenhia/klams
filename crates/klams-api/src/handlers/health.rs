@@ -18,7 +18,9 @@ use axum::{
     Json,
 };
 use klams_store::Store;
-use klams_types::{HealthSnapshot, HealthStatus, QueueStatus, SubsystemStatus};
+use klams_types::{
+    HealthSnapshot, HealthStatus, MaintenanceSnapshot, QueueStatus, SubsystemStatus,
+};
 use serde::Deserialize;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -134,6 +136,7 @@ pub async fn healthz<S: Store>(
         version: env!("CARGO_PKG_VERSION").to_string(),
         uptime_seconds: state.started_at.elapsed().as_secs(),
         contract: params.contract.filter(|v| v == "v1"),
+        maintenance: Some(MaintenanceSnapshot::from_state(&state.maintenance)),
     };
 
     let code = match agg {

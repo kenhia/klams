@@ -122,15 +122,15 @@ Tests live under `tests/integration/` and `tests/fixtures/`. Grafana JSON at `de
 
 ### Tests for User Story 3
 
-- [ ] T035 [P] [US3] Write failing integration test `tests/integration/maintenance_middleware.rs` covering FR-007 + FR-008 + SC-003: build an axum test app with the maintenance middleware + `MaintenanceState`; set `active=false`, all routes 200; set `active=true`, `POST /memory/facts` returns `503 + Retry-After + {"error":"maintenance_window_active","retry_after_seconds":N}`, `GET /memory/facts` returns 200, `POST /memory/search` returns 200, `POST /memory/context` returns 200
-- [ ] T036 [P] [US3] Write failing integration test (same file) covering the critical-write exception: a `POST /memory/dissents/{id}/promote` request carrying the `User`-source marker returns 200 while `active=true`; the same endpoint without the User marker returns 503
+- [X] T035 [P] [US3] Write failing integration test `tests/integration/maintenance_middleware.rs` covering FR-007 + FR-008 + SC-003: build an axum test app with the maintenance middleware + `MaintenanceState`; set `active=false`, all routes 200; set `active=true`, `POST /memory/facts` returns `503 + Retry-After + {"error":"maintenance_window_active","retry_after_seconds":N}`, `GET /memory/facts` returns 200, `POST /memory/search` returns 200, `POST /memory/context` returns 200
+- [X] T036 [P] [US3] Write failing integration test (same file) covering the critical-write exception: a `POST /memory/dissents/{id}/promote` request carrying the `User`-source marker returns 200 while `active=true`; the same endpoint without the User marker returns 503
 
 ### Implementation for User Story 3
 
-- [ ] T037 [US3] Define a `CriticalWrite` axum route extension marker in `crates/klams-api/src/middleware/maintenance.rs`; export a helper to attach it at router-build time
-- [ ] T038 [US3] Implement the `maintenance_layer(state: MaintenanceState)` axum `from_fn` middleware in `crates/klams-api/src/middleware/maintenance.rs` per research.md R-005: short-circuits non-GET, non-`CriticalWrite` requests with the 503 envelope when `state.active()`; computes `retry_after_seconds` from `RunningSnapshot::expected_end_at` with a 30s floor; make T035 green
-- [ ] T039 [US3] Wire `maintenance_layer` into the `klams-api` router in `crates/klams-api/src/lib.rs` (or wherever the router is composed); attach `CriticalWrite` to the dissent promote/discard handlers; verify with T036
-- [ ] T040 [US3] Extend `/healthz` response shape in `crates/klams-api/src/routes/health.rs` (or equivalent) to include the `maintenance: { active, run_id?, started_at?, expected_end_at? }` block per **FR-018** and data-model.md "HTTP envelope additions"; add a unit/integration test asserting both active and inactive shapes
+- [X] T037 [US3] Define a `CriticalWrite` axum route extension marker in `crates/klams-api/src/middleware/maintenance.rs`; export a helper to attach it at router-build time
+- [X] T038 [US3] Implement the `maintenance_layer(state: MaintenanceState)` axum `from_fn` middleware in `crates/klams-api/src/middleware/maintenance.rs` per research.md R-005: short-circuits non-GET, non-`CriticalWrite` requests with the 503 envelope when `state.active()`; computes `retry_after_seconds` from `RunningSnapshot::expected_end_at` with a 30s floor; make T035 green
+- [X] T039 [US3] Wire `maintenance_layer` into the `klams-api` router in `crates/klams-api/src/lib.rs` (or wherever the router is composed); attach `CriticalWrite` to the dissent promote/discard handlers; verify with T036
+- [X] T040 [US3] Extend `/healthz` response shape in `crates/klams-api/src/routes/health.rs` (or equivalent) to include the `maintenance: { active, run_id?, started_at?, expected_end_at? }` block per **FR-018** and data-model.md "HTTP envelope additions"; add a unit/integration test asserting both active and inactive shapes
 
 **Checkpoint**: US3 makes the backup consistent across Postgres + Qdrant. SC-003 + FR-007 + FR-008 green.
 

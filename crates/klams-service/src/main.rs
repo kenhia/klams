@@ -142,6 +142,7 @@ async fn main() -> Result<()> {
         started_at: std::time::Instant::now(),
         validators: Arc::new(ValidatorRegistry::with_defaults()),
         context_builder,
+        maintenance: maintenance_state.clone(),
     };
     let router = with_metrics(build_router(state, cfg.auth.bearer_token.clone()));
     klams_core::metrics::describe();

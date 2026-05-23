@@ -15,6 +15,7 @@ use axum_prometheus::PrometheusMetricLayer;
 use klams_core::context::ContextBuilder;
 use klams_core::{MemoryQueue, ValidatorRegistry};
 use klams_store::Store;
+use klams_types::MaintenanceState;
 use std::sync::Arc;
 use tower_http::trace::TraceLayer;
 
@@ -30,6 +31,9 @@ pub struct ApiState<S: Store> {
     /// `/memory/context` requests (the `cl100k_base` tables are
     /// expensive to load).
     pub context_builder: Arc<ContextBuilder>,
+    /// Sprint 006: backup-window flag. Default-constructed in test
+    /// fixtures; populated by the backup orchestrator in production.
+    pub maintenance: MaintenanceState,
 }
 
 impl<S: Store> Clone for ApiState<S> {
@@ -42,6 +46,7 @@ impl<S: Store> Clone for ApiState<S> {
             started_at: self.started_at,
             validators: Arc::clone(&self.validators),
             context_builder: Arc::clone(&self.context_builder),
+            maintenance: self.maintenance.clone(),
         }
     }
 }
@@ -90,13 +95,21 @@ pub fn build_router<S: Store>(state: ApiState<S>, bearer_token: impl Into<String
         .route("/memory/dissents/:id", get(handlers::dissents::get))
         .route(
             "/memory/dissents/:id/promote",
-            post(handlers::dissents::promote),
+            post(handlers::dissents::promote).route_layer(axum::Extension(
+                crate::middleware::maintenance::CriticalWrite,
+            )),
         )
         .route(
             "/memory/dissents/:id/discard",
-            post(handlers::dissents::discard),
+            post(handlers::dissents::discard).route_layer(axum::Extension(
+                crate::middleware::maintenance::CriticalWrite,
+            )),
         )
         .with_state(state.clone())
+        .layer(middleware::from_fn_with_state(
+            state.maintenance.clone(),
+            crate::middleware::maintenance::maintenance_check,
+        ))
         .layer(middleware::from_fn_with_state(
             auth_state,
             crate::auth::require_bearer,

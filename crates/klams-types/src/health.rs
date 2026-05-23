@@ -1,5 +1,6 @@
 //! Health snapshot wire format.
 
+use crate::maintenance::MaintenanceSnapshot;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -37,4 +38,8 @@ pub struct HealthSnapshot {
     /// the response shape they depend on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contract: Option<String>,
+    /// Sprint 006 FR-018: backup-window state. Omitted on responses
+    /// from binaries that don't run the backup orchestrator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maintenance: Option<MaintenanceSnapshot>,
 }

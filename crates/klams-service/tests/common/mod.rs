@@ -92,6 +92,7 @@ impl TestServer {
             started_at: std::time::Instant::now(),
             validators: Arc::new(klams_core::ValidatorRegistry::with_defaults()),
             context_builder: Arc::new(builder),
+            maintenance: klams_types::MaintenanceState::default(),
         };
         let router = build_router(state, bearer.clone());
 

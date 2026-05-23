@@ -12,6 +12,7 @@ pub mod entities;
 pub mod error;
 pub mod hash;
 pub mod health;
+pub mod maintenance;
 pub mod pipeline;
 pub mod requests;
 pub mod responses;
@@ -31,6 +32,7 @@ pub use entities::{Event, Fact, FactType, KnowledgeItem, Source};
 pub use error::ApiError;
 pub use hash::canonical_json_hash;
 pub use health::{HealthSnapshot, HealthStatus, QueueStatus, SubsystemStatus};
+pub use maintenance::{MaintenanceSnapshot, MaintenanceState, RunningSnapshot};
 pub use pipeline::{AppendEvent, IndexKnowledge, MemoryWrite, UpsertFact};
 pub use requests::{
     AppendEventRequest, IndexKnowledgeRequest, ListDissentsParams, ListEventsParams,

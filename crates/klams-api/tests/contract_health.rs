@@ -71,6 +71,7 @@ fn router() -> axum::Router {
                 klams_core::tokens::TokenCounter::new(klams_core::tokens::TokenMode::CharsDiv4),
                 100,
             )),
+            maintenance: klams_types::MaintenanceState::default(),
         },
         "test-token",
     )
@@ -141,4 +142,66 @@ async fn healthz_without_contract_query_unchanged() {
     let body = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert!(v.get("contract").is_none());
+}
+
+#[tokio::test]
+async fn healthz_includes_inactive_maintenance_block() {
+    let app = router();
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/healthz")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    let body = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let m = &v["maintenance"];
+    assert_eq!(m["active"], false);
+    assert!(m.get("run_id").is_none() || m["run_id"].is_null());
+    assert!(m.get("started_at").is_none() || m["started_at"].is_null());
+}
+
+#[tokio::test]
+async fn healthz_includes_active_maintenance_block_with_run_id() {
+    use klams_types::{MaintenanceState, RunningSnapshot};
+    use ulid::Ulid;
+
+    let (queue, _rx) = MemoryQueue::new(8);
+    let maintenance = MaintenanceState::new();
+    let run_id = Ulid::new();
+    let started_at = chrono::Utc::now();
+    maintenance.mark_active(RunningSnapshot {
+        run_id,
+        started_at,
+        expected_end_at: Some(started_at + chrono::Duration::seconds(120)),
+    });
+    let state = ApiState {
+        store: Arc::new(HealthyStore),
+        queue,
+        queue_capacity: 8,
+        workers: 2,
+        started_at: std::time::Instant::now(),
+        validators: std::sync::Arc::new(klams_core::ValidatorRegistry::with_defaults()),
+        context_builder: std::sync::Arc::new(klams_core::context::ContextBuilder::new(
+            klams_core::tokens::TokenCounter::new(klams_core::tokens::TokenMode::CharsDiv4),
+            100,
+        )),
+        maintenance,
+    };
+    let app = build_router(state, "test-token");
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/healthz")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    let body = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    let m = &v["maintenance"];
+    assert_eq!(m["active"], true);
+    assert_eq!(m["run_id"], run_id.to_string());
+    assert!(m["started_at"].is_string());
+    assert!(m["expected_end_at"].is_string());
 }
