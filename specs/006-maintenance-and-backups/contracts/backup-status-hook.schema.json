@@ -1,0 +1,187 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://klams.dev/contracts/backup-status-hook.schema.json",
+  "title": "klams backup status hook payload",
+  "description": "JSON document piped on stdin to the executable named by [backup] status_hook at each backup lifecycle event. Schema is forward-compatible: future klams sprints may bump schema_version and add fields; consumers MUST tolerate unknown fields.",
+  "type": "object",
+  "required": ["schema_version", "run_id", "event", "started_at", "ok"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Pinned to 1 for sprint 006. Future klams sprints may bump."
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "description": "ULID identifying this BackupRun. Stable across the 2-3 hook invocations for one run."
+    },
+    "event": {
+      "type": "string",
+      "enum": ["started", "finished", "failed"],
+      "description": "Lifecycle point. 'started' fires before pg_dump begins. Exactly one of 'finished' or 'failed' fires when the run completes."
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 / ISO 8601 UTC timestamp when the BackupRun was created."
+    },
+    "ended_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "RFC 3339 / ISO 8601 UTC timestamp when the BackupRun completed. Null on 'started'; required on 'finished' and 'failed'."
+    },
+    "duration_ms": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "Total wall-clock duration in milliseconds. Null on 'started'; required on 'finished' and 'failed'."
+    },
+    "artifacts": {
+      "type": "array",
+      "description": "Per-artifact results. Always present; empty array on 'started'.",
+      "items": {
+        "type": "object",
+        "required": ["kind", "path", "bytes", "duration_ms", "ok"],
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": ["postgres", "qdrant"]
+          },
+          "path": {
+            "type": "string",
+            "description": "Absolute path to the final (post-rename) artifact file. Set even when ok=false (the .partial file path may be useful for triage)."
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Size of the committed artifact file in bytes. 0 when ok=false."
+          },
+          "duration_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": ["string", "null"],
+            "description": "Single-line human-readable error message if ok=false; null when ok=true."
+          }
+        }
+      }
+    },
+    "ok": {
+      "type": "boolean",
+      "description": "Overall run status. Always false on 'started' (the run has not yet succeeded). True on 'finished' iff every artifact has ok=true. False on 'failed'."
+    },
+    "error": {
+      "type": ["string", "null"],
+      "description": "First per-run failure message; null on 'started' and on a clean 'finished'."
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "event": { "const": "started" } } },
+      "then": {
+        "properties": {
+          "ended_at":    { "type": "null" },
+          "duration_ms": { "type": "null" },
+          "ok":          { "const": false },
+          "artifacts":   { "maxItems": 0 },
+          "error":       { "type": "null" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "finished" } } },
+      "then": {
+        "required": ["ended_at", "duration_ms"],
+        "properties": {
+          "ok":    { "const": true },
+          "error": { "type": "null" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "failed" } } },
+      "then": {
+        "required": ["ended_at", "duration_ms", "error"],
+        "properties": {
+          "ok":    { "const": false },
+          "error": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "schema_version": 1,
+      "run_id": "01HZP4K8M3VG2X9D5Q7TYRJB6N",
+      "event": "started",
+      "started_at": "2026-05-23T10:00:00Z",
+      "ended_at": null,
+      "duration_ms": null,
+      "artifacts": [],
+      "ok": false,
+      "error": null
+    },
+    {
+      "schema_version": 1,
+      "run_id": "01HZP4K8M3VG2X9D5Q7TYRJB6N",
+      "event": "finished",
+      "started_at": "2026-05-23T10:00:00Z",
+      "ended_at": "2026-05-23T10:04:12Z",
+      "duration_ms": 252000,
+      "artifacts": [
+        {
+          "kind": "postgres",
+          "path": "/mnt/gratch/klams/postgres-2026-05-23.dump",
+          "bytes": 41827392,
+          "duration_ms": 31200,
+          "ok": true,
+          "error": null
+        },
+        {
+          "kind": "qdrant",
+          "path": "/mnt/gratch/klams/qdrant-2026-05-23.snapshot",
+          "bytes": 187443200,
+          "duration_ms": 220800,
+          "ok": true,
+          "error": null
+        }
+      ],
+      "ok": true,
+      "error": null
+    },
+    {
+      "schema_version": 1,
+      "run_id": "01HZP4K8M3VG2X9D5Q7TYRJB6N",
+      "event": "failed",
+      "started_at": "2026-05-23T10:00:00Z",
+      "ended_at": "2026-05-23T10:00:38Z",
+      "duration_ms": 38000,
+      "artifacts": [
+        {
+          "kind": "postgres",
+          "path": "/mnt/gratch/klams/postgres-2026-05-23.dump",
+          "bytes": 41827392,
+          "duration_ms": 31200,
+          "ok": true,
+          "error": null
+        },
+        {
+          "kind": "qdrant",
+          "path": "/mnt/gratch/klams/qdrant-2026-05-23.snapshot",
+          "bytes": 0,
+          "duration_ms": 6800,
+          "ok": false,
+          "error": "qdrant snapshot API returned 503: storage temporarily unavailable"
+        }
+      ],
+      "ok": false,
+      "error": "qdrant snapshot API returned 503: storage temporarily unavailable"
+    }
+  ]
+}
