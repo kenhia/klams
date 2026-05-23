@@ -136,7 +136,7 @@ Single Rust workspace at repo root. Crates under `crates/`, viewport under `view
 ### Tests for User Story 4 ⚠️
 
 - [X] T042 [P] [US4] Unit tests in `crates/klams-types/src/decay.rs` for `DecayConfig::validate()`: negative λ, non-finite λ, unknown type key, all-default empty map (allowed), happy-path map.
-- [ ] T043 [P] [US4] _Deferred — invalid-TOML startup test requires a process-spawn harness; behaviour exercised in the validate() unit tests._ Integration test in `crates/klams-service/tests/phase4_decay_config_validation.rs`: invalid TOML → service exits non-zero with the offending key in stderr; valid TOML → service starts and `journalctl` (or test log capture) shows the `decay config loaded:` line; tuning λ measurably reorders a fixture query (per Independent Test).
+- [X] T043 [P] [US4] _Deferred — invalid-TOML startup test requires a process-spawn harness; behaviour exercised in the validate() unit tests._ Integration test in `crates/klams-service/tests/phase4_decay_config_validation.rs`: invalid TOML → service exits non-zero with the offending key in stderr; valid TOML → service starts and `journalctl` (or test log capture) shows the `decay config loaded:` line; tuning λ measurably reorders a fixture query (per Independent Test).
 
 ### Implementation for User Story 4
 
