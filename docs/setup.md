@@ -119,6 +119,8 @@ commit — it executes the constitution's pre-commit gate
 | `health`          | `/healthz` curl + `scripts/verify-mvp.sh --light`. |
 | `verify`          | Full `scripts/verify-mvp.sh` (SC-001..SC-009 smoke). |
 | `viewport-build`  | `cargo xwin` Windows cross-build of the viewport. |
+| `viewport-build-linux` | Native Linux build of the viewport (also works in WSL Ubuntu — see [usage.md](usage.md) for the runtime libs). |
+| `viewport-run-linux`   | Build + launch the Linux viewport with `--debug`. |
 
 ## Decay tuning (sprint 002)
 

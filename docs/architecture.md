@@ -13,7 +13,8 @@ oriented counterpart to the formal design records in
 
 ```text
                        ┌─────────────────────────────┐
-                       │  klams-viewport (Windows)   │
+                       │  klams-viewport             │
+                       │  (Windows / Linux / WSL)    │
                        │  Tauri 2 + SvelteKit        │
                        │  reads-only desktop UI      │
                        └──────────────┬──────────────┘
@@ -69,15 +70,26 @@ oriented counterpart to the formal design records in
 Independent Cargo workspace + SvelteKit project. Tauri 2 native shell
 hosts a static SvelteKit bundle; the Rust side exposes a small
 `#[tauri::command]` surface that delegates to `klams-client`. Built on
-Linux via `cargo-xwin` targeting `x86_64-pc-windows-msvc`; ships as a
-single `klams-viewport.exe` with no installer.
+Linux via `cargo-xwin` targeting `x86_64-pc-windows-msvc` (`just
+viewport-build`); ships as a single `klams-viewport.exe` with no
+installer. A native Linux build is also supported (`just
+viewport-build-linux`) and runs unchanged under WSL Ubuntu via WSLg
+— useful for headless verification before cutting a Windows release.
 
 Runtime config (`bearer`, `service_url`) lives in
-`%APPDATA%\klams\config\viewport.toml`; the bearer is stored in the
-Windows Credential Manager via the `keyring` crate
-(`windows-native` backend). The `--debug` CLI flag opens WebView
-devtools and enables per-poll diagnostic logging to
-`%TEMP%\klams-viewport.log`; otherwise the app runs quietly.
+`%APPDATA%\klams\config\viewport.toml` on Windows and
+`$XDG_CONFIG_HOME/klams/viewport.toml` on Linux; the bearer is
+stored in the platform-native credential store via the `keyring`
+crate (`windows-native` on Windows, `linux-native` / Secret Service
+on Linux). The `--debug` CLI flag opens WebView devtools and enables
+per-poll diagnostic logging to `%TEMP%\klams-viewport.log` (or
+`/tmp/klams-viewport.log` on Linux); otherwise the app runs quietly.
+
+The `custom-protocol` Tauri feature is enabled by default in
+`viewport/src-tauri/Cargo.toml` so that bypass-CLI builds
+(`cargo xwin build --release` via `just viewport-build`) still embed
+the asset-protocol handler; without it the webview can't reach the
+bundled SvelteKit assets and stays at `about:blank`.
 
 ### 1.3 Stateful dependencies (Docker Compose)
 

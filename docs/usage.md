@@ -189,10 +189,17 @@ common task is a one-liner that matches what CI runs.
 | `health`          | `/healthz` curl + `scripts/verify-mvp.sh --light`. |
 | `verify`          | Full `scripts/verify-mvp.sh` (SC-001..SC-009). |
 | `viewport-build`  | `cargo xwin` Windows cross-build of the viewport. |
+| `viewport-build-linux` | Native Linux build of the viewport (also runs in WSL Ubuntu). |
+| `viewport-run-linux`   | Build + launch the Linux viewport with `--debug`. |
 
 `KLAMS_URL` and `KLAMS_TOKEN` are read from the environment (with
 local-dev defaults) so the same `just health` and `just verify`
 work against a local stack or a remote `kubs0`.
+
+> **WSL note**: The Linux viewport runs unchanged under WSL Ubuntu via
+> WSLg. Install the webkit2gtk runtime first:
+> `sudo apt install libwebkit2gtk-4.1-0 libjavascriptcoregtk-4.1-0 libsoup-3.0-0`.
+> Quick-tested launching both `./klams-viewport` and `./klams-viewport --debug`.
 
 ## Reference
 
@@ -375,3 +382,14 @@ and `klams_summarization_runs_total{mechanism="extractive"}` increments;
 the events section in `/memory/context` keeps shipping headlines
 ("3x compile, 2x test"). Watch `klams_summarization_lag_seconds` for
 the wall-clock age of the most recent successful cycle.
+
+### Viewport: Context Preview pane
+
+The viewport gains a `/preview` route backed by
+`viewport/src/lib/components/ContextPreview.svelte`. The pane has a
+query box, a 250 ms-debounced token-budget slider, a
+raw-vs-summarized toggle, and per-section token-count readouts.
+Each interaction calls `POST /memory/context` via the typed client
+in `viewport/src/lib/api/context.ts` and renders the returned bundle
+section-by-section, surfacing `sections[*].status` (`degraded`,
+etc.) and any `Retry-After` hint on 503.

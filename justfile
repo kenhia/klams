@@ -63,6 +63,16 @@ verify:
 viewport-build:
     cd viewport/src-tauri && cargo xwin build --release --target x86_64-pc-windows-msvc
 
+# Native Linux build of the viewport (webkit2gtk).
+# Requires: libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev.
+viewport-build-linux:
+    cd viewport && pnpm install --frozen-lockfile && pnpm build
+    cd viewport/src-tauri && cargo build --release
+
+# Run the natively-built Linux viewport with devtools enabled.
+viewport-run-linux: viewport-build-linux
+    ./viewport/target/release/klams-viewport --debug
+
 # sprint-003 T046 — systemd lifecycle helpers.
 install-systemd:
     cargo build --release --bin klams-service --bin klams-scanner --bin klams-monitor
