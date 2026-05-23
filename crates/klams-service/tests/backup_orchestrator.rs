@@ -22,6 +22,13 @@ fn qdrant_rest_url() -> String {
     std::env::var("TEST_QDRANT_REST_URL").unwrap_or_else(|_| "http://127.0.0.1:56333".into())
 }
 
+/// Optional pg-16 client tools directory (host `pg_dump` 18 emits
+/// `transaction_timeout` SETs which the test compose's pg 16 rejects).
+fn pg_bin_dir() -> Option<std::path::PathBuf> {
+    let candidate = std::path::PathBuf::from("/usr/lib/postgresql/16/bin");
+    candidate.is_dir().then_some(candidate)
+}
+
 async fn ensure_collection() {
     QdrantStore::connect(&qdrant_grpc_url(), TEST_COLLECTION, 384)
         .await
@@ -38,6 +45,7 @@ async fn run_once_produces_both_artifacts_and_clears_state() {
     let deps = OrchestratorDeps {
         backup_dir: dir.path().to_path_buf(),
         pg_url: pg_url(),
+        pg_bin_dir: pg_bin_dir(),
         qdrant_rest_url: qdrant_rest_url(),
         qdrant_collection: TEST_COLLECTION.into(),
         daily_count: 14,

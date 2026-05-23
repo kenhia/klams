@@ -36,6 +36,11 @@ async fn main() -> Result<()> {
     // the HTTP server or the scheduler. Used by `just backup-once`.
     let run_now = args.iter().any(|a| a == "--run-backup-now");
 
+    // Sprint 006 (T034) — `--restore-from <date> [--force]` driver.
+    // Same one-shot pattern as --run-backup-now.
+    let restore_from = arg_value(&args, "--restore-from");
+    let restore_force = args.iter().any(|a| a == "--force");
+
     let cfg = config::Config::from_path(&config_path)
         .with_context(|| format!("loading config from {config_path}"))?;
 
@@ -52,6 +57,9 @@ async fn main() -> Result<()> {
 
     if run_now {
         run_backup_now_cli(&cfg, &maintenance_state).await;
+    }
+    if let Some(date) = restore_from {
+        run_restore_from_cli(&cfg, &maintenance_state, &date, restore_force).await;
     }
 
     let postgres = PostgresStore::connect(&cfg.postgres.url, cfg.postgres.max_connections)
@@ -266,6 +274,7 @@ fn orchestrator_deps_from_config(
     OrchestratorDeps {
         backup_dir,
         pg_url: cfg.postgres.url.clone(),
+        pg_bin_dir: cfg.backup.pg_bin_dir.clone(),
         qdrant_rest_url: derive_qdrant_rest_url(&cfg.qdrant.grpc_url),
         qdrant_collection: cfg.qdrant.collection.clone(),
         daily_count: cfg.backup.daily_count,
@@ -304,6 +313,78 @@ async fn run_backup_now_cli(cfg: &config::Config, state: &MaintenanceState) -> !
         }
         Err(e) => {
             eprintln!("[backup] run_once error: {e}");
+            std::process::exit(2);
+        }
+    }
+}
+
+/// Find the value following a `--flag` in `args`, supporting both
+/// `--flag value` and `--flag=value` forms. Returns `None` if not
+/// present or if the next token also starts with `--`.
+fn arg_value(args: &[String], flag: &str) -> Option<String> {
+    let prefix = format!("{flag}=");
+    for (i, a) in args.iter().enumerate() {
+        if let Some(v) = a.strip_prefix(&prefix) {
+            return Some(v.to_string());
+        }
+        if a == flag {
+            if let Some(next) = args.get(i + 1) {
+                if !next.starts_with("--") {
+                    return Some(next.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Sprint 006 (T034) — `klams-service --restore-from <date> [--force]`.
+///
+/// Runs one restore synchronously and exits 0/2. Used by
+/// `just restore-from`. Never returns.
+async fn run_restore_from_cli(
+    cfg: &config::Config,
+    state: &MaintenanceState,
+    date: &str,
+    force: bool,
+) -> ! {
+    let Some(dir) = cfg.backup.backup_dir.clone() else {
+        eprintln!("[backup] cannot --restore-from: backup_dir is unset");
+        std::process::exit(2);
+    };
+    service_backup::metrics::describe();
+    let deps = orchestrator_deps_from_config(cfg, dir, state.clone());
+    let started = std::time::Instant::now();
+    let result = service_backup::restore::run_from(&deps, date, force, |evt| match evt {
+        service_backup::restore::RestoreProgress::Resolved { pg_path, q_path } => {
+            println!(
+                "resolved pg={} qdrant={}",
+                pg_path.display(),
+                q_path.display()
+            );
+        }
+        service_backup::restore::RestoreProgress::PgRestoreStarted => {
+            println!("postgres restore: started");
+        }
+        service_backup::restore::RestoreProgress::PgRestoreDone => {
+            println!("postgres restore: done");
+        }
+        service_backup::restore::RestoreProgress::QdrantRestoreStarted => {
+            println!("qdrant restore: started");
+        }
+        service_backup::restore::RestoreProgress::QdrantRestoreDone => {
+            println!("qdrant restore: done");
+        }
+    })
+    .await;
+    let elapsed_ms = started.elapsed().as_millis();
+    match result {
+        Ok(()) => {
+            println!("OK restore date={date} elapsed_ms={elapsed_ms}");
+            std::process::exit(0);
+        }
+        Err(e) => {
+            eprintln!("FAIL restore date={date} elapsed_ms={elapsed_ms} error={e}");
             std::process::exit(2);
         }
     }

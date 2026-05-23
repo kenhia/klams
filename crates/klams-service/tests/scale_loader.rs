@@ -22,8 +22,7 @@ mod common;
 
 use common::{
     fixture::{generate_with_seed, FixtureScale},
-    seed,
-    TestServer,
+    seed, TestServer,
 };
 
 #[tokio::test(flavor = "multi_thread")]

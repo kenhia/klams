@@ -12,6 +12,20 @@ use tokio::process::Command;
 
 use super::{ArtifactKind, BackupArtifact, BackupError};
 
+/// Resolve `pg_dump` / `pg_restore` to an absolute path when the
+/// operator pins `KLAMS_PG_BIN_DIR` (e.g. `/usr/lib/postgresql/16/bin`),
+/// otherwise fall back to `$PATH`. Required because a dump produced
+/// by a newer `pg_dump` may emit `SET` statements that an older
+/// server cannot restore (FR-002 / FR-013). `KLAMS_PG_BIN_DIR`
+/// overrides any caller-supplied directory; this lets operators
+/// override without redeploying config.
+fn pg_binary(name: &str, override_dir: Option<&Path>) -> PathBuf {
+    if let Some(dir) = std::env::var_os("KLAMS_PG_BIN_DIR") {
+        return PathBuf::from(dir).join(name);
+    }
+    override_dir.map_or_else(|| PathBuf::from(name), |d| d.join(name))
+}
+
 /// Run `pg_dump -Fc` against `pg_url`, writing the artifact under
 /// `backup_dir`. The filename is `postgres-<date>[-N].dump` where
 /// `N` is a numeric suffix used when a file for `date` already
@@ -26,6 +40,7 @@ pub async fn dump(
     pg_url: &str,
     date_str: &str,
     suffix: Option<u32>,
+    pg_bin_dir: Option<&Path>,
 ) -> Result<BackupArtifact, BackupError> {
     let started = Instant::now();
     let (final_path, partial_path) = artifact_paths(backup_dir, date_str, suffix);
@@ -34,7 +49,7 @@ pub async fn dump(
         tokio::fs::create_dir_all(parent).await?;
     }
 
-    let output = Command::new("pg_dump")
+    let output = Command::new(pg_binary("pg_dump", pg_bin_dir))
         .arg("-Fc")
         .arg("--no-owner")
         .arg("--no-privileges")
@@ -66,13 +81,22 @@ pub async fn dump(
 }
 
 /// Restore from a previously-captured `pg_dump -Fc` artifact into
-/// `pg_url`. Uses `pg_restore --clean --if-exists --no-owner`.
+/// `pg_url`. Uses `pg_restore --single-transaction --clean --if-exists --no-owner`.
+///
+/// The `--single-transaction` wrapper makes the whole restore
+/// atomic: any error rolls back both the `--clean` `DROP`s and the
+/// partial data load, leaving the target in its pre-call state.
 ///
 /// # Errors
 ///
 /// Returns [`BackupError::PgRestoreFailed`] on a non-zero exit.
-pub async fn restore(pg_url: &str, dump_path: &Path) -> Result<(), BackupError> {
-    let output = Command::new("pg_restore")
+pub async fn restore(
+    pg_url: &str,
+    dump_path: &Path,
+    pg_bin_dir: Option<&Path>,
+) -> Result<(), BackupError> {
+    let output = Command::new(pg_binary("pg_restore", pg_bin_dir))
+        .arg("--single-transaction")
         .arg("--clean")
         .arg("--if-exists")
         .arg("--no-owner")

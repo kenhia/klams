@@ -41,6 +41,8 @@ thiserror = { workspace = true }
 url = { workspace = true }
 chrono = { workspace = true }
 metrics = { workspace = true }
+reqwest = { workspace = true }
+sqlx = { workspace = true }
 ulid = "1"
 
 [dev-dependencies]

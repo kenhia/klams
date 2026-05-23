@@ -27,6 +27,7 @@ use self::lifecycle::{BackupRun, LockfileError};
 pub struct OrchestratorDeps {
     pub backup_dir: PathBuf,
     pub pg_url: String,
+    pub pg_bin_dir: Option<PathBuf>,
     pub qdrant_rest_url: String,
     pub qdrant_collection: String,
     pub daily_count: u32,
@@ -111,8 +112,14 @@ async fn run_once_inner(
         date_str,
         deps.same_day_strategy,
     );
-    let pg_art =
-        store_backup::postgres::dump(&deps.backup_dir, &deps.pg_url, date_str, pg_suffix).await;
+    let pg_art = store_backup::postgres::dump(
+        &deps.backup_dir,
+        &deps.pg_url,
+        date_str,
+        pg_suffix,
+        deps.pg_bin_dir.as_deref(),
+    )
+    .await;
     record_artifact(run, ArtifactKind::Postgres, pg_art);
 
     let q_suffix = next_suffix_for_date(

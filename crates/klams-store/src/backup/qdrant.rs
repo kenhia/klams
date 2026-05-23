@@ -119,24 +119,85 @@ pub async fn snapshot(
     })
 }
 
-/// Upload a previously-captured Qdrant snapshot file to a collection.
+/// Upload a previously-captured Qdrant snapshot file to `collection`
+/// via `POST /collections/{name}/snapshots/upload` and wait for the
+/// collection status to be `green` (or `yellow`, which qdrant uses
+/// while index optimization completes — both indicate readable data).
 ///
-/// Sprint 006 Phase 4 (T032) lands the real implementation. The MVP
-/// (Phase 3) returns an error so the call-site type-checks while
-/// `klams-service::backup::restore` is still a TODO.
+/// `rest_url` is the base URL of Qdrant's HTTP API.
 ///
 /// # Errors
 ///
-/// Always returns [`BackupError::QdrantSnapshot`] in the MVP.
-#[allow(clippy::unused_async)]
+/// Returns [`BackupError::QdrantHttp`] for transport errors,
+/// [`BackupError::QdrantSnapshot`] for non-2xx upload responses or
+/// if the collection does not reach `green`/`yellow` within ~60s,
+/// and [`BackupError::Io`] for filesystem errors reading `snapshot_path`.
 pub async fn restore(
-    _rest_url: &str,
-    _collection: &str,
-    _snapshot_path: &Path,
+    rest_url: &str,
+    collection: &str,
+    snapshot_path: &Path,
 ) -> Result<(), BackupError> {
-    Err(BackupError::QdrantSnapshot(
-        "qdrant restore not implemented yet (sprint 006 Phase 4 / T032)".into(),
-    ))
+    let bytes = tokio::fs::read(snapshot_path).await?;
+    let filename = snapshot_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("snapshot")
+        .to_string();
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60 * 60))
+        .build()
+        .map_err(|e| BackupError::QdrantHttp(format!("client build: {e}")))?;
+
+    let upload_url =
+        format!("{rest_url}/collections/{collection}/snapshots/upload?priority=snapshot");
+    let part = reqwest::multipart::Part::bytes(bytes).file_name(filename);
+    let form = reqwest::multipart::Form::new().part("snapshot", part);
+
+    let resp = client
+        .post(&upload_url)
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|e| BackupError::QdrantHttp(format!("upload POST: {e}")))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(BackupError::QdrantSnapshot(format!(
+            "upload returned {status}: {body}"
+        )));
+    }
+
+    let status_url = format!("{rest_url}/collections/{collection}");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        if std::time::Instant::now() >= deadline {
+            return Err(BackupError::QdrantSnapshot(format!(
+                "collection {collection} not ready within 60s of upload"
+            )));
+        }
+        let r = client
+            .get(&status_url)
+            .send()
+            .await
+            .map_err(|e| BackupError::QdrantHttp(format!("status GET: {e}")))?;
+        if r.status().is_success() {
+            #[derive(Deserialize)]
+            struct StatusResult {
+                status: String,
+            }
+            #[derive(Deserialize)]
+            struct StatusEnvelope {
+                result: StatusResult,
+            }
+            if let Ok(env) = r.json::<StatusEnvelope>().await {
+                if env.result.status == "green" || env.result.status == "yellow" {
+                    return Ok(());
+                }
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
 }
 
 fn artifact_paths(backup_dir: &Path, date_str: &str, suffix: Option<u32>) -> (PathBuf, PathBuf) {

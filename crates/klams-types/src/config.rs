@@ -45,6 +45,15 @@ pub struct BackupConfig {
     /// Bounded timeout for `status_hook` invocations. Default `10s`.
     #[serde(default = "default_hook_timeout", with = "humantime_serde")]
     pub status_hook_timeout: Duration,
+
+    /// Optional directory containing version-matched `pg_dump` /
+    /// `pg_restore` binaries (e.g. `/usr/lib/postgresql/16/bin`).
+    /// When `None`, the system PATH is used. Required when the host
+    /// runs newer Postgres client tools than the target server, since
+    /// `pg_dump` emits server-version-specific `SET` statements
+    /// (sprint 006 R-001 / FR-013). `KLAMS_PG_BIN_DIR` env overrides.
+    #[serde(default)]
+    pub pg_bin_dir: Option<PathBuf>,
 }
 
 const fn default_daily_count() -> u32 {
@@ -188,6 +197,7 @@ impl Default for BackupConfig {
             same_day_strategy: SameDayStrategy::Suffix,
             status_hook: None,
             status_hook_timeout: default_hook_timeout(),
+            pg_bin_dir: None,
         }
     }
 }

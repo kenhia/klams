@@ -94,8 +94,7 @@ backup-once:
     cargo run --quiet -p klams-service -- --run-backup-now
 
 restore-from date *force:
-    @echo "restore-from {{date}} {{force}}: not yet implemented (sprint 006 T034)" >&2
-    @exit 1
+    cargo run --quiet -p klams-service -- --restore-from {{date}} {{force}}
 
 backup-validate-config:
     cargo run --quiet -p klams-service -- --validate-backup-config
