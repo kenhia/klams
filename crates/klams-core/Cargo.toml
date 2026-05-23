@@ -23,3 +23,5 @@ metrics = { workspace = true }
 time = { workspace = true }
 sha2 = { workspace = true }
 unicode-normalization = { workspace = true }
+tiktoken-rs = { workspace = true }
+reqwest = { workspace = true }

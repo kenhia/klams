@@ -8,9 +8,9 @@
 use crate::commands::{AppState, ViewportError};
 use crate::config;
 use klams_types::{
-    Dissent, DissentPage, EventPage, Fact, FactPage, FactType, FactWriteOutcome, KnowledgeItem,
-    ListDissentsParams, ListEventsParams, ListFactsParams, SearchRequest, SearchResults,
-    SearchType, Source, UpsertFactRequest,
+    ContextBundle, ContextRequest, Dissent, DissentPage, EventPage, Fact, FactPage, FactType,
+    FactWriteOutcome, KnowledgeItem, ListDissentsParams, ListEventsParams, ListFactsParams,
+    SearchRequest, SearchResults, SearchType, Source, UpsertFactRequest,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -123,12 +123,13 @@ pub async fn list_events(
     args: ListEventsArgs,
 ) -> Result<EventPage, ViewportError> {
     let params = ListEventsParams {
-        task_id: args.task_id,
+        task_id: args.task_id.map(|u| u.to_string()),
         category: args.category,
         created_after: args.created_after.as_deref().and_then(parse_rfc3339_opt),
         created_before: args.created_before.as_deref().and_then(parse_rfc3339_opt),
         limit: args.limit,
         cursor: args.cursor,
+        ..ListEventsParams::default()
     };
     state.factory.list_events(params).await
 }
@@ -177,6 +178,16 @@ pub async fn get_knowledge_item(
     args: ByIdArgs,
 ) -> Result<KnowledgeItem, ViewportError> {
     state.factory.get_knowledge(args.id).await
+}
+
+/// Sprint 005 — `POST /memory/context`. Args envelope mirrors the
+/// wire `ContextRequest` exactly.
+#[tauri::command]
+pub async fn memory_context(
+    state: tauri::State<'_, AppState>,
+    args: ContextRequest,
+) -> Result<ContextBundle, ViewportError> {
+    state.factory.memory_context(args).await
 }
 
 #[derive(Debug, Serialize)]
@@ -433,6 +444,15 @@ mod tests {
                 message: "no".into(),
             })
         }
+        async fn memory_context(
+            &self,
+            _req: ContextRequest,
+        ) -> Result<ContextBundle, ViewportError> {
+            Err(ViewportError::Server {
+                status: 501,
+                message: "mock".into(),
+            })
+        }
         async fn health(&self) -> Result<HealthSnapshot, ViewportError> {
             Ok(HealthSnapshot {
                 status: HealthStatus::Ok,
@@ -446,6 +466,7 @@ mod tests {
                 },
                 version: "test".into(),
                 uptime_seconds: 0,
+                contract: None,
             })
         }
         async fn list_dissents(
@@ -602,6 +623,7 @@ mod tests {
             created_before: None,
             limit: Some(50),
             cursor: None,
+            ..ListEventsParams::default()
         };
         assert!(params.created_after.is_some());
         let _ = mock.list_events(params).await.unwrap();

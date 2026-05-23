@@ -12,6 +12,7 @@ use axum::{
     Router,
 };
 use axum_prometheus::PrometheusMetricLayer;
+use klams_core::context::ContextBuilder;
 use klams_core::{MemoryQueue, ValidatorRegistry};
 use klams_store::Store;
 use std::sync::Arc;
@@ -25,6 +26,10 @@ pub struct ApiState<S: Store> {
     pub workers: usize,
     pub started_at: std::time::Instant,
     pub validators: Arc<ValidatorRegistry>,
+    /// Sprint 005: pre-built context bundler shared across
+    /// `/memory/context` requests (the `cl100k_base` tables are
+    /// expensive to load).
+    pub context_builder: Arc<ContextBuilder>,
 }
 
 impl<S: Store> Clone for ApiState<S> {
@@ -36,6 +41,7 @@ impl<S: Store> Clone for ApiState<S> {
             workers: self.workers,
             started_at: self.started_at,
             validators: Arc::clone(&self.validators),
+            context_builder: Arc::clone(&self.context_builder),
         }
     }
 }
@@ -78,6 +84,7 @@ pub fn build_router<S: Store>(state: ApiState<S>, bearer_token: impl Into<String
         )
         .route("/memory/knowledge/:id", get(handlers::knowledge::get::<S>))
         .route("/memory/search", post(handlers::search::search::<S>))
+        .route("/memory/context", post(handlers::context::context::<S>))
         .route("/memory/policy", get(handlers::policy::get_policy))
         .route("/memory/dissents", get(handlers::dissents::list))
         .route("/memory/dissents/:id", get(handlers::dissents::get))

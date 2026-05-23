@@ -212,3 +212,102 @@ pub struct DecayRow {
     pub fact_type: FactType,
     pub age_seconds: f32,
 }
+
+// ---------------------------------------------------------------------------
+// Sprint 005 (Phase 4) traits: hybrid retrieval + summary storage.
+// ---------------------------------------------------------------------------
+
+use klams_types::{ContextItem, EventSummary, RetrievalFilters, RetrievalSource, SummaryMechanism};
+use time::Date;
+
+/// A ranked row returned by a single retrieval source before fusion.
+#[derive(Debug, Clone)]
+pub struct RankedRow {
+    pub source: RetrievalSource,
+    pub id: Uuid,
+    pub score: f32,
+    pub payload: serde_json::Value,
+}
+
+/// Narrow trait the `klams-core` `ContextBuilder` calls to fan out
+/// across retrieval sources and receive ranked rows ready for fusion.
+///
+/// Implementations live in `klams-store::composite` (sprint 005 T028).
+#[async_trait]
+pub trait HybridStore: Send + Sync + 'static {
+    /// Retrieve up to `per_source_top_k` rows from the given source
+    /// for the query, honoring `filters`. Returns rows already
+    /// scored by the source (no fusion happens here).
+    async fn retrieve(
+        &self,
+        source: RetrievalSource,
+        query: &str,
+        filters: &RetrievalFilters,
+        per_source_top_k: u32,
+    ) -> StoreResult<Vec<RankedRow>>;
+}
+
+/// Narrow trait the summarization task uses to persist event
+/// summaries to Postgres without depending on the full `Store`
+/// surface. Implementations live in `klams-store::postgres`
+/// (sprint 005 T037).
+#[async_trait]
+pub trait SummaryStore: Send + Sync + 'static {
+    /// Upsert an event summary keyed by `(host, category, day_bucket)`.
+    async fn upsert_event_summary(&self, summary: &EventSummary) -> StoreResult<()>;
+
+    /// Mark all event summaries for the cluster as invalidated.
+    async fn invalidate_event_summaries(
+        &self,
+        host: &str,
+        category: &str,
+        day_bucket: Date,
+    ) -> StoreResult<u64>;
+
+    /// Return the active (non-invalidated) summary for a cluster, if one
+    /// exists. The retrieval path uses this to substitute a summary
+    /// when raw events would blow the budget.
+    async fn get_event_summary(
+        &self,
+        host: &str,
+        category: &str,
+        day_bucket: Date,
+    ) -> StoreResult<Option<EventSummary>>;
+
+    /// List active summaries that match the filters; used by the
+    /// `ContextBuilder` to surface summaries through the retrieval
+    /// path.
+    async fn list_event_summaries(
+        &self,
+        filters: &RetrievalFilters,
+        limit: u32,
+    ) -> StoreResult<Vec<EventSummary>>;
+}
+
+/// Convenience helper: turn an `EventSummary` into a `ContextItem`
+/// of `ItemKind::Summary` with no token accounting (the caller fills
+/// in `tokens`).
+#[must_use]
+pub fn summary_to_context_item(summary: &EventSummary) -> ContextItem {
+    use klams_types::ItemKind;
+    ContextItem {
+        kind: ItemKind::Summary,
+        id: summary.id,
+        score: 0.0,
+        tokens: 0,
+        payload: serde_json::json!({
+            "host": summary.host,
+            "category": summary.category,
+            "day_bucket": summary.day_bucket.to_string(),
+            "source_count": summary.source_count,
+            "summary_text": summary.summary_text,
+            "mechanism": summary.mechanism.as_str(),
+        }),
+        source_ids: Some(summary.source_ids.clone()),
+    }
+}
+
+// Suppress dead-code warning for `SummaryMechanism` import in case
+// no other module references it from this crate; we re-use it via
+// `summary.mechanism`.
+const _: Option<SummaryMechanism> = None;

@@ -70,6 +70,7 @@ fn main() {
             memory::get_fact,
             memory::get_event,
             memory::get_knowledge_item,
+            memory::memory_context,
             memory::get_config,
             memory::set_config,
             memory::list_dissents,

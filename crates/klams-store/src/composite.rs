@@ -175,6 +175,38 @@ impl crate::DecayStore for CompositeStore {
     }
 }
 
+// Sprint 005 T037 — delegate the SummaryStore surface to Postgres.
+#[async_trait]
+impl crate::SummaryStore for CompositeStore {
+    async fn upsert_event_summary(&self, summary: &klams_types::EventSummary) -> StoreResult<()> {
+        crate::SummaryStore::upsert_event_summary(&self.postgres, summary).await
+    }
+    async fn invalidate_event_summaries(
+        &self,
+        host: &str,
+        category: &str,
+        day_bucket: time::Date,
+    ) -> StoreResult<u64> {
+        crate::SummaryStore::invalidate_event_summaries(&self.postgres, host, category, day_bucket)
+            .await
+    }
+    async fn get_event_summary(
+        &self,
+        host: &str,
+        category: &str,
+        day_bucket: time::Date,
+    ) -> StoreResult<Option<klams_types::EventSummary>> {
+        crate::SummaryStore::get_event_summary(&self.postgres, host, category, day_bucket).await
+    }
+    async fn list_event_summaries(
+        &self,
+        filters: &klams_types::RetrievalFilters,
+        limit: u32,
+    ) -> StoreResult<Vec<klams_types::EventSummary>> {
+        crate::SummaryStore::list_event_summaries(&self.postgres, filters, limit).await
+    }
+}
+
 // Suppress unused-import warning when not all variants are used yet.
 fn _dummy_error_ref() -> Option<StoreError> {
     None

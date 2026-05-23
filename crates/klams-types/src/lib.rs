@@ -4,6 +4,7 @@
 //! kept aligned manually. See `specs/001-initial-mvp/data-model.md`
 //! and `specs/001-initial-mvp/contracts/openapi.yaml`.
 
+pub mod context;
 pub mod decay;
 pub mod dissent;
 pub mod entities;
@@ -13,9 +14,15 @@ pub mod health;
 pub mod pipeline;
 pub mod requests;
 pub mod responses;
+pub mod retrieval;
 pub mod search;
+pub mod summary;
 pub mod validation;
 
+pub use context::{
+    ContextBundle, ContextItem, ContextRequest, ItemKind, RetrievalFilters, SectionMeta,
+    SectionSource, SectionStatus, TokenEncoderId,
+};
 pub use decay::DecayConfig;
 pub use dissent::{Dissent, DissentStatus, DissentSubmittedResponse, FactWriteOutcome};
 pub use entities::{Event, Fact, FactType, KnowledgeItem, Source};
@@ -31,5 +38,7 @@ pub use responses::{
     AcceptedId, DissentPage, EventPage, EventWriteResponse, FactPage, FactWriteResponse,
     IndexKnowledgeResponse, KnowledgeDeleteResponse, SearchResults, WritePath,
 };
+pub use retrieval::{FusionStrategy, HybridQueryPlan, RetrievalSource, WeightedNorm};
 pub use search::{SearchHit, SearchType};
+pub use summary::{DigestCluster, EventSummary, KnowledgeDigest, SummaryMechanism};
 pub use validation::{ErrorDetail, ValidationError, ValidationResult};

@@ -771,6 +771,146 @@ impl crate::DecayStore for PostgresStore {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Sprint 005 (T037) — SummaryStore impl.
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl crate::SummaryStore for PostgresStore {
+    async fn upsert_event_summary(&self, summary: &klams_types::EventSummary) -> StoreResult<()> {
+        sqlx::query(
+            r"
+            INSERT INTO summaries
+              (id, kind, host, category, day_bucket, source_count,
+               source_ids, summary_text, mechanism, generated_at,
+               invalidated_at)
+            VALUES ($1, 'event', $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            ON CONFLICT (kind, host, category, day_bucket) DO UPDATE SET
+              source_count   = EXCLUDED.source_count,
+              source_ids     = EXCLUDED.source_ids,
+              summary_text   = EXCLUDED.summary_text,
+              mechanism      = EXCLUDED.mechanism,
+              generated_at   = EXCLUDED.generated_at,
+              invalidated_at = NULL
+            ",
+        )
+        .bind(summary.id)
+        .bind(&summary.host)
+        .bind(&summary.category)
+        .bind(summary.day_bucket)
+        .bind(i32::try_from(summary.source_count).unwrap_or(i32::MAX))
+        .bind(&summary.source_ids)
+        .bind(&summary.summary_text)
+        .bind(summary.mechanism.as_str())
+        .bind(summary.generated_at)
+        .bind(summary.invalidated_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StoreError::Backend(format!("upsert_event_summary: {e}")))?;
+        Ok(())
+    }
+
+    async fn invalidate_event_summaries(
+        &self,
+        host: &str,
+        category: &str,
+        day_bucket: time::Date,
+    ) -> StoreResult<u64> {
+        let res = sqlx::query(
+            r"
+            UPDATE summaries SET invalidated_at = now()
+            WHERE kind = 'event' AND host = $1 AND category = $2
+              AND day_bucket = $3 AND invalidated_at IS NULL
+            ",
+        )
+        .bind(host)
+        .bind(category)
+        .bind(day_bucket)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StoreError::Backend(format!("invalidate_event_summaries: {e}")))?;
+        Ok(res.rows_affected())
+    }
+
+    async fn get_event_summary(
+        &self,
+        host: &str,
+        category: &str,
+        day_bucket: time::Date,
+    ) -> StoreResult<Option<klams_types::EventSummary>> {
+        let row = sqlx::query(
+            r"
+            SELECT id, host, category, day_bucket, source_count,
+                   source_ids, summary_text, mechanism,
+                   generated_at, invalidated_at
+            FROM summaries
+            WHERE kind = 'event' AND host = $1 AND category = $2
+              AND day_bucket = $3 AND invalidated_at IS NULL
+            ",
+        )
+        .bind(host)
+        .bind(category)
+        .bind(day_bucket)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| StoreError::Backend(format!("get_event_summary: {e}")))?;
+        row.as_ref().map(row_to_event_summary).transpose()
+    }
+
+    async fn list_event_summaries(
+        &self,
+        filters: &klams_types::RetrievalFilters,
+        limit: u32,
+    ) -> StoreResult<Vec<klams_types::EventSummary>> {
+        let lim = i64::from(limit.max(1));
+        let rows = sqlx::query(
+            r"
+            SELECT id, host, category, day_bucket, source_count,
+                   source_ids, summary_text, mechanism,
+                   generated_at, invalidated_at
+            FROM summaries
+            WHERE kind = 'event' AND invalidated_at IS NULL
+              AND ($1::text IS NULL OR host = $1)
+              AND ($2::timestamptz IS NULL OR generated_at >= $2)
+              AND ($3::timestamptz IS NULL OR generated_at <= $3)
+            ORDER BY day_bucket DESC, generated_at DESC
+            LIMIT $4
+            ",
+        )
+        .bind(filters.host.as_deref())
+        .bind(filters.since)
+        .bind(filters.until)
+        .bind(lim)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StoreError::Backend(format!("list_event_summaries: {e}")))?;
+        rows.iter().map(row_to_event_summary).collect()
+    }
+}
+
+fn row_to_event_summary(r: &sqlx::postgres::PgRow) -> StoreResult<klams_types::EventSummary> {
+    use klams_types::SummaryMechanism;
+    let mechanism_s: String = r.try_get("mechanism").map_err(map_decode)?;
+    let mechanism = match mechanism_s.as_str() {
+        "extractive" => SummaryMechanism::Extractive,
+        "llm" => SummaryMechanism::Llm,
+        other => return Err(StoreError::Backend(format!("unknown mechanism: {other}"))),
+    };
+    let source_count_i32: i32 = r.try_get("source_count").map_err(map_decode)?;
+    Ok(klams_types::EventSummary {
+        id: r.try_get("id").map_err(map_decode)?,
+        host: r.try_get("host").map_err(map_decode)?,
+        category: r.try_get("category").map_err(map_decode)?,
+        day_bucket: r.try_get("day_bucket").map_err(map_decode)?,
+        source_count: u32::try_from(source_count_i32.max(0)).unwrap_or(0),
+        source_ids: r.try_get("source_ids").map_err(map_decode)?,
+        summary_text: r.try_get("summary_text").map_err(map_decode)?,
+        mechanism,
+        generated_at: r.try_get("generated_at").map_err(map_decode)?,
+        invalidated_at: r.try_get("invalidated_at").map_err(map_decode)?,
+    })
+}
+
 #[cfg(test)]
 mod fts_tests {
     use super::*;

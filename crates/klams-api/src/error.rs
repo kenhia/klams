@@ -32,6 +32,8 @@ pub enum ApiError {
     TooLarge,
     #[error("queue at capacity")]
     QueueFull { retry_after: u32 },
+    #[error("all retrieval sources are unavailable")]
+    AllSourcesUnavailable { retry_after: u32 },
     #[error("not found: {resource}")]
     NotFound { resource: String },
     #[error("gone: {what}")]
@@ -79,7 +81,9 @@ impl ApiError {
             ApiError::TrustRequired { .. } => StatusCode::FORBIDDEN,
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
             ApiError::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
-            ApiError::QueueFull { .. } => StatusCode::SERVICE_UNAVAILABLE,
+            ApiError::QueueFull { .. } | ApiError::AllSourcesUnavailable { .. } => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
             ApiError::NotFound { .. } => StatusCode::NOT_FOUND,
             ApiError::Gone { .. } => StatusCode::GONE,
             ApiError::Internal { .. } => StatusCode::INTERNAL_SERVER_ERROR,
@@ -147,6 +151,14 @@ impl ApiError {
                 details: None,
                 current_version: None,
             },
+            ApiError::AllSourcesUnavailable { .. } => WireApiError {
+                code: "all_sources_unavailable".into(),
+                message: "all retrieval sources are unavailable; retry later".into(),
+                field: None,
+                request_id: None,
+                details: None,
+                current_version: None,
+            },
             ApiError::NotFound { resource } => WireApiError {
                 code: "not_found".into(),
                 message: format!("no such {resource}"),
@@ -189,6 +201,11 @@ impl IntoResponse for ApiError {
         let body = Json(self.wire());
         let mut response = (status, body).into_response();
         if let ApiError::QueueFull { retry_after } = self {
+            if let Ok(v) = HeaderValue::from_str(&retry_after.to_string()) {
+                response.headers_mut().insert(header::RETRY_AFTER, v);
+            }
+        }
+        if let ApiError::AllSourcesUnavailable { retry_after } = self {
             if let Ok(v) = HeaderValue::from_str(&retry_after.to_string()) {
                 response.headers_mut().insert(header::RETRY_AFTER, v);
             }

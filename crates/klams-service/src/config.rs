@@ -10,6 +10,22 @@ use std::path::Path;
 pub enum ConfigError {
     #[error("config load: {0}")]
     Load(#[from] Box<figment::Error>),
+    #[error("decay lambda for type `{type_}` must be >= 0, got {value}")]
+    DecayLambdaNegative { type_: String, value: f32 },
+    #[error("decay lambda for type `{type_}` must be finite")]
+    DecayLambdaNonFinite { type_: String },
+    #[error("decay config references unknown FactType `{type_}`")]
+    DecayUnknownType { type_: String },
+    #[error(
+        "retrieval fusion strategy `{value}` is not recognized (expected \"rrf\" or \"weighted\")"
+    )]
+    RetrievalFusionUnknown { value: String },
+    #[error("summarization.ollama_url `{value}` is not a valid URL: {source}")]
+    SummarizationOllamaUrlInvalid {
+        value: String,
+        #[source]
+        source: url::ParseError,
+    },
 }
 
 impl From<figment::Error> for ConfigError {
@@ -29,6 +45,12 @@ pub struct Config {
     pub logging: LoggingConfig,
     #[serde(default)]
     pub decay: DecayConfig,
+    #[serde(default)]
+    pub retrieval: RetrievalConfig,
+    #[serde(default)]
+    pub tokens: TokensConfig,
+    #[serde(default)]
+    pub summarization: SummarizationConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,6 +109,129 @@ pub struct LoggingConfig {
 /// the canonical type from `klams-types` so the runtime config and
 /// the decay task agree on field layout.
 pub use klams_types::DecayConfig;
+
+// ---------------------------------------------------------------------------
+// Sprint 005 (Phase 4) configuration blocks.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetrievalConfig {
+    #[serde(default = "default_fusion")]
+    pub fusion: String,
+    #[serde(default = "default_rrf_k")]
+    pub rrf_k: u32,
+    #[serde(default = "default_per_source_top_k")]
+    pub per_source_top_k: u32,
+    #[serde(default)]
+    pub weights: Option<RetrievalWeights>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetrievalWeights {
+    pub vector: f32,
+    pub fts: f32,
+    #[serde(default = "default_weighted_norm")]
+    pub normalization: String,
+}
+
+fn default_fusion() -> String {
+    "rrf".into()
+}
+fn default_rrf_k() -> u32 {
+    60
+}
+fn default_per_source_top_k() -> u32 {
+    100
+}
+fn default_weighted_norm() -> String {
+    "zscore".into()
+}
+
+impl Default for RetrievalConfig {
+    fn default() -> Self {
+        Self {
+            fusion: default_fusion(),
+            rrf_k: default_rrf_k(),
+            per_source_top_k: default_per_source_top_k(),
+            weights: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokensConfig {
+    #[serde(default = "default_tokens_mode")]
+    pub mode: String,
+}
+
+fn default_tokens_mode() -> String {
+    "tiktoken".into()
+}
+
+impl Default for TokensConfig {
+    fn default() -> Self {
+        Self {
+            mode: default_tokens_mode(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SummarizationConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_event_cluster_min")]
+    pub event_cluster_min: u32,
+    #[serde(default = "default_knowledge_stale_days")]
+    pub knowledge_stale_days: u32,
+    #[serde(default = "default_knowledge_cluster_min")]
+    pub knowledge_cluster_min: u32,
+    #[serde(default = "default_true")]
+    pub llm_fallback: bool,
+    #[serde(default = "default_ollama_url")]
+    pub ollama_url: String,
+    #[serde(default = "default_ollama_model")]
+    pub ollama_model: String,
+    #[serde(default = "default_summarization_interval")]
+    pub task_interval_seconds: u64,
+}
+
+fn default_true() -> bool {
+    true
+}
+fn default_event_cluster_min() -> u32 {
+    50
+}
+fn default_knowledge_stale_days() -> u32 {
+    90
+}
+fn default_knowledge_cluster_min() -> u32 {
+    20
+}
+fn default_ollama_url() -> String {
+    "http://127.0.0.1:11434".into()
+}
+fn default_ollama_model() -> String {
+    "phi3:medium".into()
+}
+fn default_summarization_interval() -> u64 {
+    3600
+}
+
+impl Default for SummarizationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            event_cluster_min: default_event_cluster_min(),
+            knowledge_stale_days: default_knowledge_stale_days(),
+            knowledge_cluster_min: default_knowledge_cluster_min(),
+            llm_fallback: true,
+            ollama_url: default_ollama_url(),
+            ollama_model: default_ollama_model(),
+            task_interval_seconds: default_summarization_interval(),
+        }
+    }
+}
 
 impl LogResolvedDecay for DecayConfig {
     fn log_resolved(&self) {
@@ -152,14 +297,21 @@ mod tests {
         assert!(cfg.queue.capacity >= 1);
         assert!(cfg.queue.workers >= 1);
         assert_eq!(cfg.logging.format, "json");
-        // [decay] is commented out in the shipped example, so the
-        // defaults must apply.
+        // Sprint 005: [decay.lambda] is now uncommented in the
+        // shipped example; the per-type values match the documented
+        // defaults so behavior is unchanged.
         assert_eq!(cfg.decay.task_interval_seconds, 3600);
         assert_eq!(cfg.decay.batch_size, 500);
-        assert!(cfg.decay.lambda.is_empty());
+        assert_eq!(cfg.decay.lambda.len(), 3);
         assert!((cfg.decay.lambda_for(FactType::UserFact) - 1e-9).abs() < f32::EPSILON);
         assert!((cfg.decay.lambda_for(FactType::TaskFact) - 1e-6).abs() < f32::EPSILON);
         assert!((cfg.decay.lambda_for(FactType::EnvFact) - 1e-9).abs() < f32::EPSILON);
+        // Sprint 005: new [retrieval], [tokens], [summarization] blocks.
+        assert_eq!(cfg.retrieval.fusion, "rrf");
+        assert_eq!(cfg.retrieval.rrf_k, 60);
+        assert_eq!(cfg.tokens.mode, "tiktoken");
+        assert!(cfg.summarization.enabled);
+        assert_eq!(cfg.summarization.ollama_model, "phi3:medium");
     }
 
     /// T012(a): a config with no `[decay]` block loads defaults.

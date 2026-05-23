@@ -12,8 +12,8 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "klams viewport",
-        "url": "index.html",
         "width": 1200,
         "height": 800,
         "resizable": true,

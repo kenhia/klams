@@ -18,11 +18,11 @@
 
 use klams_core::PolicyTable;
 use klams_types::{
-    AcceptedId, ApiError as WireError, AppendEventRequest, Dissent, DissentPage,
-    DissentSubmittedResponse, EventPage, Fact, FactPage, FactWriteOutcome, HealthSnapshot,
-    IndexKnowledgeRequest, IndexKnowledgeResponse, KnowledgeItem, ListDissentsParams,
-    ListEventsParams, ListFactsParams, SearchRequest, SearchResults, SearchType, Source,
-    UpsertFactRequest,
+    AcceptedId, ApiError as WireError, AppendEventRequest, ContextBundle, ContextRequest, Dissent,
+    DissentPage, DissentSubmittedResponse, EventPage, Fact, FactPage, FactWriteOutcome,
+    HealthSnapshot, IndexKnowledgeRequest, IndexKnowledgeResponse, KnowledgeItem,
+    ListDissentsParams, ListEventsParams, ListFactsParams, SearchRequest, SearchResults,
+    SearchType, Source, UpsertFactRequest,
 };
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use reqwest::StatusCode;
@@ -284,6 +284,11 @@ impl Client {
 
     pub async fn search(&self, req: &SearchRequest) -> ClientResult<SearchResults> {
         self.post_json("/memory/search", req).await
+    }
+
+    /// `POST /memory/context` — sprint 005 hybrid retrieval bundle.
+    pub async fn memory_context(&self, req: &ContextRequest) -> ClientResult<ContextBundle> {
+        self.post_json("/memory/context", req).await
     }
 
     /// Convenience wrapper: knowledge-only search via the unified

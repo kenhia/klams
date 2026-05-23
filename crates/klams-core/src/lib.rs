@@ -1,9 +1,13 @@
 //! Bounded write queue, worker pool, and `MemoryWrite` dispatch.
 
+pub mod context;
 pub mod decay;
+pub mod hybrid;
 pub mod metrics;
 pub mod policy;
 pub mod queue;
+pub mod summarize;
+pub mod tokens;
 pub mod validate;
 pub mod worker;
 

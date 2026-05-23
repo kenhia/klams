@@ -13,6 +13,7 @@ name = "klams-viewport"
 path = "src/main.rs"
 
 [features]
+default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
 
 [build-dependencies]

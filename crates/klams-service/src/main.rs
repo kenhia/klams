@@ -46,11 +46,57 @@ async fn main() -> Result<()> {
         Arc::new(CompositeStore::new(postgres, qdrant, embedder).with_bump_sender(bumper.sender()));
 
     cfg.decay.log_resolved();
+    if let Err(err) = cfg.decay.validate() {
+        tracing::error!(error = %err, "invalid [decay] config; refusing to start");
+        std::process::exit(2);
+    }
+    klams_core::metrics::incr_decay_config_reloads();
+    info!(
+        task_fact_lambda = cfg.decay.lambda_for(klams_types::FactType::TaskFact),
+        user_fact_lambda = cfg.decay.lambda_for(klams_types::FactType::UserFact),
+        env_fact_lambda = cfg.decay.lambda_for(klams_types::FactType::EnvFact),
+        interval = cfg.decay.task_interval_seconds,
+        batch = cfg.decay.batch_size,
+        "decay config loaded"
+    );
     let decay_task = DecayTask::new(cfg.decay.clone(), Arc::clone(&store)).with_bumps_rx(bumps_rx);
     let _decay_handle = tokio::spawn(decay_task.run());
 
     let (queue, rx) = MemoryQueue::new(cfg.queue.capacity);
     let _workers = spawn_workers(cfg.queue.workers, rx, Arc::clone(&store));
+
+    let token_mode = klams_core::tokens::TokenMode::from_config_str(&cfg.tokens.mode);
+    let token_counter = klams_core::tokens::TokenCounter::new(token_mode);
+    info!(
+        encoder = token_counter.encoder_id().as_str(),
+        configured_mode = %cfg.tokens.mode,
+        "context token counter ready"
+    );
+    let context_builder = Arc::new(
+        klams_core::context::ContextBuilder::new(token_counter, cfg.retrieval.per_source_top_k)
+            .with_summary_store(Arc::clone(&store) as Arc<dyn klams_store::SummaryStore>),
+    );
+
+    // Sprint 005 (T040) — spawn the summarization task.
+    {
+        use klams_core::summarize::{
+            StoreEventSource, SummarizationConfig as SCfg, SummarizationTask,
+        };
+        let scfg = SCfg {
+            enabled: cfg.summarization.enabled,
+            event_cluster_min: cfg.summarization.event_cluster_min,
+            llm_fallback: cfg.summarization.llm_fallback,
+            task_interval: std::time::Duration::from_secs(cfg.summarization.task_interval_seconds),
+            ollama_url: cfg.summarization.ollama_url.clone(),
+            ollama_model: cfg.summarization.ollama_model.clone(),
+        };
+        let task = SummarizationTask::new(
+            scfg,
+            Arc::new(StoreEventSource::new(Arc::clone(&store))),
+            Arc::clone(&store) as Arc<dyn klams_store::SummaryStore>,
+        );
+        let _ = task.spawn();
+    }
 
     let state = ApiState {
         store: Arc::clone(&store),
@@ -59,6 +105,7 @@ async fn main() -> Result<()> {
         workers: cfg.queue.workers,
         started_at: std::time::Instant::now(),
         validators: Arc::new(ValidatorRegistry::with_defaults()),
+        context_builder,
     };
     let router = with_metrics(build_router(state, cfg.auth.bearer_token.clone()));
     klams_core::metrics::describe();

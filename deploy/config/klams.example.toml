@@ -52,7 +52,44 @@ level = "info"
 #
 # Per-FactType lambda values (decay rate). Larger = decays faster.
 # Defaults: UserFact = 1e-9, TaskFact = 1e-6, EnvFact = 1e-9.
-# [decay.lambda]
-# UserFact = 1e-9
-# TaskFact = 1e-6
-# EnvFact  = 1e-9
+[decay.lambda]
+UserFact = 1e-9
+TaskFact = 1e-6
+EnvFact  = 1e-9
+
+# ---------------------------------------------------------------------------
+# Sprint 005 (Phase 4) — advanced retrieval, summarization, token accounting.
+# ---------------------------------------------------------------------------
+
+[retrieval]
+# Fusion strategy for hybrid retrieval. "rrf" (default) is
+# Reciprocal Rank Fusion: score(d) = Σ_s 1 / (k + rank_s(d)).
+# "weighted" uses per-source weights with normalization.
+fusion           = "rrf"
+rrf_k            = 60       # used when fusion = "rrf"
+per_source_top_k = 100      # each retrieval source returns top-k before fusion
+
+# Used only when fusion = "weighted":
+# [retrieval.weights]
+# vector = 1.0
+# fts    = 1.0
+# normalization = "zscore"  # "zscore" | "minmax"
+
+[tokens]
+# Token-cost estimator for /memory/context budget accounting.
+# "tiktoken" uses cl100k_base (matches OpenAI/Anthropic chat tokenizers).
+# "fallback" uses chars/4 — use this when tiktoken data files are absent.
+mode = "tiktoken"
+
+[summarization]
+# Background summarization task. When disabled, /memory/context still
+# works — it just falls back to raw items + truncation.
+enabled                = true
+event_cluster_min      = 50     # min events per (host, category, day_bucket) to summarize
+knowledge_stale_days   = 90     # last_used_at AND updated_at older than this = stale
+knowledge_cluster_min  = 20     # min stale chunks per (repo, file_prefix) cluster
+llm_fallback           = true   # use Ollama Phi-3-medium when extractive output is inadequate
+ollama_url             = "http://127.0.0.1:11434"
+ollama_model           = "phi3:medium"
+task_interval_seconds  = 3600
+
