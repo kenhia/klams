@@ -2,9 +2,9 @@
 //!
 //! Loads runtime config, initializes logging, connects to Postgres /
 //! Qdrant / TEI, spawns the worker pool, and serves the HTTP API.
+//! Module bodies live in the sibling library crate (`src/lib.rs`).
 
-pub mod config;
-pub mod logging;
+use klams_service::{config, logging};
 
 use anyhow::{Context, Result};
 use klams_api::{build_router, with_metrics, ApiState};
@@ -14,12 +14,21 @@ use std::sync::Arc;
 use tokio::signal;
 use tracing::info;
 
-use crate::config::LogResolvedDecay;
+use klams_service::config::LogResolvedDecay;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let config_path =
         std::env::var("KLAMS_CONFIG").unwrap_or_else(|_| "/ai/klams/config/klams.toml".to_string());
+
+    // Sprint 006 (T013) — `--validate-backup-config` early-out.
+    // Loads the config, prints a single line, exits 0/2 without
+    // starting the service or contacting any backend.
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--validate-backup-config") {
+        validate_backup_config_cli(&config_path);
+    }
+
     let cfg = config::Config::from_path(&config_path)
         .with_context(|| format!("loading config from {config_path}"))?;
 
@@ -141,5 +150,45 @@ async fn shutdown_signal() {
     tokio::select! {
         () = ctrl_c => {}
         () = terminate => {}
+    }
+}
+
+/// Sprint 006 (T013) — `klams-service --validate-backup-config`.
+///
+/// Loads `klams.toml`, runs [`BackupConfig::validate`], prints either
+/// `OK: ...` or the error, and exits with `0` on success or `2` on
+/// any error. No backends are contacted, no logging is initialized.
+/// Never returns.
+fn validate_backup_config_cli(config_path: &str) -> ! {
+    let cfg = match config::Config::from_path(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("config load error ({config_path}): {e}");
+            std::process::exit(2);
+        }
+    };
+    match cfg.backup.validate() {
+        Ok(()) => {
+            if cfg.backup.enabled {
+                println!(
+                    "OK: [backup] enabled, dir={}, window_start_utc={}, daily={}, weekly={}",
+                    cfg.backup
+                        .backup_dir
+                        .as_ref()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_default(),
+                    cfg.backup.window_start_utc,
+                    cfg.backup.daily_count,
+                    cfg.backup.weekly_count,
+                );
+            } else {
+                println!("OK: [backup] disabled (enabled=false)");
+            }
+            std::process::exit(0);
+        }
+        Err(e) => {
+            eprintln!("[backup] config invalid: {e}");
+            std::process::exit(2);
+        }
     }
 }

@@ -9,6 +9,10 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[lib]
+name = "klams_service"
+path = "src/lib.rs"
+
 [[bin]]
 name = "klams-service"
 path = "src/main.rs"
@@ -21,6 +25,7 @@ klams-api = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 toml = { workspace = true }
 figment = { workspace = true }
 tracing = { workspace = true }
@@ -28,6 +33,9 @@ tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 url = { workspace = true }
+chrono = { workspace = true }
+metrics = { workspace = true }
+ulid = "1"
 
 [dev-dependencies]
 klams-client = { workspace = true }

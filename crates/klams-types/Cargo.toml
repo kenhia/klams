@@ -16,3 +16,7 @@ uuid = { workspace = true }
 time = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
+humantime-serde = { workspace = true }
+
+[dev-dependencies]
+toml = { workspace = true }

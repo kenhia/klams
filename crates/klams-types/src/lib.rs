@@ -4,6 +4,7 @@
 //! kept aligned manually. See `specs/001-initial-mvp/data-model.md`
 //! and `specs/001-initial-mvp/contracts/openapi.yaml`.
 
+pub mod config;
 pub mod context;
 pub mod decay;
 pub mod dissent;
@@ -19,6 +20,7 @@ pub mod search;
 pub mod summary;
 pub mod validation;
 
+pub use config::{BackupConfig, BackupConfigError, SameDayStrategy, WindowStartUtc};
 pub use context::{
     ContextBundle, ContextItem, ContextRequest, ItemKind, RetrievalFilters, SectionMeta,
     SectionSource, SectionStatus, TokenEncoderId,

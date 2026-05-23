@@ -93,3 +93,22 @@ ollama_url             = "http://127.0.0.1:11434"
 ollama_model           = "phi3:medium"
 task_interval_seconds  = 3600
 
+# ---------------------------------------------------------------------------
+# Sprint 006 (Phase 5) — maintenance window + backups.
+# ---------------------------------------------------------------------------
+#
+# Disabled by default. To enable nightly backups: uncomment, set
+# `enabled = true`, point `backup_dir` at a writable filesystem path
+# (typically a NAS mount), and pick a UTC `window_start_utc`.
+#
+# [backup]
+# enabled              = false                  # master switch; default off
+# backup_dir           = "/ai/klams/backups"    # written atomically via .partial -> rename
+# window_start_utc     = "07:00"                # HH:MM, UTC only (no DST drift)
+# daily_count          = 14                     # newest N distinct dates per kind
+# weekly_count         = 4                      # newest N Sundays per kind
+# same_day_strategy    = "suffix"               # "suffix" (default) | "overwrite"
+# status_hook          = "/usr/local/bin/klams-backup-shim"  # optional executable
+# status_hook_timeout  = "10s"                  # bounded; misbehaving hook can't stall a backup
+
+

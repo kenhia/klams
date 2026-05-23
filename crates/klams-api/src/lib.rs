@@ -6,6 +6,7 @@
 pub mod auth;
 pub mod error;
 pub mod handlers;
+pub mod middleware;
 pub mod router;
 
 pub use auth::{require_bearer, AuthState};

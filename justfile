@@ -86,6 +86,25 @@ monitor-once:
     KLAMS_URL={{klams_url}} KLAMS_TOKEN={{klams_token}} \
         cargo run --release --bin klams-monitor -- --once
 
+# sprint 006 — maintenance + backup operator surface.
+# All four are stubs until the sprint phases land them; they exit 1
+# so callers fail loudly instead of silently no-op'ing.
+
+backup-once:
+    @echo "backup-once: not yet implemented (sprint 006 T028)" >&2
+    @exit 1
+
+restore-from date *force:
+    @echo "restore-from {{date}} {{force}}: not yet implemented (sprint 006 T034)" >&2
+    @exit 1
+
+backup-validate-config:
+    cargo run --quiet -p klams-service -- --validate-backup-config
+
+backup-size:
+    @echo "backup-size: not yet implemented (sprint 006 T015)" >&2
+    @exit 1
+
 # Atomic rollback: swap *.prev back into place for each klams binary,
 # then restart the live services. No-op when no .prev exists.
 rollback:

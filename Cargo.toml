@@ -78,9 +78,14 @@ base64 = "0.22"
 unicode-normalization = "0.1"
 tiktoken-rs = "0.11"
 url = "2"
+humantime-serde = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 
 # test helpers
 wiremock = "0.6"
+jsonschema = { version = "0.18", default-features = false }
+tempfile = "3"
+filetime = "0.2"
 
 # workspace member dependencies
 klams-types = { path = "crates/klams-types" }

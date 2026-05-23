@@ -29,12 +29,12 @@ Tests live under `tests/integration/` and `tests/fixtures/`. Grafana JSON at `de
 
 **Purpose**: Stand up the empty module trees, dev fixtures, and `just` recipe stubs so subsequent phases land into a working skeleton.
 
-- [ ] T001 Create empty backup module skeleton in `crates/klams-store/src/backup/mod.rs` re-exporting `postgres`, `qdrant`, `retention` submodules (declare with `pub mod` and empty submodule files) and wire `pub mod backup;` into `crates/klams-store/src/lib.rs`
-- [ ] T002 Create empty backup module skeleton in `crates/klams-service/src/backup/mod.rs` declaring `pub mod scheduler; pub mod lifecycle; pub mod hook; pub mod metrics;` plus empty submodule files; wire `pub mod backup;` into `crates/klams-service/src/lib.rs`
-- [ ] T003 [P] Create empty maintenance middleware module at `crates/klams-api/src/middleware/maintenance.rs` and wire `pub mod maintenance;` into `crates/klams-api/src/middleware/mod.rs`
-- [ ] T004 [P] Add `[backup]` block (commented-out, defaults) to `deploy/config/klams.example.toml` per data-model.md "BackupConfig"; pin `enabled = false`
-- [ ] T005 [P] Add `humantime-serde = "1"` and `jsonschema = "0.18"` (dev-dep, gated by `cfg(test)`) to the relevant `Cargo.toml` files (`klams-types` for humantime-serde, workspace dev-deps for jsonschema) per data-model.md serializer + R-004 hook contract test plan
-- [ ] T006 [P] Add `just` recipe stubs `backup-once`, `restore-from <date>`, `backup-validate-config`, and `backup-size` to `justfile`; each prints `not yet implemented` and `exit 1` so the surface area is reserved before phases land
+- [X] T001 Create empty backup module skeleton in `crates/klams-store/src/backup/mod.rs` re-exporting `postgres`, `qdrant`, `retention` submodules (declare with `pub mod` and empty submodule files) and wire `pub mod backup;` into `crates/klams-store/src/lib.rs`
+- [X] T002 Create empty backup module skeleton in `crates/klams-service/src/backup/mod.rs` declaring `pub mod scheduler; pub mod lifecycle; pub mod hook; pub mod metrics;` plus empty submodule files; wire `pub mod backup;` into `crates/klams-service/src/lib.rs`
+- [X] T003 [P] Create empty maintenance middleware module at `crates/klams-api/src/middleware/maintenance.rs` and wire `pub mod maintenance;` into `crates/klams-api/src/middleware/mod.rs`
+- [X] T004 [P] Add `[backup]` block (commented-out, defaults) to `deploy/config/klams.example.toml` per data-model.md "BackupConfig"; pin `enabled = false`
+- [X] T005 [P] Add `humantime-serde = "1"` and `jsonschema = "0.18"` (dev-dep, gated by `cfg(test)`) to the relevant `Cargo.toml` files (`klams-types` for humantime-serde, workspace dev-deps for jsonschema) per data-model.md serializer + R-004 hook contract test plan
+- [X] T006 [P] Add `just` recipe stubs `backup-once`, `restore-from <date>`, `backup-validate-config`, and `backup-size` to `justfile`; each prints `not yet implemented` and `exit 1` so the surface area is reserved before phases land
 
 ---
 
@@ -42,15 +42,17 @@ Tests live under `tests/integration/` and `tests/fixtures/`. Grafana JSON at `de
 
 **Purpose**: Land the config types, shared state, and sizing fixture that every story phase depends on. NO user story work begins until this phase is complete.
 
-- [ ] T007 Write failing unit tests for `BackupConfig` deserialization and validation in `crates/klams-types/src/config.rs` (test module): valid TOML round-trips; invalid `window_start_utc` (`"25:00"`, `"10"`, `""`) returns parse error; defaults for `daily_count=14`, `weekly_count=4`, `same_day_strategy=Suffix`, `status_hook_timeout=10s`; missing `backup_dir` with `enabled=true` is rejected by `BackupConfig::validate()`
-- [ ] T008 Implement `BackupConfig`, `WindowStartUtc`, `SameDayStrategy`, and `BackupConfig::validate(&self) -> Result<()>` in `crates/klams-types/src/config.rs` per data-model.md; make T007 green
-- [ ] T009 Wire `klams.toml` loader (existing in `crates/klams-types/src/lib.rs` or equivalent) to surface a `BackupConfig` field on the top-level `KlamsConfig`; update existing config loader unit tests to expect the new field
-- [ ] T010 [P] Write failing unit tests for `MaintenanceState` in `crates/klams-service/src/backup/mod.rs` (test module): `MaintenanceState::new()` reports `active() == false`; `mark_active(snapshot)` then `active() == true` and `inflight()` returns the snapshot; `clear()` returns to inactive
-- [ ] T011 [P] Implement `MaintenanceState` and `RunningSnapshot` in `crates/klams-service/src/backup/mod.rs` per data-model.md; make T010 green
-- [ ] T012 [P] Register and export the five Prometheus series listed in data-model.md "Prometheus series schema" from `crates/klams-service/src/backup/metrics.rs`, using the existing prometheus registry; verify via a smoke unit test that all five series appear in `/metrics` after registration
-- [ ] T013 [P] Implement `just backup-validate-config` recipe end-to-end: invokes `klams-service --validate-backup-config` (new binary subcommand or flag; see plan.md Source Code tree → klams-service for the three subcommand handlers introduced by this sprint: `--validate-backup-config`, `--run-backup-now`, `--restore-from`) which loads `klams.toml`, runs `BackupConfig::validate()`, prints `OK: ...` or the error and exits with `0` / `2`; add a unit test on the validation path
+- [X] T007 Write failing unit tests for `BackupConfig` deserialization and validation in `crates/klams-types/src/config.rs` (test module): valid TOML round-trips; invalid `window_start_utc` (`"25:00"`, `"10"`, `""`) returns parse error; defaults for `daily_count=14`, `weekly_count=4`, `same_day_strategy=Suffix`, `status_hook_timeout=10s`; missing `backup_dir` with `enabled=true` is rejected by `BackupConfig::validate()`
+- [X] T008 Implement `BackupConfig`, `WindowStartUtc`, `SameDayStrategy`, and `BackupConfig::validate(&self) -> Result<()>` in `crates/klams-types/src/config.rs` per data-model.md; make T007 green
+- [X] T009 Wire `klams.toml` loader (existing in `crates/klams-types/src/lib.rs` or equivalent) to surface a `BackupConfig` field on the top-level `KlamsConfig`; update existing config loader unit tests to expect the new field
+- [X] T010 [P] Write failing unit tests for `MaintenanceState` in `crates/klams-service/src/backup/mod.rs` (test module): `MaintenanceState::new()` reports `active() == false`; `mark_active(snapshot)` then `active() == true` and `inflight()` returns the snapshot; `clear()` returns to inactive
+- [X] T011 [P] Implement `MaintenanceState` and `RunningSnapshot` in `crates/klams-service/src/backup/mod.rs` per data-model.md; make T010 green
+- [X] T012 [P] Register and export the five Prometheus series listed in data-model.md "Prometheus series schema" from `crates/klams-service/src/backup/metrics.rs`, using the existing prometheus registry; verify via a smoke unit test that all five series appear in `/metrics` after registration
+- [X] T013 [P] Implement `just backup-validate-config` recipe end-to-end: invokes `klams-service --validate-backup-config` (new binary subcommand or flag; see plan.md Source Code tree → klams-service for the three subcommand handlers introduced by this sprint: `--validate-backup-config`, `--run-backup-now`, `--restore-from`) which loads `klams.toml`, runs `BackupConfig::validate()`, prints `OK: ...` or the error and exits with `0` / `2`; add a unit test on the validation path
 - [ ] T014 Build the Day-0 sizing fixture at `tests/fixtures/scale_loader.rs` per research.md R-009: loads ~10k facts, ~50k events, ~20k knowledge chunks into the test compose stack; expose as a `cargo test --features scale-fixture` gated integration helper; add a one-line README under `tests/fixtures/backup/README.md` pointing at it
 - [ ] T015 Implement `just backup-size` recipe: brings up the test compose stack if not running, runs the scale fixture from T014, times one `backup::run_once()` invocation, prints the table `kind | bytes | seconds` to stdout, and appends a dated entry to `specs/006-maintenance-and-backups/sizing.md` (creating the file on first run)
+
+> **Phase 2 status (impl pass 1):** T007–T013 are landed and green. T014 (~10k/50k/20k scale fixture) and T015 (`backup-size` recipe that depends on it) are deferred to a focused micro-pass after Phase 3 lands `run_once`, since both are observability-only and don't unblock the MVP.
 
 **Checkpoint**: Config types, shared state, metrics registration, and the sizing fixture are all in place. User story phases (P1 → P3) can now proceed in parallel where dependencies allow.
 
