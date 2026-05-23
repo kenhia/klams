@@ -177,11 +177,42 @@ Expected new metric families:
 
 ## 9. Acceptance check
 
-- [ ] `/memory/context` returns coherent bundle under a token budget
+- [X] `/memory/context` returns coherent bundle under a token budget
       for a representative query (Phase 4 exit criterion).
-- [ ] Hybrid ranking surfaces literal AND paraphrase matches (US2).
-- [ ] Summary records appear after threshold reached (US3).
-- [ ] Bad `[decay.lambda]` value refuses startup (US4).
+- [X] Hybrid ranking surfaces literal AND paraphrase matches (US2).
+- [X] Summary records appear after threshold reached (US3).
+- [X] Bad `[decay.lambda]` value refuses startup (US4).
 - [ ] Viewport context-preview pane renders bundle (US5).
-- [ ] `cargo fmt --check`, `cargo clippy --all-targets --all-features
+- [X] `cargo fmt --check`, `cargo clippy --all-targets --all-features
       -- -D warnings`, `cargo test` all clean.
+
+## 10. Automated validation coverage (T058)
+
+The manual walkthrough above is the canonical acceptance check, but
+each non-UI bullet now has a deferred (`#[ignore]`) integration test
+that drives the live test stack (Postgres / Qdrant / TEI from
+`tests/docker-compose.test.yml`). Run them with:
+
+```bash
+docker compose -f tests/docker-compose.test.yml up -d
+TEST_DATABASE_URL=postgres://klams:klams_test@127.0.0.1:55432/klams \
+TEST_QDRANT_URL=http://127.0.0.1:56334 \
+TEST_TEI_URL=http://127.0.0.1:57070 \
+cargo test -p klams-service --tests -- --ignored --test-threads=1
+```
+
+| Acceptance bullet | Automated coverage |
+|-------------------|---------------------|
+| Bundle under budget (Phase 4 exit) | `tests/phase4_context_bundle.rs` (T016) |
+| Hybrid literal + paraphrase (US2) | `tests/phase4_hybrid_retrieval.rs` (T023) |
+| Hybrid SLO under 10k events | `tests/phase4_hybrid_perf.rs` (T024) |
+| Summary records (US3) | `tests/phase4_summarization_pipeline.rs` (T033) — `llm_fallback=false`, extractive path |
+| Bad `[decay.lambda]` refuses startup (US4) | `tests/phase4_decay_config_validation.rs` (T043) — spawns the real `klams-service` binary |
+| `fmt` / `clippy -D warnings` / `cargo test` clean | `just gate` |
+
+The Viewport pane check (US5) remains manual; T047 tracks an
+integration test for it once the Tauri harness is available.
+Step 8 (metrics endpoint) is a documentation/manual check — the
+metric families it lists are emitted by `klams-service` whenever
+the corresponding code path runs, so the integration tests above
+exercise the emit sites.
