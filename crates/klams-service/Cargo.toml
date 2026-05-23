@@ -17,6 +17,12 @@ path = "src/lib.rs"
 name = "klams-service"
 path = "src/main.rs"
 
+[features]
+# Enables the Day-0 sizing fixture loader (sprint 006 T014). Gated
+# off by default so the multi-minute load does not run with
+# `cargo test --workspace`.
+scale-fixture = []
+
 [dependencies]
 klams-types = { workspace = true }
 klams-core = { workspace = true }
