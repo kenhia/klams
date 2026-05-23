@@ -39,3 +39,18 @@ pub struct SeedReport {
     pub knowledge: usize,
     pub events: usize,
 }
+
+/// Wipe `facts`, `events`, and `summaries` so a test starts from a
+/// known-empty Postgres state. Reads `TEST_DATABASE_URL` (same
+/// default as the harness). Knowledge in the shared Qdrant test
+/// collection is left in place — tests that care about knowledge
+/// counts should query by repo/file filters seeded for that test.
+pub async fn truncate_pg() {
+    let url = std::env::var("TEST_DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://klams:klams_test@127.0.0.1:55432/klams".into());
+    let pool = sqlx::PgPool::connect(&url).await.expect("pg connect");
+    sqlx::query("TRUNCATE facts, events, summaries CASCADE")
+        .execute(&pool)
+        .await
+        .expect("truncate");
+}
