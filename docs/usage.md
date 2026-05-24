@@ -436,6 +436,7 @@ just backup-validate-config
 | `backup-once`             | Runs `klams-service --run-backup-now` once: skips the scheduler but exercises every other path (maintenance flag, hook invocations, retention, metrics). |
 | `restore-from <date> [--force]` | Restores `postgres-<date>.dump` + `qdrant-<date>.snapshot` from `[backup].backup_dir`. Refuses non-empty targets without `--force`. |
 | `backup-validate-config`  | Loads `klams.toml`, runs `BackupConfig::validate()`, exits `0` on OK / `2` on validation error. |
+| `backup-verify [<date>]`  | Read-only integrity check of a committed pair (default: today UTC). Runs `pg_restore --list` on the dump and `tar tf` on the snapshot, asserts both produce a non-empty listing. Exits `0` on OK / `1` on missing or unreadable artifact. |
 | `backup-size`             | Brings up the test stack, loads the scale fixture, times one `run_once`, prints `kind | bytes | seconds`, and appends a dated entry to `specs/006-maintenance-and-backups/sizing.md`. |
 
 ### Maintenance-mode error envelope
@@ -515,8 +516,45 @@ with a 2-second SIGTERM grace before SIGKILL. **Hook failure is
 observability, not control flow** — a missing executable, infinite
 loop, or non-zero exit increments
 `klams_backup_hook_invocations_total{ok="false"}` but never affects
-the backup outcome. This is the contract that the kpidash widget
-shim consumes: subscribe to the lifecycle events from a tiny shell
+the backup outcome. A misconfigured hook (path does not exist or is
+not executable) is also a **non-fatal startup warning** — the
+service logs a `WARN` line on boot and the backup task carries on,
+recording the hook failure via the same `ok="false"` counter when
+the run fires. This is the contract that the kpidash widget shim
+consumes: subscribe to the lifecycle events from a tiny shell
 script that publishes them on Redis (or any other transport), keep
 the script under the timeout, and the live dashboard reflects backup
 state within the SC-004 2-second budget.
+
+### Verifying a committed backup
+
+`just backup-verify [<date>]` runs a read-only integrity check
+against the most recent (or explicitly-dated) pair in
+`[backup].backup_dir`:
+
+```bash
+just backup-verify              # today UTC
+just backup-verify 2026-05-24   # explicit date
+# ==> postgres: /ai/klams/backups/postgres-2026-05-24.dump
+#   bytes=21168 toc_entries=43 OK
+# ==> qdrant:   /ai/klams/backups/qdrant-2026-05-24.snapshot
+#   bytes=712192 tar_members=18 OK
+# ==> backup-verify: OK
+```
+
+What it actually checks:
+
+- **Postgres dump** — `pg_restore --list <file>` parses the dump's
+  table of contents without touching a database. A truncated or
+  corrupt dump fails to produce TOC entries. (Uses
+  `[backup].pg_bin_dir/pg_restore` when set, else the `pg_restore`
+  on `$PATH`.)
+- **Qdrant snapshot** — qdrant snapshots are uncompressed tar
+  archives; `tar tf <file>` listing succeeds with a non-zero member
+  count on an intact snapshot.
+
+For the strongest possible verification — exercising the same
+`restore::run_from` code path the once-exercised drill validates —
+follow the manual procedure in
+[specs/006-maintenance-and-backups/quickstart.md §5](../specs/006-maintenance-and-backups/quickstart.md#5-restore-from-a-snapshot-fr-016)
+against a throwaway compose stack and compare row counts.

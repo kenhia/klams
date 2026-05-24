@@ -139,14 +139,16 @@ pub enum BackupConfigError {
     BackupDirNotADir(PathBuf),
     #[error("[backup] backup_dir is not writable: {0}")]
     BackupDirNotWritable(PathBuf),
-    #[error("[backup] status_hook does not exist: {0}")]
-    HookMissing(PathBuf),
-    #[error("[backup] status_hook is not executable: {0}")]
-    HookNotExecutable(PathBuf),
 }
 
 impl BackupConfig {
     /// Service-start validation per spec FR-012.
+    ///
+    /// Hard errors only — anything returned here refuses startup.
+    /// Soft issues (notably a missing or non-executable
+    /// `status_hook`) are reported by [`BackupConfig::warnings`]
+    /// instead, because hook failure is observability and never
+    /// blocks a backup run (SC-005).
     pub fn validate(&self) -> Result<(), BackupConfigError> {
         if !self.enabled {
             return Ok(());
@@ -166,23 +168,49 @@ impl BackupConfig {
             return Err(BackupConfigError::BackupDirNotWritable(dir.clone()));
         }
 
+        Ok(())
+    }
+
+    /// Non-fatal configuration issues to surface at startup as
+    /// warnings. Currently: a `status_hook` that does not exist
+    /// or is not executable. The runtime hook invoker handles
+    /// either condition gracefully (increments
+    /// `klams_backup_hook_invocations_total{ok="false"}` and moves
+    /// on), so misconfiguring the hook must not block the backup
+    /// itself.
+    #[must_use]
+    pub fn warnings(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if !self.enabled {
+            return out;
+        }
         if let Some(hook) = &self.status_hook {
-            let hmeta = std::fs::metadata(hook)
-                .map_err(|_| BackupConfigError::HookMissing(hook.clone()))?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                if hmeta.permissions().mode() & 0o111 == 0 {
-                    return Err(BackupConfigError::HookNotExecutable(hook.clone()));
+            match std::fs::metadata(hook) {
+                Err(_) => {
+                    out.push(format!(
+                        "[backup] status_hook does not exist: {} (hook invocations will be recorded as failures; backups will proceed)",
+                        hook.display()
+                    ));
+                }
+                Ok(hmeta) => {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        if hmeta.permissions().mode() & 0o111 == 0 {
+                            out.push(format!(
+                                "[backup] status_hook is not executable: {} (hook invocations will be recorded as failures; backups will proceed)",
+                                hook.display()
+                            ));
+                        }
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        let _ = hmeta;
+                    }
                 }
             }
-            #[cfg(not(unix))]
-            {
-                let _ = hmeta;
-            }
         }
-
-        Ok(())
+        out
     }
 }
 

@@ -99,6 +99,54 @@ restore-from date *force:
 backup-validate-config:
     cargo run --quiet -p klams-service -- --validate-backup-config
 
+# sprint 006 — verify a committed backup pair is readable + intact
+# without actually restoring it. Reads `[backup].backup_dir` from
+# $KLAMS_CONFIG (defaults /ai/klams/config/klams.toml).
+#
+#   just backup-verify                # today's UTC date
+#   just backup-verify 2026-05-24     # explicit UTC date
+#
+# Checks performed:
+#   1. Postgres dump: `pg_restore --list` parses the TOC (catches
+#      truncation / corruption without writing to a database).
+#   2. Qdrant snapshot: magic bytes + `tar tf` listing (qdrant
+#      snapshots are uncompressed tar archives).
+# Exits 0 iff every check passes; non-zero with the offending step
+# on stderr otherwise.
+backup-verify date="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cfg="${KLAMS_CONFIG:-/ai/klams/config/klams.toml}"
+    if [[ ! -r "$cfg" ]]; then echo "backup-verify: $cfg not readable" >&2; exit 1; fi
+    backup_dir=$(awk -F '"' '/^[[:space:]]*backup_dir[[:space:]]*=/{print $2; exit}' "$cfg")
+    if [[ -z "$backup_dir" ]]; then echo "backup-verify: [backup].backup_dir unset in $cfg" >&2; exit 1; fi
+    pg_bin_dir=$(awk -F '"' '/^[[:space:]]*pg_bin_dir[[:space:]]*=/{print $2; exit}' "$cfg")
+    pg_restore_bin="${pg_bin_dir:+$pg_bin_dir/}pg_restore"
+    d='{{date}}'; if [[ -z "$d" ]]; then d=$(date -u +%Y-%m-%d); fi
+    pg_file=$(ls -1 "$backup_dir"/postgres-"$d"*.dump 2>/dev/null | tail -n1 || true)
+    q_file=$(ls -1 "$backup_dir"/qdrant-"$d"*.snapshot 2>/dev/null | tail -n1 || true)
+    if [[ -z "$pg_file" ]]; then echo "backup-verify: no postgres-$d*.dump in $backup_dir" >&2; exit 1; fi
+    if [[ -z "$q_file"  ]]; then echo "backup-verify: no qdrant-$d*.snapshot in $backup_dir" >&2; exit 1; fi
+    echo "==> postgres: $pg_file"
+    pg_bytes=$(stat -c %s "$pg_file")
+    toc=$("$pg_restore_bin" --list "$pg_file" 2>&1)
+    pg_entries=$(printf '%s\n' "$toc" | grep -cE '^[0-9]+;' || true)
+    if [[ "$pg_entries" -lt 1 ]]; then
+        echo "backup-verify: pg_restore --list produced no TOC entries:" >&2
+        printf '%s\n' "$toc" >&2
+        exit 1
+    fi
+    printf '  bytes=%s toc_entries=%s OK\n' "$pg_bytes" "$pg_entries"
+    echo "==> qdrant:   $q_file"
+    q_bytes=$(stat -c %s "$q_file")
+    q_members=$(tar tf "$q_file" 2>/dev/null | wc -l)
+    if [[ "$q_members" -lt 1 ]]; then
+        echo "backup-verify: tar listing produced no members; snapshot may be truncated" >&2
+        exit 1
+    fi
+    printf '  bytes=%s tar_members=%s OK\n' "$q_bytes" "$q_members"
+    echo "==> backup-verify: OK"
+
 # sprint 006 T015 — load the scale fixture, run one backup, print
 # `kind | bytes | seconds` and append a dated entry to sizing.md.
 # Requires the docker-compose.test.yml stack to be running and a

@@ -51,6 +51,9 @@ async fn main() -> Result<()> {
         tracing::error!(error = %err, "invalid [backup] config; refusing to start");
         std::process::exit(2);
     }
+    for warning in cfg.backup.warnings() {
+        tracing::warn!("{warning}");
+    }
     service_backup::metrics::describe();
     service_backup::metrics::set_maintenance_active(false);
     let maintenance_state = MaintenanceState::new();
@@ -241,6 +244,9 @@ fn validate_backup_config_cli(config_path: &str) -> ! {
                 );
             } else {
                 println!("OK: [backup] disabled (enabled=false)");
+            }
+            for warning in cfg.backup.warnings() {
+                eprintln!("warning: {warning}");
             }
             std::process::exit(0);
         }
