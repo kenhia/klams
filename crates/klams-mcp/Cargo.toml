@@ -11,6 +11,9 @@ workspace = true
 
 [dependencies]
 klams-types = { workspace = true }
+klams-api = { workspace = true }
+klams-store = { workspace = true }
+klams-core = { workspace = true }
 
 axum = { workspace = true }
 tokio = { workspace = true }
@@ -20,10 +23,12 @@ tower-http = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+time = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
+metrics = { workspace = true }
 
 rmcp = { version = "1.7", features = [
     "server",
@@ -36,3 +41,5 @@ schemars = "1"
 [dev-dependencies]
 tokio = { workspace = true }
 serde_json = { workspace = true }
+chrono = { workspace = true }
+ulid = "1"

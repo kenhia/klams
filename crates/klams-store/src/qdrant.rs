@@ -84,6 +84,14 @@ impl QdrantStore {
         &self.collection
     }
 
+    /// Read access to the underlying Qdrant gRPC client. Required by
+    /// the sprint-007 author backfill module (`backfill_qdrant_authors`)
+    /// to drive scroll + `set_payload` pages without re-exposing the
+    /// full upsert/search surface.
+    pub fn client(&self) -> &Qdrant {
+        &self.client
+    }
+
     /// Upsert a knowledge point with a caller-supplied embedding and
     /// content hash. Returns the persisted `KnowledgeItem`.
     pub async fn index_knowledge(
@@ -140,7 +148,10 @@ impl QdrantStore {
         // Exclude digest points from the default raw-knowledge search
         // (sprint 005 T038). Existing knowledge items have no `kind`
         // payload field, so the `must_not` is a no-op for them.
+        // Sprint 007: also exclude soft-deleted points (R-003) — they
+        // are points whose payload carries a non-null `deleted_at`.
         let filter = Filter {
+            must: vec![Condition::is_empty("deleted_at")],
             must_not: vec![Condition::matches("kind", "digest".to_string())],
             ..Default::default()
         };
@@ -567,6 +578,87 @@ fn payload_to_digest(payload: &HashMap<String, Value>) -> Option<KnowledgeDigest
         generated_at,
         invalidated_at,
     })
+}
+
+// ---------- sprint 007: author attribution + soft-delete ----------
+
+impl QdrantStore {
+    /// Soft-delete a knowledge point by stamping `deleted_at` (RFC-3339)
+    /// and `deleted_by_author_id` (UUID string) into its payload. The
+    /// vector and other fields are untouched. Returns `Ok(())` on
+    /// success even if the point was already soft-deleted; the default
+    /// search filter (`is_empty("deleted_at")`) hides it either way.
+    pub async fn soft_delete_payload(
+        &self,
+        id: uuid::Uuid,
+        by_author_id: uuid::Uuid,
+        when: OffsetDateTime,
+    ) -> StoreResult<()> {
+        let mut payload = std::collections::HashMap::new();
+        payload.insert(
+            "deleted_at".to_string(),
+            Value::from(when.format(&Rfc3339).unwrap_or_default()),
+        );
+        payload.insert(
+            "deleted_by_author_id".to_string(),
+            Value::from(by_author_id.to_string()),
+        );
+        let points = PointsIdsList {
+            ids: vec![PointId {
+                point_id_options: Some(PointIdOptions::Uuid(id.to_string())),
+            }],
+        };
+        self.client
+            .set_payload(
+                SetPayloadPointsBuilder::new(self.collection.clone(), payload)
+                    .points_selector(points)
+                    .wait(true),
+            )
+            .await
+            .map_err(|e| StoreError::Backend(format!("qdrant soft_delete_payload: {e}")))?;
+        Ok(())
+    }
+
+    /// Remove the soft-delete payload fields, returning the point to live
+    /// state. No-op if the point is not soft-deleted.
+    pub async fn restore_payload(&self, id: uuid::Uuid) -> StoreResult<()> {
+        use qdrant_client::qdrant::DeletePayloadPointsBuilder;
+        let points = PointsIdsList {
+            ids: vec![PointId {
+                point_id_options: Some(PointIdOptions::Uuid(id.to_string())),
+            }],
+        };
+        self.client
+            .delete_payload(
+                DeletePayloadPointsBuilder::new(
+                    self.collection.clone(),
+                    vec!["deleted_at".to_string(), "deleted_by_author_id".to_string()],
+                )
+                .points_selector(points)
+                .wait(true),
+            )
+            .await
+            .map_err(|e| StoreError::Backend(format!("qdrant restore_payload: {e}")))?;
+        Ok(())
+    }
+
+    /// Permanently remove a knowledge point.
+    pub async fn hard_delete_point(&self, id: uuid::Uuid) -> StoreResult<()> {
+        let points = PointsIdsList {
+            ids: vec![PointId {
+                point_id_options: Some(PointIdOptions::Uuid(id.to_string())),
+            }],
+        };
+        self.client
+            .delete_points(
+                DeletePointsBuilder::new(self.collection.clone())
+                    .points(points)
+                    .wait(true),
+            )
+            .await
+            .map_err(|e| StoreError::Backend(format!("qdrant hard_delete_point: {e}")))?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

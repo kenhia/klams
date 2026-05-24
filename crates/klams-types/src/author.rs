@@ -86,8 +86,8 @@ impl RegisterAuthorArgs {
             }
         }
         if !self.extra.is_null() {
-            let bytes = serde_json::to_vec(&self.extra)
-                .map_err(|_| RegisterAuthorError::ExtraTooLarge)?;
+            let bytes =
+                serde_json::to_vec(&self.extra).map_err(|_| RegisterAuthorError::ExtraTooLarge)?;
             if bytes.len() > EXTRA_MAX_BYTES {
                 return Err(RegisterAuthorError::ExtraTooLarge);
             }

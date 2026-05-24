@@ -6,8 +6,8 @@
 use crate::{DissentQuery, EventQuery, FactQuery, StoreError, StoreResult, TextHit};
 use async_trait::async_trait;
 use klams_types::{
-    canonical_json_hash, AppendEvent, Dissent, DissentStatus, Event, Fact, FactType,
-    FactWriteOutcome, Source, UpsertFact,
+    canonical_json_hash, AppendEvent, AuthorRecord, Dissent, DissentStatus, Event, Fact, FactType,
+    FactWriteOutcome, RegisterAuthorArgs, Source, UpsertFact, SYSTEM_AUTHOR_ID,
 };
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
@@ -52,8 +52,8 @@ impl PostgresStore {
 
         let row = sqlx::query(
             r"
-            INSERT INTO facts (id, type, payload, payload_hash, source, version)
-            VALUES ($1, $2, $3, $4, $5, 1)
+            INSERT INTO facts (id, type, payload, payload_hash, source, version, author_id)
+            VALUES ($1, $2, $3, $4, $5, 1, $6)
             ON CONFLICT (type, payload_hash) DO UPDATE
                 SET updated_at = now(),
                     version = facts.version + CASE
@@ -72,6 +72,7 @@ impl PostgresStore {
         .bind(&req.payload)
         .bind(&hash[..])
         .bind(req.source.as_str())
+        .bind(SYSTEM_AUTHOR_ID)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| StoreError::Backend(format!("upsert_fact: {e}")))?;
@@ -81,8 +82,8 @@ impl PostgresStore {
     pub async fn append_event(&self, req: AppendEvent) -> StoreResult<Event> {
         let row = sqlx::query(
             r"
-            INSERT INTO events (id, task_id, category, payload, source)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO events (id, task_id, category, payload, source, author_id)
+            VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING id, task_id, category, payload, source, created_at
             ",
         )
@@ -91,6 +92,7 @@ impl PostgresStore {
         .bind(&req.category)
         .bind(&req.payload)
         .bind(req.source.as_str())
+        .bind(SYSTEM_AUTHOR_ID)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| StoreError::Backend(format!("append_event: {e}")))?;
@@ -101,7 +103,7 @@ impl PostgresStore {
         let limit = i64::from(q.limit.clamp(1, 500));
         let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
             "SELECT id, type, payload, version, source, confidence, decay_weight,
-             use_count, last_used_at, created_at, updated_at FROM facts WHERE 1=1",
+             use_count, last_used_at, created_at, updated_at FROM facts WHERE deleted_at IS NULL",
         );
         if let Some(ft) = q.fact_type {
             qb.push(" AND type = ").push_bind(ft.as_str().to_string());
@@ -197,6 +199,7 @@ impl PostgresStore {
                     * (1.0 + ln(1.0 + use_count)))::float4 AS score
             FROM facts
             WHERE tsv @@ plainto_tsquery('english', $1)
+              AND deleted_at IS NULL
             ORDER BY score DESC, id ASC LIMIT $2
             ",
         )
@@ -483,8 +486,8 @@ impl PostgresStore {
         // 3) Brand new canonical fact.
         let id = req.explicit_id.unwrap_or_else(Uuid::now_v7);
         let row = sqlx::query(
-            r"INSERT INTO facts (id, type, payload, payload_hash, source, version)
-              VALUES ($1, $2, $3, $4, $5, 1)
+            r"INSERT INTO facts (id, type, payload, payload_hash, source, version, author_id)
+              VALUES ($1, $2, $3, $4, $5, 1, $6)
               RETURNING id, type, payload, version, source,
                         confidence, decay_weight, use_count, dissent_count,
                         last_used_at, created_at, updated_at",
@@ -494,6 +497,7 @@ impl PostgresStore {
         .bind(&req.payload)
         .bind(&hash[..])
         .bind(req.source.as_str())
+        .bind(SYSTEM_AUTHOR_ID)
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| StoreError::Backend(format!("upsert_fact_v2 insert: {e}")))?;
@@ -691,6 +695,7 @@ impl PostgresStore {
                      EXTRACT(EPOCH FROM (now() - COALESCE(last_used_at, created_at)))::float4
                          AS age_seconds
               FROM facts
+                AND deleted_at IS NULL
               WHERE id > $1
               ORDER BY id ASC
               LIMIT $2",
@@ -886,6 +891,295 @@ impl crate::SummaryStore for PostgresStore {
         .map_err(|e| StoreError::Backend(format!("list_event_summaries: {e}")))?;
         rows.iter().map(row_to_event_summary).collect()
     }
+}
+
+// ---------- sprint 007: author registry + soft-delete ----------
+
+/// Postgres-side result row for `list_authors_with_counts`.
+#[derive(Debug, Clone)]
+pub struct AuthorWithCounts {
+    pub author: AuthorRecord,
+    pub fact_count: i64,
+    pub event_count: i64,
+}
+
+/// Postgres-side projection of a soft-deleted fact for the admin
+/// `memory_admin_list_deleted` MCP tool. Carries the deletion bookkeeping
+/// columns omitted from the public projection.
+#[derive(Debug, Clone)]
+pub struct DeletedFactRow {
+    pub fact: Fact,
+    pub deleted_at: time::OffsetDateTime,
+    pub deleted_by_author_id: Option<Uuid>,
+}
+
+impl PostgresStore {
+    /// Insert (or upsert by id) an author row. The id is generated as
+    /// UUID v7 if not provided by the caller. On INSERT both
+    /// `created_at` and `last_seen_at` are set to `now()`; on conflict
+    /// the row is left untouched and the existing record is returned.
+    pub async fn insert_author(
+        &self,
+        args: RegisterAuthorArgs,
+        explicit_id: Option<Uuid>,
+    ) -> StoreResult<AuthorRecord> {
+        args.validate()
+            .map_err(|e| StoreError::Other(format!("register_author: {e}")))?;
+        let id = explicit_id.unwrap_or_else(Uuid::now_v7);
+        let extra = if args.extra.is_null() {
+            serde_json::json!({})
+        } else {
+            args.extra.clone()
+        };
+        let row = sqlx::query(
+            r"
+            INSERT INTO authors (
+                id, agent_name, model, session_title, repo,
+                client_app, client_version, extra
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ON CONFLICT (id) DO UPDATE
+                SET last_seen_at = now()
+            RETURNING id, agent_name, model, session_title, repo,
+                      client_app, client_version, extra,
+                      created_at, last_seen_at
+            ",
+        )
+        .bind(id)
+        .bind(&args.agent_name)
+        .bind(args.model.as_deref())
+        .bind(args.session_title.as_deref())
+        .bind(args.repo.as_deref())
+        .bind(args.client_app.as_deref())
+        .bind(args.client_version.as_deref())
+        .bind(&extra)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| StoreError::Backend(format!("insert_author: {e}")))?;
+        row_to_author(&row)
+    }
+
+    /// Look up a single author by id.
+    pub async fn get_author_by_id(&self, id: Uuid) -> StoreResult<Option<AuthorRecord>> {
+        let row = sqlx::query(
+            r"SELECT id, agent_name, model, session_title, repo,
+                     client_app, client_version, extra,
+                     created_at, last_seen_at
+              FROM authors WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| StoreError::Backend(format!("get_author_by_id: {e}")))?;
+        row.map(|r| row_to_author(&r)).transpose()
+    }
+
+    /// Bump `last_seen_at` on every authenticated MCP call that
+    /// references this author (FR-005). Returns the number of rows
+    /// updated (0 if the author has been hard-deleted out from under us).
+    pub async fn touch_author_last_seen_at(&self, id: Uuid) -> StoreResult<u64> {
+        let res = sqlx::query("UPDATE authors SET last_seen_at = now() WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StoreError::Backend(format!("touch_author: {e}")))?;
+        Ok(res.rows_affected())
+    }
+
+    /// List authors with per-author live-fact and live-event counts.
+    /// Soft-deleted facts are excluded from `fact_count`; events have no
+    /// soft-delete state.
+    pub async fn list_authors_with_counts(&self, limit: u32) -> StoreResult<Vec<AuthorWithCounts>> {
+        let limit = i64::from(limit.clamp(1, 1_000));
+        let rows = sqlx::query(
+            r"
+            SELECT a.id, a.agent_name, a.model, a.session_title, a.repo,
+                   a.client_app, a.client_version, a.extra,
+                   a.created_at, a.last_seen_at,
+                   COALESCE(fc.cnt, 0) AS fact_count,
+                   COALESCE(ec.cnt, 0) AS event_count
+              FROM authors a
+              LEFT JOIN (
+                  SELECT author_id, COUNT(*)::bigint AS cnt
+                    FROM facts
+                   WHERE deleted_at IS NULL
+                   GROUP BY author_id
+              ) fc ON fc.author_id = a.id
+              LEFT JOIN (
+                  SELECT author_id, COUNT(*)::bigint AS cnt
+                    FROM events
+                   GROUP BY author_id
+              ) ec ON ec.author_id = a.id
+              ORDER BY a.last_seen_at DESC, a.id
+              LIMIT $1
+            ",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StoreError::Backend(format!("list_authors_with_counts: {e}")))?;
+        let mut out = Vec::with_capacity(rows.len());
+        for r in &rows {
+            out.push(AuthorWithCounts {
+                author: row_to_author(r)?,
+                fact_count: r.try_get("fact_count").map_err(map_decode)?,
+                event_count: r.try_get("event_count").map_err(map_decode)?,
+            });
+        }
+        Ok(out)
+    }
+
+    /// MCP write path for facts — same dedupe semantics as `upsert_fact`
+    /// but attributes the row to `author_id` instead of `SYSTEM_AUTHOR_ID`.
+    pub async fn upsert_fact_with_author(
+        &self,
+        req: UpsertFact,
+        author_id: Uuid,
+    ) -> StoreResult<Fact> {
+        let hash = canonical_json_hash(req.fact_type.as_str(), &req.payload);
+        let id = req.explicit_id.unwrap_or_else(Uuid::now_v7);
+        let row = sqlx::query(
+            r"
+            INSERT INTO facts (id, type, payload, payload_hash, source, version, author_id)
+            VALUES ($1, $2, $3, $4, $5, 1, $6)
+            ON CONFLICT (type, payload_hash) DO UPDATE
+                SET updated_at = now(),
+                    version = facts.version + CASE
+                        WHEN facts.payload <> EXCLUDED.payload THEN 1
+                        ELSE 0
+                    END,
+                    payload = EXCLUDED.payload
+            RETURNING
+                id, type, payload, version, source,
+                confidence, decay_weight, use_count,
+                last_used_at, created_at, updated_at
+            ",
+        )
+        .bind(id)
+        .bind(req.fact_type.as_str())
+        .bind(&req.payload)
+        .bind(&hash[..])
+        .bind(req.source.as_str())
+        .bind(author_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| StoreError::Backend(format!("upsert_fact_with_author: {e}")))?;
+        row_to_fact(&row)
+    }
+
+    /// MCP write path for events — append with an explicit author.
+    pub async fn append_event_with_author(
+        &self,
+        req: AppendEvent,
+        author_id: Uuid,
+    ) -> StoreResult<Event> {
+        let row = sqlx::query(
+            r"
+            INSERT INTO events (id, task_id, category, payload, source, author_id)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING id, task_id, category, payload, source, created_at
+            ",
+        )
+        .bind(req.id)
+        .bind(req.task_id)
+        .bind(&req.category)
+        .bind(&req.payload)
+        .bind(req.source.as_str())
+        .bind(author_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| StoreError::Backend(format!("append_event_with_author: {e}")))?;
+        row_to_event(&row)
+    }
+
+    /// Soft-delete a single fact. Returns `false` if the fact was not
+    /// found or was already soft-deleted.
+    pub async fn soft_delete_fact(&self, id: Uuid, by_author_id: Uuid) -> StoreResult<bool> {
+        let res = sqlx::query(
+            r"UPDATE facts
+                 SET deleted_at = now(),
+                     deleted_by_author_id = $2
+               WHERE id = $1 AND deleted_at IS NULL",
+        )
+        .bind(id)
+        .bind(by_author_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StoreError::Backend(format!("soft_delete_fact: {e}")))?;
+        Ok(res.rows_affected() == 1)
+    }
+
+    /// Restore a soft-deleted fact. The original `deleted_by_author_id`
+    /// is cleared. Returns `false` if the fact was not soft-deleted.
+    pub async fn restore_fact(&self, id: Uuid) -> StoreResult<bool> {
+        let res = sqlx::query(
+            r"UPDATE facts
+                 SET deleted_at = NULL,
+                     deleted_by_author_id = NULL
+               WHERE id = $1 AND deleted_at IS NOT NULL",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StoreError::Backend(format!("restore_fact: {e}")))?;
+        Ok(res.rows_affected() == 1)
+    }
+
+    /// Permanently remove a fact row. Returns `false` if not found.
+    pub async fn hard_delete_fact(&self, id: Uuid) -> StoreResult<bool> {
+        let res = sqlx::query("DELETE FROM facts WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StoreError::Backend(format!("hard_delete_fact: {e}")))?;
+        Ok(res.rows_affected() == 1)
+    }
+
+    /// List soft-deleted facts (admin only) with deletion bookkeeping.
+    pub async fn list_deleted_facts(&self, limit: u32) -> StoreResult<Vec<DeletedFactRow>> {
+        let limit = i64::from(limit.clamp(1, 500));
+        let rows = sqlx::query(
+            r"SELECT id, type, payload, version, source,
+                     confidence, decay_weight, use_count,
+                     last_used_at, created_at, updated_at,
+                     deleted_at, deleted_by_author_id
+              FROM facts
+              WHERE deleted_at IS NOT NULL
+              ORDER BY deleted_at DESC, id
+              LIMIT $1",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StoreError::Backend(format!("list_deleted_facts: {e}")))?;
+        let mut out = Vec::with_capacity(rows.len());
+        for r in &rows {
+            out.push(DeletedFactRow {
+                fact: row_to_fact(r)?,
+                deleted_at: r.try_get("deleted_at").map_err(map_decode)?,
+                deleted_by_author_id: r.try_get("deleted_by_author_id").map_err(map_decode)?,
+            });
+        }
+        Ok(out)
+    }
+}
+
+fn row_to_author(row: &sqlx::postgres::PgRow) -> StoreResult<AuthorRecord> {
+    use chrono::{DateTime, Utc};
+    let created_at: DateTime<Utc> = row.try_get("created_at").map_err(map_decode)?;
+    let last_seen_at: DateTime<Utc> = row.try_get("last_seen_at").map_err(map_decode)?;
+    Ok(AuthorRecord {
+        id: row.try_get("id").map_err(map_decode)?,
+        agent_name: row.try_get("agent_name").map_err(map_decode)?,
+        model: row.try_get("model").map_err(map_decode)?,
+        session_title: row.try_get("session_title").map_err(map_decode)?,
+        repo: row.try_get("repo").map_err(map_decode)?,
+        client_app: row.try_get("client_app").map_err(map_decode)?,
+        client_version: row.try_get("client_version").map_err(map_decode)?,
+        extra: row.try_get("extra").map_err(map_decode)?,
+        created_at,
+        last_seen_at,
+    })
 }
 
 fn row_to_event_summary(r: &sqlx::postgres::PgRow) -> StoreResult<klams_types::EventSummary> {

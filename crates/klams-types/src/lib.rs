@@ -4,8 +4,8 @@
 //! kept aligned manually. See `specs/001-initial-mvp/data-model.md`
 //! and `specs/001-initial-mvp/contracts/openapi.yaml`.
 
-pub mod author;
 pub mod auth;
+pub mod author;
 pub mod config;
 pub mod context;
 pub mod decay;

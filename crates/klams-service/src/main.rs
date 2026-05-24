@@ -147,8 +147,27 @@ async fn main() -> Result<()> {
         context_builder,
         maintenance: maintenance_state.clone(),
     };
-    let router = with_metrics(build_router(state, cfg.auth.bearer_token.clone()));
+    let api_router = build_router(state, cfg.auth.bearer_token.clone());
+    let mcp_router = klams_mcp::router(klams_mcp::tools::McpState::empty());
+    let router = with_metrics(api_router.nest("/mcp", mcp_router));
     klams_core::metrics::describe();
+
+    // Sprint 007 T024 — one-shot Qdrant author backfill at startup.
+    {
+        let store_for_backfill = Arc::clone(&store);
+        tokio::spawn(async move {
+            let cancel = tokio_util::sync::CancellationToken::new();
+            match klams_store::backfill_qdrant_authors::run_backfill(
+                &store_for_backfill.qdrant,
+                cancel,
+            )
+            .await
+            {
+                Ok(n) => info!(patched = n, "qdrant author backfill complete"),
+                Err(e) => tracing::warn!(error = %e, "qdrant author backfill failed"),
+            }
+        });
+    }
 
     // Sprint 006 (T024/T027) — stale-lockfile recovery + scheduler.
     if cfg.backup.enabled {

@@ -49,38 +49,38 @@ description: "Task list for feature 007-mcp-server"
 
 ### Storage layer (klams-store)
 
-- [ ] T010 Extend `crates/klams-store/src/postgres.rs` with author-store functions (`insert_author`, `get_author_by_id`, `list_authors_with_counts`, `touch_author_last_seen_at`) appended to the existing single-file module.
-- [ ] T011 Extend `crates/klams-store/src/postgres.rs` fact write path to require `author_id`; add `soft_delete_fact(id, by_author_id)`, `restore_fact(id)`, `hard_delete_fact(id)`, `list_deleted_facts(...)`; default fact reads filter `WHERE deleted_at IS NULL`.
-- [ ] T012 Extend `crates/klams-store/src/postgres.rs` event write path to require `author_id`; reads include a join on `authors` for projection.
-- [ ] T013 Extend `crates/klams-store/src/qdrant.rs` per [research.md R-003](./research.md#r-003--soft-delete-representation-in-qdrant): default search adds a `must_not` filter on `deleted_at`; add `soft_delete_payload`, `restore_payload`, `hard_delete_point` helpers; `memory_admin_list_deleted` queries via `must` on `deleted_at`.
-- [ ] T014 Create `crates/klams-store/src/backfill_qdrant_authors.rs` — idempotent one-shot that sets `author_id = SYSTEM_AUTHOR_ID` on any Qdrant point missing it; exposes `run_backfill(client, &CancellationToken)`.
+- [X] T010 Extend `crates/klams-store/src/postgres.rs` with author-store functions (`insert_author`, `get_author_by_id`, `list_authors_with_counts`, `touch_author_last_seen_at`) appended to the existing single-file module.
+- [X] T011 Extend `crates/klams-store/src/postgres.rs` fact write path to require `author_id`; add `soft_delete_fact(id, by_author_id)`, `restore_fact(id)`, `hard_delete_fact(id)`, `list_deleted_facts(...)`; default fact reads filter `WHERE deleted_at IS NULL`.
+- [X] T012 Extend `crates/klams-store/src/postgres.rs` event write path to require `author_id`; reads include a join on `authors` for projection.
+- [X] T013 Extend `crates/klams-store/src/qdrant.rs` per [research.md R-003](./research.md#r-003--soft-delete-representation-in-qdrant): default search adds a `must_not` filter on `deleted_at`; add `soft_delete_payload`, `restore_payload`, `hard_delete_point` helpers; `memory_admin_list_deleted` queries via `must` on `deleted_at`.
+- [X] T014 Create `crates/klams-store/src/backfill_qdrant_authors.rs` — idempotent one-shot that sets `author_id = SYSTEM_AUTHOR_ID` on any Qdrant point missing it; exposes `run_backfill(client, &CancellationToken)`.
 
 ### Scoped auth (klams-api)
 
-- [ ] T015 Refactor `crates/klams-api/src/auth.rs`: replace single-token comparison with `Arc<Vec<TokenGrant>>` and a constant-time loop per [research.md R-004](./research.md#r-004--multi-token-constant-time-comparison) (unconditional `ct_eq` across every grant, no early exit); add `require_scope(scope: Scope)` axum middleware extractor; extend `crates/klams-api/src/error.rs` with `ScopeInsufficient -> 403`.
+- [X] T015 Refactor `crates/klams-api/src/auth.rs`: replace single-token comparison with `Arc<Vec<TokenGrant>>` and a constant-time loop per [research.md R-004](./research.md#r-004--multi-token-constant-time-comparison) (unconditional `ct_eq` across every grant, no early exit); add `require_scope(scope: Scope)` axum middleware extractor; extend `crates/klams-api/src/error.rs` with `ScopeInsufficient -> 403`.
 
 ### MCP crate plumbing (klams-mcp)
 
-- [ ] T016 Implement `crates/klams-mcp/src/lib.rs::router(state) -> axum::Router` returning a stub `/mcp` mount + `tools/list` returning an empty tool registry, using `rmcp` (or the fallback chosen at T001).
-- [ ] T017 Implement `crates/klams-mcp/src/transport.rs` exposing Streamable HTTP as primary and HTTP+SSE as a fallback on the same mount point per [research.md R-001](./research.md#r-001--transport-selection).
-- [ ] T018 Implement `crates/klams-mcp/src/auth_bridge.rs`: extract `Authorization: Bearer <token>` from the request, resolve to `ScopeSet` via the `Arc<Vec<TokenGrant>>` shared with klams-api; return MCP `UNAUTHORIZED` envelope when no match.
-- [ ] T019 Implement `crates/klams-mcp/src/errors.rs` with the constants from [contracts/error-codes.md](./contracts/error-codes.md) and a helper for the `{"isError": true, "content": [...], "_meta": {"error_code": "..."}}` envelope.
-- [ ] T020 Implement `crates/klams-mcp/src/projection.rs`: pure functions mapping internal `Fact`/`KnowledgeItem`/`Event` to `PublicMemory` — must drop `version`, `decay`, `confidence`, embedding vectors, `source` trust-tier, and any other internal field per [spec.md FR-011](./spec.md) and [data-model.md §4](./data-model.md).
-- [ ] T021 Implement `crates/klams-mcp/src/maintenance.rs`: wraps `MaintenanceState::is_active()` and returns the `MAINTENANCE_WINDOW_ACTIVE` envelope (`_meta.retry_after_seconds = 30`) for every write tool entry per [research.md R-009](./research.md#r-009--maintenance-window-integration).
-- [ ] T022 Implement `crates/klams-mcp/src/metrics.rs`: three Prometheus counters per [research.md R-010](./research.md#r-010--cardinality-discipline-for-prometheus-author-labels) and [spec.md FR-022](./spec.md): `klams_mcp_writes_total{agent_name, model, kind}` (kind ∈ {fact, knowledge, event}), `klams_mcp_deletes_total{agent_name, model, mode}` (mode ∈ {soft, restored, hard}), `klams_mcp_search_total{agent_name, model}`. `author_id` MUST NOT be a label; the search counter MUST NOT carry the request's `kinds` set as a label.
-- [ ] T023 Implement `crates/klams-mcp/src/tools/mod.rs`: registry that exposes `tools/list` filtered by the caller's `ScopeSet` (FR-020); `memory_admin_*` tools MUST be hidden from non-admin callers, not merely 403 on call.
-- [ ] T023b Instrument the `tools/mod.rs` dispatch with a `tracing::info_span!("mcp.tool", tool = %name, author_id = %author_id, agent_name = %agent_name, model = %model)` wrapping every tool call (FR-023). The span MUST be entered before scope re-validation so denied calls are still traced.
+- [X] T016 Implement `crates/klams-mcp/src/lib.rs::router(state) -> axum::Router` returning a stub `/mcp` mount + `tools/list` returning an empty tool registry, using `rmcp` (or the fallback chosen at T001).
+- [X] T017 Implement `crates/klams-mcp/src/transport.rs` exposing Streamable HTTP as primary and HTTP+SSE as a fallback on the same mount point per [research.md R-001](./research.md#r-001--transport-selection).
+- [X] T018 Implement `crates/klams-mcp/src/auth_bridge.rs`: extract `Authorization: Bearer <token>` from the request, resolve to `ScopeSet` via the `Arc<Vec<TokenGrant>>` shared with klams-api; return MCP `UNAUTHORIZED` envelope when no match.
+- [X] T019 Implement `crates/klams-mcp/src/errors.rs` with the constants from [contracts/error-codes.md](./contracts/error-codes.md) and a helper for the `{"isError": true, "content": [...], "_meta": {"error_code": "..."}}` envelope.
+- [X] T020 Implement `crates/klams-mcp/src/projection.rs`: pure functions mapping internal `Fact`/`KnowledgeItem`/`Event` to `PublicMemory` — must drop `version`, `decay`, `confidence`, embedding vectors, `source` trust-tier, and any other internal field per [spec.md FR-011](./spec.md) and [data-model.md §4](./data-model.md).
+- [X] T021 Implement `crates/klams-mcp/src/maintenance.rs`: wraps `MaintenanceState::is_active()` and returns the `MAINTENANCE_WINDOW_ACTIVE` envelope (`_meta.retry_after_seconds = 30`) for every write tool entry per [research.md R-009](./research.md#r-009--maintenance-window-integration).
+- [X] T022 Implement `crates/klams-mcp/src/metrics.rs`: three Prometheus counters per [research.md R-010](./research.md#r-010--cardinality-discipline-for-prometheus-author-labels) and [spec.md FR-022](./spec.md): `klams_mcp_writes_total{agent_name, model, kind}` (kind ∈ {fact, knowledge, event}), `klams_mcp_deletes_total{agent_name, model, mode}` (mode ∈ {soft, restored, hard}), `klams_mcp_search_total{agent_name, model}`. `author_id` MUST NOT be a label; the search counter MUST NOT carry the request's `kinds` set as a label.
+- [X] T023 Implement `crates/klams-mcp/src/tools/mod.rs`: registry that exposes `tools/list` filtered by the caller's `ScopeSet` (FR-020); `memory_admin_*` tools MUST be hidden from non-admin callers, not merely 403 on call.
+- [X] T023b Instrument the `tools/mod.rs` dispatch with a `tracing::info_span!("mcp.tool", tool = %name, author_id = %author_id, agent_name = %agent_name, model = %model)` wrapping every tool call (FR-023). The span MUST be entered before scope re-validation so denied calls are still traced.
 
 ### Service wiring
 
-- [ ] T024 Update `crates/klams-service/src/main.rs`: mount `klams_mcp::router(state)` at `/mcp`; spawn the T014 backfill once at startup before the axum `serve()` call; register the T022 metrics with the existing Prometheus registry.
+- [X] T024 Update `crates/klams-service/src/main.rs`: mount `klams_mcp::router(state)` at `/mcp`; spawn the T014 backfill once at startup before the axum `serve()` call; register the T022 metrics with the existing Prometheus registry.
 
 ### Foundation-level tests (must fail before, pass after)
 
-- [ ] T025 [P] Unit test `tests/unit/klams-types/auth_scope.rs` covering `ScopeSet` union/intersect/contains semantics.
-- [ ] T026 [P] Integration test `tests/integration/mcp_scope_gating.rs` — read-only token sees only read tools; admin sees all; non-admin caller of `memory_admin_restore` gets `INSUFFICIENT_SCOPE` (FR-020); also covers mid-session scope downgrade: token rotated from `admin` to `write` no longer sees `memory_admin_*` in a fresh `tools/list` call (spec Edge Cases).
-- [ ] T027 [P] Integration test `tests/integration/auth_scoped_tokens.rs` — multi-token config dispatches by scope; legacy `[auth] bearer_token = "..."` still authenticates as full-scope (FR-017, FR-018, FR-019).
-- [ ] T028 [P] Integration test `tests/integration/mcp_maintenance_window.rs` — write tools return `MAINTENANCE_WINDOW_ACTIVE` while `MaintenanceState::is_active()` is true; reads continue to serve (FR-021).
+- [X] T025 [P] Unit test `tests/unit/klams-types/auth_scope.rs` covering `ScopeSet` union/intersect/contains semantics.
+- [X] T026 [P] Integration test `tests/integration/mcp_scope_gating.rs` — read-only token sees only read tools; admin sees all; non-admin caller of `memory_admin_restore` gets `INSUFFICIENT_SCOPE` (FR-020); also covers mid-session scope downgrade: token rotated from `admin` to `write` no longer sees `memory_admin_*` in a fresh `tools/list` call (spec Edge Cases).
+- [X] T027 [P] Integration test `tests/integration/auth_scoped_tokens.rs` — multi-token config dispatches by scope; legacy `[auth] bearer_token = "..."` still authenticates as full-scope (FR-017, FR-018, FR-019).
+- [X] T028 [P] Integration test `tests/integration/mcp_maintenance_window.rs` — write tools return `MAINTENANCE_WINDOW_ACTIVE` while `MaintenanceState::is_active()` is true; reads continue to serve (FR-021).
 
 **Checkpoint**: `just gate` green; `/mcp` returns empty `tools/list` over Streamable HTTP. User-story phases unblocked.
 
