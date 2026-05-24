@@ -583,6 +583,34 @@ fn payload_to_digest(payload: &HashMap<String, Value>) -> Option<KnowledgeDigest
 // ---------- sprint 007: author attribution + soft-delete ----------
 
 impl QdrantStore {
+    /// Stamp `author_id` into a knowledge point's payload after
+    /// `index_knowledge` returns. Idempotent; overwrites any prior
+    /// value. Used by `memory_add` (kind = knowledge) so that MCP
+    /// writes are attributed without changing the `IndexKnowledge`
+    /// request shape consumed by older REST callers.
+    pub async fn set_author_payload(
+        &self,
+        id: uuid::Uuid,
+        author_id: uuid::Uuid,
+    ) -> StoreResult<()> {
+        let mut payload = std::collections::HashMap::new();
+        payload.insert("author_id".to_string(), Value::from(author_id.to_string()));
+        let points = PointsIdsList {
+            ids: vec![PointId {
+                point_id_options: Some(PointIdOptions::Uuid(id.to_string())),
+            }],
+        };
+        self.client
+            .set_payload(
+                SetPayloadPointsBuilder::new(self.collection.clone(), payload)
+                    .points_selector(points)
+                    .wait(true),
+            )
+            .await
+            .map_err(|e| StoreError::Backend(format!("qdrant set_author_payload: {e}")))?;
+        Ok(())
+    }
+
     /// Soft-delete a knowledge point by stamping `deleted_at` (RFC-3339)
     /// and `deleted_by_author_id` (UUID string) into its payload. The
     /// vector and other fields are untouched. Returns `Ok(())` on

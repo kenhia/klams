@@ -1,22 +1,19 @@
-//! MCP tool registry (sprint 007 T023).
+//! MCP tool registry (sprint 007 T023 + T032/T033).
 //!
 //! Houses the [`ToolRegistry`] [`rmcp::ServerHandler`] implementation
-//! that backs `tools/list` and `tools/call`. At Phase 2 foundational
-//! the registry is intentionally empty — the individual tool handlers
-//! (`memory_add`, `memory_search`, `memory_admin_*`, …) land in
-//! Phases 3-7 and are appended here once their schemas and storage
-//! contracts are wired.
-//!
-//! Scope-gated visibility (FR-020) means `tools/list` must filter by
-//! the caller's [`AuthenticatedScopes`] — that filtering happens here
-//! once the registry is populated so non-admin callers never see
-//! `memory_admin_*`. Today the empty registry trivially satisfies the
-//! contract for every scope set.
+//! that backs `tools/list` and `tools/call`, plus the [`McpState`]
+//! that carries shared backend handles into per-tool modules.
 
+pub mod memory_add;
+pub mod register_author;
+
+use klams_api::auth::TokenGrant;
+use klams_store::CompositeStore;
+use klams_types::MaintenanceState;
 use rmcp::{
     model::{
-        CallToolRequestParams, CallToolResult, ListToolsResult, PaginatedRequestParams,
-        ProtocolVersion, ServerCapabilities, ServerInfo,
+        CallToolRequestParams, CallToolResult, Content, ListToolsResult, PaginatedRequestParams,
+        ProtocolVersion, ServerCapabilities, ServerInfo, Tool,
     },
     service::RequestContext,
     ErrorData as McpError, RoleServer, ServerHandler,
@@ -24,29 +21,33 @@ use rmcp::{
 use std::sync::Arc;
 
 /// Shared state injected into every tool handler.
-///
-/// Holds clones of the Postgres + Qdrant stores, the maintenance
-/// state, and the auth grant table. Tool modules in later sprints
-/// take this struct by reference / `Arc<>` and never reach for global
-/// state.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct McpState {
-    // Populated as later sprint tasks land:
-    //   pub pg: Arc<PostgresStore>,
-    //   pub qd: Arc<QdrantStore>,
-    //   pub maintenance: Arc<MaintenanceState>,
-    //   pub grants: Arc<Vec<TokenGrant>>,
-    /// Placeholder so the struct is non-empty and version-stable.
-    pub(crate) _phantom: Arc<()>,
+    pub store: Arc<CompositeStore>,
+    pub maintenance: Arc<MaintenanceState>,
+    pub grants: Arc<Vec<TokenGrant>>,
+}
+
+impl std::fmt::Debug for McpState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpState")
+            .field("grants", &self.grants.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl McpState {
-    /// Construct an empty state shell. Replaced by real state when
-    /// `klams-service` wires the router (T024).
+    /// Canonical constructor used by `klams-service`.
     #[must_use]
-    pub fn empty() -> Self {
+    pub fn new(
+        store: Arc<CompositeStore>,
+        maintenance: Arc<MaintenanceState>,
+        grants: Arc<Vec<TokenGrant>>,
+    ) -> Self {
         Self {
-            _phantom: Arc::new(()),
+            store,
+            maintenance,
+            grants,
         }
     }
 }
@@ -54,7 +55,6 @@ impl McpState {
 /// `ServerHandler` implementation that exposes the klams MCP tools.
 #[derive(Clone, Debug)]
 pub struct ToolRegistry {
-    #[allow(dead_code)] // wired up by handlers added in later phases
     state: McpState,
 }
 
@@ -65,7 +65,7 @@ impl ToolRegistry {
     }
 }
 
-#[allow(clippy::needless_pass_by_value)] // McpState is the canonical constructor input
+#[allow(clippy::needless_pass_by_value)]
 impl ServerHandler for ToolRegistry {
     fn get_info(&self) -> ServerInfo {
         let mut info = ServerInfo::default();
@@ -75,7 +75,7 @@ impl ServerHandler for ToolRegistry {
         info.server_info.version = env!("CARGO_PKG_VERSION").into();
         info.instructions = Some(
             "klams memory server. Call `register_author` once per session, \
-             then use `memory_*` tools. See contracts in spec 007."
+             then use `memory_*` tools."
                 .into(),
         );
         info
@@ -86,9 +86,21 @@ impl ServerHandler for ToolRegistry {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        // Phase 2 foundational: empty tool list. Tools are added in
-        // Phases 3-7 alongside their scope-gated visibility logic.
-        Ok(ListToolsResult::default())
+        let tools = vec![
+            tool_descriptor::<register_author::RegisterAuthorInput>(
+                "register_author",
+                "Register the calling agent and obtain an author_id (UUID v7).",
+            ),
+            tool_descriptor::<memory_add::MemoryAddArgs>(
+                "memory_add",
+                "Persist a fact or knowledge memory attributed to an author_id.",
+            ),
+        ];
+        let result = ListToolsResult {
+            tools,
+            ..ListToolsResult::default()
+        };
+        Ok(result)
     }
 
     async fn call_tool(
@@ -96,14 +108,69 @@ impl ServerHandler for ToolRegistry {
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        // T023b: trace every dispatch (entered before scope re-check so
-        // denied calls still produce a span). `author_id` / `agent_name`
-        // / `model` are filled in by the per-tool handlers once they
-        // exist (Phase 3+); the empty registry only sees unknown tools.
-        let _span = tracing::info_span!("mcp.tool", tool = %request.name).entered();
-        Err(McpError::invalid_params(
-            format!("unknown tool: {}", request.name),
-            None,
-        ))
+        tracing::info!(tool = %request.name, "mcp.tool dispatch");
+        let name = request.name.as_ref();
+        let args_value = request
+            .arguments
+            .map_or(serde_json::Value::Null, serde_json::Value::Object);
+        match name {
+            "register_author" => {
+                let args = match serde_json::from_value(args_value) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        return Ok(envelope_result(&crate::errors::envelope(
+                            crate::errors::INVALID_AGENT_NAME,
+                            format!("invalid register_author arguments: {e}"),
+                        )))
+                    }
+                };
+                match register_author::run(&self.state, args).await {
+                    Ok(out) => Ok(json_result(&out)),
+                    Err(env) => Ok(envelope_result(&env)),
+                }
+            }
+            "memory_add" => {
+                let args = match serde_json::from_value(args_value) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        return Ok(envelope_result(&crate::errors::envelope(
+                            crate::errors::SCHEMA_VALIDATION_FAILED,
+                            format!("invalid memory_add arguments: {e}"),
+                        )))
+                    }
+                };
+                match memory_add::run(&self.state, args).await {
+                    Ok(out) => Ok(json_result(&out)),
+                    Err(env) => Ok(envelope_result(&env)),
+                }
+            }
+            _ => Err(McpError::invalid_params(
+                format!("unknown tool: {name}"),
+                None,
+            )),
+        }
     }
+}
+
+fn tool_descriptor<T>(name: &'static str, description: &'static str) -> Tool
+where
+    T: schemars::JsonSchema + 'static,
+{
+    let placeholder: Arc<serde_json::Map<String, serde_json::Value>> =
+        Arc::new(serde_json::Map::new());
+    Tool::new(name, description, placeholder).with_input_schema::<T>()
+}
+
+fn json_result<T: serde::Serialize>(value: &T) -> CallToolResult {
+    let text = serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string());
+    CallToolResult::success(vec![Content::text(text)])
+}
+
+fn envelope_result(env: &crate::errors::ErrorEnvelope) -> CallToolResult {
+    let json = serde_json::to_string(env).unwrap_or_else(|_| "{}".to_string());
+    let structured = serde_json::to_value(env).unwrap_or_default();
+    let mut out = CallToolResult::success(vec![Content::text(json)]);
+    out.is_error = Some(true);
+    out.structured_content = Some(structured);
+    out
 }

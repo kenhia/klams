@@ -148,7 +148,21 @@ async fn main() -> Result<()> {
         maintenance: maintenance_state.clone(),
     };
     let api_router = build_router(state, cfg.auth.bearer_token.clone());
-    let mcp_router = klams_mcp::router(klams_mcp::tools::McpState::empty());
+    let mcp_grants = std::sync::Arc::new(vec![klams_api::auth::TokenGrant::new(
+        cfg.auth.bearer_token.clone(),
+        vec![
+            klams_types::Scope::Read,
+            klams_types::Scope::Write,
+            klams_types::Scope::Admin,
+        ],
+        Some("legacy".into()),
+    )]);
+    let mcp_state = klams_mcp::tools::McpState::new(
+        Arc::clone(&store),
+        std::sync::Arc::new(maintenance_state.clone()),
+        mcp_grants,
+    );
+    let mcp_router = klams_mcp::router(mcp_state);
     let router = with_metrics(api_router.nest("/mcp", mcp_router));
     klams_core::metrics::describe();
 

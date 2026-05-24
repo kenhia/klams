@@ -29,6 +29,7 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
 metrics = { workspace = true }
+sha2 = { workspace = true }
 
 rmcp = { version = "1.7", features = [
     "server",

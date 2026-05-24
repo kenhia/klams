@@ -93,15 +93,15 @@ description: "Task list for feature 007-mcp-server"
 
 ### Tests for US1 (write FIRST, ensure they fail)
 
-- [ ] T029 [P] [US1] Integration test `tests/integration/mcp_register_author.rs` — `register_author` happy path returns a UUID v7; `touch_last_seen_at` updates on repeat call with same `agent_name` (FR-004, FR-006).
-- [ ] T030 [P] [US1] Integration test `tests/integration/mcp_memory_add_fact.rs` — fact persists with FK to `authors`, returns `PublicMemory` envelope, no internal fields leak (FR-009, FR-011); also covers `UNKNOWN_AUTHOR_ID`: calling `memory_add` with a UUID that does not exist in `authors` returns the error and writes nothing (spec Edge Cases).
-- [ ] T031 [P] [US1] Integration test `tests/integration/mcp_memory_add_knowledge.rs` — server computes embedding via TEI (no client vector accepted) per [research.md R-012](./research.md#r-012--embedding-policy-for-knowledge); soft-delete columns initialize to NULL; also covers `EMBEDDING_UNAVAILABLE`: when the TEI adapter errors, the tool returns the retryable error envelope with `retry_after_seconds` populated and no row is written (spec Edge Cases).
+- [X] T029 [P] [US1] Integration test `tests/integration/mcp_register_author.rs` — `register_author` happy path returns a UUID v7; `touch_last_seen_at` updates on repeat call with same `agent_name` (FR-004, FR-006).
+- [X] T030 [P] [US1] Integration test `tests/integration/mcp_memory_add_fact.rs` — fact persists with FK to `authors`, returns `PublicMemory` envelope, no internal fields leak (FR-009, FR-011); also covers `UNKNOWN_AUTHOR_ID`: calling `memory_add` with a UUID that does not exist in `authors` returns the error and writes nothing (spec Edge Cases).
+- [X] T031 [P] [US1] Integration test `tests/integration/mcp_memory_add_knowledge.rs` — server computes embedding via TEI (no client vector accepted) per [research.md R-012](./research.md#r-012--embedding-policy-for-knowledge); soft-delete columns initialize to NULL; also covers `EMBEDDING_UNAVAILABLE`: when the TEI adapter errors, the tool returns the retryable error envelope with `retry_after_seconds` populated and no row is written (spec Edge Cases).
 
 ### Implementation for US1
 
-- [ ] T032 [US1] Implement `crates/klams-mcp/src/tools/register_author.rs` with input validation against `contracts/tool-schemas/register_author.json`; touches `authors.last_seen_at` on repeat.
-- [ ] T033 [US1] Implement `crates/klams-mcp/src/tools/memory_add.rs` dispatching on `kind` (`fact` | `knowledge`); knowledge path calls the existing TEI adapter; both increment `klams_mcp_writes_total{agent_name, model, kind}`.
-- [ ] T034 [US1] Wire `memory_add` `fact` path through the existing dedupe pipeline in `klams-core` so MCP-submitted facts deduplicate the same way as REST-submitted ones.
+- [X] T032 [US1] Implement `crates/klams-mcp/src/tools/register_author.rs` with input validation against `contracts/tool-schemas/register_author.json`; touches `authors.last_seen_at` on repeat.
+- [X] T033 [US1] Implement `crates/klams-mcp/src/tools/memory_add.rs` dispatching on `kind` (`fact` | `knowledge`); knowledge path calls the existing TEI adapter; both increment `klams_mcp_writes_total{agent_name, model, kind}`.
+- [X] T034 [US1] Wire `memory_add` `fact` path through the existing dedupe pipeline in `klams-core` so MCP-submitted facts deduplicate the same way as REST-submitted ones.
 
 **Checkpoint**: An MCP client (VS Code or `just mcp-call`) can register and add facts/knowledge end-to-end.
 
