@@ -670,6 +670,86 @@ impl QdrantStore {
         Ok(())
     }
 
+    /// Fetch the embedding vector for a single knowledge point. Returns
+    /// `None` if the point is unknown or has no vector. Used by
+    /// `memory_related` to seed a nearest-neighbour search from an
+    /// existing memory id.
+    pub async fn get_point_vector(&self, id: uuid::Uuid) -> StoreResult<Option<Vec<f32>>> {
+        use qdrant_client::qdrant::{vector_output::Vector as VectorKind, GetPointsBuilder};
+        let resp = self
+            .client
+            .get_points(
+                GetPointsBuilder::new(
+                    self.collection.clone(),
+                    vec![PointId {
+                        point_id_options: Some(PointIdOptions::Uuid(id.to_string())),
+                    }],
+                )
+                .with_payload(false)
+                .with_vectors(true),
+            )
+            .await
+            .map_err(|e| StoreError::Backend(format!("qdrant get_point_vector: {e}")))?;
+        Ok(resp
+            .result
+            .into_iter()
+            .next()
+            .and_then(|p| p.vectors)
+            .and_then(|v| v.get_vector())
+            .and_then(|v| match v {
+                VectorKind::Dense(d) => Some(d.data),
+                VectorKind::Sparse(_) | VectorKind::MultiDense(_) => None,
+            }))
+    }
+
+    /// Bulk-lookup `author_id` payload values for a set of knowledge
+    /// point ids. Missing ids and points without an `author_id` field
+    /// are simply absent from the returned map.
+    pub async fn knowledge_authors_by_ids(
+        &self,
+        ids: &[uuid::Uuid],
+    ) -> StoreResult<HashMap<uuid::Uuid, uuid::Uuid>> {
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let point_ids: Vec<PointId> = ids
+            .iter()
+            .map(|id| PointId {
+                point_id_options: Some(PointIdOptions::Uuid(id.to_string())),
+            })
+            .collect();
+        let resp = self
+            .client
+            .get_points(
+                qdrant_client::qdrant::GetPointsBuilder::new(self.collection.clone(), point_ids)
+                    .with_payload(true)
+                    .with_vectors(false),
+            )
+            .await
+            .map_err(|e| StoreError::Backend(format!("qdrant knowledge_authors_by_ids: {e}")))?;
+        let mut out = HashMap::with_capacity(resp.result.len());
+        for p in resp.result {
+            let Some(point_id) = p.id.and_then(|p| p.point_id_options) else {
+                continue;
+            };
+            let PointIdOptions::Uuid(s) = point_id else {
+                continue;
+            };
+            let Ok(pid) = Uuid::parse_str(&s) else {
+                continue;
+            };
+            if let Some(author) = p
+                .payload
+                .get("author_id")
+                .and_then(qdrant_client::qdrant::Value::as_str)
+                .and_then(|s| Uuid::parse_str(s).ok())
+            {
+                out.insert(pid, author);
+            }
+        }
+        Ok(out)
+    }
+
     /// Permanently remove a knowledge point.
     pub async fn hard_delete_point(&self, id: uuid::Uuid) -> StoreResult<()> {
         let points = PointsIdsList {

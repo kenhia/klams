@@ -114,13 +114,13 @@ description: "Task list for feature 007-mcp-server"
 
 ### Tests for US2
 
-- [ ] T035 [P] [US2] Integration test `tests/integration/mcp_memory_search.rs` — projection scrubs internal fields (FR-011); soft-deleted items excluded by default; tag filter honored.
-- [ ] T036 [P] [US2] Integration test `tests/integration/mcp_memory_related.rs` — related lookup honors the same soft-delete filter and returns the configured `top_k`.
+- [X] T035 [P] [US2] Integration test `tests/integration/mcp_memory_search.rs` — projection scrubs internal fields (FR-011); soft-deleted items excluded by default; tag filter honored.
+- [X] T036 [P] [US2] Integration test `tests/integration/mcp_memory_related.rs` — related lookup honors the same soft-delete filter and returns the configured `top_k`.
 
 ### Implementation for US2
 
-- [ ] T037 [US2] Implement `crates/klams-mcp/src/tools/memory_search.rs` (Postgres FTS for facts, Qdrant for knowledge, in-memory merge by score per [research.md R-008](./research.md#r-008--rest-endpoints-for-viewport)); applies the soft-delete filter; increments `klams_mcp_search_total`.
-- [ ] T038 [US2] Implement `crates/klams-mcp/src/tools/memory_related.rs` (Qdrant nearest-neighbor on the originating point's vector).
+- [X] T037 [US2] Implement `crates/klams-mcp/src/tools/memory_search.rs` (Postgres FTS for facts, Qdrant for knowledge, in-memory merge by score per [research.md R-008](./research.md#r-008--rest-endpoints-for-viewport)); applies the soft-delete filter; increments `klams_mcp_search_total`.
+- [X] T038 [US2] Implement `crates/klams-mcp/src/tools/memory_related.rs` (Qdrant nearest-neighbor on the originating point's vector).
 
 **Checkpoint**: Search + related work end-to-end and satisfy SC-006 at the fixture dataset size.
 

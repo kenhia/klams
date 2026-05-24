@@ -974,6 +974,67 @@ impl PostgresStore {
         row.map(|r| row_to_author(&r)).transpose()
     }
 
+    /// Bulk-fetch facts joined with their authoring `AuthorRecord` by id.
+    /// Soft-deleted facts are excluded. Returned order is unspecified;
+    /// callers re-sort by their own score.
+    pub async fn fetch_facts_with_authors(
+        &self,
+        ids: &[Uuid],
+    ) -> StoreResult<Vec<(Fact, AuthorRecord)>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            r"SELECT f.id, f.type, f.payload, f.version, f.source, f.confidence,
+                     f.decay_weight, f.use_count, f.last_used_at, f.created_at, f.updated_at,
+                     a.id AS author_id, a.agent_name, a.model, a.session_title, a.repo,
+                     a.client_app, a.client_version, a.extra,
+                     a.created_at AS author_created_at, a.last_seen_at AS author_last_seen_at
+              FROM facts f JOIN authors a ON a.id = f.author_id
+              WHERE f.id = ANY($1) AND f.deleted_at IS NULL",
+        )
+        .bind(ids)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StoreError::Backend(format!("fetch_facts_with_authors: {e}")))?;
+        let mut out = Vec::with_capacity(rows.len());
+        for r in &rows {
+            let fact = row_to_fact(r)?;
+            let author = row_to_author_prefixed(r)?;
+            out.push((fact, author));
+        }
+        Ok(out)
+    }
+
+    /// Bulk-fetch events joined with their authoring `AuthorRecord` by id.
+    pub async fn fetch_events_with_authors(
+        &self,
+        ids: &[Uuid],
+    ) -> StoreResult<Vec<(Event, AuthorRecord)>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            r"SELECT e.id, e.task_id, e.category, e.payload, e.source, e.created_at,
+                     a.id AS author_id, a.agent_name, a.model, a.session_title, a.repo,
+                     a.client_app, a.client_version, a.extra,
+                     a.created_at AS author_created_at, a.last_seen_at AS author_last_seen_at
+              FROM events e JOIN authors a ON a.id = e.author_id
+              WHERE e.id = ANY($1)",
+        )
+        .bind(ids)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StoreError::Backend(format!("fetch_events_with_authors: {e}")))?;
+        let mut out = Vec::with_capacity(rows.len());
+        for r in &rows {
+            let event = row_to_event(r)?;
+            let author = row_to_author_prefixed(r)?;
+            out.push((event, author));
+        }
+        Ok(out)
+    }
+
     /// Bump `last_seen_at` on every authenticated MCP call that
     /// references this author (FR-005). Returns the number of rows
     /// updated (0 if the author has been hard-deleted out from under us).
@@ -1170,6 +1231,26 @@ fn row_to_author(row: &sqlx::postgres::PgRow) -> StoreResult<AuthorRecord> {
     let last_seen_at: DateTime<Utc> = row.try_get("last_seen_at").map_err(map_decode)?;
     Ok(AuthorRecord {
         id: row.try_get("id").map_err(map_decode)?,
+        agent_name: row.try_get("agent_name").map_err(map_decode)?,
+        model: row.try_get("model").map_err(map_decode)?,
+        session_title: row.try_get("session_title").map_err(map_decode)?,
+        repo: row.try_get("repo").map_err(map_decode)?,
+        client_app: row.try_get("client_app").map_err(map_decode)?,
+        client_version: row.try_get("client_version").map_err(map_decode)?,
+        extra: row.try_get("extra").map_err(map_decode)?,
+        created_at,
+        last_seen_at,
+    })
+}
+
+/// Like `row_to_author` but reads the `a.*` columns under
+/// `author_<col>` / `author_id` aliases used by the bulk-fetch joins.
+fn row_to_author_prefixed(row: &sqlx::postgres::PgRow) -> StoreResult<AuthorRecord> {
+    use chrono::{DateTime, Utc};
+    let created_at: DateTime<Utc> = row.try_get("author_created_at").map_err(map_decode)?;
+    let last_seen_at: DateTime<Utc> = row.try_get("author_last_seen_at").map_err(map_decode)?;
+    Ok(AuthorRecord {
+        id: row.try_get("author_id").map_err(map_decode)?,
         agent_name: row.try_get("agent_name").map_err(map_decode)?,
         model: row.try_get("model").map_err(map_decode)?,
         session_title: row.try_get("session_title").map_err(map_decode)?,

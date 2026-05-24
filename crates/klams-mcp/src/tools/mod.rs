@@ -5,6 +5,8 @@
 //! that carries shared backend handles into per-tool modules.
 
 pub mod memory_add;
+pub mod memory_related;
+pub mod memory_search;
 pub mod register_author;
 
 use klams_api::auth::TokenGrant;
@@ -95,6 +97,14 @@ impl ServerHandler for ToolRegistry {
                 "memory_add",
                 "Persist a fact or knowledge memory attributed to an author_id.",
             ),
+            tool_descriptor::<memory_search::MemorySearchArgs>(
+                "memory_search",
+                "Search memory across facts, knowledge, and events; returns merged results ranked by relevance.",
+            ),
+            tool_descriptor::<memory_related::MemoryRelatedArgs>(
+                "memory_related",
+                "Find knowledge items semantically related to an existing memory id.",
+            ),
         ];
         let result = ListToolsResult {
             tools,
@@ -140,6 +150,36 @@ impl ServerHandler for ToolRegistry {
                     }
                 };
                 match memory_add::run(&self.state, args).await {
+                    Ok(out) => Ok(json_result(&out)),
+                    Err(env) => Ok(envelope_result(&env)),
+                }
+            }
+            "memory_search" => {
+                let args = match serde_json::from_value(args_value) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        return Ok(envelope_result(&crate::errors::envelope(
+                            crate::errors::SCHEMA_VALIDATION_FAILED,
+                            format!("invalid memory_search arguments: {e}"),
+                        )))
+                    }
+                };
+                match memory_search::run(&self.state, args).await {
+                    Ok(out) => Ok(json_result(&out)),
+                    Err(env) => Ok(envelope_result(&env)),
+                }
+            }
+            "memory_related" => {
+                let args = match serde_json::from_value(args_value) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        return Ok(envelope_result(&crate::errors::envelope(
+                            crate::errors::SCHEMA_VALIDATION_FAILED,
+                            format!("invalid memory_related arguments: {e}"),
+                        )))
+                    }
+                };
+                match memory_related::run(&self.state, args).await {
                     Ok(out) => Ok(json_result(&out)),
                     Err(env) => Ok(envelope_result(&env)),
                 }
