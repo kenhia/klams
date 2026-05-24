@@ -65,7 +65,14 @@ pub struct ServerConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthConfig {
+    /// Legacy single-token form. When non-empty, behaves as a grant with
+    /// all scopes set. New deployments should prefer [`Self::tokens`].
+    #[serde(default)]
     pub bearer_token: String,
+
+    /// Multi-token form. Each entry carries its own scope set.
+    #[serde(default)]
+    pub tokens: Vec<klams_types::TokenGrantConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

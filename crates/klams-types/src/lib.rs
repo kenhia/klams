@@ -4,6 +4,8 @@
 //! kept aligned manually. See `specs/001-initial-mvp/data-model.md`
 //! and `specs/001-initial-mvp/contracts/openapi.yaml`.
 
+pub mod author;
+pub mod auth;
 pub mod config;
 pub mod context;
 pub mod decay;
@@ -13,6 +15,7 @@ pub mod error;
 pub mod hash;
 pub mod health;
 pub mod maintenance;
+pub mod memory;
 pub mod pipeline;
 pub mod requests;
 pub mod responses;
@@ -21,6 +24,13 @@ pub mod search;
 pub mod summary;
 pub mod validation;
 
+/// UUID of the seeded `system` author. Backfilled into every pre-MCP fact
+/// and event row by migrations 0006 and 0007.
+pub const SYSTEM_AUTHOR_ID: uuid::Uuid =
+    uuid::Uuid::from_u128(0x0000_0000_0000_7000_8000_0000_0000_0001_u128);
+
+pub use auth::{AuthConfigError, Scope, TokenGrantConfig};
+pub use author::{AuthorRecord, PublicAuthorRef, RegisterAuthorArgs, RegisterAuthorError};
 pub use config::{BackupConfig, BackupConfigError, SameDayStrategy, WindowStartUtc};
 pub use context::{
     ContextBundle, ContextItem, ContextRequest, ItemKind, RetrievalFilters, SectionMeta,
@@ -33,6 +43,7 @@ pub use error::ApiError;
 pub use hash::canonical_json_hash;
 pub use health::{HealthSnapshot, HealthStatus, QueueStatus, SubsystemStatus};
 pub use maintenance::{MaintenanceSnapshot, MaintenanceState, RunningSnapshot};
+pub use memory::{MemoryKind, PublicMemory, PublicMemoryContent};
 pub use pipeline::{AppendEvent, IndexKnowledge, MemoryWrite, UpsertFact};
 pub use requests::{
     AppendEventRequest, IndexKnowledgeRequest, ListDissentsParams, ListEventsParams,

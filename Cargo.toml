@@ -9,6 +9,7 @@ members = [
     "crates/klams-client",
     "crates/klams-scanner",
     "crates/klams-monitor",
+    "crates/klams-mcp",
 ]
 
 [workspace.package]
@@ -93,3 +94,4 @@ klams-core = { path = "crates/klams-core" }
 klams-store = { path = "crates/klams-store" }
 klams-api = { path = "crates/klams-api" }
 klams-client = { path = "crates/klams-client" }
+klams-mcp = { path = "crates/klams-mcp" }

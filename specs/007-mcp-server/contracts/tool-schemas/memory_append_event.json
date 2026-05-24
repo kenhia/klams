@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "klams.mcp/memory_append_event",
+  "title": "memory_append_event input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["author_id", "category", "payload"],
+  "properties": {
+    "author_id": { "type": "string", "format": "uuid" },
+    "category":  { "type": "string", "minLength": 1, "maxLength": 64 },
+    "payload":   { "type": "object" },
+    "task_id":   { "type": ["string", "null"], "format": "uuid" }
+  }
+}

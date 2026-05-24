@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "klams.mcp/memory_admin_list_deleted",
+  "title": "memory_admin_list_deleted input",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "kinds": {
+      "type": "array",
+      "items": { "enum": ["fact", "knowledge"] },
+      "uniqueItems": true,
+      "minItems": 1
+    },
+    "since":     { "type": ["string", "null"], "format": "date-time" },
+    "author_id": { "type": ["string", "null"], "format": "uuid" },
+    "limit":     { "type": "integer", "minimum": 1, "maximum": 500, "default": 100 },
+    "cursor":    { "type": ["string", "null"] }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "klams.mcp/memory_delete",
+  "title": "memory_delete input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["author_id", "id"],
+  "properties": {
+    "author_id": { "type": "string", "format": "uuid" },
+    "id":        { "type": "string", "format": "uuid" }
+  }
+}
