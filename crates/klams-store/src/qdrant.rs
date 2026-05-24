@@ -750,6 +750,132 @@ impl QdrantStore {
         Ok(out)
     }
 
+    /// Returns `true` if a point with `id` exists in the collection,
+    /// regardless of its soft-delete state. Used by `memory_delete` to
+    /// distinguish `NOT_FOUND` from "already soft-deleted" (FR-014).
+    pub async fn point_exists_any(&self, id: uuid::Uuid) -> StoreResult<bool> {
+        let resp = self
+            .client
+            .get_points(
+                qdrant_client::qdrant::GetPointsBuilder::new(
+                    self.collection.clone(),
+                    vec![PointId {
+                        point_id_options: Some(PointIdOptions::Uuid(id.to_string())),
+                    }],
+                )
+                .with_payload(false)
+                .with_vectors(false),
+            )
+            .await
+            .map_err(|e| StoreError::Backend(format!("qdrant point_exists_any: {e}")))?;
+        Ok(!resp.result.is_empty())
+    }
+
+    /// Returns `Some(true)` if the point exists AND has a non-empty
+    /// `deleted_at` payload field, `Some(false)` if it exists but is
+    /// live, and `None` if the point is unknown. Used by
+    /// `memory_admin_restore` to distinguish `NOT_SOFT_DELETED` from
+    /// `NOT_FOUND`.
+    pub async fn point_is_soft_deleted(&self, id: uuid::Uuid) -> StoreResult<Option<bool>> {
+        let resp = self
+            .client
+            .get_points(
+                qdrant_client::qdrant::GetPointsBuilder::new(
+                    self.collection.clone(),
+                    vec![PointId {
+                        point_id_options: Some(PointIdOptions::Uuid(id.to_string())),
+                    }],
+                )
+                .with_payload(true)
+                .with_vectors(false),
+            )
+            .await
+            .map_err(|e| StoreError::Backend(format!("qdrant point_is_soft_deleted: {e}")))?;
+        let Some(p) = resp.result.into_iter().next() else {
+            return Ok(None);
+        };
+        let deleted = p
+            .payload
+            .get("deleted_at")
+            .and_then(qdrant_client::qdrant::Value::as_str)
+            .is_some_and(|s| !s.is_empty());
+        Ok(Some(deleted))
+    }
+
+    /// Scroll the collection for soft-deleted knowledge points
+    /// (payload `deleted_at` set). Returns up to `limit` items plus
+    /// the next scroll offset (opaque cursor) when more pages remain.
+    /// Optional `author_id` filter narrows to a single deleter.
+    pub async fn list_deleted_knowledge(
+        &self,
+        limit: u32,
+        author_id: Option<uuid::Uuid>,
+        offset: Option<uuid::Uuid>,
+    ) -> StoreResult<(
+        Vec<(
+            KnowledgeItem,
+            OffsetDateTime,
+            Option<uuid::Uuid>,
+            Option<uuid::Uuid>,
+        )>,
+        Option<uuid::Uuid>,
+    )> {
+        let mut must: Vec<Condition> = Vec::new();
+        if let Some(a) = author_id {
+            must.push(Condition::matches("deleted_by_author_id", a.to_string()));
+        }
+        let filter = Filter {
+            must,
+            must_not: vec![Condition::is_empty("deleted_at")],
+            ..Default::default()
+        };
+        let mut builder = ScrollPointsBuilder::new(self.collection.clone())
+            .filter(filter)
+            .limit(limit.clamp(1, 500))
+            .with_payload(true)
+            .with_vectors(false);
+        if let Some(o) = offset {
+            builder = builder.offset(PointId {
+                point_id_options: Some(PointIdOptions::Uuid(o.to_string())),
+            });
+        }
+        let resp = self
+            .client
+            .scroll(builder)
+            .await
+            .map_err(|e| StoreError::Backend(format!("qdrant scroll deleted: {e}")))?;
+        let next = resp
+            .next_page_offset
+            .and_then(|p| match p.point_id_options? {
+                PointIdOptions::Uuid(s) => uuid::Uuid::parse_str(&s).ok(),
+                PointIdOptions::Num(_) => None,
+            });
+        let mut out = Vec::with_capacity(resp.result.len());
+        for p in resp.result {
+            let Some(item) = payload_to_item(&p.payload) else {
+                continue;
+            };
+            let deleted_at = p
+                .payload
+                .get("deleted_at")
+                .and_then(qdrant_client::qdrant::Value::as_str)
+                .and_then(|s| OffsetDateTime::parse(s, &Rfc3339).ok())
+                .unwrap_or_else(OffsetDateTime::now_utc);
+            let deleter = p
+                .payload
+                .get("deleted_by_author_id")
+                .and_then(qdrant_client::qdrant::Value::as_str)
+                .and_then(|s| uuid::Uuid::parse_str(s).ok());
+            let author = p
+                .payload
+                .get("author_id")
+                .and_then(qdrant_client::qdrant::Value::as_str)
+                .and_then(|s| uuid::Uuid::parse_str(s).ok());
+            out.push((item, deleted_at, deleter, author));
+        }
+        Ok((out, next))
+    }
+
     /// Permanently remove a knowledge point.
     pub async fn hard_delete_point(&self, id: uuid::Uuid) -> StoreResult<()> {
         let points = PointsIdsList {

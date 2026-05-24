@@ -5,7 +5,11 @@
 //! that carries shared backend handles into per-tool modules.
 
 pub mod memory_add;
+pub mod memory_admin_hard_delete;
+pub mod memory_admin_list_deleted;
+pub mod memory_admin_restore;
 pub mod memory_append_event;
+pub mod memory_delete;
 pub mod memory_related;
 pub mod memory_search;
 pub mod register_author;
@@ -110,6 +114,22 @@ impl ServerHandler for ToolRegistry {
                 "memory_append_event",
                 "Append an immutable event (deployment, run, signal) attributed to an author_id.",
             ),
+            tool_descriptor::<memory_delete::MemoryDeleteArgs>(
+                "memory_delete",
+                "Soft-delete a fact or knowledge memory by id (FR-014). Idempotent. Events are append-only.",
+            ),
+            tool_descriptor::<memory_admin_restore::MemoryAdminRestoreArgs>(
+                "memory_admin_restore",
+                "Admin: restore a soft-deleted memory by id (clears deleted_at).",
+            ),
+            tool_descriptor::<memory_admin_hard_delete::MemoryAdminHardDeleteArgs>(
+                "memory_admin_hard_delete",
+                "Admin: permanently delete a memory by id. Events are not deletable.",
+            ),
+            tool_descriptor::<memory_admin_list_deleted::MemoryAdminListDeletedArgs>(
+                "memory_admin_list_deleted",
+                "Admin: paginate soft-deleted facts and knowledge for rogue-agent recovery (FR-013).",
+            ),
         ];
         let result = ListToolsResult {
             tools,
@@ -118,6 +138,7 @@ impl ServerHandler for ToolRegistry {
         Ok(result)
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
@@ -200,6 +221,66 @@ impl ServerHandler for ToolRegistry {
                     }
                 };
                 match memory_append_event::run(&self.state, args).await {
+                    Ok(out) => Ok(json_result(&out)),
+                    Err(env) => Ok(envelope_result(&env)),
+                }
+            }
+            "memory_delete" => {
+                let args = match serde_json::from_value(args_value) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        return Ok(envelope_result(&crate::errors::envelope(
+                            crate::errors::SCHEMA_VALIDATION_FAILED,
+                            format!("invalid memory_delete arguments: {e}"),
+                        )))
+                    }
+                };
+                match memory_delete::run(&self.state, args).await {
+                    Ok(out) => Ok(json_result(&out)),
+                    Err(env) => Ok(envelope_result(&env)),
+                }
+            }
+            "memory_admin_restore" => {
+                let args = match serde_json::from_value(args_value) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        return Ok(envelope_result(&crate::errors::envelope(
+                            crate::errors::SCHEMA_VALIDATION_FAILED,
+                            format!("invalid memory_admin_restore arguments: {e}"),
+                        )))
+                    }
+                };
+                match memory_admin_restore::run(&self.state, args).await {
+                    Ok(out) => Ok(json_result(&out)),
+                    Err(env) => Ok(envelope_result(&env)),
+                }
+            }
+            "memory_admin_hard_delete" => {
+                let args = match serde_json::from_value(args_value) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        return Ok(envelope_result(&crate::errors::envelope(
+                            crate::errors::SCHEMA_VALIDATION_FAILED,
+                            format!("invalid memory_admin_hard_delete arguments: {e}"),
+                        )))
+                    }
+                };
+                match memory_admin_hard_delete::run(&self.state, args).await {
+                    Ok(out) => Ok(json_result(&out)),
+                    Err(env) => Ok(envelope_result(&env)),
+                }
+            }
+            "memory_admin_list_deleted" => {
+                let args = match serde_json::from_value(args_value) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        return Ok(envelope_result(&crate::errors::envelope(
+                            crate::errors::SCHEMA_VALIDATION_FAILED,
+                            format!("invalid memory_admin_list_deleted arguments: {e}"),
+                        )))
+                    }
+                };
+                match memory_admin_list_deleted::run(&self.state, args).await {
                     Ok(out) => Ok(json_result(&out)),
                     Err(env) => Ok(envelope_result(&env)),
                 }

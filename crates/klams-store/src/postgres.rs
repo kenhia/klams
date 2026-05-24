@@ -1153,6 +1153,28 @@ impl PostgresStore {
         row_to_event(&row)
     }
 
+    /// Returns `true` if a fact row with `id` exists, regardless of
+    /// its soft-delete state. Used by `memory_delete` to distinguish
+    /// `NOT_FOUND` from "already soft-deleted" (FR-014).
+    pub async fn fact_exists_any(&self, id: Uuid) -> StoreResult<bool> {
+        let row = sqlx::query("SELECT 1 AS one FROM facts WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StoreError::Backend(format!("fact_exists_any: {e}")))?;
+        Ok(row.is_some())
+    }
+
+    /// Returns `true` if an event row with `id` exists.
+    pub async fn event_exists(&self, id: Uuid) -> StoreResult<bool> {
+        let row = sqlx::query("SELECT 1 AS one FROM events WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StoreError::Backend(format!("event_exists: {e}")))?;
+        Ok(row.is_some())
+    }
+
     /// Soft-delete a single fact. Returns `false` if the fact was not
     /// found or was already soft-deleted.
     pub async fn soft_delete_fact(&self, id: Uuid, by_author_id: Uuid) -> StoreResult<bool> {
@@ -1220,6 +1242,62 @@ impl PostgresStore {
                 deleted_at: r.try_get("deleted_at").map_err(map_decode)?,
                 deleted_by_author_id: r.try_get("deleted_by_author_id").map_err(map_decode)?,
             });
+        }
+        Ok(out)
+    }
+
+    /// Filtered pagination over soft-deleted facts. Returns rows
+    /// ordered by `(deleted_at DESC, id DESC)`; pass the last row's
+    /// `(deleted_at, id)` as `cursor` to fetch the next page. Used by
+    /// `memory_admin_list_deleted` (FR-013).
+    pub async fn list_deleted_facts_filtered(
+        &self,
+        limit: u32,
+        since: Option<time::OffsetDateTime>,
+        author_id: Option<Uuid>,
+        cursor: Option<(time::OffsetDateTime, Uuid)>,
+    ) -> StoreResult<Vec<(DeletedFactRow, AuthorRecord)>> {
+        let limit = i64::from(limit.clamp(1, 500));
+        let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
+            "SELECT f.id, f.type, f.payload, f.version, f.source,
+                    f.confidence, f.decay_weight, f.use_count,
+                    f.last_used_at, f.created_at, f.updated_at,
+                    f.deleted_at, f.deleted_by_author_id,
+                    a.id AS author_id, a.agent_name, a.model, a.session_title, a.repo,
+                    a.client_app, a.client_version, a.extra,
+                    a.created_at AS author_created_at, a.last_seen_at AS author_last_seen_at
+             FROM facts f JOIN authors a ON a.id = f.author_id
+             WHERE f.deleted_at IS NOT NULL",
+        );
+        if let Some(t) = since {
+            qb.push(" AND f.deleted_at >= ").push_bind(t);
+        }
+        if let Some(a) = author_id {
+            qb.push(" AND f.deleted_by_author_id = ").push_bind(a);
+        }
+        if let Some((ts, id)) = cursor {
+            qb.push(" AND (f.deleted_at, f.id) < (")
+                .push_bind(ts)
+                .push(", ")
+                .push_bind(id)
+                .push(")");
+        }
+        qb.push(" ORDER BY f.deleted_at DESC, f.id DESC LIMIT ")
+            .push_bind(limit);
+        let rows = qb
+            .build()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StoreError::Backend(format!("list_deleted_facts_filtered: {e}")))?;
+        let mut out = Vec::with_capacity(rows.len());
+        for r in &rows {
+            let row = DeletedFactRow {
+                fact: row_to_fact(r)?,
+                deleted_at: r.try_get("deleted_at").map_err(map_decode)?,
+                deleted_by_author_id: r.try_get("deleted_by_author_id").map_err(map_decode)?,
+            };
+            let author = row_to_author_prefixed(r)?;
+            out.push((row, author));
         }
         Ok(out)
     }

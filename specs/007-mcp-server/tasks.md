@@ -150,18 +150,18 @@ description: "Task list for feature 007-mcp-server"
 
 ### Tests for US4
 
-- [ ] T041 [P] [US4] Integration test `tests/integration/mcp_memory_delete_soft.rs` — soft delete sets `deleted_at` + `deleted_by_author_id`, is idempotent (FR-014), and events are not deletable (FR-015).
-- [ ] T042 [P] [US4] Integration test `tests/integration/mcp_admin_restore.rs` — restore clears soft-delete columns and the item reappears in `memory_search`.
-- [ ] T043 [P] [US4] Integration test `tests/integration/mcp_admin_hard_delete.rs` — hard delete removes Postgres row + Qdrant point; subsequent restore returns `NOT_FOUND`.
-- [ ] T044 [P] [US4] Integration test `tests/integration/mcp_admin_list_deleted.rs` — cursor pagination over the `deleted_at IS NOT NULL` slice; filter by `author_id` and `since`.
-- [ ] T045 [P] [US4] Integration test `tests/integration/mcp_rogue_agent_drill.rs` — the full SC-008 drill: register rogue author → spam writes → admin soft-deletes them → search no longer surfaces them → hard-delete cleans up.
+- [X] T041 [P] [US4] Integration test `tests/integration/mcp_memory_delete_soft.rs` — soft delete sets `deleted_at` + `deleted_by_author_id`, is idempotent (FR-014), and events are not deletable (FR-015).
+- [X] T042 [P] [US4] Integration test `tests/integration/mcp_admin_restore.rs` — restore clears soft-delete columns and the item reappears in `memory_search`.
+- [X] T043 [P] [US4] Integration test `tests/integration/mcp_admin_hard_delete.rs` — hard delete removes Postgres row + Qdrant point; subsequent restore returns `NOT_FOUND`.
+- [X] T044 [P] [US4] Integration test `tests/integration/mcp_admin_list_deleted.rs` — cursor pagination over the `deleted_at IS NOT NULL` slice; filter by `author_id` and `since`.
+- [X] T045 [P] [US4] Integration test `tests/integration/mcp_rogue_agent_drill.rs` — the full SC-008 drill: register rogue author → spam writes → admin soft-deletes them → search no longer surfaces them → hard-delete cleans up.
 
 ### Implementation for US4
 
-- [ ] T046 [US4] Implement `crates/klams-mcp/src/tools/memory_delete.rs` (soft only; rejects event ids with `EVENTS_NOT_DELETABLE`); increments `klams_mcp_deletes_total{agent_name, model, mode = "soft"}`.
-- [ ] T047 [US4] Implement `crates/klams-mcp/src/tools/memory_admin_restore.rs`; increments `klams_mcp_deletes_total{agent_name, model, mode = "restored"}`.
-- [ ] T048 [US4] Implement `crates/klams-mcp/src/tools/memory_admin_hard_delete.rs` (Postgres `DELETE` + Qdrant `delete_points`); increments `klams_mcp_deletes_total{agent_name, model, mode = "hard"}`.
-- [ ] T049 [US4] Implement `crates/klams-mcp/src/tools/memory_admin_list_deleted.rs` with opaque cursor pagination.
+- [X] T046 [US4] Implement `crates/klams-mcp/src/tools/memory_delete.rs` (soft only; rejects event ids with `EVENTS_NOT_DELETABLE`); increments `klams_mcp_deletes_total{agent_name, model, mode = "soft"}`.
+- [X] T047 [US4] Implement `crates/klams-mcp/src/tools/memory_admin_restore.rs`; increments `klams_mcp_deletes_total{agent_name, model, mode = "restored"}`.
+- [X] T048 [US4] Implement `crates/klams-mcp/src/tools/memory_admin_hard_delete.rs` (Postgres `DELETE` + Qdrant `delete_points`); increments `klams_mcp_deletes_total{agent_name, model, mode = "hard"}`.
+- [X] T049 [US4] Implement `crates/klams-mcp/src/tools/memory_admin_list_deleted.rs` with opaque cursor pagination.
 
 **Checkpoint**: The rogue-agent drill succeeds end-to-end (SC-008).
 
