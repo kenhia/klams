@@ -29,6 +29,7 @@ time = { workspace = true }
 sha2 = { workspace = true }
 unicode-normalization = { workspace = true }
 async-trait = { workspace = true }
+chrono = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
@@ -36,3 +37,5 @@ async-trait = { workspace = true }
 time = { workspace = true }
 http-body-util = "0.1"
 mime = "0.3"
+ulid = "1"
+tower = { workspace = true, features = ["util"] }

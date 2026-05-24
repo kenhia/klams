@@ -112,6 +112,7 @@ fn router_with_store(store: Arc<MockStore>) -> axum::Router {
                 klams_core::tokens::TokenCounter::new(klams_core::tokens::TokenMode::CharsDiv4),
                 100,
             )),
+            maintenance: klams_types::MaintenanceState::default(),
         },
         "test-bearer",
     )

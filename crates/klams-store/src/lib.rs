@@ -14,6 +14,7 @@ use std::fmt;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+pub mod backup;
 pub mod composite;
 pub mod embeddings;
 pub mod postgres;

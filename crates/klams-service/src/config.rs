@@ -51,6 +51,10 @@ pub struct Config {
     pub tokens: TokensConfig,
     #[serde(default)]
     pub summarization: SummarizationConfig,
+    /// Sprint 006 — nightly backup feature. Default `enabled=false`,
+    /// so a config without a `[backup]` block is unaffected.
+    #[serde(default)]
+    pub backup: BackupConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,7 +112,7 @@ pub struct LoggingConfig {
 /// Background decay-task configuration (sprint 002). Re-export of
 /// the canonical type from `klams-types` so the runtime config and
 /// the decay task agree on field layout.
-pub use klams_types::DecayConfig;
+pub use klams_types::{BackupConfig, DecayConfig};
 
 // ---------------------------------------------------------------------------
 // Sprint 005 (Phase 4) configuration blocks.

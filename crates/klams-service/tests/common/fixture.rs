@@ -94,6 +94,18 @@ impl FixtureScale {
             event_days: 30,
         }
     }
+
+    /// Large — sprint 006 Day-0 sizing fixture per research.md R-009
+    /// (~10k facts / ~20k knowledge chunks / ~50k events). Used by the
+    /// scale-fixture gated loader and `just backup-size`.
+    pub const fn large() -> Self {
+        Self {
+            facts: 10_000,
+            knowledge: 20_000,
+            events: 50_000,
+            event_days: 90,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

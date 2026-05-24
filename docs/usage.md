@@ -393,3 +393,168 @@ Each interaction calls `POST /memory/context` via the typed client
 in `viewport/src/lib/api/context.ts` and renders the returned bundle
 section-by-section, surfacing `sections[*].status` (`degraded`,
 etc.) and any `Retry-After` hint on 503.
+
+## Sprint 006 — Maintenance window + backups
+
+This sprint adds an in-process scheduler that takes a Postgres `pg_dump`
+and a Qdrant snapshot once per UTC day, an axum middleware that gates
+non-critical writes while a backup is in flight, and a generic
+exec-with-JSON status hook so any external observer (kpidash, an SRE
+script, ansible-k) can subscribe to the lifecycle. End-to-end walkthrough
+lives at
+[specs/006-maintenance-and-backups/quickstart.md](../specs/006-maintenance-and-backups/quickstart.md).
+
+### `[backup]` config block
+
+Match
+[`deploy/config/klams.example.toml`](../deploy/config/klams.example.toml).
+Disabled by default — set `enabled = true` to opt in:
+
+```toml
+[backup]
+enabled              = true
+backup_dir           = "/ai/klams/backups"         # written atomically: .partial -> rename
+window_start_utc     = "07:00"                     # HH:MM UTC; no DST drift
+daily_count          = 14                          # newest N distinct dates per kind
+weekly_count         = 4                           # newest N Sundays per kind
+same_day_strategy    = "suffix"                    # "suffix" (default) | "overwrite"
+status_hook          = "/usr/local/bin/klams-backup-shim"   # optional
+status_hook_timeout  = "10s"                       # bounded; misbehaving hook can't stall a backup
+```
+
+Validate the config without starting the service:
+
+```bash
+just backup-validate-config
+# OK: [backup] enabled=true backup_dir=/ai/klams/backups window_start_utc=07:00 ...
+```
+
+### `just` recipe additions
+
+| Recipe                    | What it does |
+|---------------------------|--------------|
+| `backup-once`             | Runs `klams-service --run-backup-now` once: skips the scheduler but exercises every other path (maintenance flag, hook invocations, retention, metrics). |
+| `restore-from <date> [--force]` | Restores `postgres-<date>.dump` + `qdrant-<date>.snapshot` from `[backup].backup_dir`. Refuses non-empty targets without `--force`. |
+| `backup-validate-config`  | Loads `klams.toml`, runs `BackupConfig::validate()`, exits `0` on OK / `2` on validation error. |
+| `backup-verify [<date>]`  | Read-only integrity check of a committed pair (default: today UTC). Runs `pg_restore --list` on the dump and `tar tf` on the snapshot, asserts both produce a non-empty listing. Exits `0` on OK / `1` on missing or unreadable artifact. |
+| `backup-size`             | Brings up the test stack, loads the scale fixture, times one `run_once`, prints `kind | bytes | seconds`, and appends a dated entry to `specs/006-maintenance-and-backups/sizing.md`. |
+
+### Maintenance-mode error envelope
+
+While `MaintenanceState::active == true`, non-`GET` requests that are
+**not** marked as critical writes are short-circuited by the
+`maintenance_check` middleware. Clients should be prepared for:
+
+```http
+HTTP/1.1 503 Service Unavailable
+Retry-After: 30
+Content-Type: application/json
+
+{
+  "error": "maintenance_window_active",
+  "retry_after_seconds": 30
+}
+```
+
+`retry_after_seconds` is the estimated number of seconds until the
+running backup completes (computed from `RunningSnapshot.expected_end_at`)
+with a 30-second floor. Reads (`GET /memory/*`) and User-source dissent
+resolution (`POST /memory/dissents/{id}/promote|discard`) pass through
+unchanged — see
+[specs/006-maintenance-and-backups/quickstart.md §3](../specs/006-maintenance-and-backups/quickstart.md#3-observe-maintenance-mode-behavior).
+
+### `/healthz` extension
+
+`HealthSnapshot` gains a `maintenance` block reflecting the live
+`MaintenanceState`:
+
+```jsonc
+{
+  "status": "Ok",
+  // ... existing subsystems ...
+  "maintenance": {
+    "active": true,
+    "run_id": "01HZ0Q3X4WM7Q3X4WM7Q3X4WM7",
+    "started_at": "2026-05-22T07:00:00Z",
+    "expected_end_at": "2026-05-22T07:08:00Z"
+  }
+}
+```
+
+When no backup is in flight the block collapses to
+`{ "active": false }` with the optional fields omitted.
+
+### Status hook contract
+
+Set `[backup].status_hook` to an executable path and klams will spawn
+it three times per run — `event ∈ {started, finished, failed}` — with
+a versioned JSON payload streamed to its stdin and the run's
+identifiers exposed via environment variables (`KLAMS_BACKUP_RUN_ID`,
+`KLAMS_BACKUP_EVENT`). The schema is the single source of truth:
+[`contracts/backup-status-hook.schema.json`](../specs/006-maintenance-and-backups/contracts/backup-status-hook.schema.json).
+
+```jsonc
+// finished example (lifecycle events match the schema's examples[])
+{
+  "schema_version": 1,
+  "run_id":     "01HZ0Q3X4WM7Q3X4WM7Q3X4WM7",
+  "event":      "finished",
+  "started_at": "2026-05-22T07:00:00Z",
+  "ended_at":   "2026-05-22T07:08:00Z",
+  "duration_ms": 480000,
+  "artifacts": [
+    {"kind": "postgres", "path": "/ai/klams/backups/postgres-2026-05-22.dump",     "bytes": 12345678},
+    {"kind": "qdrant",   "path": "/ai/klams/backups/qdrant-2026-05-22.snapshot",   "bytes": 9876543}
+  ],
+  "ok": true,
+  "error": null
+}
+```
+
+Hook invocations are bounded by `status_hook_timeout` (default `10s`)
+with a 2-second SIGTERM grace before SIGKILL. **Hook failure is
+observability, not control flow** — a missing executable, infinite
+loop, or non-zero exit increments
+`klams_backup_hook_invocations_total{ok="false"}` but never affects
+the backup outcome. A misconfigured hook (path does not exist or is
+not executable) is also a **non-fatal startup warning** — the
+service logs a `WARN` line on boot and the backup task carries on,
+recording the hook failure via the same `ok="false"` counter when
+the run fires. This is the contract that the kpidash widget shim
+consumes: subscribe to the lifecycle events from a tiny shell
+script that publishes them on Redis (or any other transport), keep
+the script under the timeout, and the live dashboard reflects backup
+state within the SC-004 2-second budget.
+
+### Verifying a committed backup
+
+`just backup-verify [<date>]` runs a read-only integrity check
+against the most recent (or explicitly-dated) pair in
+`[backup].backup_dir`:
+
+```bash
+just backup-verify              # today UTC
+just backup-verify 2026-05-24   # explicit date
+# ==> postgres: /ai/klams/backups/postgres-2026-05-24.dump
+#   bytes=21168 toc_entries=43 OK
+# ==> qdrant:   /ai/klams/backups/qdrant-2026-05-24.snapshot
+#   bytes=712192 tar_members=18 OK
+# ==> backup-verify: OK
+```
+
+What it actually checks:
+
+- **Postgres dump** — `pg_restore --list <file>` parses the dump's
+  table of contents without touching a database. A truncated or
+  corrupt dump fails to produce TOC entries. (Uses
+  `[backup].pg_bin_dir/pg_restore` when set, else the `pg_restore`
+  on `$PATH`.)
+- **Qdrant snapshot** — qdrant snapshots are uncompressed tar
+  archives; `tar tf <file>` listing succeeds with a non-zero member
+  count on an intact snapshot.
+
+For the strongest possible verification — exercising the same
+`restore::run_from` code path the once-exercised drill validates —
+follow the manual procedure in
+[specs/006-maintenance-and-backups/quickstart.md §5](../specs/006-maintenance-and-backups/quickstart.md#5-restore-from-a-snapshot-fr-016)
+against a throwaway compose stack and compare row counts.
