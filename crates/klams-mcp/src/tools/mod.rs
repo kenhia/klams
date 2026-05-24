@@ -5,6 +5,7 @@
 //! that carries shared backend handles into per-tool modules.
 
 pub mod memory_add;
+pub mod memory_append_event;
 pub mod memory_related;
 pub mod memory_search;
 pub mod register_author;
@@ -105,6 +106,10 @@ impl ServerHandler for ToolRegistry {
                 "memory_related",
                 "Find knowledge items semantically related to an existing memory id.",
             ),
+            tool_descriptor::<memory_append_event::MemoryAppendEventArgs>(
+                "memory_append_event",
+                "Append an immutable event (deployment, run, signal) attributed to an author_id.",
+            ),
         ];
         let result = ListToolsResult {
             tools,
@@ -180,6 +185,21 @@ impl ServerHandler for ToolRegistry {
                     }
                 };
                 match memory_related::run(&self.state, args).await {
+                    Ok(out) => Ok(json_result(&out)),
+                    Err(env) => Ok(envelope_result(&env)),
+                }
+            }
+            "memory_append_event" => {
+                let args = match serde_json::from_value(args_value) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        return Ok(envelope_result(&crate::errors::envelope(
+                            crate::errors::SCHEMA_VALIDATION_FAILED,
+                            format!("invalid memory_append_event arguments: {e}"),
+                        )))
+                    }
+                };
+                match memory_append_event::run(&self.state, args).await {
                     Ok(out) => Ok(json_result(&out)),
                     Err(env) => Ok(envelope_result(&env)),
                 }

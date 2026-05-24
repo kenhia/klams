@@ -133,11 +133,11 @@ description: "Task list for feature 007-mcp-server"
 
 ### Tests for US3
 
-- [ ] T039 [P] [US3] Integration test `tests/integration/mcp_memory_append_event.rs` — round-trip; `category` + `payload` persisted; attempting `memory_delete` on the returned id returns `EVENTS_NOT_DELETABLE` (FR-015).
+- [X] T039 [P] [US3] Integration test `tests/integration/mcp_memory_append_event.rs` — round-trip; `category` + `payload` persisted; attempting `memory_delete` on the returned id returns `EVENTS_NOT_DELETABLE` (FR-015).
 
 ### Implementation for US3
 
-- [ ] T040 [US3] Implement `crates/klams-mcp/src/tools/memory_append_event.rs` validating against `contracts/tool-schemas/memory_append_event.json`; rejects with `MAINTENANCE_WINDOW_ACTIVE` during the backup window.
+- [X] T040 [US3] Implement `crates/klams-mcp/src/tools/memory_append_event.rs` validating against `contracts/tool-schemas/memory_append_event.json`; rejects with `MAINTENANCE_WINDOW_ACTIVE` during the backup window.
 
 **Checkpoint**: Events flow end-to-end and remain append-only.
 
