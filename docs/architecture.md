@@ -35,6 +35,10 @@ oriented counterpart to the formal design records in
 │   │   ├───────────────────────────────────────────────────────┤  │  │
 │   │   │ klams-store   Postgres (sqlx) | Qdrant (gRPC) |       │  │  │
 │   │   │               TEI HTTP embedding adapter              │  │  │
+│   │   ├───────────────────────────────────────────────────────┤  │  │
+│   │   │ Backup task   tokio scheduler → pg_dump + qdrant      │  │  │
+│   │   │               snapshot → retention; flips             │  │  │
+│   │   │               MaintenanceState + fires status_hook    │  │  │
 │   │   └───────────────────────────────────────────────────────┘  │  │
 │   └───────┬──────────────────────┬──────────────────────┬────────┘  │
 │           │                      │                      │           │
@@ -408,6 +412,107 @@ Plan and spec for this delta live at
 [specs/005-advanced-retrieval/plan.md](../specs/005-advanced-retrieval/plan.md)
 and
 [specs/005-advanced-retrieval/spec.md](../specs/005-advanced-retrieval/spec.md).
+
+## 2d. Phase 6 deltas (sprint 006 — maintenance & backups)
+
+Sprint 006 adds an in-process **backup task** to `klams-service` that
+takes a Postgres `pg_dump` and a Qdrant snapshot once per UTC day, an
+axum middleware that quiesces non-critical writes while a backup is
+in flight, a generic exec-with-JSON status hook so external observers
+(kpidash, ansible-k) can subscribe to the lifecycle, and a Grafana
+dashboard authored alongside the metrics. The crate boundaries do
+not change.
+
+```text
+┌───────────────────────────────────────────────────────────────────┐
+│ klams-service                                                     │
+│                                                                   │
+│   ┌──────────────┐  every UTC day  ┌────────────────────────────┐ │
+│   │  scheduler   │  ─────────────▶ │  Backup task               │ │
+│   │ (sleep_until │                 │   1. mark MaintenanceState │ │
+│   │  window_utc) │                 │      .active = true        │ │
+│   └──────────────┘                 │   2. status_hook "started" │ │
+│                                    │   3. pg_dump  -> *.partial │ │
+│                                    │      atomic rename         │ │
+│                                    │   4. qdrant snapshot ditto │ │
+│                                    │   5. retention prune       │ │
+│                                    │   6. status_hook           │ │
+│                                    │      "finished" / "failed" │ │
+│                                    │   7. clear MaintenanceState│ │
+│                                    └─────────────┬──────────────┘ │
+│                                                  │                │
+│                              ┌───────────────────┼──────────────┐ │
+│                              ▼                   ▼              ▼ │
+│                         pg_dump 16          qdrant REST   status_hook │
+│                         (TCP 5432)         (HTTP 6333)    (exec + stdin JSON) │
+│                                                                   │
+│   axum router ── maintenance_check middleware ──▶ 503 + Retry-After│
+│                  (reads MaintenanceState.active)                  │
+│                                                                   │
+│   /healthz ──▶ HealthSnapshot.maintenance { active, run_id, ...} │
+└───────────────────────────────────────────────────────────────────┘
+                          │
+                          ▼
+              ${backup_dir}/
+              ├── lockfile                       (pid + run_id; stale-recovery on startup)
+              ├── postgres-YYYY-MM-DD.dump       (atomic; .partial during write)
+              ├── qdrant-YYYY-MM-DD.snapshot
+              └── (older dates pruned per daily_count + weekly_count)
+```
+
+* **Scheduler (FR-001..FR-006)** — hand-rolled `tokio::time::sleep_until`
+  loop on the next UTC `[backup].window_start_utc` instant, calling
+  `backup::run_once` exactly once per day. Skipped with a single INFO
+  line when `[backup].enabled = false`.
+* **Orchestrator** — `klams_service::backup::run_once` flips
+  `MaintenanceState::active = true`, fires the `started` hook, takes
+  the Postgres dump then the Qdrant snapshot then the retention prune,
+  fires `finished` / `failed`, and clears the flag in a guard that
+  runs on both success and failure paths. Lockfile + `.partial` files
+  protect against mid-run crashes — startup recovery cleans both up
+  and emits a `failed` hook with `error: "service_restarted_mid_backup"`.
+* **MaintenanceState (FR-007..FR-008)** — shared `Arc<RwLock>` in
+  `klams-types` so `klams-api` can depend on it without dragging in
+  `klams-service`. The `maintenance_check` middleware short-circuits
+  non-`GET`, non-critical-write requests with a `503 + Retry-After`
+  envelope when active; the critical-write set (currently
+  `POST /memory/dissents/{id}/{promote,discard}`) is matched
+  path-wise because axum global layers run before routing.
+* **Hook executor (FR-009..FR-012)** — `tokio::process::Command` with
+  piped stdin, env passthrough for `KLAMS_BACKUP_RUN_ID` +
+  `KLAMS_BACKUP_EVENT`, bounded by `status_hook_timeout` with a 2s
+  SIGTERM grace before SIGKILL (via `nix::sys::signal`, since
+  `unsafe_code = forbid` rules out `libc::kill` directly). Hook
+  failure is observability, not control flow — see
+  `crates/klams-service/src/backup/hook.rs`. Schema:
+  [`contracts/backup-status-hook.schema.json`](../specs/006-maintenance-and-backups/contracts/backup-status-hook.schema.json).
+* **Retention (FR-005)** — filename-as-truth date parsing keeps the
+  newest `daily_count` distinct dates + the newest `weekly_count`
+  Sundays per kind; treats `same_day_strategy = "suffix"` runs as the
+  same date for retention (highest-N copy wins). No mtime consulted.
+* **Metrics** — five new Prometheus series:
+  `klams_backup_runs_total{ok}`,
+  `klams_backup_duration_seconds{kind}`,
+  `klams_backup_last_success_timestamp_seconds`,
+  `klams_backup_size_bytes{kind}`,
+  `klams_backup_hook_invocations_total{event,ok}`.
+* **Grafana dashboard (US5)** —
+  [`deploy/grafana/klams.json`](../deploy/grafana/klams.json) ships
+  the 11-panel dashboard (queue / throughput / latency / errors /
+  backup age / maintenance / summarization / backup duration / runs
+  by ok / hook invocations). **Production install lives in
+  ansible-k, not here.** The handoff document at
+  [`~/ansible-k/specs/klams-integration/klams-grafana.md`](../../../ansible-k/specs/klams-integration/klams-grafana.md)
+  enumerates every series the panels consume and the two recommended
+  alerts (`klams_backup_stale`, `klams_backup_failures`); the
+  `tests/grafana_dashboard_json.rs` integration test parses both and
+  fails if the dashboard references a series the handoff does not
+  list. SC-008's cross-link assertion is satisfied by this paragraph.
+
+Plan and spec live at
+[specs/006-maintenance-and-backups/plan.md](../specs/006-maintenance-and-backups/plan.md)
+and
+[specs/006-maintenance-and-backups/spec.md](../specs/006-maintenance-and-backups/spec.md).
 
 ## 3. Deployment topology on `kubs0`
 

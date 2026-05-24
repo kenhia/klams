@@ -212,13 +212,43 @@ test -f ~/ansible-k/specs/klams-integration/klams-grafana.md && \
 
 ## Acceptance checklist (Phase 5 exit)
 
-- [ ] SC-001 — Scheduled backup produces both artifacts within ±2 min of `window_start_utc`. (Validated by an integration test that fast-forwards `tokio` time.)
-- [ ] SC-002 — Restore reproduces production counts. (Section 5.)
-- [ ] SC-003 — Non-critical 503 / read 200 / critical 200 during the window. (Section 3.)
-- [ ] SC-004 — kpidash widget reflects start within 2s. (Out-of-tree, but the JSON contract + Section 4 exercise the hook timing.)
-- [ ] SC-005 — Misbehaving hook does not block the run. (Section 4.)
-- [ ] SC-006 — Grafana dashboard imports clean, panels render. (Section 6.)
-- [ ] SC-007 — `docs/setup.md` "Restore from snapshot" section walks an operator through Section 5 verbatim.
-- [ ] SC-008 — ansible-k handoff at `~/ansible-k/specs/klams-integration/klams-grafana.md` exists, lists every series the panels consume, and is referenced from `plan.md` + `docs/architecture.md`.
-- [ ] `just gate` green.
-- [ ] Sprint-005 deferred T055/T056 benchmarks now have a >=1k-fact fixture (from R-009) and can be re-evaluated.
+- [X] SC-001 — Scheduled backup produces both artifacts within ±2 min of `window_start_utc`. (Validated by an integration test that fast-forwards `tokio` time.)
+- [X] SC-002 — Restore reproduces production counts. (Section 5 + FR-016 evidence below; `restore_roundtrip.rs` integration test.)
+- [X] SC-003 — Non-critical 503 / read 200 / critical 200 during the window. (Section 3; `maintenance_middleware.rs` integration tests.)
+- [X] SC-004 — kpidash widget reflects start within 2s. (Out-of-tree on the kpidash side; klams meets its half of the contract via the `< 500ms` `started`-hook spawn budget asserted in `backup_status_hook.rs`.)
+- [X] SC-005 — Misbehaving hook does not block the run. (Section 4; `backup_status_hook.rs` covers missing-exec, exit-1, and SIGTERM-bounded timeout.)
+- [X] SC-006 — Grafana dashboard imports clean, panels render. (Section 6; manual import checklist in `dashboard-smoke.md`; `grafana_dashboard_json.rs` enforces panel/series invariants.)
+- [X] SC-007 — `docs/setup.md` "Restore from snapshot" section walks an operator through Section 5 verbatim. (`docs/setup.md` "Sprint 006 — Restore from snapshot".)
+- [X] SC-008 — ansible-k handoff at `~/ansible-k/specs/klams-integration/klams-grafana.md` exists, lists every series the panels consume, and is referenced from `plan.md` + `docs/architecture.md`. (Cross-reference lives in `docs/architecture.md` §2d; series-coverage enforced by `grafana_dashboard_json.rs`.)
+- [X] `just gate` green.
+- [X] Sprint-005 deferred T055/T056 benchmarks now have a >=1k-fact fixture (from R-009) and can be re-evaluated. (Pointer added to `specs/005-advanced-retrieval/tasks.md`; bench harness deferred to a follow-up sprint.)
+
+## FR-016 evidence — once-exercised restore drill
+
+**Status: PASSED on 2026-05-23.**
+
+The end-to-end restore drill that satisfies FR-016 (and the SC-002
+acceptance bullet) is automated as the integration test
+[`crates/klams-service/tests/restore_roundtrip.rs`](../../crates/klams-service/tests/restore_roundtrip.rs)
+(task T029, landed in commit `935a899` —
+*"feat(backup): phase 4 US2 — restore from snapshot pair (T029-T034)"*,
+2026-05-23). The test:
+
+1. Brings up the `tests/docker-compose.test.yml` stack
+   (Postgres 16 on :55432, Qdrant 1.12.4 on :56333/:56334).
+2. Seeds the scale fixture from T014 (~10k facts, ~50k events,
+   ~20k knowledge chunks).
+3. Calls `klams_service::backup::run_once`, then tears the stack
+   down with `-v` and brings it back up empty.
+4. Calls `klams_service::backup::restore::run_from(date, force=true)`
+   against the fresh stack and asserts row counts on
+   `facts` / `events` / `knowledge_items` plus a 10-row sample
+   identity check.
+
+It first ran clean on the same date as the implementing commit
+(`935a899`, 2026-05-23). The Section 5 manual walkthrough above is
+the operator-facing version of the same drill; running
+`just restore-from <date>` against a backup pair invokes the same
+`restore::run_from` code path the integration test covers. This
+satisfies the spec.md "once-exercised restore" requirement (FR-016)
+without committing to a recurring DR drill cadence.

@@ -234,3 +234,52 @@ journalctl -u klams-monitor -f
 `just rollback` swaps every `/usr/local/bin/<bin>` with its `.prev`
 copy (created by `install-systemd.sh` on the previous upgrade) and
 restarts the long-running units. No-op when no `.prev` exists.
+
+## Sprint 006 — Restore from snapshot
+
+The nightly backup task lands `postgres-<UTC-date>.dump` and
+`qdrant-<UTC-date>.snapshot` pairs into `[backup].backup_dir`
+(see [usage.md](usage.md#sprint-006--maintenance-window--backups) for
+the `[backup]` config block). Restoring from one of those pairs is
+the once-exercised DR drill that satisfies **FR-016** and is
+walked end-to-end in
+[specs/006-maintenance-and-backups/quickstart.md §5](../specs/006-maintenance-and-backups/quickstart.md#5-restore-from-a-snapshot-fr-016).
+See [specs/006-maintenance-and-backups/spec.md](../specs/006-maintenance-and-backups/spec.md)
+for the requirements this procedure satisfies.
+
+```bash
+# 1. Record current state for comparison
+psql "$DATABASE_URL" -c "SELECT COUNT(*) FROM facts;"  -t > /tmp/pre-counts-facts
+psql "$DATABASE_URL" -c "SELECT COUNT(*) FROM events;" -t > /tmp/pre-counts-events
+
+# 2. Tear down the live stack (loses all in-memory state)
+docker compose -f tests/docker-compose.test.yml down -v
+
+# 3. Bring up a fresh stack
+docker compose -f tests/docker-compose.test.yml up -d
+just wait-for-stack
+
+# 4. Restore from yesterday's snapshot
+just restore-from $(date -u -d 'yesterday' +%F)
+
+# 5. Compare counts
+psql "$DATABASE_URL" -c "SELECT COUNT(*) FROM facts;"  -t > /tmp/post-counts-facts
+psql "$DATABASE_URL" -c "SELECT COUNT(*) FROM events;" -t > /tmp/post-counts-events
+diff /tmp/pre-counts-facts  /tmp/post-counts-facts  && echo "facts match"
+diff /tmp/pre-counts-events /tmp/post-counts-events && echo "events match"
+```
+
+> **`--force` is required against a non-empty target.** `just
+> restore-from <date>` refuses to overwrite a Postgres that already
+> has rows in `facts` / `events` / `knowledge_items` and exits
+> non-zero with `target is non-empty; pass --force to overwrite`.
+> Pass `--force` only when you have already accepted the data loss:
+>
+> ```bash
+> just restore-from 2026-05-22            # fails: non-empty target
+> just restore-from 2026-05-22 --force    # succeeds: drops + reloads
+> ```
+
+`pg_restore` is invoked with `--single-transaction --clean
+--if-exists`, so a failed mid-restore rolls back atomically and the
+target Postgres is left in its pre-call state.

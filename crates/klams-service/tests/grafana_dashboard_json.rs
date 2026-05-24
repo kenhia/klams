@@ -31,9 +31,7 @@ fn extract_series(s: &str) -> HashSet<String> {
     while i + 6 <= bytes.len() {
         if &bytes[i..i + 6] == b"klams_" {
             let mut j = i + 6;
-            while j < bytes.len()
-                && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_')
-            {
+            while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
                 j += 1;
             }
             out.insert(String::from_utf8_lossy(&bytes[i..j]).into_owned());
@@ -76,7 +74,10 @@ fn dashboard_json_parses_and_has_panels() {
     let v: serde_json::Value = serde_json::from_str(&raw).expect("dashboard JSON parses");
     assert_eq!(v["title"], "klams");
     let panels = v["panels"].as_array().expect("panels[] present");
-    assert!(!panels.is_empty(), "dashboard must define at least one panel");
+    assert!(
+        !panels.is_empty(),
+        "dashboard must define at least one panel"
+    );
     for p in panels {
         let ds_uid = &p["datasource"]["uid"];
         assert_eq!(
