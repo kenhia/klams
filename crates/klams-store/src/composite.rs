@@ -156,6 +156,320 @@ impl Store for CompositeStore {
             .discard_dissent(dissent_id, caller_source)
             .await
     }
+
+    async fn list_authors_v1(
+        &self,
+        q: crate::AuthorListQuery,
+    ) -> StoreResult<(Vec<crate::AuthorWithCountsOut>, Option<String>)> {
+        let cursor = q.cursor.as_deref().and_then(decode_author_cursor);
+        let limit = if q.limit == 0 { 50 } else { q.limit };
+        let (rows, next) = self
+            .postgres
+            .list_authors_with_counts_filtered(limit, q.since, q.agent_name.as_deref(), cursor)
+            .await?;
+        let out: Vec<_> = rows.into_iter().map(authors_to_public).collect();
+        let next_cursor = next.map(|(ts, id)| encode_author_cursor(ts, id));
+        Ok((out, next_cursor))
+    }
+
+    async fn get_author_v1(&self, id: Uuid) -> StoreResult<Option<crate::AuthorWithCountsOut>> {
+        Ok(self
+            .postgres
+            .get_author_with_counts(id)
+            .await?
+            .map(authors_to_public))
+    }
+
+    async fn list_author_memories(
+        &self,
+        q: crate::AuthorMemoriesQuery,
+    ) -> StoreResult<(Vec<crate::AuthorMemoryRow>, Option<String>)> {
+        list_author_memories_impl(self, q).await
+    }
+}
+
+fn authors_to_public(row: crate::postgres::AuthorWithCounts) -> crate::AuthorWithCountsOut {
+    crate::AuthorWithCountsOut {
+        author: row.author,
+        writes_facts: row.fact_count,
+        events: row.event_count,
+        soft_deletes_authored: row.soft_deletes_authored,
+        restores_received: row.restores_received,
+    }
+}
+
+fn offset_to_chrono(ts: time::OffsetDateTime) -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::<chrono::Utc>::from_timestamp_nanos(
+        i64::try_from(ts.unix_timestamp_nanos()).unwrap_or(0),
+    )
+}
+
+fn encode_author_cursor(ts: chrono::DateTime<chrono::Utc>, id: Uuid) -> String {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine as _;
+    URL_SAFE_NO_PAD.encode(format!("{}:{}", ts.timestamp_nanos_opt().unwrap_or(0), id))
+}
+
+fn decode_author_cursor(raw: &str) -> Option<(chrono::DateTime<chrono::Utc>, Uuid)> {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine as _;
+    let bytes = URL_SAFE_NO_PAD.decode(raw).ok()?;
+    let s = std::str::from_utf8(&bytes).ok()?;
+    let (ns, id) = s.rsplit_once(':')?;
+    let ns: i64 = ns.parse().ok()?;
+    let ts = chrono::DateTime::<chrono::Utc>::from_timestamp_nanos(ns);
+    let id = Uuid::parse_str(id).ok()?;
+    Some((ts, id))
+}
+
+fn encode_memory_cursor(section: &str, ts_nanos: i128, id: Uuid) -> String {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine as _;
+    URL_SAFE_NO_PAD.encode(format!("{section}:{ts_nanos}:{id}"))
+}
+
+fn decode_memory_cursor(raw: &str) -> Option<(String, i128, Uuid)> {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine as _;
+    let bytes = URL_SAFE_NO_PAD.decode(raw).ok()?;
+    let s = std::str::from_utf8(&bytes).ok()?;
+    let mut parts = s.splitn(3, ':');
+    let section = parts.next()?.to_string();
+    let ts: i128 = parts.next()?.parse().ok()?;
+    let id = Uuid::parse_str(parts.next()?).ok()?;
+    Some((section, ts, id))
+}
+
+#[allow(clippy::too_many_lines)]
+async fn list_author_memories_impl(
+    composite: &CompositeStore,
+    q: crate::AuthorMemoriesQuery,
+) -> StoreResult<(Vec<crate::AuthorMemoryRow>, Option<String>)> {
+    use crate::{AuthorMemoryKind, AuthorMemoryStateOut, AuthorMemoryStateQuery};
+    use klams_types::{MemoryKind, PublicAuthorRef, PublicMemory, PublicMemoryContent};
+
+    // Resolve the author's own PublicAuthorRef (used on every row).
+    let author = composite
+        .postgres
+        .get_author_by_id(q.author_id)
+        .await?
+        .ok_or_else(|| StoreError::Other(format!("author {} not found", q.author_id)))?;
+    let author_ref = PublicAuthorRef {
+        agent_name: author.agent_name.clone(),
+        model: author.model.clone(),
+        repo: author.repo.clone(),
+    };
+
+    let limit = if q.limit == 0 { 50 } else { q.limit };
+    let pg_state = match q.state {
+        AuthorMemoryStateQuery::Live => crate::postgres::AuthorMemoryState::Live,
+        AuthorMemoryStateQuery::Deleted => crate::postgres::AuthorMemoryState::Deleted,
+        AuthorMemoryStateQuery::All => crate::postgres::AuthorMemoryState::All,
+    };
+    let qd_state = match q.state {
+        AuthorMemoryStateQuery::Live => crate::qdrant::AuthorMemoryStateFilter::Live,
+        AuthorMemoryStateQuery::Deleted => crate::qdrant::AuthorMemoryStateFilter::Deleted,
+        AuthorMemoryStateQuery::All => crate::qdrant::AuthorMemoryStateFilter::All,
+    };
+
+    let cursor = q.cursor.as_deref().and_then(decode_memory_cursor);
+    let section = cursor
+        .as_ref()
+        .map_or_else(|| "f".to_string(), |c| c.0.clone());
+
+    let want_facts = q.kinds.is_empty() || q.kinds.contains(&AuthorMemoryKind::Fact);
+    let want_events = q.kinds.is_empty() || q.kinds.contains(&AuthorMemoryKind::Event);
+    let want_knowledge = q.kinds.is_empty() || q.kinds.contains(&AuthorMemoryKind::Knowledge);
+
+    // -- facts page --
+    if section == "f" && want_facts {
+        let pg_cursor = cursor.as_ref().and_then(|(s, ns, id)| {
+            if s == "f" {
+                Some((
+                    time::OffsetDateTime::from_unix_timestamp_nanos(*ns).ok()?,
+                    *id,
+                ))
+            } else {
+                None
+            }
+        });
+        let (rows, next) = composite
+            .postgres
+            .list_facts_by_author(q.author_id, pg_state, limit, pg_cursor)
+            .await?;
+        let len = rows.len();
+        let mut deleter_ids = Vec::new();
+        for (_, _, d) in &rows {
+            if let Some(d) = d {
+                deleter_ids.push(*d);
+            }
+        }
+        let deleters = bulk_fetch_authors(composite, &deleter_ids).await;
+        let out: Vec<_> = rows
+            .into_iter()
+            .map(|(f, deleted_at, deleter)| {
+                let state = if deleted_at.is_some() {
+                    AuthorMemoryStateOut::Deleted
+                } else {
+                    AuthorMemoryStateOut::Live
+                };
+                let mem = PublicMemory {
+                    id: f.id,
+                    kind: MemoryKind::Fact,
+                    content: PublicMemoryContent::Fact {
+                        fact_type: f.fact_type.as_str().to_string(),
+                        payload: f.payload.clone(),
+                    },
+                    tags: Vec::new(),
+                    author: author_ref.clone(),
+                    created_at: offset_to_chrono(f.created_at),
+                    updated_at: offset_to_chrono(f.updated_at),
+                };
+                crate::AuthorMemoryRow {
+                    memory: mem,
+                    state,
+                    deleted_at: deleted_at.map(offset_to_chrono),
+                    deleted_by: deleter.and_then(|d| deleters.get(&d).cloned()),
+                }
+            })
+            .collect();
+        let next_cursor = if let Some((ts, id)) = next {
+            Some(encode_memory_cursor("f", ts.unix_timestamp_nanos(), id))
+        } else if want_events {
+            Some(encode_memory_cursor("e", 0, Uuid::nil()))
+        } else if want_knowledge {
+            Some(encode_memory_cursor("k", 0, Uuid::nil()))
+        } else {
+            None
+        };
+        // If the page is empty but we have more sections to try, fall through.
+        if !out.is_empty() || len > 0 {
+            return Ok((out, next_cursor));
+        }
+    }
+
+    if (section == "f" || section == "e") && want_events {
+        let pg_cursor = cursor.as_ref().and_then(|(s, ns, id)| {
+            if s == "e" {
+                Some((
+                    time::OffsetDateTime::from_unix_timestamp_nanos(*ns).ok()?,
+                    *id,
+                ))
+            } else {
+                None
+            }
+        });
+        let (rows, next) = composite
+            .postgres
+            .list_events_by_author(q.author_id, limit, pg_cursor)
+            .await?;
+        let out: Vec<_> = rows
+            .into_iter()
+            .map(|e| {
+                let mem = PublicMemory {
+                    id: e.id,
+                    kind: MemoryKind::Event,
+                    content: PublicMemoryContent::Event {
+                        category: e.category.clone(),
+                        payload: e.payload.clone(),
+                        task_id: e.task_id,
+                    },
+                    tags: Vec::new(),
+                    author: author_ref.clone(),
+                    created_at: offset_to_chrono(e.created_at),
+                    updated_at: offset_to_chrono(e.created_at),
+                };
+                crate::AuthorMemoryRow {
+                    memory: mem,
+                    state: AuthorMemoryStateOut::Live,
+                    deleted_at: None,
+                    deleted_by: None,
+                }
+            })
+            .collect();
+        let next_cursor = if let Some((ts, id)) = next {
+            Some(encode_memory_cursor("e", ts.unix_timestamp_nanos(), id))
+        } else if want_knowledge {
+            Some(encode_memory_cursor("k", 0, Uuid::nil()))
+        } else {
+            None
+        };
+        if !out.is_empty() {
+            return Ok((out, next_cursor));
+        }
+    }
+
+    if want_knowledge {
+        let qd_cursor = cursor.as_ref().and_then(|(s, _, id)| {
+            if s == "k" && *id != Uuid::nil() {
+                Some(*id)
+            } else {
+                None
+            }
+        });
+        let (rows, next) = composite
+            .qdrant
+            .list_knowledge_by_author(q.author_id, qd_state, limit, qd_cursor)
+            .await?;
+        let out: Vec<_> = rows
+            .into_iter()
+            .map(|(item, deleted_at, _deleter)| {
+                let state = if deleted_at.is_some() {
+                    AuthorMemoryStateOut::Deleted
+                } else {
+                    AuthorMemoryStateOut::Live
+                };
+                let mem = PublicMemory {
+                    id: item.id,
+                    kind: MemoryKind::Knowledge,
+                    content: PublicMemoryContent::Knowledge {
+                        text: item.text.clone(),
+                        source_path: item.file.clone(),
+                        repo: item.repo.clone(),
+                    },
+                    tags: item.tags.clone(),
+                    author: author_ref.clone(),
+                    created_at: offset_to_chrono(item.created_at),
+                    updated_at: offset_to_chrono(item.updated_at),
+                };
+                crate::AuthorMemoryRow {
+                    memory: mem,
+                    state,
+                    deleted_at: deleted_at.map(offset_to_chrono),
+                    // Knowledge deleter resolution requires another author lookup;
+                    // skipped in v1 to keep the scroll cheap.
+                    deleted_by: None,
+                }
+            })
+            .collect();
+        let next_cursor = next.map(|id| encode_memory_cursor("k", 0, id));
+        return Ok((out, next_cursor));
+    }
+
+    Ok((Vec::new(), None))
+}
+
+async fn bulk_fetch_authors(
+    composite: &CompositeStore,
+    ids: &[Uuid],
+) -> std::collections::HashMap<Uuid, klams_types::PublicAuthorRef> {
+    let mut out = std::collections::HashMap::new();
+    for id in ids {
+        if out.contains_key(id) {
+            continue;
+        }
+        if let Ok(Some(a)) = composite.postgres.get_author_by_id(*id).await {
+            out.insert(
+                *id,
+                klams_types::PublicAuthorRef {
+                    agent_name: a.agent_name,
+                    model: a.model,
+                    repo: a.repo,
+                },
+            );
+        }
+    }
+    out
 }
 
 #[async_trait]

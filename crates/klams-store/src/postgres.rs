@@ -901,6 +901,13 @@ pub struct AuthorWithCounts {
     pub author: AuthorRecord,
     pub fact_count: i64,
     pub event_count: i64,
+    /// Number of items this author has soft-deleted (rolls up
+    /// `facts.deleted_by_author_id = author.id`). Knowledge points
+    /// are not included in v1.
+    pub soft_deletes_authored: i64,
+    /// Number of times this author's items have been restored.
+    /// Always `0` in v1 — restores are not yet audit-logged.
+    pub restores_received: i64,
 }
 
 /// Postgres-side projection of a soft-deleted fact for the admin
@@ -1051,45 +1058,240 @@ impl PostgresStore {
     /// Soft-deleted facts are excluded from `fact_count`; events have no
     /// soft-delete state.
     pub async fn list_authors_with_counts(&self, limit: u32) -> StoreResult<Vec<AuthorWithCounts>> {
+        self.list_authors_with_counts_filtered(limit, None, None, None)
+            .await
+            .map(|(rows, _)| rows)
+    }
+
+    /// Filtered, paginated variant used by the REST `/v1/authors` route.
+    /// Pagination orders by `(last_seen_at DESC, id DESC)`; pass the last
+    /// row's `(last_seen_at, id)` as `cursor` to fetch the next page.
+    pub async fn list_authors_with_counts_filtered(
+        &self,
+        limit: u32,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        agent_name: Option<&str>,
+        cursor: Option<(chrono::DateTime<chrono::Utc>, Uuid)>,
+    ) -> StoreResult<(
+        Vec<AuthorWithCounts>,
+        Option<(chrono::DateTime<chrono::Utc>, Uuid)>,
+    )> {
         let limit = i64::from(limit.clamp(1, 1_000));
-        let rows = sqlx::query(
+        let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
             r"
             SELECT a.id, a.agent_name, a.model, a.session_title, a.repo,
                    a.client_app, a.client_version, a.extra,
                    a.created_at, a.last_seen_at,
                    COALESCE(fc.cnt, 0) AS fact_count,
-                   COALESCE(ec.cnt, 0) AS event_count
+                   COALESCE(ec.cnt, 0) AS event_count,
+                   COALESCE(sd.cnt, 0) AS soft_deletes_authored
               FROM authors a
               LEFT JOIN (
                   SELECT author_id, COUNT(*)::bigint AS cnt
-                    FROM facts
-                   WHERE deleted_at IS NULL
+                    FROM facts WHERE deleted_at IS NULL
                    GROUP BY author_id
               ) fc ON fc.author_id = a.id
               LEFT JOIN (
                   SELECT author_id, COUNT(*)::bigint AS cnt
-                    FROM events
-                   GROUP BY author_id
+                    FROM events GROUP BY author_id
               ) ec ON ec.author_id = a.id
-              ORDER BY a.last_seen_at DESC, a.id
-              LIMIT $1
+              LEFT JOIN (
+                  SELECT deleted_by_author_id AS author_id, COUNT(*)::bigint AS cnt
+                    FROM facts
+                   WHERE deleted_at IS NOT NULL AND deleted_by_author_id IS NOT NULL
+                   GROUP BY deleted_by_author_id
+              ) sd ON sd.author_id = a.id
+              WHERE 1 = 1
             ",
-        )
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| StoreError::Backend(format!("list_authors_with_counts: {e}")))?;
+        );
+        if let Some(t) = since {
+            qb.push(" AND a.last_seen_at >= ").push_bind(t);
+        }
+        if let Some(name) = agent_name {
+            qb.push(" AND a.agent_name = ").push_bind(name);
+        }
+        if let Some((ts, id)) = cursor {
+            qb.push(" AND (a.last_seen_at, a.id) < (")
+                .push_bind(ts)
+                .push(", ")
+                .push_bind(id)
+                .push(")");
+        }
+        qb.push(" ORDER BY a.last_seen_at DESC, a.id DESC LIMIT ")
+            .push_bind(limit);
+        let rows =
+            qb.build().fetch_all(&self.pool).await.map_err(|e| {
+                StoreError::Backend(format!("list_authors_with_counts_filtered: {e}"))
+            })?;
         let mut out = Vec::with_capacity(rows.len());
         for r in &rows {
             out.push(AuthorWithCounts {
                 author: row_to_author(r)?,
                 fact_count: r.try_get("fact_count").map_err(map_decode)?,
                 event_count: r.try_get("event_count").map_err(map_decode)?,
+                soft_deletes_authored: r.try_get("soft_deletes_authored").map_err(map_decode)?,
+                restores_received: 0,
             });
         }
-        Ok(out)
+        let next = if i64::try_from(out.len()).is_ok_and(|n| n == limit) {
+            out.last().map(|a| (a.author.last_seen_at, a.author.id))
+        } else {
+            None
+        };
+        Ok((out, next))
     }
 
+    /// Fetch a single author with the rolled-up counts used by
+    /// `GET /v1/authors/{id}`. Returns `None` when the author id is
+    /// unknown.
+    pub async fn get_author_with_counts(&self, id: Uuid) -> StoreResult<Option<AuthorWithCounts>> {
+        let row = sqlx::query(
+            r"
+            SELECT a.id, a.agent_name, a.model, a.session_title, a.repo,
+                   a.client_app, a.client_version, a.extra,
+                   a.created_at, a.last_seen_at,
+                   COALESCE(fc.cnt, 0) AS fact_count,
+                   COALESCE(ec.cnt, 0) AS event_count,
+                   COALESCE(sd.cnt, 0) AS soft_deletes_authored
+              FROM authors a
+              LEFT JOIN (
+                  SELECT author_id, COUNT(*)::bigint AS cnt
+                    FROM facts WHERE deleted_at IS NULL
+                   GROUP BY author_id
+              ) fc ON fc.author_id = a.id
+              LEFT JOIN (
+                  SELECT author_id, COUNT(*)::bigint AS cnt
+                    FROM events GROUP BY author_id
+              ) ec ON ec.author_id = a.id
+              LEFT JOIN (
+                  SELECT deleted_by_author_id AS author_id, COUNT(*)::bigint AS cnt
+                    FROM facts
+                   WHERE deleted_at IS NOT NULL AND deleted_by_author_id IS NOT NULL
+                   GROUP BY deleted_by_author_id
+              ) sd ON sd.author_id = a.id
+              WHERE a.id = $1
+            ",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| StoreError::Backend(format!("get_author_with_counts: {e}")))?;
+        let Some(r) = row else { return Ok(None) };
+        Ok(Some(AuthorWithCounts {
+            author: row_to_author(&r)?,
+            fact_count: r.try_get("fact_count").map_err(map_decode)?,
+            event_count: r.try_get("event_count").map_err(map_decode)?,
+            soft_deletes_authored: r.try_get("soft_deletes_authored").map_err(map_decode)?,
+            restores_received: 0,
+        }))
+    }
+
+    /// List facts authored by `author_id` ordered by `(created_at DESC, id DESC)`.
+    /// `state` selects live (default), deleted, or all. Pagination via
+    /// `cursor = (created_at, id)`.
+    pub async fn list_facts_by_author(
+        &self,
+        author_id: Uuid,
+        state: AuthorMemoryState,
+        limit: u32,
+        cursor: Option<(time::OffsetDateTime, Uuid)>,
+    ) -> StoreResult<(
+        Vec<(Fact, Option<time::OffsetDateTime>, Option<Uuid>)>,
+        Option<(time::OffsetDateTime, Uuid)>,
+    )> {
+        let limit = i64::from(limit.clamp(1, 500));
+        let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
+            r"SELECT id, type, payload, version, source,
+                     confidence, decay_weight, use_count,
+                     last_used_at, created_at, updated_at,
+                     deleted_at, deleted_by_author_id
+              FROM facts WHERE author_id = ",
+        );
+        qb.push_bind(author_id);
+        match state {
+            AuthorMemoryState::Live => qb.push(" AND deleted_at IS NULL"),
+            AuthorMemoryState::Deleted => qb.push(" AND deleted_at IS NOT NULL"),
+            AuthorMemoryState::All => qb.push(""),
+        };
+        if let Some((ts, id)) = cursor {
+            qb.push(" AND (created_at, id) < (")
+                .push_bind(ts)
+                .push(", ")
+                .push_bind(id)
+                .push(")");
+        }
+        qb.push(" ORDER BY created_at DESC, id DESC LIMIT ")
+            .push_bind(limit);
+        let rows = qb
+            .build()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StoreError::Backend(format!("list_facts_by_author: {e}")))?;
+        let mut out = Vec::with_capacity(rows.len());
+        for r in &rows {
+            let fact = row_to_fact(r)?;
+            let deleted_at: Option<time::OffsetDateTime> =
+                r.try_get("deleted_at").map_err(map_decode)?;
+            let deleted_by: Option<Uuid> = r.try_get("deleted_by_author_id").map_err(map_decode)?;
+            out.push((fact, deleted_at, deleted_by));
+        }
+        let next = if i64::try_from(out.len()).is_ok_and(|n| n == limit) {
+            out.last().map(|(f, _, _)| (f.created_at, f.id))
+        } else {
+            None
+        };
+        Ok((out, next))
+    }
+
+    /// List events authored by `author_id` ordered by `(created_at DESC, id DESC)`.
+    pub async fn list_events_by_author(
+        &self,
+        author_id: Uuid,
+        limit: u32,
+        cursor: Option<(time::OffsetDateTime, Uuid)>,
+    ) -> StoreResult<(Vec<Event>, Option<(time::OffsetDateTime, Uuid)>)> {
+        let limit = i64::from(limit.clamp(1, 500));
+        let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
+            r"SELECT id, task_id, category, payload, source, created_at
+              FROM events WHERE author_id = ",
+        );
+        qb.push_bind(author_id);
+        if let Some((ts, id)) = cursor {
+            qb.push(" AND (created_at, id) < (")
+                .push_bind(ts)
+                .push(", ")
+                .push_bind(id)
+                .push(")");
+        }
+        qb.push(" ORDER BY created_at DESC, id DESC LIMIT ")
+            .push_bind(limit);
+        let rows = qb
+            .build()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StoreError::Backend(format!("list_events_by_author: {e}")))?;
+        let mut out = Vec::with_capacity(rows.len());
+        for r in &rows {
+            out.push(row_to_event(r)?);
+        }
+        let next = if i64::try_from(out.len()).is_ok_and(|n| n == limit) {
+            out.last().map(|e| (e.created_at, e.id))
+        } else {
+            None
+        };
+        Ok((out, next))
+    }
+}
+
+/// Filter for `list_facts_by_author` / `list_knowledge_by_author`.
+#[derive(Debug, Clone, Copy)]
+pub enum AuthorMemoryState {
+    Live,
+    Deleted,
+    All,
+}
+
+impl PostgresStore {
     /// MCP write path for facts — same dedupe semantics as `upsert_fact`
     /// but attributes the row to `author_id` instead of `SYSTEM_AUTHOR_ID`.
     pub async fn upsert_fact_with_author(

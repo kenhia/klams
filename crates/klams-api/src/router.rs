@@ -105,6 +105,12 @@ pub fn build_router<S: Store>(state: ApiState<S>, bearer_token: impl Into<String
                 crate::middleware::maintenance::CriticalWrite,
             )),
         )
+        .route("/v1/authors", get(handlers::authors::list::<S>))
+        .route("/v1/authors/:id", get(handlers::authors::get::<S>))
+        .route(
+            "/v1/authors/:id/memories",
+            get(handlers::authors::memories::<S>),
+        )
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(
             state.maintenance.clone(),

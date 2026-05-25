@@ -174,13 +174,13 @@ description: "Task list for feature 007-mcp-server"
 
 ### Tests for US5
 
-- [ ] T050 [P] [US5] Integration test `tests/integration/api_authors_list.rs` — `GET /v1/authors?limit=50` returns all authors with `last_seen_at` and the `counts` object `{writes, soft_deletes, restores_received, events}` per [contracts/rest-authors.md](./contracts/rest-authors.md) (FR-024 + FR-024a).
-- [ ] T051 [P] [US5] Integration test `tests/integration/api_authors_detail.rs` — `GET /v1/authors/{id}` returns full `Author` projection.
-- [ ] T052 [P] [US5] Integration test `tests/integration/api_authors_memories.rs` — `GET /v1/authors/{id}/memories?kinds=fact,knowledge,event` returns `PublicMemory` rows paginated.
+- [X] T050 [P] [US5] Integration test `tests/integration/api_authors_list.rs` — `GET /v1/authors?limit=50` returns all authors with `last_seen_at` and the `counts` object `{writes, soft_deletes, restores_received, events}` per [contracts/rest-authors.md](./contracts/rest-authors.md) (FR-024 + FR-024a).
+- [X] T051 [P] [US5] Integration test `tests/integration/api_authors_detail.rs` — `GET /v1/authors/{id}` returns full `Author` projection.
+- [X] T052 [P] [US5] Integration test `tests/integration/api_authors_memories.rs` — `GET /v1/authors/{id}/memories?kinds=fact,knowledge,event` returns `PublicMemory` rows paginated.
 
 ### Implementation for US5
 
-- [ ] T053 [US5] Implement `crates/klams-api/src/handlers/authors.rs` (three handlers) and mount in `crates/klams-api/src/router.rs` behind `require_scope(Scope::Read)` per [contracts/rest-authors.md](./contracts/rest-authors.md).
+- [X] T053 [US5] Implement `crates/klams-api/src/handlers/authors.rs` (three handlers) and mount in `crates/klams-api/src/router.rs` behind `require_scope(Scope::Read)` per [contracts/rest-authors.md](./contracts/rest-authors.md).
 - [ ] T054 [P] [US5] viewport route `viewport/src/routes/authors/+page.svelte` + `+page.ts` (list view calling `GET /v1/authors`).
 - [ ] T055 [P] [US5] viewport route `viewport/src/routes/authors/[id]/+page.svelte` + `[id]/+page.ts` (detail view calling `GET /v1/authors/{id}` and `.../memories`). Each memory row MUST render a state badge (`live` | `soft-deleted` | `hard-deleted`) and link `{id, kind}` to the matching detail in `/facts/{id}`, `/knowledge/{id}`, or `/events/{id}` so Ken can follow the row into the existing per-kind routes (FR-025).
 

@@ -26,6 +26,7 @@ qdrant-client = { workspace = true }
 reqwest = { workspace = true }
 sha2 = { workspace = true }
 chrono = { workspace = true }
+base64 = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

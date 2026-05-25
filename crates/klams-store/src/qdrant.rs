@@ -20,6 +20,14 @@ use uuid::Uuid;
 const KEYWORD_INDEX_FIELDS: &[&str] =
     &["content_hash", "source", "tags", "repo", "machine", "file"];
 
+/// Filter for `list_knowledge_by_author`.
+#[derive(Debug, Clone, Copy)]
+pub enum AuthorMemoryStateFilter {
+    Live,
+    Deleted,
+    All,
+}
+
 #[derive(Clone)]
 pub struct QdrantStore {
     client: Arc<Qdrant>,
@@ -872,6 +880,72 @@ impl QdrantStore {
                 .and_then(qdrant_client::qdrant::Value::as_str)
                 .and_then(|s| uuid::Uuid::parse_str(s).ok());
             out.push((item, deleted_at, deleter, author));
+        }
+        Ok((out, next))
+    }
+
+    /// Scroll the collection for knowledge points authored by
+    /// `author_id`. `state` selects live vs soft-deleted vs all.
+    /// Returns up to `limit` items plus the next scroll offset.
+    pub async fn list_knowledge_by_author(
+        &self,
+        author_id: uuid::Uuid,
+        state: AuthorMemoryStateFilter,
+        limit: u32,
+        offset: Option<uuid::Uuid>,
+    ) -> StoreResult<(
+        Vec<(KnowledgeItem, Option<OffsetDateTime>, Option<uuid::Uuid>)>,
+        Option<uuid::Uuid>,
+    )> {
+        let mut must: Vec<Condition> = vec![Condition::matches("author_id", author_id.to_string())];
+        let mut must_not: Vec<Condition> = Vec::new();
+        match state {
+            AuthorMemoryStateFilter::Live => must.push(Condition::is_empty("deleted_at")),
+            AuthorMemoryStateFilter::Deleted => must_not.push(Condition::is_empty("deleted_at")),
+            AuthorMemoryStateFilter::All => {}
+        }
+        let filter = Filter {
+            must,
+            must_not,
+            ..Default::default()
+        };
+        let mut builder = ScrollPointsBuilder::new(self.collection.clone())
+            .filter(filter)
+            .limit(limit.clamp(1, 500))
+            .with_payload(true)
+            .with_vectors(false);
+        if let Some(o) = offset {
+            builder = builder.offset(PointId {
+                point_id_options: Some(PointIdOptions::Uuid(o.to_string())),
+            });
+        }
+        let resp = self
+            .client
+            .scroll(builder)
+            .await
+            .map_err(|e| StoreError::Backend(format!("qdrant scroll by_author: {e}")))?;
+        let next = resp
+            .next_page_offset
+            .and_then(|p| match p.point_id_options? {
+                PointIdOptions::Uuid(s) => uuid::Uuid::parse_str(&s).ok(),
+                PointIdOptions::Num(_) => None,
+            });
+        let mut out = Vec::with_capacity(resp.result.len());
+        for p in resp.result {
+            let Some(item) = payload_to_item(&p.payload) else {
+                continue;
+            };
+            let deleted_at = p
+                .payload
+                .get("deleted_at")
+                .and_then(qdrant_client::qdrant::Value::as_str)
+                .and_then(|s| OffsetDateTime::parse(s, &Rfc3339).ok());
+            let deleter = p
+                .payload
+                .get("deleted_by_author_id")
+                .and_then(qdrant_client::qdrant::Value::as_str)
+                .and_then(|s| uuid::Uuid::parse_str(s).ok());
+            out.push((item, deleted_at, deleter));
         }
         Ok((out, next))
     }
