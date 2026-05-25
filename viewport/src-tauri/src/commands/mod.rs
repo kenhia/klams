@@ -10,9 +10,10 @@ pub mod memory;
 use async_trait::async_trait;
 use klams_client::{Client, ClientError};
 use klams_types::{
-    ContextBundle, ContextRequest, Dissent, DissentPage, EventPage, Fact, FactPage, FactType,
-    FactWriteOutcome, HealthSnapshot, KnowledgeItem, ListDissentsParams, ListEventsParams,
-    ListFactsParams, SearchRequest, SearchResults, Source, UpsertFactRequest,
+    AuthorMemoriesPage, AuthorPage, ContextBundle, ContextRequest, Dissent, DissentPage,
+    EventPage, Fact, FactPage, FactType, FactWriteOutcome, HealthSnapshot, KnowledgeItem,
+    ListAuthorMemoriesParams, ListAuthorsParams, ListDissentsParams, ListEventsParams,
+    ListFactsParams, PublicAuthor, SearchRequest, SearchResults, Source, UpsertFactRequest,
 };
 use serde::Serialize;
 use std::sync::Arc;
@@ -104,6 +105,18 @@ pub trait ClientFactory: Send + Sync + std::fmt::Debug {
         payload: serde_json::Value,
         expected_version: i32,
     ) -> Result<FactWriteOutcome, ViewportError>;
+
+    // -- Sprint 007: viewport `/v1/authors` drilldown -----------------
+    async fn list_authors(
+        &self,
+        params: ListAuthorsParams,
+    ) -> Result<AuthorPage, ViewportError>;
+    async fn get_author(&self, id: Uuid) -> Result<PublicAuthor, ViewportError>;
+    async fn list_author_memories(
+        &self,
+        id: Uuid,
+        params: ListAuthorMemoriesParams,
+    ) -> Result<AuthorMemoriesPage, ViewportError>;
 
     /// Default impl walks pages of `/memory/facts` looking for `id`.
     /// Override in production once a `GET /memory/facts/{id}` lands.
@@ -239,6 +252,22 @@ impl ClientFactory for LiveClientFactory {
             .client()?
             .edit_fact(id, fact_type, payload, expected_version)
             .await?)
+    }
+    async fn list_authors(
+        &self,
+        params: ListAuthorsParams,
+    ) -> Result<AuthorPage, ViewportError> {
+        Ok(self.client()?.list_authors(&params).await?)
+    }
+    async fn get_author(&self, id: Uuid) -> Result<PublicAuthor, ViewportError> {
+        Ok(self.client()?.get_author(id).await?)
+    }
+    async fn list_author_memories(
+        &self,
+        id: Uuid,
+        params: ListAuthorMemoriesParams,
+    ) -> Result<AuthorMemoriesPage, ViewportError> {
+        Ok(self.client()?.list_author_memories(id, &params).await?)
     }
 }
 

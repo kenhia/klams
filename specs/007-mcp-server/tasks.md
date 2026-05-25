@@ -181,8 +181,8 @@ description: "Task list for feature 007-mcp-server"
 ### Implementation for US5
 
 - [X] T053 [US5] Implement `crates/klams-api/src/handlers/authors.rs` (three handlers) and mount in `crates/klams-api/src/router.rs` behind `require_scope(Scope::Read)` per [contracts/rest-authors.md](./contracts/rest-authors.md).
-- [ ] T054 [P] [US5] viewport route `viewport/src/routes/authors/+page.svelte` + `+page.ts` (list view calling `GET /v1/authors`).
-- [ ] T055 [P] [US5] viewport route `viewport/src/routes/authors/[id]/+page.svelte` + `[id]/+page.ts` (detail view calling `GET /v1/authors/{id}` and `.../memories`). Each memory row MUST render a state badge (`live` | `soft-deleted` | `hard-deleted`) and link `{id, kind}` to the matching detail in `/facts/{id}`, `/knowledge/{id}`, or `/events/{id}` so Ken can follow the row into the existing per-kind routes (FR-025).
+- [X] T054 [P] [US5] viewport route `viewport/src/routes/authors/+page.svelte` + `+page.ts` (list view calling `GET /v1/authors`).
+- [X] T055 [P] [US5] viewport route `viewport/src/routes/authors/[id]/+page.svelte` + `[id]/+page.ts` (detail view calling `GET /v1/authors/{id}` and `.../memories`). Each memory row MUST render a state badge (`live` | `soft-deleted` | `hard-deleted`) and link `{id, kind}` to the matching detail in `/facts/{id}`, `/knowledge/{id}`, or `/events/{id}` so Ken can follow the row into the existing per-kind routes (FR-025).
 
 **Checkpoint**: All user stories independently functional.
 

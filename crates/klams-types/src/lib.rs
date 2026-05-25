@@ -46,12 +46,13 @@ pub use maintenance::{MaintenanceSnapshot, MaintenanceState, RunningSnapshot};
 pub use memory::{MemoryKind, PublicMemory, PublicMemoryContent};
 pub use pipeline::{AppendEvent, IndexKnowledge, MemoryWrite, UpsertFact};
 pub use requests::{
-    AppendEventRequest, IndexKnowledgeRequest, ListDissentsParams, ListEventsParams,
-    ListFactsParams, SearchRequest, UpsertFactRequest,
+    AppendEventRequest, IndexKnowledgeRequest, ListAuthorMemoriesParams, ListAuthorsParams,
+    ListDissentsParams, ListEventsParams, ListFactsParams, SearchRequest, UpsertFactRequest,
 };
 pub use responses::{
-    AcceptedId, DissentPage, EventPage, EventWriteResponse, FactPage, FactWriteResponse,
-    IndexKnowledgeResponse, KnowledgeDeleteResponse, SearchResults, WritePath,
+    AcceptedId, AuthorCounts, AuthorMemoriesPage, AuthorMemoryRow, AuthorPage, DissentPage,
+    EventPage, EventWriteResponse, FactPage, FactWriteResponse, IndexKnowledgeResponse,
+    KnowledgeDeleteResponse, PublicAuthor, SearchResults, WritePath,
 };
 pub use retrieval::{FusionStrategy, HybridQueryPlan, RetrievalSource, WeightedNorm};
 pub use search::{SearchHit, SearchType};

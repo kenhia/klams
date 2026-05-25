@@ -134,3 +134,31 @@ pub struct ListDissentsParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
 }
+
+/// Query parameters for `GET /v1/authors` (sprint 007).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ListAuthorsParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+
+/// Query parameters for `GET /v1/authors/{id}/memories` (sprint 007).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ListAuthorMemoriesParams {
+    /// Comma-separated subset of `fact,knowledge,event`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kinds: Option<String>,
+    /// `live | deleted | all` (default `live`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
