@@ -1,7 +1,9 @@
 //! Outbound API response DTOs.
 
+use crate::author::PublicAuthorRef;
 use crate::dissent::Dissent;
 use crate::entities::{Event, Fact};
+use crate::memory::PublicMemory;
 use crate::search::SearchHit;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -68,6 +70,63 @@ pub struct FactPage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventPage {
     pub items: Vec<Event>,
+    #[serde(default)]
+    pub next_cursor: Option<String>,
+}
+
+/// Author projection returned by `GET /v1/authors` and
+/// `GET /v1/authors/{id}` (sprint 007).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublicAuthor {
+    pub id: Uuid,
+    pub agent_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_app: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_version: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub last_seen_at: chrono::DateTime<chrono::Utc>,
+    pub counts: AuthorCounts,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorCounts {
+    pub writes: i64,
+    pub events: i64,
+    pub soft_deletes: i64,
+    pub restores_received: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorPage {
+    pub authors: Vec<PublicAuthor>,
+    #[serde(default)]
+    pub next_cursor: Option<String>,
+}
+
+/// Per-row author-memory wire shape returned by
+/// `GET /v1/authors/{id}/memories`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorMemoryRow {
+    #[serde(flatten)]
+    pub memory: PublicMemory,
+    /// `"live"` or `"deleted"`.
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_by: Option<PublicAuthorRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorMemoriesPage {
+    pub memories: Vec<AuthorMemoryRow>,
     #[serde(default)]
     pub next_cursor: Option<String>,
 }

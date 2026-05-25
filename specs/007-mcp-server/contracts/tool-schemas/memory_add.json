@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "klams.mcp/memory_add",
+  "title": "memory_add input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["author_id", "kind", "content"],
+  "properties": {
+    "author_id": { "type": "string", "format": "uuid" },
+    "kind":      { "enum": ["fact", "knowledge"] },
+    "content": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "payload"],
+          "properties": {
+            "type":    { "type": "string", "minLength": 1 },
+            "payload": { "type": "object" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["text"],
+          "properties": {
+            "text":        { "type": "string", "minLength": 1 },
+            "source_path": { "type": ["string", "null"] },
+            "repo":        { "type": ["string", "null"] }
+          }
+        }
+      ]
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1, "maxLength": 64 },
+      "maxItems": 32,
+      "default": []
+    }
+  }
+}

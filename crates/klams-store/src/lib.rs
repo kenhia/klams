@@ -14,6 +14,7 @@ use std::fmt;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+pub mod backfill_qdrant_authors;
 pub mod backup;
 pub mod composite;
 pub mod embeddings;
@@ -189,6 +190,94 @@ pub trait Store: Send + Sync + 'static {
     async fn health_embedder(&self) -> StoreResult<()> {
         Ok(())
     }
+
+    // Sprint 007 — viewport `/v1/authors` routes. Default impls
+    // return empty data so test mocks need not connect to Postgres
+    // or Qdrant.
+
+    /// List authors with rolled-up counts. Pagination orders by
+    /// `(last_seen_at DESC, id DESC)`.
+    async fn list_authors_v1(
+        &self,
+        _q: AuthorListQuery,
+    ) -> StoreResult<(Vec<AuthorWithCountsOut>, Option<String>)> {
+        Ok((Vec::new(), None))
+    }
+    /// Fetch one author with rolled-up counts.
+    async fn get_author_v1(&self, _id: Uuid) -> StoreResult<Option<AuthorWithCountsOut>> {
+        Ok(None)
+    }
+    /// List memories authored by `author_id` (facts + events + knowledge)
+    /// for `GET /v1/authors/{id}/memories`.
+    async fn list_author_memories(
+        &self,
+        _q: AuthorMemoriesQuery,
+    ) -> StoreResult<(Vec<AuthorMemoryRow>, Option<String>)> {
+        Ok((Vec::new(), None))
+    }
+}
+
+/// Query for `Store::list_authors_v1`.
+#[derive(Debug, Clone, Default)]
+pub struct AuthorListQuery {
+    pub limit: u32,
+    pub agent_name: Option<String>,
+    pub since: Option<chrono::DateTime<chrono::Utc>>,
+    pub cursor: Option<String>,
+}
+
+/// Public projection of an author + rolled-up activity counts
+/// returned by `GET /v1/authors`.
+#[derive(Debug, Clone)]
+pub struct AuthorWithCountsOut {
+    pub author: klams_types::AuthorRecord,
+    pub writes_facts: i64,
+    pub events: i64,
+    pub soft_deletes_authored: i64,
+    pub restores_received: i64,
+}
+
+/// Query for `Store::list_author_memories`.
+#[derive(Debug, Clone)]
+pub struct AuthorMemoriesQuery {
+    pub author_id: Uuid,
+    pub kinds: Vec<AuthorMemoryKind>,
+    pub state: AuthorMemoryStateQuery,
+    pub limit: u32,
+    pub cursor: Option<String>,
+}
+
+/// Which memory kinds to include in the author drilldown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthorMemoryKind {
+    Fact,
+    Knowledge,
+    Event,
+}
+
+/// Live/deleted filter for the author drilldown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthorMemoryStateQuery {
+    Live,
+    Deleted,
+    All,
+}
+
+/// Row returned by `Store::list_author_memories`. Carries the public
+/// projection plus optional deletion metadata.
+#[derive(Debug, Clone)]
+pub struct AuthorMemoryRow {
+    pub memory: klams_types::PublicMemory,
+    pub state: AuthorMemoryStateOut,
+    pub deleted_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub deleted_by: Option<klams_types::PublicAuthorRef>,
+}
+
+/// `live` or `deleted` state tag rendered in the API response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthorMemoryStateOut {
+    Live,
+    Deleted,
 }
 
 /// Narrow trait the decay task uses to interact with the store

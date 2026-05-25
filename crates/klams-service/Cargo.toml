@@ -28,8 +28,10 @@ klams-types = { workspace = true }
 klams-core = { workspace = true }
 klams-store = { workspace = true }
 klams-api = { workspace = true }
+klams-mcp = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }

@@ -131,3 +131,65 @@ export interface ViewportConfig {
   has_token: boolean;
   refresh_interval_seconds: number;
 }
+
+/* ---- Sprint 007: /v1/authors drilldown ----------------------- */
+
+export interface PublicAuthorRef {
+  agent_name: string;
+  model?: string;
+  repo?: string;
+}
+
+export interface AuthorCounts {
+  writes: number;
+  events: number;
+  soft_deletes: number;
+  restores_received: number;
+}
+
+export interface PublicAuthor {
+  id: string;
+  agent_name: string;
+  model?: string;
+  session_title?: string;
+  repo?: string;
+  client_app?: string;
+  client_version?: string;
+  created_at: string;
+  last_seen_at: string;
+  counts: AuthorCounts;
+}
+
+export interface AuthorPage {
+  authors: PublicAuthor[];
+  next_cursor: string | null;
+}
+
+export type MemoryKind = 'fact' | 'knowledge' | 'event';
+
+export type PublicMemoryContent =
+  | { kind: 'fact'; type: string; payload: unknown }
+  | { kind: 'knowledge'; text: string; source_path?: string; repo?: string }
+  | { kind: 'event'; category: string; payload: unknown; task_id?: string };
+
+export type AuthorMemoryState = 'live' | 'deleted';
+
+/** Row returned by `GET /v1/authors/{id}/memories`. The PublicMemory
+ *  fields (`id`, `kind`, content discriminated union, `tags`, `author`,
+ *  timestamps) are flattened into the row alongside `state` and the
+ *  optional soft-delete fields. */
+export type AuthorMemoryRow = {
+  id: string;
+  tags: string[];
+  author: PublicAuthorRef;
+  created_at: string;
+  updated_at: string;
+  state: AuthorMemoryState;
+  deleted_at?: string;
+  deleted_by?: PublicAuthorRef;
+} & PublicMemoryContent;
+
+export interface AuthorMemoriesPage {
+  memories: AuthorMemoryRow[];
+  next_cursor: string | null;
+}

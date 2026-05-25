@@ -69,6 +69,7 @@
     <a href="/facts">Facts</a>
     <a href="/events">Events</a>
     <a href="/knowledge">Knowledge</a>
+    <a href="/authors">Authors</a>
     <a href="/preview">Preview</a>
     <a href="/dissents" class="dissents-link">
       Dissents{#if $pendingDissentCount > 0}<span class="badge">{$pendingDissentCount}</span>{/if}

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "klams.mcp/register_author",
+  "title": "register_author input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["agent_name"],
+  "properties": {
+    "agent_name":     { "type": "string", "minLength": 1, "maxLength": 128 },
+    "model":          { "type": ["string", "null"], "maxLength": 128 },
+    "session_title":  { "type": ["string", "null"], "maxLength": 256 },
+    "repo":           { "type": ["string", "null"], "pattern": "^/.+" },
+    "client_app":     { "type": ["string", "null"], "maxLength": 128 },
+    "client_version": { "type": ["string", "null"], "maxLength": 64 },
+    "extra":          { "type": "object", "default": {} }
+  }
+}

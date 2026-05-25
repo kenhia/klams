@@ -371,6 +371,73 @@ pub async fn delete_fact(
     state.factory.delete_fact(args.id).await
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub struct ListAuthorsArgs {
+    #[serde(default)]
+    pub agent_name: Option<String>,
+    #[serde(default)]
+    pub since: Option<String>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub cursor: Option<String>,
+}
+
+impl From<ListAuthorsArgs> for klams_types::ListAuthorsParams {
+    fn from(a: ListAuthorsArgs) -> Self {
+        klams_types::ListAuthorsParams {
+            agent_name: a.agent_name,
+            since: a.since,
+            limit: a.limit,
+            cursor: a.cursor,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct ListAuthorMemoriesArgs {
+    pub id: Uuid,
+    #[serde(default)]
+    pub kinds: Option<String>,
+    #[serde(default)]
+    pub state: Option<String>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub cursor: Option<String>,
+}
+
+#[tauri::command]
+pub async fn list_authors(
+    state: tauri::State<'_, AppState>,
+    args: ListAuthorsArgs,
+) -> Result<klams_types::AuthorPage, ViewportError> {
+    state.factory.list_authors(args.into()).await
+}
+
+#[tauri::command]
+pub async fn get_author(
+    state: tauri::State<'_, AppState>,
+    args: ByIdArgs,
+) -> Result<klams_types::PublicAuthor, ViewportError> {
+    state.factory.get_author(args.id).await
+}
+
+#[tauri::command]
+pub async fn list_author_memories(
+    state: tauri::State<'_, AppState>,
+    args: ListAuthorMemoriesArgs,
+) -> Result<klams_types::AuthorMemoriesPage, ViewportError> {
+    let id = args.id;
+    let params = klams_types::ListAuthorMemoriesParams {
+        kinds: args.kinds,
+        state: args.state,
+        limit: args.limit,
+        cursor: args.cursor,
+    };
+    state.factory.list_author_memories(id, params).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -467,6 +534,7 @@ mod tests {
                 version: "test".into(),
                 uptime_seconds: 0,
                 contract: None,
+                maintenance: None,
             })
         }
         async fn list_dissents(
@@ -562,6 +630,34 @@ mod tests {
             Ok(FactWriteOutcome::VersionConflict {
                 current_version: 1,
                 fact_id: id,
+            })
+        }
+        async fn list_authors(
+            &self,
+            _params: klams_types::ListAuthorsParams,
+        ) -> Result<klams_types::AuthorPage, ViewportError> {
+            Ok(klams_types::AuthorPage {
+                authors: vec![],
+                next_cursor: None,
+            })
+        }
+        async fn get_author(
+            &self,
+            _id: Uuid,
+        ) -> Result<klams_types::PublicAuthor, ViewportError> {
+            Err(ViewportError::Server {
+                status: 404,
+                message: "no".into(),
+            })
+        }
+        async fn list_author_memories(
+            &self,
+            _id: Uuid,
+            _params: klams_types::ListAuthorMemoriesParams,
+        ) -> Result<klams_types::AuthorMemoriesPage, ViewportError> {
+            Ok(klams_types::AuthorMemoriesPage {
+                memories: vec![],
+                next_cursor: None,
             })
         }
     }

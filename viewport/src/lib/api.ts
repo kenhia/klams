@@ -7,6 +7,9 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import type {
+  AuthorMemoriesPage,
+  AuthorMemoryState,
+  AuthorPage,
   Dissent,
   DissentPage,
   DissentStatus,
@@ -17,6 +20,7 @@ import type {
   HealthSnapshot,
   KlamsEvent,
   KnowledgeItem,
+  PublicAuthor,
   SearchResults,
   Source,
   UpsertResult,
@@ -90,6 +94,22 @@ export interface DiscardDissentArgs {
   caller_source: Source;
 }
 
+export interface ListAuthorsArgs {
+  agent_name?: string;
+  since?: string;
+  limit?: number;
+  cursor?: string;
+}
+
+export interface ListAuthorMemoriesArgs {
+  id: string;
+  /** Comma-separated subset of `fact,knowledge,event`. */
+  kinds?: string;
+  state?: AuthorMemoryState | 'all';
+  limit?: number;
+  cursor?: string;
+}
+
 export const api = {
   listFacts: (args: ListFactsArgs = {}) => invoke<FactPage>('list_facts', { args }),
   listEvents: (args: ListEventsArgs = {}) => invoke<EventPage>('list_events', { args }),
@@ -108,5 +128,10 @@ export const api = {
   discardDissent: (args: DiscardDissentArgs) => invoke<Dissent>('discard_dissent', { args }),
   upsertFact: (args: UpsertFactArgs) => invoke<UpsertResult>('upsert_fact', { args }),
   editFact: (args: EditFactArgs) => invoke<UpsertResult>('edit_fact', { args }),
-  deleteFact: (id: string) => invoke<void>('delete_fact', { args: { id } })
+  deleteFact: (id: string) => invoke<void>('delete_fact', { args: { id } }),
+  listAuthors: (args: ListAuthorsArgs = {}) =>
+    invoke<AuthorPage>('list_authors', { args }),
+  getAuthor: (id: string) => invoke<PublicAuthor>('get_author', { args: { id } }),
+  listAuthorMemories: (args: ListAuthorMemoriesArgs) =>
+    invoke<AuthorMemoriesPage>('list_author_memories', { args })
 };

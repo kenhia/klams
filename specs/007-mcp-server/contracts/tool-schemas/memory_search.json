@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "klams.mcp/memory_search",
+  "title": "memory_search input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["query"],
+  "properties": {
+    "query": { "type": "string", "minLength": 1, "maxLength": 1024 },
+    "kinds": {
+      "type": "array",
+      "items": { "enum": ["fact", "knowledge", "event"] },
+      "uniqueItems": true,
+      "minItems": 1
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1, "maxLength": 64 },
+      "uniqueItems": true
+    },
+    "top_k":   { "type": "integer", "minimum": 1, "maximum": 50, "default": 10 },
+    "filters": { "type": "object", "default": {} }
+  }
+}

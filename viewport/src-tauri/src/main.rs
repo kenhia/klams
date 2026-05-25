@@ -80,6 +80,9 @@ fn main() {
             memory::upsert_fact,
             memory::edit_fact,
             memory::delete_fact,
+            memory::list_authors,
+            memory::get_author,
+            memory::list_author_memories,
             health::get_health,
         ])
         .setup(|app| {

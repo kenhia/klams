@@ -18,11 +18,12 @@
 
 use klams_core::PolicyTable;
 use klams_types::{
-    AcceptedId, ApiError as WireError, AppendEventRequest, ContextBundle, ContextRequest, Dissent,
-    DissentPage, DissentSubmittedResponse, EventPage, Fact, FactPage, FactWriteOutcome,
-    HealthSnapshot, IndexKnowledgeRequest, IndexKnowledgeResponse, KnowledgeItem,
-    ListDissentsParams, ListEventsParams, ListFactsParams, SearchRequest, SearchResults,
-    SearchType, Source, UpsertFactRequest,
+    AcceptedId, ApiError as WireError, AppendEventRequest, AuthorMemoriesPage, AuthorPage,
+    ContextBundle, ContextRequest, Dissent, DissentPage, DissentSubmittedResponse, EventPage, Fact,
+    FactPage, FactWriteOutcome, HealthSnapshot, IndexKnowledgeRequest, IndexKnowledgeResponse,
+    KnowledgeItem, ListAuthorMemoriesParams, ListAuthorsParams, ListDissentsParams,
+    ListEventsParams, ListFactsParams, PublicAuthor, SearchRequest, SearchResults, SearchType,
+    Source, UpsertFactRequest,
 };
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use reqwest::StatusCode;
@@ -219,6 +220,26 @@ impl Client {
     /// `GET /memory/dissents` with optional filters.
     pub async fn list_dissents(&self, params: &ListDissentsParams) -> ClientResult<DissentPage> {
         self.get_json_query("/memory/dissents", params).await
+    }
+
+    /// `GET /v1/authors` — sprint 007 viewport drilldown.
+    pub async fn list_authors(&self, params: &ListAuthorsParams) -> ClientResult<AuthorPage> {
+        self.get_json_query("/v1/authors", params).await
+    }
+
+    /// `GET /v1/authors/{id}`.
+    pub async fn get_author(&self, id: uuid::Uuid) -> ClientResult<PublicAuthor> {
+        self.get_json(&format!("/v1/authors/{id}")).await
+    }
+
+    /// `GET /v1/authors/{id}/memories`.
+    pub async fn list_author_memories(
+        &self,
+        id: uuid::Uuid,
+        params: &ListAuthorMemoriesParams,
+    ) -> ClientResult<AuthorMemoriesPage> {
+        self.get_json_query(&format!("/v1/authors/{id}/memories"), params)
+            .await
     }
 
     /// `GET /memory/dissents/{id}`.

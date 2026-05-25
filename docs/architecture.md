@@ -514,6 +514,141 @@ Plan and spec live at
 and
 [specs/006-maintenance-and-backups/spec.md](../specs/006-maintenance-and-backups/spec.md).
 
+## 2e. Phase 7 deltas (sprint 007 — MCP projection layer)
+
+Sprint 007 (`specs/007-mcp-server/`) exposes klams over the **Model
+Context Protocol** without changing the underlying Postgres/Qdrant
+schemas. The MCP surface is a new public projection on top of the
+existing stores; everything below it (decay, dissents, dedupe,
+embedding pipeline) is untouched.
+
+### 2e.1 `authors` table — first-class attribution
+
+New table `authors` (migration `0005_authors_table.sql`) attributes
+every memory to the agent that wrote it. `facts.author_id` and
+`events.author_id` become NOT NULL FKs after a backfill to the
+seeded `SYSTEM_AUTHOR_ID` (`00000000-0000-7000-8000-000000000001`);
+Qdrant points carry `author_id` in payload. Schema reference:
+[specs/007-mcp-server/data-model.md §1–§4](../specs/007-mcp-server/data-model.md).
+
+Authors are registered via the `register_author` MCP tool. The
+returned UUID is the caller's identity for every subsequent
+authenticated call; the server bumps `last_seen_at` on each touch
+(FR-005). There is **no delete path** for authors in v1.
+
+### 2e.2 Public projection (`PublicMemory`)
+
+The only shape returned by MCP tools and the viewport author REST
+endpoints is `klams_types::PublicMemory`. The internal `Fact`,
+`Event`, and `KnowledgeItem` types are **never** serialized across
+the public boundary; the projection deliberately omits
+`version`, `decay_weight`, `confidence`, `use_count`, `last_used_at`,
+raw embedding vectors, and the internal `source` trust tier
+(`User`/`Controller`/`Task`/`AgentProposal`).
+
+```text
++-----------------------+   Streamable    +---------------------+
+| MCP client            |   HTTP / SSE    |  klams-mcp          |
+| (VS Code, Copilot     |  ◄ JSON-RPC ──► |  rmcp ServerHandler |
+|  CLI, custom)         |   over POST/GET |  + scope filter     |
++-----------------------+                 +---------+-----------+
+                                                    │
+                                                    ▼
+                                          +---------------------+
+                                          |  ProjectionLayer    |
+                                          | (Fact|Event|Knowledge|
+                                          |   → PublicMemory)   |
+                                          +----+---------+------+
+                                               │         │
+                              +----------------+         +-------------+
+                              ▼                                        ▼
+                    +--------------------+                  +--------------------+
+                    |  PostgresStore     |                  |  QdrantStore       |
+                    | (facts, events,    |                  | (knowledge_items,  |
+                    |  authors)          |                  |  authors-aware     |
+                    +--------------------+                  |   payload)         |
+                                                            +--------------------+
+```
+
+### 2e.3 Scope-gated tool surface
+
+Every MCP tool is gated by a `Scope` (`Read | Write | Admin`)
+checked from the bearer token's `TokenGrant`. The legacy single
+`bearer_token` field is materialized at load time into one grant
+with all scopes set; the new `[[auth.tokens]]` array (see
+[data-model.md §5](../specs/007-mcp-server/data-model.md#5-configuration-extension-klams-typesauthconfig))
+issues per-purpose tokens (read-only viewport, read+write GHCP,
+admin for `ken-admin`). Insufficient-scope calls return a
+deterministic `permission_denied` error; scope failures are counted
+by `klams_mcp_scope_denied_total{scope,tool}`.
+
+| Tool family | Scope |
+|-------------|-------|
+| `register_author`, `memory_search`, `memory_related`, `memory_context` | `Read` |
+| `memory_add`, `memory_event`, `memory_delete` (own writes) | `Write` |
+| `memory_admin_*` (restore, hard_delete, list_deleted) | `Admin` |
+
+### 2e.4 Soft-delete representation
+
+Facts and knowledge items support **soft delete**:
+`deleted_at` (timestamptz / Qdrant payload string) is NULL for live
+rows, set to the UTC delete time for tombstoned ones. Every read
+path applies `WHERE deleted_at IS NULL` (or the Qdrant equivalent
+`must_not deleted_at`) unless an admin tool explicitly asks for the
+inverse. `events` are append-only and **never** carry soft-delete
+columns (FR-015).
+
+| State | Postgres | Qdrant payload | Visible to `memory_search` | Visible to `memory_admin_list_deleted` |
+|-------|----------|----------------|----------------------------|----------------------------------------|
+| live | `deleted_at IS NULL` | no `deleted_at` key | yes | no |
+| soft-deleted | `deleted_at = T`, `deleted_by_author_id = A` | `deleted_at = T`, `deleted_by_author_id = A` | no | yes |
+| hard-deleted | row removed | point removed | no | no |
+
+The viewport drilldown at `/authors/{id}` consumes the same
+projection via `GET /v1/authors/{id}/memories` and renders a state
+badge (`live` | `soft-deleted` | `hard-deleted`) plus a
+cross-kind link `{id, kind} → /facts|/knowledge|/events/{id}`
+(FR-025).
+
+### 2e.5 HTTP transport & auth wiring
+
+The MCP surface is mounted at `/mcp` on the same axum router as the
+REST API (no separate listener). `klams-service::main` builds:
+
+```text
+Router::new()
+  .merge(protected_rest)      // /v1/* behind require_bearer
+  .merge(public)              // /healthz, /metrics (when enabled)
+  .nest("/mcp",
+        klams_mcp::router(mcp_state, cfg.server.mcp_allowed_hosts)
+            .layer(require_bearer))   // ← layer attached HERE
+```
+
+The `require_bearer` layer **must** wrap the `/mcp` sub-router
+directly; layering on the outer `Router::new()` after `.nest(...)`
+does not apply to nested services in axum 0.8. The shared
+`AuthState` (built from `[auth.bearer_token]` + `[[auth.tokens]]`)
+backs both the REST and MCP gates so a single token works for both.
+
+`klams_mcp::router` wraps rmcp's `StreamableHttpService` with a
+configurable Host-header allowlist (`[server].mcp_allowed_hosts`).
+Default is empty — the allowlist is **disabled** because
+`require_bearer` is the real access control; bearer-less requests
+are rejected with `401` before any tool sees them. Operators who
+want DNS-rebinding belt-and-suspenders can set the list explicitly
+(e.g. `["localhost", "workstation:7777"]`).
+
+No OAuth metadata is served. VS Code Insiders' `"type": "http"`
+client accepts a static `headers.Authorization` in `mcp.json` and
+treats the absent `/.well-known/oauth-protected-resource` as a
+harmless warning. The handshake walkthrough lives at
+[specs/007-mcp-server/research-vscode-mcp-http.md](../specs/007-mcp-server/research-vscode-mcp-http.md).
+
+Plan and spec live at
+[specs/007-mcp-server/plan.md](../specs/007-mcp-server/plan.md)
+and
+[specs/007-mcp-server/spec.md](../specs/007-mcp-server/spec.md).
+
 ## 3. Deployment topology on `kubs0`
 
 ```text

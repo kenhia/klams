@@ -68,8 +68,16 @@ impl<S: Store> std::fmt::Debug for ApiState<S> {
 /// which would break parallel tests). Use [`with_metrics`] in the
 /// binary to add `/metrics` and the prometheus layer.
 pub fn build_router<S: Store>(state: ApiState<S>, bearer_token: impl Into<String>) -> Router {
-    let auth_state = AuthState::new(bearer_token);
+    build_router_with_auth(state, AuthState::new(bearer_token))
+}
 
+/// Sprint 007 — multi-token variant. Same shape as [`build_router`]
+/// but accepts a pre-built [`AuthState`] so callers can supply scoped
+/// `[[auth.tokens]]` grants on top of (or instead of) the legacy
+/// single-token form, and so a *shared* `AuthState` can also gate the
+/// nested `/mcp` router via the same `require_bearer` layer (see
+/// [`klams-mcp` mount in `main.rs`](../../../klams-service/src/main.rs)).
+pub fn build_router_with_auth<S: Store>(state: ApiState<S>, auth_state: AuthState) -> Router {
     let protected = Router::new()
         .route(
             "/memory/facts",
@@ -104,6 +112,12 @@ pub fn build_router<S: Store>(state: ApiState<S>, bearer_token: impl Into<String
             post(handlers::dissents::discard).route_layer(axum::Extension(
                 crate::middleware::maintenance::CriticalWrite,
             )),
+        )
+        .route("/v1/authors", get(handlers::authors::list::<S>))
+        .route("/v1/authors/:id", get(handlers::authors::get::<S>))
+        .route(
+            "/v1/authors/:id/memories",
+            get(handlers::authors::memories::<S>),
         )
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(

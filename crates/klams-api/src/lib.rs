@@ -11,4 +11,4 @@ pub mod router;
 
 pub use auth::{require_bearer, AuthState};
 pub use error::ApiError;
-pub use router::{build_router, with_metrics, ApiState};
+pub use router::{build_router, build_router_with_auth, with_metrics, ApiState};

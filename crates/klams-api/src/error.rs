@@ -28,6 +28,8 @@ pub enum ApiError {
     TrustRequired { message: String },
     #[error("unauthorized")]
     Unauthorized,
+    #[error("insufficient scope: {needed:?} required")]
+    ScopeInsufficient { needed: klams_types::Scope },
     #[error("payload too large")]
     TooLarge,
     #[error("queue at capacity")]
@@ -78,7 +80,9 @@ impl ApiError {
             ApiError::Validation { .. } => StatusCode::BAD_REQUEST,
             ApiError::ValidationDetailed { .. } => StatusCode::UNPROCESSABLE_ENTITY,
             ApiError::VersionConflict { .. } => StatusCode::CONFLICT,
-            ApiError::TrustRequired { .. } => StatusCode::FORBIDDEN,
+            ApiError::TrustRequired { .. } | ApiError::ScopeInsufficient { .. } => {
+                StatusCode::FORBIDDEN
+            }
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
             ApiError::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             ApiError::QueueFull { .. } | ApiError::AllSourcesUnavailable { .. } => {
@@ -91,6 +95,7 @@ impl ApiError {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn wire(&self) -> WireApiError {
         match self {
             ApiError::Validation { field, message } => WireApiError {
@@ -130,6 +135,21 @@ impl ApiError {
             ApiError::Unauthorized => WireApiError {
                 code: "unauthorized".into(),
                 message: "missing or invalid bearer token".into(),
+                field: None,
+                request_id: None,
+                details: None,
+                current_version: None,
+            },
+            ApiError::ScopeInsufficient { needed } => WireApiError {
+                code: "scope_insufficient".into(),
+                message: format!(
+                    "this token does not carry the required `{}` scope",
+                    match needed {
+                        klams_types::Scope::Read => "read",
+                        klams_types::Scope::Write => "write",
+                        klams_types::Scope::Admin => "admin",
+                    }
+                ),
                 field: None,
                 request_id: None,
                 details: None,

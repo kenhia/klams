@@ -16,6 +16,61 @@ for the desktop GUI plan. Items below are deferred or not yet scheduled.
     - If the item is moved due to being cut ` **CUT**` should be added to the
       title (i.e. "## Some feature" becomes "## Some feature **CUT**")
 
+## SC-006 perf benchmark (T062, sprint 007)
+
+Validate sprint-007 success criterion SC-006: load a fixture with
+≥ 10k facts + 50k knowledge items, run `memory_search` 100×, and
+record p95 latency. Attach the result to a follow-up PR or note it in
+the next sprint's spec. Do **not** start tuning work if p95 exceeds
+1 s — surface the measurement first and let the user decide whether
+the actual overshoot is "good enough" for the homelab before any
+optimization work begins.
+
+Deferred from sprint 007 ship per user decision (2026-05-25).
+
+## Phase 6 test harness isolation
+`crates/klams-service/tests/mcp_phase6.rs` share a single
+`knowledge_items_test` Qdrant collection and a single test Postgres
+database. Running them in sequence (`--test-threads=1`) lets earlier
+tests' rows skew the counter assertion in
+`memory_admin_list_deleted_smoke`. Fix options: (a) per-test
+randomized collection name + truncate facts table in setup, (b)
+move to `testcontainers`-style per-test ephemeral instances.
+Low-priority — the underlying delete→restore round-trip is proven by
+the other three tests and the live quickstart §8 walk.
+
+## `event_search` MCP tool **PRIORITY**
+
+Dedicated filter-based tool for event lookup. `memory_search` is
+semantic/embedding-driven over free text — events have no text body,
+only `category` + structured `payload`, so they are not surfaced via
+`memory_search` (confirmed during sprint 007 quickstart walk).
+Proposed shape:
+
+```
+event_search {
+  author_id?: string,
+  category?: string | string[],
+  since?: timestamp,
+  until?: timestamp,
+  payload_match?: { key: value, ... },   // exact-equality on payload fields
+  limit?: int (default 50, max 500),
+  order?: "desc" | "asc" (default desc)
+}
+```
+
+Read scope. Pure SQL — no embedding pipeline involved. Pick up
+immediately after sprint 007 ships.
+
+## Grafana "MCP author activity" panel: No Data **PRIORITY**
+
+Quickstart §11: counters under `klams_mcp_*` are emitted correctly by
+the service (verified via `curl /metrics`) but the Grafana dashboard
+panels render "No Data". Likely a Prometheus scrape config drift or a
+PromQL/label-name mismatch introduced when the per-author label set
+landed in sprint 007. Blocks SC-005. Investigate Prometheus scrape
+target + the panel queries in `deploy/grafana/`.
+
 ## Multi-vector embeddings (text + code)
 
 Separate embedding spaces for prose vs source code, with per-space retrieval

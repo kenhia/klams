@@ -558,3 +558,122 @@ For the strongest possible verification — exercising the same
 follow the manual procedure in
 [specs/006-maintenance-and-backups/quickstart.md §5](../specs/006-maintenance-and-backups/quickstart.md#5-restore-from-a-snapshot-fr-016)
 against a throwaway compose stack and compare row counts.
+
+## Sprint 007 — MCP server
+
+Sprint 007 mounts a Model Context Protocol (MCP) surface on
+`klams-service` so editors and shell agents can read and write
+klams memories through a uniform tool interface. The MCP server is
+**additive**: every existing REST endpoint, the viewport, and the
+non-agentic writers (`klams-scanner`, `klams-monitor`) keep working
+unchanged. Detailed contracts live under
+[specs/007-mcp-server/contracts/](../specs/007-mcp-server/contracts/).
+
+### Tool surface
+
+| Tool | Scope | Purpose |
+|------|-------|---------|
+| `register_author` | `read` | Issue / refresh the caller's author id; everything else is attributed to it. |
+| `memory_search` | `read` | Hybrid retrieval over facts + knowledge + events. |
+| `memory_related` | `read` | Neighborhood expansion around a known memory id. |
+| `memory_context` | `read` | Token-budgeted context bundle (proxies the existing `/memory/context`). |
+| `memory_add` | `write` | Add a fact or knowledge item. Same dedupe + dissent rules as REST. |
+| `memory_append_event` | `write` | Append an event. Always canonical, never soft-deleted. |
+| `memory_delete` | `write` | Soft-delete the caller's own fact / knowledge item by id. |
+| `memory_admin_restore` | `admin` | Reverse a prior soft delete. |
+| `memory_admin_hard_delete` | `admin` | Permanently remove a soft-deleted row. |
+| `memory_admin_list_deleted` | `admin` | Page through soft-deleted rows for triage. |
+
+The advertised tool list is filtered per-request by the bearer
+token's grant; an `admin`-less token never sees the `memory_admin_*`
+tools (FR-020).
+
+### Scope configuration
+
+Sprint 007 keeps the legacy single `auth.bearer_token` field (which
+materializes into one grant with all three scopes) and adds an
+`[[auth.tokens]]` array for fine-grained tokens:
+
+```toml
+[auth]
+# Legacy single-token form — still supported, grants all scopes:
+# bearer_token = "..."
+
+[[auth.tokens]]
+token = "viewport-readonly-XXXXXXXXXXXX"
+scopes = ["read"]
+label = "viewport"
+
+[[auth.tokens]]
+token = "ghcp-write-XXXXXXXXXXXXXXXX"
+scopes = ["read", "write"]
+label = "ghcp"
+
+[[auth.tokens]]
+token = "ken-admin-XXXXXXXXXXXXXXXXXX"
+scopes = ["read", "write", "admin"]
+label = "ken-admin"
+```
+
+Validation rules (enforced at load):
+
+- At least one of `bearer_token` (non-empty) or `tokens` (non-empty)
+  must be present.
+- Every token must be ≥ 16 characters (loose entropy floor — real
+  entropy is the operator's responsibility).
+- Every grant's `scopes` array must be non-empty.
+
+The `label` is surfaced in logs and metrics (`klams_mcp_calls_total{token_label}`)
+so a noisy or rogue client is easy to identify without leaking the
+raw token. Recommended layout: one read-only token for the viewport
+so a UI compromise cannot mutate state, one read+write token per
+agent, and a single admin token used only from your own shell.
+
+### Soft-delete safety model
+
+Facts and knowledge items support **soft delete** via `memory_delete`:
+
+- `memory_delete` is idempotent — repeated calls on the same id are
+  no-ops once the row is tombstoned (FR-014).
+- A soft-deleted row vanishes from every read path (`memory_search`,
+  `memory_related`, `memory_context`, `GET /v1/authors/{id}/memories?state=live`)
+  but is preserved in Postgres / Qdrant with `deleted_at` and
+  `deleted_by_author_id` populated.
+- Recovery is `memory_admin_restore`; the original delete
+  attribution is preserved.
+- `memory_admin_hard_delete` is the only path that removes the row
+  permanently and is irreversible.
+- Events are **never** soft-deleted (FR-015). They are append-only
+  and have no `deleted_at` column.
+
+This means a rogue write+scope agent can hide memories but cannot
+destroy them. The DR drill at
+[specs/007-mcp-server/quickstart.md §12](../specs/007-mcp-server/quickstart.md#12-restore-from-rogue-agent-drill)
+walks through detecting and reversing a mass-delete.
+
+### Viewport `/authors` review workflow
+
+The viewport gains an `Authors` nav entry that drills into per-agent
+state:
+
+1. **`/authors`** — table of every registered author with rolling
+   counts (writes, events, soft-deletes, restores received). Filter
+   by `agent_name` substring or `since` timestamp.
+2. **`/authors/{id}`** — author header (model, repo, client app,
+   first/last seen, counts) plus a memories table. Each row carries
+   a state badge (`live` | `soft-deleted` | `hard-deleted`),
+   a kind column, a summary, the updated-at timestamp, and a link
+   that lands on `/facts/{id}`, `/knowledge/{id}`, or
+   `/events/{id}` so you can pivot into the existing per-kind
+   inspectors (FR-025).
+
+Filter controls on the detail page: kinds checkboxes
+(`fact` / `knowledge` / `event`) and a state selector
+(`live` / `deleted` / `all`). Pagination uses the same cursor
+contract as the REST endpoint.
+
+Use it for incident review (who wrote this?), routine hygiene
+(this scanner has been hammering the dissent queue), and the
+post-restore audit (every restore drill should end with a glance
+at the rogue author's `/authors/{id}` page to confirm counts
+returned to baseline).

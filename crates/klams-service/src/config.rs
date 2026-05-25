@@ -61,11 +61,24 @@ pub struct Config {
 pub struct ServerConfig {
     pub listen_addr: String,
     pub port: u16,
+    /// Host header allowlist for the MCP Streamable HTTP mount (DNS
+    /// rebinding protection). Empty (default) disables the check —
+    /// `require_bearer` still gates the surface. Set to e.g.
+    /// `["localhost", "my-host:7777"]` to restrict.
+    #[serde(default)]
+    pub mcp_allowed_hosts: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthConfig {
+    /// Legacy single-token form. When non-empty, behaves as a grant with
+    /// all scopes set. New deployments should prefer [`Self::tokens`].
+    #[serde(default)]
     pub bearer_token: String,
+
+    /// Multi-token form. Each entry carries its own scope set.
+    #[serde(default)]
+    pub tokens: Vec<klams_types::TokenGrantConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

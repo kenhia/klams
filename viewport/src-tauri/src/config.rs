@@ -45,10 +45,10 @@ pub struct ViewportConfig {
 
 fn config_path() -> Result<PathBuf, ViewportError> {
     let pd = ProjectDirs::from("", "", "klams")
-        .ok_or_else(|| ViewportError::NotConfigured("no project dirs".into()))?;
+        .ok_or_else(|| ViewportError::NotConfigured { message: "no project dirs".into() })?;
     let dir = pd.config_dir().to_path_buf();
     fs::create_dir_all(&dir)
-        .map_err(|e| ViewportError::NotConfigured(format!("create config dir: {e}")))?;
+        .map_err(|e| ViewportError::NotConfigured { message: format!("create config dir: {e}") })?;
     Ok(dir.join("viewport.toml"))
 }
 
@@ -65,8 +65,8 @@ pub fn load() -> StoredConfig {
 pub fn save(cfg: &StoredConfig) -> Result<(), ViewportError> {
     let path = config_path()?;
     let s = toml::to_string_pretty(cfg)
-        .map_err(|e| ViewportError::NotConfigured(format!("serialize: {e}")))?;
-    fs::write(&path, s).map_err(|e| ViewportError::NotConfigured(format!("write config: {e}")))
+        .map_err(|e| ViewportError::NotConfigured { message: format!("serialize: {e}") })?;
+    fs::write(&path, s).map_err(|e| ViewportError::NotConfigured { message: format!("write config: {e}") })
 }
 
 pub fn read_token() -> Option<String> {
@@ -76,10 +76,10 @@ pub fn read_token() -> Option<String> {
 
 pub fn write_token(token: &str) -> Result<(), ViewportError> {
     let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
-        .map_err(|e| ViewportError::NotConfigured(format!("keyring open: {e}")))?;
+        .map_err(|e| ViewportError::NotConfigured { message: format!("keyring open: {e}") })?;
     entry
         .set_password(token)
-        .map_err(|e| ViewportError::NotConfigured(format!("keyring write: {e}")))
+        .map_err(|e| ViewportError::NotConfigured { message: format!("keyring write: {e}") })
 }
 
 pub fn snapshot() -> ViewportConfig {
