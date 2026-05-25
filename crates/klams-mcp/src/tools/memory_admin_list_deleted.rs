@@ -22,7 +22,7 @@ use crate::{
     tools::McpState,
 };
 use chrono::{DateTime, Utc};
-use klams_types::{MemoryKind, PublicAuthorRef, PublicMemory, PublicMemoryContent};
+use klams_types::{PublicAuthorRef, PublicMemory, PublicMemoryContent};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -184,7 +184,6 @@ pub async fn run(
                         .unwrap_or_else(unknown_author_ref);
                     let mem = PublicMemory {
                         id: r.fact.id,
-                        kind: MemoryKind::Fact,
                         content: PublicMemoryContent::Fact {
                             fact_type: r.fact.fact_type.as_str().to_string(),
                             payload: r.fact.payload.clone(),
@@ -272,7 +271,6 @@ async fn list_knowledge(
                 .unwrap_or_else(unknown_author_ref);
             let mem = PublicMemory {
                 id: item.id,
-                kind: MemoryKind::Knowledge,
                 content: PublicMemoryContent::Knowledge {
                     text: item.text.clone(),
                     source_path: item.file.clone(),

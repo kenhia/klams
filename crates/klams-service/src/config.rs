@@ -61,6 +61,12 @@ pub struct Config {
 pub struct ServerConfig {
     pub listen_addr: String,
     pub port: u16,
+    /// Host header allowlist for the MCP Streamable HTTP mount (DNS
+    /// rebinding protection). Empty (default) disables the check —
+    /// `require_bearer` still gates the surface. Set to e.g.
+    /// `["localhost", "my-host:7777"]` to restrict.
+    #[serde(default)]
+    pub mcp_allowed_hosts: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

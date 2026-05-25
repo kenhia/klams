@@ -246,7 +246,7 @@ async fn list_author_memories_impl(
     q: crate::AuthorMemoriesQuery,
 ) -> StoreResult<(Vec<crate::AuthorMemoryRow>, Option<String>)> {
     use crate::{AuthorMemoryKind, AuthorMemoryStateOut, AuthorMemoryStateQuery};
-    use klams_types::{MemoryKind, PublicAuthorRef, PublicMemory, PublicMemoryContent};
+    use klams_types::{PublicAuthorRef, PublicMemory, PublicMemoryContent};
 
     // Resolve the author's own PublicAuthorRef (used on every row).
     let author = composite
@@ -315,7 +315,6 @@ async fn list_author_memories_impl(
                 };
                 let mem = PublicMemory {
                     id: f.id,
-                    kind: MemoryKind::Fact,
                     content: PublicMemoryContent::Fact {
                         fact_type: f.fact_type.as_str().to_string(),
                         payload: f.payload.clone(),
@@ -368,7 +367,6 @@ async fn list_author_memories_impl(
             .map(|e| {
                 let mem = PublicMemory {
                     id: e.id,
-                    kind: MemoryKind::Event,
                     content: PublicMemoryContent::Event {
                         category: e.category.clone(),
                         payload: e.payload.clone(),
@@ -421,7 +419,6 @@ async fn list_author_memories_impl(
                 };
                 let mem = PublicMemory {
                     id: item.id,
-                    kind: MemoryKind::Knowledge,
                     content: PublicMemoryContent::Knowledge {
                         text: item.text.clone(),
                         source_path: item.file.clone(),

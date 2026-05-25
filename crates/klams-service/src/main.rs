@@ -8,7 +8,7 @@ use klams_service::backup::{self as service_backup, MaintenanceState, Orchestrat
 use klams_service::{config, logging};
 
 use anyhow::{Context, Result};
-use klams_api::{build_router, with_metrics, ApiState};
+use klams_api::{build_router_with_auth, with_metrics, ApiState};
 use klams_core::{spawn_workers, DecayTask, LastUsedBumper, MemoryQueue, ValidatorRegistry};
 use klams_store::{CompositeStore, PostgresStore, QdrantStore, TeiEmbedder};
 use std::sync::Arc;
@@ -29,6 +29,12 @@ async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--validate-backup-config") {
         validate_backup_config_cli(&config_path);
+    }
+
+    // Sprint 007 — `--validate-config` early-out covering all blocks
+    // a fresh quickstart cares about ([auth], [backup], [decay]).
+    if args.iter().any(|a| a == "--validate-config") {
+        validate_config_cli(&config_path);
     }
 
     // Sprint 006 (T028) — `--run-backup-now` ad-hoc trigger. Loads
@@ -68,6 +74,16 @@ async fn main() -> Result<()> {
     let postgres = PostgresStore::connect(&cfg.postgres.url, cfg.postgres.max_connections)
         .await
         .context("connecting to postgres")?;
+
+    // Sprint 007 — `--migrate-only` exits after running pending
+    // SQL migrations (which `PostgresStore::connect` applies as a
+    // side effect). Used by `just db-migrate`.
+    if args.iter().any(|a| a == "--migrate-only") {
+        info!("migrations applied; exiting (--migrate-only)");
+        drop(postgres);
+        std::process::exit(0);
+    }
+
     let qdrant = QdrantStore::connect(
         &cfg.qdrant.grpc_url,
         &cfg.qdrant.collection,
@@ -147,22 +163,42 @@ async fn main() -> Result<()> {
         context_builder,
         maintenance: maintenance_state.clone(),
     };
-    let api_router = build_router(state, cfg.auth.bearer_token.clone());
-    let mcp_grants = std::sync::Arc::new(vec![klams_api::auth::TokenGrant::new(
-        cfg.auth.bearer_token.clone(),
-        vec![
-            klams_types::Scope::Read,
-            klams_types::Scope::Write,
-            klams_types::Scope::Admin,
-        ],
-        Some("legacy".into()),
-    )]);
+    // Sprint 007 — unify legacy `bearer_token` + scoped `[[auth.tokens]]`
+    // into a single `AuthState` and apply the same `require_bearer`
+    // layer to both the REST router and the nested `/mcp` router.
+    // Previously /mcp was unauthenticated because the layer only sat on
+    // the REST sub-router inside `build_router`.
+    let mut all_grants: Vec<klams_api::auth::TokenGrant> = Vec::new();
+    if !cfg.auth.bearer_token.is_empty() {
+        all_grants.push(klams_api::auth::TokenGrant::new(
+            cfg.auth.bearer_token.clone(),
+            vec![
+                klams_types::Scope::Read,
+                klams_types::Scope::Write,
+                klams_types::Scope::Admin,
+            ],
+            Some("legacy".into()),
+        ));
+    }
+    for g in &cfg.auth.tokens {
+        all_grants.push(klams_api::auth::TokenGrant::new(
+            g.token.clone(),
+            g.scopes.clone(),
+            g.label.clone(),
+        ));
+    }
+    let auth_state = klams_api::auth::AuthState::with_grants(all_grants.clone());
+
+    let api_router = build_router_with_auth(state, auth_state.clone());
+    let mcp_grants = std::sync::Arc::new(all_grants);
     let mcp_state = klams_mcp::tools::McpState::new(
         Arc::clone(&store),
         std::sync::Arc::new(maintenance_state.clone()),
         mcp_grants,
     );
-    let mcp_router = klams_mcp::router(mcp_state);
+    let mcp_router = klams_mcp::router(mcp_state, cfg.server.mcp_allowed_hosts.clone()).layer(
+        axum::middleware::from_fn_with_state(auth_state, klams_api::require_bearer),
+    );
     let router = with_metrics(api_router.nest("/mcp", mcp_router));
     klams_core::metrics::describe();
 
@@ -245,6 +281,91 @@ async fn shutdown_signal() {
         () = ctrl_c => {}
         () = terminate => {}
     }
+}
+
+/// Sprint 007 — `klams-service --validate-config`.
+///
+/// Loads `klams.toml`, validates the [auth], [backup] and [decay]
+/// blocks without contacting any backend or initializing logging.
+/// Prints `OK: ...` lines to stdout, warnings to stderr, and exits
+/// 0 on success or 2 on any error. Used by `just service-validate-config`.
+fn validate_config_cli(config_path: &str) -> ! {
+    let cfg = match config::Config::from_path(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("config load error ({config_path}): {e}");
+            std::process::exit(2);
+        }
+    };
+
+    let mut errors: Vec<String> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+
+    // [auth] — at least one token form must be present; each scoped
+    // grant must individually validate.
+    if cfg.auth.bearer_token.is_empty() && cfg.auth.tokens.is_empty() {
+        errors
+            .push("[auth]: at least one of `bearer_token` or `[[auth.tokens]]` must be set".into());
+    }
+    for (i, g) in cfg.auth.tokens.iter().enumerate() {
+        if let Err(e) = g.validate() {
+            errors.push(format!(
+                "[auth.tokens[{i}]] ({label}): {e}",
+                label = g.label.as_deref().unwrap_or("<no label>")
+            ));
+        }
+        if g.label.is_none() {
+            warnings.push(format!(
+                "[auth.tokens[{i}]]: no `label` set; log/metric attribution will be empty"
+            ));
+        }
+    }
+    if !cfg.auth.bearer_token.is_empty() && cfg.auth.bearer_token.len() < 16 {
+        warnings.push("[auth].bearer_token is shorter than 16 chars".into());
+    }
+    if errors.is_empty() {
+        println!(
+            "OK: [auth] legacy_token={}, scoped_grants={}",
+            !cfg.auth.bearer_token.is_empty(),
+            cfg.auth.tokens.len()
+        );
+    }
+
+    // [backup]
+    match cfg.backup.validate() {
+        Ok(()) => {
+            println!(
+                "OK: [backup] enabled={}, dir={}",
+                cfg.backup.enabled,
+                cfg.backup
+                    .backup_dir
+                    .as_ref()
+                    .map_or_else(|| "<none>".into(), |p| p.display().to_string()),
+            );
+            warnings.extend(cfg.backup.warnings());
+        }
+        Err(e) => errors.push(format!("[backup]: {e}")),
+    }
+
+    // [decay]
+    match cfg.decay.validate() {
+        Ok(()) => println!(
+            "OK: [decay] interval={}s, batch={}",
+            cfg.decay.task_interval_seconds, cfg.decay.batch_size
+        ),
+        Err(e) => errors.push(format!("[decay]: {e}")),
+    }
+
+    for w in &warnings {
+        eprintln!("warning: {w}");
+    }
+    if errors.is_empty() {
+        std::process::exit(0);
+    }
+    for e in &errors {
+        eprintln!("error: {e}");
+    }
+    std::process::exit(2);
 }
 
 /// Sprint 006 (T013) — `klams-service --validate-backup-config`.

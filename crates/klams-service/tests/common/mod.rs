@@ -15,7 +15,7 @@
 
 #![allow(dead_code)]
 
-use klams_api::{build_router, ApiState};
+use klams_api::{build_router_with_auth, ApiState};
 use klams_client::Client;
 use klams_core::{spawn_workers, MemoryQueue};
 use klams_store::{CompositeStore, PostgresStore, QdrantStore, TeiEmbedder};
@@ -32,6 +32,10 @@ pub struct TestServer {
     pub client: Client,
     pub addr: SocketAddr,
     pub bearer_token: String,
+    /// Read-only scope token (sprint 007 T066).
+    pub read_token: String,
+    /// Write+Read scope token (sprint 007 T066).
+    pub write_token: String,
     pub store: Arc<TestStore>,
 }
 
@@ -40,6 +44,8 @@ impl std::fmt::Debug for TestServer {
         f.debug_struct("TestServer")
             .field("addr", &self.addr)
             .field("bearer_token", &"<redacted>")
+            .field("read_token", &"<redacted>")
+            .field("write_token", &"<redacted>")
             .field("client", &"<klams_client>")
             .field("store", &"<CompositeStore>")
             .finish()
@@ -62,6 +68,8 @@ impl TestServer {
         let tei_url =
             std::env::var("TEST_TEI_URL").unwrap_or_else(|_| "http://127.0.0.1:57070".into());
         let bearer = "test-token-do-not-use-in-prod".to_string();
+        let read_token = "test-token-read-only".to_string();
+        let write_token = "test-token-write".to_string();
 
         let postgres = PostgresStore::connect(&pg_url, 4)
             .await
@@ -94,7 +102,42 @@ impl TestServer {
             context_builder: Arc::new(builder),
             maintenance: klams_types::MaintenanceState::default(),
         };
-        let router = build_router(state, bearer.clone());
+        let router = {
+            // Mirror main.rs's wiring: single AuthState gates both REST
+            // and the nested /mcp router. Sprint 007 T064.
+            let grants = vec![
+                klams_api::auth::TokenGrant::new(
+                    bearer.clone(),
+                    vec![
+                        klams_types::Scope::Read,
+                        klams_types::Scope::Write,
+                        klams_types::Scope::Admin,
+                    ],
+                    Some("legacy".into()),
+                ),
+                klams_api::auth::TokenGrant::new(
+                    read_token.clone(),
+                    vec![klams_types::Scope::Read],
+                    Some("read-only".into()),
+                ),
+                klams_api::auth::TokenGrant::new(
+                    write_token.clone(),
+                    vec![klams_types::Scope::Read, klams_types::Scope::Write],
+                    Some("write".into()),
+                ),
+            ];
+            let auth_state = klams_api::auth::AuthState::with_grants(grants.clone());
+            let mcp_grants = std::sync::Arc::new(grants);
+            let mcp_state = klams_mcp::tools::McpState::new(
+                Arc::clone(&store),
+                std::sync::Arc::new(klams_types::MaintenanceState::default()),
+                mcp_grants,
+            );
+            let mcp_router = klams_mcp::router(mcp_state, Vec::new()).layer(
+                axum::middleware::from_fn_with_state(auth_state.clone(), klams_api::require_bearer),
+            );
+            build_router_with_auth(state, auth_state).nest("/mcp", mcp_router)
+        };
 
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr = listener.local_addr().expect("local_addr");
@@ -107,6 +150,8 @@ impl TestServer {
             client,
             addr,
             bearer_token: bearer,
+            read_token,
+            write_token,
             store,
         }
     }

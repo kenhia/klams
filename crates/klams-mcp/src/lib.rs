@@ -28,12 +28,12 @@ use crate::tools::McpState;
 
 /// Build the axum sub-router that exposes the MCP endpoint.
 ///
-/// Mount with `Router::new().nest_service("/mcp", klams_mcp::router(state))`.
-/// All authentication is enforced by the parent router's
-/// `klams_api::auth::require_bearer` middleware; this router assumes
-/// requests reaching it have already had their bearer validated.
+/// Mount under `/mcp` *with* the same `require_bearer` layer wrapping
+/// the parent application — see `klams-service::main` for the canonical
+/// wiring. `allowed_hosts` is the rmcp DNS-rebinding Host-header
+/// allowlist; pass an empty `Vec` to disable.
 #[must_use = "the returned axum::Router must be mounted"]
-pub fn router(state: McpState) -> Router {
-    let svc = transport::streamable_http_service(state);
+pub fn router(state: McpState, allowed_hosts: Vec<String>) -> Router {
+    let svc = transport::streamable_http_service(state, allowed_hosts);
     Router::new().fallback_service(svc)
 }

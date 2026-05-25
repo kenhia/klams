@@ -14,9 +14,9 @@ pub mod memory_related;
 pub mod memory_search;
 pub mod register_author;
 
-use klams_api::auth::TokenGrant;
+use klams_api::auth::{AuthenticatedScopes, TokenGrant};
 use klams_store::CompositeStore;
-use klams_types::MaintenanceState;
+use klams_types::{MaintenanceState, Scope};
 use rmcp::{
     model::{
         CallToolRequestParams, CallToolResult, Content, ListToolsResult, PaginatedRequestParams,
@@ -26,6 +26,37 @@ use rmcp::{
     ErrorData as McpError, RoleServer, ServerHandler,
 };
 use std::sync::Arc;
+
+/// Minimum scope required to see/invoke each tool (FR-020). Sprint 007 T065.
+#[must_use]
+pub fn required_scope(tool: &str) -> Option<Scope> {
+    Some(match tool {
+        "register_author" | "memory_search" | "memory_related" => Scope::Read,
+        "memory_add" | "memory_append_event" | "memory_delete" => Scope::Write,
+        "memory_admin_restore" | "memory_admin_hard_delete" | "memory_admin_list_deleted" => {
+            Scope::Admin
+        }
+        _ => return None,
+    })
+}
+
+/// Pull the caller's scope set from the rmcp request context. rmcp's
+/// `StreamableHttpService` injects `http::request::Parts` into the
+/// context extensions; `require_bearer` previously stamped
+/// `AuthenticatedScopes` onto those extensions.
+fn caller_scopes<R>(ctx: &RequestContext<R>) -> Option<Arc<Vec<Scope>>>
+where
+    R: rmcp::service::ServiceRole,
+{
+    ctx.extensions
+        .get::<axum::http::request::Parts>()
+        .and_then(|p| p.extensions.get::<AuthenticatedScopes>())
+        .map(|s| s.0.clone())
+}
+
+fn scope_satisfied(scopes: &[Scope], needed: Scope) -> bool {
+    scopes.iter().any(|s| s.satisfies(needed))
+}
 
 /// Shared state injected into every tool handler.
 #[derive(Clone)]
@@ -91,9 +122,9 @@ impl ServerHandler for ToolRegistry {
     async fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        let tools = vec![
+        let all_tools = vec![
             tool_descriptor::<register_author::RegisterAuthorInput>(
                 "register_author",
                 "Register the calling agent and obtain an author_id (UUID v7).",
@@ -131,6 +162,17 @@ impl ServerHandler for ToolRegistry {
                 "Admin: paginate soft-deleted facts and knowledge for rogue-agent recovery (FR-013).",
             ),
         ];
+        // FR-020: only advertise tools the caller's scope set satisfies.
+        let scopes = caller_scopes(&context);
+        let tools: Vec<Tool> = all_tools
+            .into_iter()
+            .filter(|t| match required_scope(&t.name) {
+                Some(needed) => scopes
+                    .as_deref()
+                    .is_some_and(|s| scope_satisfied(s, needed)),
+                None => false,
+            })
+            .collect();
         let result = ListToolsResult {
             tools,
             ..ListToolsResult::default()
@@ -142,10 +184,31 @@ impl ServerHandler for ToolRegistry {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         tracing::info!(tool = %request.name, "mcp.tool dispatch");
         let name = request.name.as_ref();
+        // FR-020: reject calls the caller's scope set cannot satisfy.
+        match required_scope(name) {
+            Some(needed) => {
+                let scopes = caller_scopes(&context);
+                let allowed = scopes
+                    .as_deref()
+                    .is_some_and(|s| scope_satisfied(s, needed));
+                if !allowed {
+                    return Ok(envelope_result(&crate::errors::envelope(
+                        crate::errors::INSUFFICIENT_SCOPE,
+                        format!("tool {name} requires scope {needed:?}"),
+                    )));
+                }
+            }
+            None => {
+                return Err(McpError::invalid_params(
+                    format!("unknown tool: {name}"),
+                    None,
+                ));
+            }
+        }
         let args_value = request
             .arguments
             .map_or(serde_json::Value::Null, serde_json::Value::Object);

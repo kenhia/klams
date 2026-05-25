@@ -121,7 +121,7 @@ async fn memory_search_smoke() {
     .expect("memory_search knowledge-only");
     assert!(only_knowledge
         .iter()
-        .all(|m| m.kind == MemoryKind::Knowledge));
+        .all(|m| m.kind() == MemoryKind::Knowledge));
 
     // Tag filter is honored.
     let tagged = memory_search(
@@ -193,7 +193,7 @@ async fn memory_related_smoke() {
         "seed point excluded from results"
     );
     assert!(
-        neighbours.iter().all(|m| m.kind == MemoryKind::Knowledge),
+        neighbours.iter().all(|m| m.kind() == MemoryKind::Knowledge),
         "only knowledge returned"
     );
 }

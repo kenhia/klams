@@ -365,6 +365,9 @@ when prioritized:
 - Memory diffing and replay
 - Cross-machine caching
 - Multi-agent coordination memory
+- `event_search` MCP tool (filter-based event lookup — category /
+  author / time-window / payload key=value; complements `memory_search`,
+  which is text-similarity over facts/knowledge only)
 
 ## 9. Risks and open questions
 

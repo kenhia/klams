@@ -14,16 +14,22 @@ use std::sync::Arc;
 
 /// Build the Streamable HTTP service that the axum router mounts.
 ///
+/// `allowed_hosts` is the Host-header allowlist for rmcp's DNS-rebinding
+/// protection. Pass an empty `Vec` to disable the check entirely
+/// (relying on `require_bearer` for access control); pass a list to
+/// restrict.
+///
 /// The `service_factory` closure is invoked once per session by rmcp,
 /// so it must be cheap to clone the underlying state.
 #[must_use]
 pub fn streamable_http_service(
     state: McpState,
+    allowed_hosts: Vec<String>,
 ) -> StreamableHttpService<ToolRegistry, LocalSessionManager> {
     let mut config = StreamableHttpServerConfig::default();
     config.stateful_mode = true;
     config.json_response = false;
-    config.allowed_hosts = vec!["localhost".into(), "127.0.0.1".into(), "0.0.0.0".into()];
+    config.allowed_hosts = allowed_hosts;
     let factory_state = state;
     StreamableHttpService::new(
         move || Ok(ToolRegistry::new(factory_state.clone())),

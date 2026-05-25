@@ -49,7 +49,6 @@ pub enum PublicMemoryContent {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PublicMemory {
     pub id: Uuid,
-    pub kind: MemoryKind,
     #[serde(flatten)]
     pub content: PublicMemoryContent,
     #[serde(default)]
@@ -57,6 +56,21 @@ pub struct PublicMemory {
     pub author: PublicAuthorRef,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+impl PublicMemory {
+    /// Discriminator derived from [`PublicMemoryContent`]. The wire
+    /// shape exposes a single `kind` field via the internally-tagged
+    /// `content`; this accessor lets Rust callers read it without
+    /// matching on the enum.
+    #[must_use]
+    pub fn kind(&self) -> MemoryKind {
+        match self.content {
+            PublicMemoryContent::Fact { .. } => MemoryKind::Fact,
+            PublicMemoryContent::Knowledge { .. } => MemoryKind::Knowledge,
+            PublicMemoryContent::Event { .. } => MemoryKind::Event,
+        }
+    }
 }
 
 #[cfg(test)]

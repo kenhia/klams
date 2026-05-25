@@ -304,7 +304,7 @@ Create or extend `<workspace>/.vscode/mcp.json`:
   "servers": {
     "klams": {
       "type": "http",
-      "url": "http://kubs0:8088/mcp",
+      "url": "http://kubs0:7777/mcp",
       "headers": {
         "Authorization": "Bearer ghcp-write-XXXXXXXXXXXXXXXX"
       }
@@ -317,6 +317,16 @@ Reload the VS Code window. The status bar shows the klams MCP server
 connected and GHCP's tool palette lists the klams tools (filtered
 to the scopes the token grants — `read` + `write` for `ghcp`).
 
+VS Code's "MCP: klams" Output panel will log two harmless warnings
+on startup (`Could not fetch resource metadata` and
+`Failed to parse message: ""`) — see
+[specs/007-mcp-server/research-vscode-mcp-http.md](../specs/007-mcp-server/research-vscode-mcp-http.md)
+§6–§7 for what they mean. They can be ignored.
+
+If you connect via a non-loopback hostname and want belt-and-suspenders
+DNS-rebinding protection, set `[server].mcp_allowed_hosts` in
+`klams.toml` (default empty = disabled; bearer auth is the real gate).
+
 ### GHCP CLI (`~/.copilot/mcp-config.json`)
 
 ```jsonc
@@ -324,7 +334,7 @@ to the scopes the token grants — `read` + `write` for `ghcp`).
   "mcpServers": {
     "klams": {
       "type": "http",
-      "url": "http://kubs0:8088/mcp",
+      "url": "http://kubs0:7777/mcp",
       "headers": {
         "Authorization": "Bearer ghcp-write-XXXXXXXXXXXXXXXX"
       },

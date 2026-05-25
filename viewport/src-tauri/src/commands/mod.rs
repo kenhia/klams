@@ -23,24 +23,24 @@ use uuid::Uuid;
 #[derive(Serialize, Debug, Error, Clone)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ViewportError {
-    #[error("not configured: {0}")]
-    NotConfigured(String),
-    #[error("network error: {0}")]
-    Network(String),
+    #[error("not configured: {message}")]
+    NotConfigured { message: String },
+    #[error("network error: {message}")]
+    Network { message: String },
     #[error("auth failed")]
     Unauthorized,
     #[error("server error {status}: {message}")]
     Server { status: u16, message: String },
-    #[error("invalid response: {0}")]
-    Deserialization(String),
+    #[error("invalid response: {message}")]
+    Deserialization { message: String },
 }
 
 impl From<ClientError> for ViewportError {
     fn from(e: ClientError) -> Self {
         match e {
-            ClientError::InvalidUrl(m) => ViewportError::NotConfigured(m),
-            ClientError::Transport(t) => ViewportError::Network(t.to_string()),
-            ClientError::Decode(m) => ViewportError::Deserialization(m),
+            ClientError::InvalidUrl(m) => ViewportError::NotConfigured { message: m },
+            ClientError::Transport(t) => ViewportError::Network { message: t.to_string() },
+            ClientError::Decode(m) => ViewportError::Deserialization { message: m },
             ClientError::NotImplemented(m) => ViewportError::Server {
                 status: 501,
                 message: m.into(),
@@ -177,7 +177,7 @@ impl LiveClientFactory {
     fn client(&self) -> Result<Client, ViewportError> {
         let cfg = crate::config::load();
         let token = crate::config::read_token()
-            .ok_or_else(|| ViewportError::NotConfigured("no bearer token in keyring".into()))?;
+            .ok_or_else(|| ViewportError::NotConfigured { message: "no bearer token in keyring".into() })?;
         Client::new(&cfg.klams_url, token).map_err(Into::into)
     }
 }

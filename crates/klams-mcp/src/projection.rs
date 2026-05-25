@@ -9,9 +9,7 @@
 //! trust tier, and the soft-deletion bookkeeping columns.
 
 use chrono::{DateTime, Utc};
-use klams_types::{
-    Event, Fact, KnowledgeItem, MemoryKind, PublicAuthorRef, PublicMemory, PublicMemoryContent,
-};
+use klams_types::{Event, Fact, KnowledgeItem, PublicAuthorRef, PublicMemory, PublicMemoryContent};
 
 /// Project a [`Fact`] to the public wire shape. The caller supplies the
 /// `author` because it is denormalized from `authors` at the call site
@@ -20,7 +18,6 @@ use klams_types::{
 pub fn project_fact(fact: &Fact, author: PublicAuthorRef) -> PublicMemory {
     PublicMemory {
         id: fact.id,
-        kind: MemoryKind::Fact,
         content: PublicMemoryContent::Fact {
             fact_type: fact.fact_type.as_str().to_string(),
             payload: fact.payload.clone(),
@@ -37,7 +34,6 @@ pub fn project_fact(fact: &Fact, author: PublicAuthorRef) -> PublicMemory {
 pub fn project_knowledge(item: &KnowledgeItem, author: PublicAuthorRef) -> PublicMemory {
     PublicMemory {
         id: item.id,
-        kind: MemoryKind::Knowledge,
         content: PublicMemoryContent::Knowledge {
             text: item.text.clone(),
             source_path: item.file.clone(),
@@ -55,7 +51,6 @@ pub fn project_knowledge(item: &KnowledgeItem, author: PublicAuthorRef) -> Publi
 pub fn project_event(event: &Event, author: PublicAuthorRef) -> PublicMemory {
     PublicMemory {
         id: event.id,
-        kind: MemoryKind::Event,
         content: PublicMemoryContent::Event {
             category: event.category.clone(),
             payload: event.payload.clone(),

@@ -547,26 +547,27 @@ raw embedding vectors, and the internal `source` trust tier
 (`User`/`Controller`/`Task`/`AgentProposal`).
 
 ```text
-+-----------------------+               +---------------------+
-| MCP client            |  stdio JSON-  |  klams-mcp          |
-| (Copilot, custom)     |  ◄ RPC      ─►|  rmcp ServerHandler |
-+-----------------------+               +---------+-----------+
-                                                  │
-                                                  ▼
-                                        +---------------------+
-                                        |  ProjectionLayer    |
-                                        | (Fact|Event|Knowledge|
-                                        |   → PublicMemory)   |
-                                        +----+---------+------+
-                                             │         │
-                            +----------------+         +-------------+
-                            ▼                                        ▼
-                  +--------------------+                  +--------------------+
-                  |  PostgresStore     |                  |  QdrantStore       |
-                  | (facts, events,    |                  | (knowledge_items,  |
-                  |  authors)          |                  |  authors-aware     |
-                  +--------------------+                  |   payload)         |
-                                                          +--------------------+
++-----------------------+   Streamable    +---------------------+
+| MCP client            |   HTTP / SSE    |  klams-mcp          |
+| (VS Code, Copilot     |  ◄ JSON-RPC ──► |  rmcp ServerHandler |
+|  CLI, custom)         |   over POST/GET |  + scope filter     |
++-----------------------+                 +---------+-----------+
+                                                    │
+                                                    ▼
+                                          +---------------------+
+                                          |  ProjectionLayer    |
+                                          | (Fact|Event|Knowledge|
+                                          |   → PublicMemory)   |
+                                          +----+---------+------+
+                                               │         │
+                              +----------------+         +-------------+
+                              ▼                                        ▼
+                    +--------------------+                  +--------------------+
+                    |  PostgresStore     |                  |  QdrantStore       |
+                    | (facts, events,    |                  | (knowledge_items,  |
+                    |  authors)          |                  |  authors-aware     |
+                    +--------------------+                  |   payload)         |
+                                                            +--------------------+
 ```
 
 ### 2e.3 Scope-gated tool surface
@@ -608,6 +609,40 @@ projection via `GET /v1/authors/{id}/memories` and renders a state
 badge (`live` | `soft-deleted` | `hard-deleted`) plus a
 cross-kind link `{id, kind} → /facts|/knowledge|/events/{id}`
 (FR-025).
+
+### 2e.5 HTTP transport & auth wiring
+
+The MCP surface is mounted at `/mcp` on the same axum router as the
+REST API (no separate listener). `klams-service::main` builds:
+
+```text
+Router::new()
+  .merge(protected_rest)      // /v1/* behind require_bearer
+  .merge(public)              // /healthz, /metrics (when enabled)
+  .nest("/mcp",
+        klams_mcp::router(mcp_state, cfg.server.mcp_allowed_hosts)
+            .layer(require_bearer))   // ← layer attached HERE
+```
+
+The `require_bearer` layer **must** wrap the `/mcp` sub-router
+directly; layering on the outer `Router::new()` after `.nest(...)`
+does not apply to nested services in axum 0.8. The shared
+`AuthState` (built from `[auth.bearer_token]` + `[[auth.tokens]]`)
+backs both the REST and MCP gates so a single token works for both.
+
+`klams_mcp::router` wraps rmcp's `StreamableHttpService` with a
+configurable Host-header allowlist (`[server].mcp_allowed_hosts`).
+Default is empty — the allowlist is **disabled** because
+`require_bearer` is the real access control; bearer-less requests
+are rejected with `401` before any tool sees them. Operators who
+want DNS-rebinding belt-and-suspenders can set the list explicitly
+(e.g. `["localhost", "workstation:7777"]`).
+
+No OAuth metadata is served. VS Code Insiders' `"type": "http"`
+client accepts a static `headers.Authorization` in `mcp.json` and
+treats the absent `/.well-known/oauth-protected-resource` as a
+harmless warning. The handshake walkthrough lives at
+[specs/007-mcp-server/research-vscode-mcp-http.md](../specs/007-mcp-server/research-vscode-mcp-http.md).
 
 Plan and spec live at
 [specs/007-mcp-server/plan.md](../specs/007-mcp-server/plan.md)

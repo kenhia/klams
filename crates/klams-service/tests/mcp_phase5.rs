@@ -60,7 +60,7 @@ async fn memory_append_event_smoke() {
     )
     .await
     .expect("memory_append_event");
-    assert_eq!(mem.kind, MemoryKind::Event);
+    assert_eq!(mem.kind(), MemoryKind::Event);
     assert_eq!(mem.author.agent_name, "GHCP-test-event");
     match mem.content {
         PublicMemoryContent::Event {

@@ -83,7 +83,7 @@ async fn memory_add_fact_smoke() {
     .await
     .expect("memory_add fact");
 
-    assert_eq!(mem.kind, MemoryKind::Fact);
+    assert_eq!(mem.kind(), MemoryKind::Fact);
     assert_eq!(mem.author.agent_name, "GHCP-test-fact");
     match mem.content {
         PublicMemoryContent::Fact { fact_type, .. } => assert_eq!(fact_type, "EnvFact"),
@@ -140,6 +140,6 @@ async fn memory_add_knowledge_smoke() {
     )
     .await
     .expect("memory_add knowledge");
-    assert_eq!(mem.kind, MemoryKind::Knowledge);
+    assert_eq!(mem.kind(), MemoryKind::Knowledge);
     assert_eq!(mem.author.agent_name, "GHCP-test-know");
 }

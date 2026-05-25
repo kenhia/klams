@@ -195,9 +195,41 @@ description: "Task list for feature 007-mcp-server"
 - [X] T058 [P] Update `docs/usage.md` with the MCP chapter: tool surface, scope configuration, soft-delete safety model, and the viewport `/authors` review workflow.
 - [X] T059 [P] Add a commented `[[auth.tokens]]` block to `deploy/config/klams.example.toml` mirroring [data-model.md §5](./data-model.md).
 - [X] T060 [P] Add `mcp-call` recipe to the root `justfile` (used by [quickstart.md](./quickstart.md) and ops scripts).
-- [ ] T061 Execute all 12 steps of [quickstart.md](./quickstart.md) against a fresh test instance; record observed timings against SC-001..SC-008.
-- [ ] T062 Validate SC-006 explicitly: load fixture with ≥ 10k facts + 50k knowledge items, run `memory_search` 100× and record p95. Attach the result to the PR description. **Do not** start tuning work if the p95 exceeds 1 s — surface the measurement to the user first and let them decide whether the actual overshoot is "good enough" for the homelab before any optimization work begins (per SC-006 note).
-- [ ] T063 Final `just gate` pass; resolve any clippy/fmt drift introduced during integration.
+- [X] T061 Execute all 12 steps of [quickstart.md](./quickstart.md) against a fresh test instance; record observed timings against SC-001..SC-008. *(2026-05-25: §1–§9, §12 verified live; §10 viewport check deferred — user reports stale build on `cleo`, see backlog/quickstart §10 note; §11 Grafana panels blocked on "No Data" issue, tracked in backlog as priority.)*
+- [X] T062 Validate SC-006 explicitly: load fixture with ≥ 10k facts + 50k knowledge items, run `memory_search` 100× and record p95. Attach the result to the PR description. **Do not** start tuning work if the p95 exceeds 1 s — surface the measurement to the user first and let them decide whether the actual overshoot is "good enough" for the homelab before any optimization work begins (per SC-006 note). **(Deferred to [backlog](../planning/backlog.md#sc-006-perf-benchmark-t062-sprint-007) at sprint ship per user decision 2026-05-25.)**
+- [X] T063 Final `just gate` pass; resolve any clippy/fmt drift introduced during integration.
+
+---
+
+## Phase 9: MCP transport hardening + VS Code `type: "http"` parity
+
+Discovered during the operator walkthrough (post-T060). Splits into a
+**critical security fix** and a **client-compat track** so the
+production VS Code path (`type: "http"` with static bearer) works
+without OAuth detours.
+
+### Critical security fix
+
+- [X] T064 [SECURITY] `klams-mcp` router is mounted under `/mcp` but the parent router's `require_bearer` layer is NOT applied to the nested service — `POST /mcp initialize` and `POST /mcp tools/list` both return 200 with no `Authorization` header. Reproduce, then either (a) move the `/mcp` nest *before* `build_router` returns so the existing layer covers it, or (b) wrap `klams_mcp::router(...)` with its own `axum::middleware::from_fn_with_state(...)` that calls the same `require_bearer` path. Verify with an integration test in `crates/klams-mcp/tests/` that asserts 401 on every method without a bearer.
+- [X] T065 [SECURITY] `tools/list` currently returns every registered tool regardless of the caller's scopes (verified empirically; admin tools visible to an unauthenticated probe). Wire `ScopeFilter` (from `auth_bridge`) into the `ServerHandler::list_tools` path so the surface advertised back to the client is filtered per FR-020. Cover with a test per scope tier (read, write, admin) that asserts the exact tool set returned.
+- [X] T066 [SECURITY] Add a regression test exercising the **negative** path: `viewport-readonly` token must not see `memory_delete`/`memory_admin_*`; `write` token must not see `memory_admin_*`; admin token must see everything. Pin against the canonical example config from [deploy/config/klams.example.toml](../../deploy/config/klams.example.toml).
+
+### VS Code `type: "http"` parity track
+
+- [X] T067 Research: capture VS Code Insiders' actual MCP HTTP handshake (Output → "MCP: klams"). Document which `/.well-known/*` paths it probes, what it expects in the 401 `WWW-Authenticate` header (e.g., `Bearer realm="..."`), and at what point it decides "this server needs OAuth, prompt the user." Land findings in `specs/007-mcp-server/research-vscode-mcp-http.md`.
+- [X] T068 Decide between two paths based on T067 findings (record decision + rationale in research doc):
+    - **Path A chosen** — see [research-vscode-mcp-http.md](./research-vscode-mcp-http.md) §7. VS Code Insiders `"type": "http"` accepts `headers.Authorization` directly and treats the well-known 404s as warnings. No OAuth metadata is required.
+- [X] T069 No-op for Path A. The only server-side change actually required for VS Code parity was the host-allowlist fix (configurable `[server].mcp_allowed_hosts`, default empty) landed in T067. Optional cosmetic polish (WWW-Authenticate header, empty well-known stub, `json_response = true`) deferred — see [research-vscode-mcp-http.md](./research-vscode-mcp-http.md) §7.
+- [X] T070 Smoke-test live: VS Code Insiders → reload window → klams tools populate without manual intervention. Verified 2026-05-25 — 6 tools discovered for a Read+Write token, no OAuth dialog, no GHCP CLI regression. Happy-path Output log captured in [research-vscode-mcp-http.md](./research-vscode-mcp-http.md) §6.
+- [X] T071 [P] Update [quickstart.md](./quickstart.md) §4 with the now-working VS Code flow (drop any "dismiss OAuth dialog" workaround). Update [docs/setup.md](../../docs/setup.md) MCP-registration section in lockstep.
+- [X] T072 [P] Update [docs/architecture.md](../../docs/architecture.md) §2e to note the auth-layer mount point (post T064 fix) and the well-known surface (post T069).
+
+### Acceptance for Phase 9
+
+- All four `curl` probes from the operator notes return 401 without a token (initialize, tools/list, tools/call, GET SSE).
+- `tools/list` returns scope-filtered tool sets for read / write / admin tokens.
+- VS Code Insiders with the workspace [.vscode/mcp.json](../../.vscode/mcp.json) configured with `type: "http"` + `headers.Authorization` lists klams tools after a single window reload, no dialog.
+- `just gate` clean.
 
 ---
 

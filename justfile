@@ -5,6 +5,7 @@
 # `just verify`  ─ end-to-end functional smoke against a running service
 
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
+set positional-arguments
 
 # Default recipe shows the menu so a bare `just` is friendly.
 default:
@@ -19,6 +20,10 @@ compose_file  := 'deploy/docker-compose.yml'
 # Bring the Postgres+Qdrant+TEI stack up in the background.
 compose-up:
     docker compose -f {{compose_file}} up -d
+
+# Alias for `compose-up` — kept so quickstart-style operator docs can
+# distinguish a throwaway test stack from a long-lived one.
+compose-up-test: compose-up
 
 # Stop and remove the stack (keeps volumes).
 compose-down:
@@ -38,6 +43,16 @@ build:
 run:
     cargo run -p klams-service 2>&1
 
+# Quickstart-friendly alias for `run`.
+service-run: run
+
+# sprint 007 — validate [auth] / [backup] / [decay] in $KLAMS_CONFIG
+# (or /ai/klams/config/klams.toml) without contacting any backend.
+# Exits 0 on success, 2 on the first error; warnings go to stderr.
+service-validate-config:
+    KLAMS_CONFIG=${KLAMS_CONFIG:-/ai/klams/config/klams.toml} \
+        cargo run --quiet -p klams-service -- --validate-config
+
 # Workspace-wide tests (excludes #[ignore]'d cases).
 test:
     cargo test --workspace
@@ -54,13 +69,29 @@ health:
     KLAMS_URL={{klams_url}} KLAMS_TOKEN={{klams_token}} \
         bash scripts/verify-mvp.sh --light
 
+# sprint 007 — apply pending SQL migrations against the configured
+# Postgres without starting the HTTP server. Idempotent — `sqlx`
+# tracks applied versions in `_sqlx_migrations` so reruns are no-ops.
+db-migrate:
+    KLAMS_CONFIG=${KLAMS_CONFIG:-/ai/klams/config/klams.toml} \
+        cargo run --quiet -p klams-service -- --migrate-only
+
+# Shell into the compose Postgres as the klams user. Forwards extra
+# args, so `just db-psql -c "SELECT 1"` and `just db-psql -t -c "..."`
+# both work.
+db-psql *ARGS:
+    @docker exec -i klams-postgres psql -U klams -d klams "$@"
+
 # Full SC-001..SC-009 functional smoke (slower than `health`).
 verify:
     KLAMS_URL={{klams_url}} KLAMS_TOKEN={{klams_token}} \
         bash scripts/verify-mvp.sh
 
 # Cross-compile the viewport for Windows (requires cargo-xwin).
+# Builds the SvelteKit frontend first — tauri's `generate_context!`
+# panics at compile time if `viewport/build/` doesn't exist.
 viewport-build:
+    cd viewport && pnpm install --frozen-lockfile && pnpm build
     cd viewport/src-tauri && cargo xwin build --release --target x86_64-pc-windows-msvc
 
 # Native Linux build of the viewport (webkit2gtk).
@@ -200,17 +231,42 @@ rollback:
     sudo systemctl restart klams-service klams-monitor || true
 
 # sprint 007 — MCP convenience.
-# Invoke an MCP tool over Streamable HTTP. Arguments are passed as a
-# raw JSON object; the recipe wraps them in a JSON-RPC `tools/call`
-# envelope. Override KLAMS_URL / KLAMS_TOKEN for a non-local stack.
+# Invoke an MCP tool over Streamable HTTP. Performs the full rmcp
+# stateful handshake (initialize -> notifications/initialized ->
+# tools/call) and prints the tool's text result. Arguments are passed
+# as a raw JSON object. Override KLAMS_URL / KLAMS_TOKEN for a
+# non-local stack.
 #
 # Example:
-#   just mcp-call memory_search '{"query":"build","top_k":5}'
+#   KLAMS_TOKEN=$tok just mcp-call memory_search '{"query":"build"}'
 mcp-call tool args='{}':
-    @curl -sS -X POST "{{klams_url}}/mcp" \
-        -H "Authorization: Bearer {{klams_token}}" \
-        -H "Content-Type: application/json" \
-        -H "Accept: application/json, text/event-stream" \
-        --data "$(jq -nc --arg name "{{tool}}" --argjson args '{{args}}' \
-            '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:$name,arguments:$args}}')" \
-        | jq -r '.result.content[0].text // .result // .error // .'
+    #!/usr/bin/env bash
+    set -euo pipefail
+    url='{{klams_url}}/mcp'
+    auth='Authorization: Bearer {{klams_token}}'
+    accept='Accept: application/json, text/event-stream'
+    ctype='Content-Type: application/json'
+    headers=$(mktemp); trap 'rm -f "$headers"' EXIT
+    # 1. initialize — capture the mcp-session-id response header.
+    curl -sS -D "$headers" -o /dev/null -X POST "$url" \
+        -H "$auth" -H "$ctype" -H "$accept" \
+        --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"just-mcp-call","version":"0"}}}'
+    sid=$(awk 'tolower($1)=="mcp-session-id:" {print $2}' "$headers" | tr -d '\r\n')
+    if [[ -z "$sid" ]]; then
+        echo "mcp-call: server did not return mcp-session-id" >&2
+        cat "$headers" >&2
+        exit 1
+    fi
+    # 2. notifications/initialized (no id, no response body expected).
+    curl -sS -o /dev/null -X POST "$url" \
+        -H "$auth" -H "$ctype" -H "$accept" -H "mcp-session-id: $sid" \
+        --data '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+    # 3. tools/call — stream SSE response and decode the result envelope.
+    printf '%s' '{{args}}' \
+        | jq -c --arg name '{{tool}}' \
+            '{jsonrpc:"2.0",id:2,method:"tools/call",params:{name:$name,arguments:.}}' \
+        | curl -sS -X POST "$url" \
+            -H "$auth" -H "$ctype" -H "$accept" -H "mcp-session-id: $sid" \
+            --data @- \
+        | sed -n 's/^data: //p' \
+        | jq -r 'select(.) | .result.content[0].text // .result // .error // .'
