@@ -14,6 +14,30 @@ port = 7777
 # Treat as a secret; constant-time compared.
 bearer_token = "changeme-rendered-by-provision-script"
 
+# Sprint 007 — scoped MCP tokens.
+# The legacy `bearer_token` above still works (it materializes as
+# one grant with all scopes). For per-purpose tokens, uncomment
+# and fill in the `[[auth.tokens]]` blocks below. Every token MUST
+# be ≥ 16 characters; `scopes` MUST be non-empty.
+# See docs/usage.md "Sprint 007 — MCP server" for the recommended
+# split (one read-only token for the viewport, one read+write per
+# agent, a single admin token used only from your own shell).
+#
+# [[auth.tokens]]
+# token  = "viewport-readonly-XXXXXXXXXXXX"
+# scopes = ["read"]
+# label  = "viewport"
+#
+# [[auth.tokens]]
+# token  = "ghcp-write-XXXXXXXXXXXXXXXX"
+# scopes = ["read", "write"]
+# label  = "ghcp"
+#
+# [[auth.tokens]]
+# token  = "ken-admin-XXXXXXXXXXXXXXXXXX"
+# scopes = ["read", "write", "admin"]
+# label  = "ken-admin"
+
 [postgres]
 url = "postgres://klams:changeme@127.0.0.1:5432/klams"
 max_connections = 8

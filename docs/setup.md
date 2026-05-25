@@ -283,3 +283,73 @@ diff /tmp/pre-counts-events /tmp/post-counts-events && echo "events match"
 `pg_restore` is invoked with `--single-transaction --clean
 --if-exists`, so a failed mid-restore rolls back atomically and the
 target Postgres is left in its pre-call state.
+
+## Sprint 007 — MCP server registration
+
+Sprint 007 mounts a Model Context Protocol surface on
+`klams-service`. Once tokens are configured (see
+[usage.md](usage.md#sprint-007--mcp-server) for the `[[auth.tokens]]`
+shape) and the service is running, register klams with each MCP
+client you want to wire in.
+
+Step-by-step walkthrough lives at
+[specs/007-mcp-server/quickstart.md](../specs/007-mcp-server/quickstart.md).
+
+### VS Code (`.vscode/mcp.json`)
+
+Create or extend `<workspace>/.vscode/mcp.json`:
+
+```jsonc
+{
+  "servers": {
+    "klams": {
+      "type": "http",
+      "url": "http://kubs0:8088/mcp",
+      "headers": {
+        "Authorization": "Bearer ghcp-write-XXXXXXXXXXXXXXXX"
+      }
+    }
+  }
+}
+```
+
+Reload the VS Code window. The status bar shows the klams MCP server
+connected and GHCP's tool palette lists the klams tools (filtered
+to the scopes the token grants — `read` + `write` for `ghcp`).
+
+### GHCP CLI (`~/.copilot/mcp-config.json`)
+
+```jsonc
+{
+  "mcpServers": {
+    "klams": {
+      "type": "http",
+      "url": "http://kubs0:8088/mcp",
+      "headers": {
+        "Authorization": "Bearer ghcp-write-XXXXXXXXXXXXXXXX"
+      },
+      "tools": ["*"]
+    }
+  }
+}
+```
+
+Restart the GHCP CLI and verify:
+
+```bash
+copilot mcp tools klams
+```
+
+Expected: `register_author`, `memory_add`, `memory_search`,
+`memory_related`, `memory_delete`, `memory_append_event`. The
+`memory_admin_*` tools are absent unless the bearer token also
+carries `admin` scope (FR-020).
+
+### Per-token scope tips
+
+- One read-only token for the viewport so a UI compromise cannot
+  mutate state.
+- One read+write token per agent that produces memories (typically
+  one per editor).
+- One admin token, used only from your own shell, for restores and
+  hard deletes.

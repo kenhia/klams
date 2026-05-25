@@ -190,11 +190,11 @@ description: "Task list for feature 007-mcp-server"
 
 ## Phase 8: Polish & Cross-Cutting
 
-- [ ] T056 [P] Update `docs/architecture.md` with a new §2e "MCP projection layer" covering the authors table, the public projection, the scope-gated tool surface, and soft-delete representation.
-- [ ] T057 [P] Update `docs/setup.md` with MCP registration sections for both VS Code (`.vscode/mcp.json`) and the GHCP CLI (`~/.copilot/mcp-config.json`); copy the working examples from [quickstart.md](./quickstart.md).
-- [ ] T058 [P] Update `docs/usage.md` with the MCP chapter: tool surface, scope configuration, soft-delete safety model, and the viewport `/authors` review workflow.
-- [ ] T059 [P] Add a commented `[[auth.tokens]]` block to `deploy/config/klams.example.toml` mirroring [data-model.md §5](./data-model.md).
-- [ ] T060 [P] Add `mcp-call` recipe to the root `justfile` (used by [quickstart.md](./quickstart.md) and ops scripts).
+- [X] T056 [P] Update `docs/architecture.md` with a new §2e "MCP projection layer" covering the authors table, the public projection, the scope-gated tool surface, and soft-delete representation.
+- [X] T057 [P] Update `docs/setup.md` with MCP registration sections for both VS Code (`.vscode/mcp.json`) and the GHCP CLI (`~/.copilot/mcp-config.json`); copy the working examples from [quickstart.md](./quickstart.md).
+- [X] T058 [P] Update `docs/usage.md` with the MCP chapter: tool surface, scope configuration, soft-delete safety model, and the viewport `/authors` review workflow.
+- [X] T059 [P] Add a commented `[[auth.tokens]]` block to `deploy/config/klams.example.toml` mirroring [data-model.md §5](./data-model.md).
+- [X] T060 [P] Add `mcp-call` recipe to the root `justfile` (used by [quickstart.md](./quickstart.md) and ops scripts).
 - [ ] T061 Execute all 12 steps of [quickstart.md](./quickstart.md) against a fresh test instance; record observed timings against SC-001..SC-008.
 - [ ] T062 Validate SC-006 explicitly: load fixture with ≥ 10k facts + 50k knowledge items, run `memory_search` 100× and record p95. Attach the result to the PR description. **Do not** start tuning work if the p95 exceeds 1 s — surface the measurement to the user first and let them decide whether the actual overshoot is "good enough" for the homelab before any optimization work begins (per SC-006 note).
 - [ ] T063 Final `just gate` pass; resolve any clippy/fmt drift introduced during integration.

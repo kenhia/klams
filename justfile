@@ -198,3 +198,19 @@ rollback:
         fi; \
     done; \
     sudo systemctl restart klams-service klams-monitor || true
+
+# sprint 007 — MCP convenience.
+# Invoke an MCP tool over Streamable HTTP. Arguments are passed as a
+# raw JSON object; the recipe wraps them in a JSON-RPC `tools/call`
+# envelope. Override KLAMS_URL / KLAMS_TOKEN for a non-local stack.
+#
+# Example:
+#   just mcp-call memory_search '{"query":"build","top_k":5}'
+mcp-call tool args='{}':
+    @curl -sS -X POST "{{klams_url}}/mcp" \
+        -H "Authorization: Bearer {{klams_token}}" \
+        -H "Content-Type: application/json" \
+        -H "Accept: application/json, text/event-stream" \
+        --data "$(jq -nc --arg name "{{tool}}" --argjson args '{{args}}' \
+            '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:$name,arguments:$args}}')" \
+        | jq -r '.result.content[0].text // .result // .error // .'
