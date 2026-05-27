@@ -24,6 +24,9 @@ pub const EVENTS_NOT_DELETABLE: &str = "EVENTS_NOT_DELETABLE";
 pub const INSUFFICIENT_SCOPE: &str = "INSUFFICIENT_SCOPE";
 pub const MAINTENANCE_WINDOW_ACTIVE: &str = "MAINTENANCE_WINDOW_ACTIVE";
 pub const INTERNAL_ERROR: &str = "INTERNAL_ERROR";
+// Sprint 008 — `event_search` (and `GET /v1/memories`) window validation.
+pub const WINDOW_TOO_LARGE: &str = "WINDOW_TOO_LARGE";
+pub const INVALID_WINDOW: &str = "INVALID_WINDOW";
 
 /// Standard MCP error envelope body.
 ///
@@ -51,6 +54,8 @@ pub struct ErrorMeta {
     pub error_code: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_after_seconds: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window_max_days: Option<u32>,
 }
 
 /// Build a standard error envelope.
@@ -65,6 +70,7 @@ pub fn envelope(code: &'static str, message: impl Into<String>) -> ErrorEnvelope
         meta: ErrorMeta {
             error_code: code,
             retry_after_seconds: None,
+            window_max_days: None,
         },
     }
 }
@@ -87,6 +93,29 @@ pub fn envelope_with_retry(
         meta: ErrorMeta {
             error_code: code,
             retry_after_seconds: Some(retry_after_seconds),
+            window_max_days: None,
+        },
+    }
+}
+
+/// Build an error envelope carrying `_meta.window_max_days`. Used by
+/// sprint 008 window-cap validation (`WINDOW_TOO_LARGE`).
+#[must_use]
+pub fn envelope_with_window_max(
+    code: &'static str,
+    message: impl Into<String>,
+    window_max_days: u32,
+) -> ErrorEnvelope {
+    ErrorEnvelope {
+        is_error: true,
+        content: vec![ErrorContent {
+            kind: "text",
+            text: message.into(),
+        }],
+        meta: ErrorMeta {
+            error_code: code,
+            retry_after_seconds: None,
+            window_max_days: Some(window_max_days),
         },
     }
 }

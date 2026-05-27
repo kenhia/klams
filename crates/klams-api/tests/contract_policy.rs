@@ -61,6 +61,7 @@ fn router() -> axum::Router {
     build_router(
         ApiState {
             store: Arc::new(NullStore),
+            api: klams_types::ApiConfig::default(),
             queue,
             queue_capacity: 8,
             workers: 1,

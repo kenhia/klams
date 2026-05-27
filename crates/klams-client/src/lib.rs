@@ -22,8 +22,8 @@ use klams_types::{
     ContextBundle, ContextRequest, Dissent, DissentPage, DissentSubmittedResponse, EventPage, Fact,
     FactPage, FactWriteOutcome, HealthSnapshot, IndexKnowledgeRequest, IndexKnowledgeResponse,
     KnowledgeItem, ListAuthorMemoriesParams, ListAuthorsParams, ListDissentsParams,
-    ListEventsParams, ListFactsParams, PublicAuthor, SearchRequest, SearchResults, SearchType,
-    Source, UpsertFactRequest,
+    ListEventsParams, ListFactsParams, ListMemoriesParams, MemoriesPage, PublicAuthor,
+    SearchRequest, SearchResults, SearchType, Source, UpsertFactRequest,
 };
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use reqwest::StatusCode;
@@ -128,6 +128,7 @@ impl Client {
                 request_id: None,
                 details: None,
                 current_version: None,
+                window_max_days: None,
             });
             Err(ClientError::Api { status, body })
         }
@@ -152,6 +153,7 @@ impl Client {
                 request_id: None,
                 details: None,
                 current_version: None,
+                window_max_days: None,
             });
             Err(ClientError::Api { status, body })
         }
@@ -202,6 +204,7 @@ impl Client {
                     request_id: None,
                     details: None,
                     current_version: None,
+                    window_max_days: None,
                 });
                 if status == StatusCode::CONFLICT {
                     if let Some(current_version) = body.current_version {
@@ -240,6 +243,11 @@ impl Client {
     ) -> ClientResult<AuthorMemoriesPage> {
         self.get_json_query(&format!("/v1/authors/{id}/memories"), params)
             .await
+    }
+
+    /// `GET /v1/memories` — sprint 008 cross-author activity page.
+    pub async fn list_memories(&self, params: &ListMemoriesParams) -> ClientResult<MemoriesPage> {
+        self.get_json_query("/v1/memories", params).await
     }
 
     /// `GET /memory/dissents/{id}`.
@@ -354,6 +362,7 @@ impl Client {
             request_id: None,
             details: None,
             current_version: None,
+            window_max_days: None,
         });
         Err(ClientError::Api { status, body })
     }

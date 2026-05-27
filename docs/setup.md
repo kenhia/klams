@@ -363,3 +363,66 @@ carries `admin` scope (FR-020).
   one per editor).
 - One admin token, used only from your own shell, for restores and
   hard deletes.
+
+## Sprint 008 — Observability profile (Prometheus + Grafana)
+
+Sprint 008 lights up the per-author MCP activity panels added to
+[`deploy/grafana/klams.json`](../deploy/grafana/klams.json). The
+underlying counters (`klams_mcp_writes_total`,
+`klams_mcp_deletes_total`, `klams_mcp_search_total`) have been
+emitted since sprint 007 but had no dashboard rendering them. The
+`observability` Compose profile is opt-in; the production stack on
+`kubs0` continues to run without Prometheus or Grafana unless you
+ask for them.
+
+### Bring the observability profile up
+
+```bash
+docker compose --profile observability up -d prometheus grafana
+```
+
+This starts two extra containers:
+
+- `klams-prometheus` (image pinned via `PROMETHEUS_IMAGE_TAG` in
+  `compose.env`, default `v2.55.0`), bound to `127.0.0.1:9090`.
+  Scrape config is mounted from
+  [`deploy/prometheus/prometheus.yml`](../deploy/prometheus/prometheus.yml);
+  WAL/TSDB lives under `${KLAMS_DATA_ROOT}/prometheus`. The single
+  scrape job targets `klams-service:7777/metrics` with the
+  service bearer token.
+- `klams-grafana` (image pinned via `GRAFANA_IMAGE_TAG`, default
+  `11.2.2`), bound to `127.0.0.1:3000`. The klams dashboard JSON is
+  bind-mounted read-only at `/var/lib/grafana/dashboards/klams.json`
+  and provisioned via the Compose-managed `dashboards.yaml` so
+  edits are reverted on container restart — the JSON is the source
+  of truth.
+
+### Reload the dashboard after editing the JSON
+
+Grafana reloads provisioned dashboards on file change, but a
+container restart is the deterministic way:
+
+```bash
+docker compose restart klams-grafana
+```
+
+Open `http://127.0.0.1:3000` (default admin/admin on first boot,
+prompt to change), browse to **Dashboards → klams**, and confirm the
+three **MCP author activity** panels render. The panel-vs-series
+contract test
+[`crates/klams-service/tests/grafana_dashboard_json.rs`](../crates/klams-service/tests/grafana_dashboard_json.rs)
+keeps the dashboard JSON in lock-step with the
+[ansible-k klams-grafana.md handoff doc](https://github.com/kenhia/ansible-k/blob/main/specs/klams-integration/klams-grafana.md);
+every series referenced by a panel must appear in that handoff
+table or the workspace gate fails.
+
+### Tear the profile down
+
+```bash
+docker compose --profile observability down
+```
+
+This stops Prometheus and Grafana only; the postgres/qdrant/tei
+services keep running. The on-disk volumes under
+`${KLAMS_DATA_ROOT}/prometheus` and `${KLAMS_DATA_ROOT}/grafana`
+persist across restarts.

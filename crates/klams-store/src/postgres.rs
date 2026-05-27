@@ -13,6 +13,16 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
+/// Convert a `chrono::DateTime<Utc>` to a `time::OffsetDateTime` so it
+/// can be bound through sqlx's `time` integration. Used by sprint 008
+/// cross-author page queries.
+fn chrono_to_offset(ts: chrono::DateTime<chrono::Utc>) -> time::OffsetDateTime {
+    time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(
+        ts.timestamp_nanos_opt().unwrap_or(0),
+    ))
+    .unwrap_or(time::OffsetDateTime::UNIX_EPOCH)
+}
+
 #[derive(Debug, Clone)]
 pub struct PostgresStore {
     pool: PgPool,
@@ -695,8 +705,8 @@ impl PostgresStore {
                      EXTRACT(EPOCH FROM (now() - COALESCE(last_used_at, created_at)))::float4
                          AS age_seconds
               FROM facts
-                AND deleted_at IS NULL
               WHERE id > $1
+                AND deleted_at IS NULL
               ORDER BY id ASC
               LIMIT $2",
         )
@@ -1276,6 +1286,214 @@ impl PostgresStore {
         }
         let next = if i64::try_from(out.len()).is_ok_and(|n| n == limit) {
             out.last().map(|e| (e.created_at, e.id))
+        } else {
+            None
+        };
+        Ok((out, next))
+    }
+
+    // Sprint 008 — cross-author paging for `GET /v1/memories` and
+    // `event_search`. Authors empty ⇒ no author filter; window is
+    // inclusive-exclusive on `created_at` (UTC).
+
+    /// Page of facts across `authors` (empty ⇒ all) within
+    /// `[since, until)`. Returns `(rows, next_cursor)` where each row
+    /// carries the author UUID and soft-delete metadata so the composite
+    /// layer can project it to the public wire shape.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn list_memories_facts_page(
+        &self,
+        authors: &[Uuid],
+        state: AuthorMemoryState,
+        since: chrono::DateTime<chrono::Utc>,
+        until: chrono::DateTime<chrono::Utc>,
+        limit: u32,
+        cursor: Option<(time::OffsetDateTime, Uuid)>,
+    ) -> StoreResult<(
+        Vec<(Fact, Uuid, Option<time::OffsetDateTime>, Option<Uuid>)>,
+        Option<(time::OffsetDateTime, Uuid)>,
+    )> {
+        let limit = i64::from(limit.clamp(1, 500));
+        let since_off = chrono_to_offset(since);
+        let until_off = chrono_to_offset(until);
+        let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
+            r"SELECT id, type, payload, version, source,
+                     confidence, decay_weight, use_count,
+                     last_used_at, created_at, updated_at,
+                     deleted_at, deleted_by_author_id, author_id
+              FROM facts WHERE created_at >= ",
+        );
+        qb.push_bind(since_off)
+            .push(" AND created_at < ")
+            .push_bind(until_off);
+        if !authors.is_empty() {
+            qb.push(" AND author_id = ANY(")
+                .push_bind(authors.to_vec())
+                .push(")");
+        }
+        match state {
+            AuthorMemoryState::Live => qb.push(" AND deleted_at IS NULL"),
+            AuthorMemoryState::Deleted => qb.push(" AND deleted_at IS NOT NULL"),
+            AuthorMemoryState::All => qb.push(""),
+        };
+        if let Some((ts, id)) = cursor {
+            qb.push(" AND (created_at, id) < (")
+                .push_bind(ts)
+                .push(", ")
+                .push_bind(id)
+                .push(")");
+        }
+        qb.push(" ORDER BY created_at DESC, id DESC LIMIT ")
+            .push_bind(limit);
+        let rows = qb
+            .build()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StoreError::Backend(format!("list_memories_facts_page: {e}")))?;
+        let mut out = Vec::with_capacity(rows.len());
+        for r in &rows {
+            let fact = row_to_fact(r)?;
+            let author_id: Uuid = r.try_get("author_id").map_err(map_decode)?;
+            let deleted_at: Option<time::OffsetDateTime> =
+                r.try_get("deleted_at").map_err(map_decode)?;
+            let deleted_by: Option<Uuid> = r.try_get("deleted_by_author_id").map_err(map_decode)?;
+            out.push((fact, author_id, deleted_at, deleted_by));
+        }
+        let next = if i64::try_from(out.len()).is_ok_and(|n| n == limit) {
+            out.last().map(|(f, _, _, _)| (f.created_at, f.id))
+        } else {
+            None
+        };
+        Ok((out, next))
+    }
+
+    /// Page of events across `authors` (empty ⇒ all) within
+    /// `[since, until)`. Events are never soft-deleted so no state
+    /// parameter is exposed. Each row carries the author UUID so the
+    /// composite layer can resolve `PublicAuthorRef` in bulk.
+    pub async fn list_memories_events_page(
+        &self,
+        authors: &[Uuid],
+        since: chrono::DateTime<chrono::Utc>,
+        until: chrono::DateTime<chrono::Utc>,
+        limit: u32,
+        cursor: Option<(time::OffsetDateTime, Uuid)>,
+    ) -> StoreResult<(Vec<(Event, Uuid)>, Option<(time::OffsetDateTime, Uuid)>)> {
+        let limit = i64::from(limit.clamp(1, 500));
+        let since_off = chrono_to_offset(since);
+        let until_off = chrono_to_offset(until);
+        let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
+            r"SELECT id, task_id, category, payload, source, created_at, author_id
+              FROM events WHERE created_at >= ",
+        );
+        qb.push_bind(since_off)
+            .push(" AND created_at < ")
+            .push_bind(until_off);
+        if !authors.is_empty() {
+            qb.push(" AND author_id = ANY(")
+                .push_bind(authors.to_vec())
+                .push(")");
+        }
+        if let Some((ts, id)) = cursor {
+            qb.push(" AND (created_at, id) < (")
+                .push_bind(ts)
+                .push(", ")
+                .push_bind(id)
+                .push(")");
+        }
+        qb.push(" ORDER BY created_at DESC, id DESC LIMIT ")
+            .push_bind(limit);
+        let rows = qb
+            .build()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StoreError::Backend(format!("list_memories_events_page: {e}")))?;
+        let mut out = Vec::with_capacity(rows.len());
+        for r in &rows {
+            let event = row_to_event(r)?;
+            let author_id: Uuid = r.try_get("author_id").map_err(map_decode)?;
+            out.push((event, author_id));
+        }
+        let next = if i64::try_from(out.len()).is_ok_and(|n| n == limit) {
+            out.last().map(|(e, _)| (e.created_at, e.id))
+        } else {
+            None
+        };
+        Ok((out, next))
+    }
+
+    /// Page of events for the `event_search` MCP tool. Supports
+    /// category filtering, JSONB containment via `payload @>
+    /// payload_match`, and ascending or descending order on
+    /// `(created_at, id)`. Each row carries the author UUID for bulk
+    /// `PublicAuthorRef` resolution.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn event_search_page(
+        &self,
+        authors: &[Uuid],
+        categories: &[String],
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        until: Option<chrono::DateTime<chrono::Utc>>,
+        payload_match: Option<&serde_json::Value>,
+        limit: u32,
+        ascending: bool,
+        cursor: Option<(time::OffsetDateTime, Uuid)>,
+    ) -> StoreResult<(Vec<(Event, Uuid)>, Option<(time::OffsetDateTime, Uuid)>)> {
+        let limit = i64::from(limit.clamp(1, 500));
+        let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
+            r"SELECT id, task_id, category, payload, source, created_at, author_id
+              FROM events WHERE 1=1",
+        );
+        if let Some(ts) = since {
+            qb.push(" AND created_at >= ")
+                .push_bind(chrono_to_offset(ts));
+        }
+        if let Some(ts) = until {
+            qb.push(" AND created_at < ")
+                .push_bind(chrono_to_offset(ts));
+        }
+        if !authors.is_empty() {
+            qb.push(" AND author_id = ANY(")
+                .push_bind(authors.to_vec())
+                .push(")");
+        }
+        if !categories.is_empty() {
+            qb.push(" AND category = ANY(")
+                .push_bind(categories.to_vec())
+                .push(")");
+        }
+        if let Some(pm) = payload_match {
+            qb.push(" AND payload @> ").push_bind(pm.clone());
+        }
+        if let Some((ts, id)) = cursor {
+            let op = if ascending { " > " } else { " < " };
+            qb.push(" AND (created_at, id)")
+                .push(op)
+                .push("(")
+                .push_bind(ts)
+                .push(", ")
+                .push_bind(id)
+                .push(")");
+        }
+        if ascending {
+            qb.push(" ORDER BY created_at ASC, id ASC LIMIT ");
+        } else {
+            qb.push(" ORDER BY created_at DESC, id DESC LIMIT ");
+        }
+        qb.push_bind(limit);
+        let rows = qb
+            .build()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StoreError::Backend(format!("event_search_page: {e}")))?;
+        let mut out = Vec::with_capacity(rows.len());
+        for r in &rows {
+            let event = row_to_event(r)?;
+            let author_id: Uuid = r.try_get("author_id").map_err(map_decode)?;
+            out.push((event, author_id));
+        }
+        let next = if i64::try_from(out.len()).is_ok_and(|n| n == limit) {
+            out.last().map(|(e, _)| (e.created_at, e.id))
         } else {
             None
         };

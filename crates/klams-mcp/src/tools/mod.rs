@@ -4,6 +4,7 @@
 //! that backs `tools/list` and `tools/call`, plus the [`McpState`]
 //! that carries shared backend handles into per-tool modules.
 
+pub mod event_search;
 pub mod memory_add;
 pub mod memory_admin_hard_delete;
 pub mod memory_admin_list_deleted;
@@ -31,7 +32,7 @@ use std::sync::Arc;
 #[must_use]
 pub fn required_scope(tool: &str) -> Option<Scope> {
     Some(match tool {
-        "register_author" | "memory_search" | "memory_related" => Scope::Read,
+        "register_author" | "memory_search" | "memory_related" | "event_search" => Scope::Read,
         "memory_add" | "memory_append_event" | "memory_delete" => Scope::Write,
         "memory_admin_restore" | "memory_admin_hard_delete" | "memory_admin_list_deleted" => {
             Scope::Admin
@@ -64,6 +65,7 @@ pub struct McpState {
     pub store: Arc<CompositeStore>,
     pub maintenance: Arc<MaintenanceState>,
     pub grants: Arc<Vec<TokenGrant>>,
+    pub api: klams_types::ApiConfig,
 }
 
 impl std::fmt::Debug for McpState {
@@ -81,11 +83,13 @@ impl McpState {
         store: Arc<CompositeStore>,
         maintenance: Arc<MaintenanceState>,
         grants: Arc<Vec<TokenGrant>>,
+        api: klams_types::ApiConfig,
     ) -> Self {
         Self {
             store,
             maintenance,
             grants,
+            api,
         }
     }
 }
@@ -144,6 +148,10 @@ impl ServerHandler for ToolRegistry {
             tool_descriptor::<memory_append_event::MemoryAppendEventArgs>(
                 "memory_append_event",
                 "Append an immutable event (deployment, run, signal) attributed to an author_id.",
+            ),
+            tool_descriptor::<event_search::EventSearchArgs>(
+                "event_search",
+                "Search events by author/category/window/payload with cursor pagination.",
             ),
             tool_descriptor::<memory_delete::MemoryDeleteArgs>(
                 "memory_delete",
@@ -284,6 +292,21 @@ impl ServerHandler for ToolRegistry {
                     }
                 };
                 match memory_append_event::run(&self.state, args).await {
+                    Ok(out) => Ok(json_result(&out)),
+                    Err(env) => Ok(envelope_result(&env)),
+                }
+            }
+            "event_search" => {
+                let args = match serde_json::from_value(args_value) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        return Ok(envelope_result(&crate::errors::envelope(
+                            crate::errors::SCHEMA_VALIDATION_FAILED,
+                            format!("invalid event_search arguments: {e}"),
+                        )))
+                    }
+                };
+                match event_search::run(&self.state, args).await {
                     Ok(out) => Ok(json_result(&out)),
                     Err(env) => Ok(envelope_result(&env)),
                 }

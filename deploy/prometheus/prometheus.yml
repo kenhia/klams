@@ -1,0 +1,21 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    instance: klams
+
+scrape_configs:
+  - job_name: klams-service
+    metrics_path: /metrics
+    scheme: http
+    static_configs:
+      - targets:
+          - host.docker.internal:7777
+        labels:
+          service: klams-service
+
+  # Optional: scrape klams-monitor when enabled and exposing metrics.
+  # - job_name: klams-monitor
+  #   metrics_path: /metrics
+  #   static_configs:
+  #     - targets: ["klams-monitor:7780"]

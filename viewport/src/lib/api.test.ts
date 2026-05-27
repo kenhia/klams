@@ -205,4 +205,39 @@ describe('api wrappers', () => {
       args: { id: '00000000-0000-0000-0000-000000000050' }
     });
   });
+
+  it('listMemories serializes kinds/authors arrays as comma lists', async () => {
+    await api.listMemories({
+      since: '2026-05-25T00:00:00Z',
+      until: '2026-05-26T00:00:00Z',
+      kinds: ['event', 'knowledge'],
+      state: 'all',
+      authors: [
+        '00000000-0000-0000-0000-000000000001',
+        '00000000-0000-0000-0000-000000000002'
+      ],
+      limit: 75,
+      cursor: 'next-page'
+    });
+    expect(invokeMock).toHaveBeenCalledWith('list_memories', {
+      args: {
+        since: '2026-05-25T00:00:00Z',
+        until: '2026-05-26T00:00:00Z',
+        kinds: 'event,knowledge',
+        state: 'all',
+        authors: '00000000-0000-0000-0000-000000000001,00000000-0000-0000-0000-000000000002',
+        limit: 75,
+        cursor: 'next-page'
+      }
+    });
+  });
+
+  it('listMemories omits kinds when all kinds are selected', async () => {
+    await api.listMemories({
+      kinds: ['fact', 'knowledge', 'event']
+    });
+    expect(invokeMock).toHaveBeenCalledWith('list_memories', {
+      args: { kinds: undefined, since: undefined, until: undefined, state: undefined, authors: undefined, limit: undefined, cursor: undefined }
+    });
+  });
 });

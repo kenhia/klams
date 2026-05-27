@@ -55,6 +55,11 @@ pub struct Config {
     /// so a config without a `[backup]` block is unaffected.
     #[serde(default)]
     pub backup: BackupConfig,
+    /// Sprint 008 — shared API knobs (memories window cap, etc.).
+    /// Default values preserve sprint-007 behavior for configs that
+    /// omit `[api]`.
+    #[serde(default)]
+    pub api: ApiConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,7 +130,7 @@ pub struct LoggingConfig {
 /// Background decay-task configuration (sprint 002). Re-export of
 /// the canonical type from `klams-types` so the runtime config and
 /// the decay task agree on field layout.
-pub use klams_types::{BackupConfig, DecayConfig};
+pub use klams_types::{ApiConfig, BackupConfig, DecayConfig};
 
 // ---------------------------------------------------------------------------
 // Sprint 005 (Phase 4) configuration blocks.

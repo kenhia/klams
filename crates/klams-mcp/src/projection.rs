@@ -26,6 +26,8 @@ pub fn project_fact(fact: &Fact, author: PublicAuthorRef) -> PublicMemory {
         author,
         created_at: offset_to_chrono(fact.created_at),
         updated_at: offset_to_chrono(fact.updated_at),
+        deleted_at: None,
+        deleted_by_author_id: None,
     }
 }
 
@@ -43,6 +45,8 @@ pub fn project_knowledge(item: &KnowledgeItem, author: PublicAuthorRef) -> Publi
         author,
         created_at: offset_to_chrono(item.created_at),
         updated_at: offset_to_chrono(item.updated_at),
+        deleted_at: None,
+        deleted_by_author_id: None,
     }
 }
 
@@ -60,6 +64,8 @@ pub fn project_event(event: &Event, author: PublicAuthorRef) -> PublicMemory {
         author,
         created_at: offset_to_chrono(event.created_at),
         updated_at: offset_to_chrono(event.created_at),
+        deleted_at: None,
+        deleted_by_author_id: None,
     }
 }
 

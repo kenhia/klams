@@ -1,0 +1,23 @@
+# Build and dependency artifacts
+node_modules/
+viewport/node_modules/
+target/
+**/target/
+
+# VCS and editor metadata
+.git/
+.vscode/
+.idea/
+
+# Logs and local env
+*.log
+*.log*
+.env
+.env.*
+
+# Test and coverage artifacts
+coverage/
+
+# Docker files themselves
+Dockerfile*
+.dockerignore

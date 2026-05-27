@@ -22,6 +22,7 @@ use tower_http::trace::TraceLayer;
 /// Shared application state injected into every handler.
 pub struct ApiState<S: Store> {
     pub store: Arc<S>,
+    pub api: klams_types::ApiConfig,
     pub queue: MemoryQueue,
     pub queue_capacity: usize,
     pub workers: usize,
@@ -40,6 +41,7 @@ impl<S: Store> Clone for ApiState<S> {
     fn clone(&self) -> Self {
         Self {
             store: Arc::clone(&self.store),
+            api: self.api.clone(),
             queue: self.queue.clone(),
             queue_capacity: self.queue_capacity,
             workers: self.workers,
@@ -118,6 +120,12 @@ pub fn build_router_with_auth<S: Store>(state: ApiState<S>, auth_state: AuthStat
         .route(
             "/v1/authors/:id/memories",
             get(handlers::authors::memories::<S>),
+        )
+        .route(
+            "/v1/memories",
+            get(handlers::memories::list::<S>).route_layer(middleware::from_fn(
+                crate::auth::require_scope(klams_types::Scope::Read),
+            )),
         )
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(

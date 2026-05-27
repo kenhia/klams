@@ -27,6 +27,7 @@ fn mcp_state_from(server: &TestServer) -> McpState {
         Arc::clone(&server.store),
         Arc::new(MaintenanceState::default()),
         Arc::new(vec![]),
+        klams_types::ApiConfig::default(),
     )
 }
 

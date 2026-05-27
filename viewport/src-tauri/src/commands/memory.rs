@@ -10,7 +10,8 @@ use crate::config;
 use klams_types::{
     ContextBundle, ContextRequest, Dissent, DissentPage, EventPage, Fact, FactPage, FactType,
     FactWriteOutcome, KnowledgeItem, ListDissentsParams, ListEventsParams, ListFactsParams,
-    SearchRequest, SearchResults, SearchType, Source, UpsertFactRequest,
+    ListMemoriesParams, MemoriesPage, SearchRequest, SearchResults, SearchType, Source,
+    UpsertFactRequest,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -407,6 +408,24 @@ pub struct ListAuthorMemoriesArgs {
     pub cursor: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub struct ListMemoriesArgs {
+    #[serde(default)]
+    pub since: Option<String>,
+    #[serde(default)]
+    pub until: Option<String>,
+    #[serde(default)]
+    pub kinds: Option<String>,
+    #[serde(default)]
+    pub state: Option<String>,
+    #[serde(default)]
+    pub authors: Option<String>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub cursor: Option<String>,
+}
+
 #[tauri::command]
 pub async fn list_authors(
     state: tauri::State<'_, AppState>,
@@ -438,6 +457,23 @@ pub async fn list_author_memories(
     state.factory.list_author_memories(id, params).await
 }
 
+#[tauri::command]
+pub async fn list_memories(
+    state: tauri::State<'_, AppState>,
+    args: ListMemoriesArgs,
+) -> Result<MemoriesPage, ViewportError> {
+    let params = ListMemoriesParams {
+        since: args.since,
+        until: args.until,
+        kinds: args.kinds,
+        state: args.state,
+        authors: args.authors,
+        limit: args.limit,
+        cursor: args.cursor,
+    };
+    state.factory.list_memories(params).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -459,6 +495,7 @@ mod tests {
         last_upsert: Mutex<Option<UpsertFactRequest>>,
         last_edit: Mutex<Option<(Uuid, FactType, serde_json::Value, i32)>>,
         last_deleted: Mutex<Option<Uuid>>,
+        last_memories: Mutex<Option<ListMemoriesParams>>,
         fail: Mutex<Option<ViewportError>>,
     }
 
@@ -660,6 +697,19 @@ mod tests {
                 next_cursor: None,
             })
         }
+        async fn list_memories(
+            &self,
+            params: ListMemoriesParams,
+        ) -> Result<MemoriesPage, ViewportError> {
+            if let Some(e) = self.fail.lock().unwrap().clone() {
+                return Err(e);
+            }
+            *self.last_memories.lock().unwrap() = Some(params);
+            Ok(MemoriesPage {
+                memories: vec![],
+                next_cursor: None,
+            })
+        }
     }
 
     #[tokio::test]
@@ -856,5 +906,29 @@ mod tests {
             ViewportError::Server { status, .. } => assert_eq!(status, 410),
             other => panic!("expected Server 410, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn list_memories_forwards_activity_filters() {
+        let mock = Arc::new(MockFactory::default());
+        let params = ListMemoriesParams {
+            since: Some("2026-05-25T00:00:00Z".into()),
+            until: Some("2026-05-26T00:00:00Z".into()),
+            kinds: Some("event,knowledge".into()),
+            state: Some("all".into()),
+            authors: Some(
+                "00000000-0000-0000-0000-000000000001,00000000-0000-0000-0000-000000000002"
+                    .into(),
+            ),
+            limit: Some(75),
+            cursor: Some("opaque-cursor".into()),
+        };
+
+        let _ = mock.list_memories(params.clone()).await.unwrap();
+        let captured = mock.last_memories.lock().unwrap().clone().unwrap();
+        assert_eq!(captured.kinds.as_deref(), Some("event,knowledge"));
+        assert_eq!(captured.state.as_deref(), Some("all"));
+        assert_eq!(captured.limit, Some(75));
+        assert_eq!(captured.cursor.as_deref(), Some("opaque-cursor"));
     }
 }

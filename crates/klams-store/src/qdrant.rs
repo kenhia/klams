@@ -15,6 +15,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
+
+/// Convert a `chrono::DateTime<Utc>` to a `time::OffsetDateTime` so it
+/// can be compared against the RFC3339 `created_at` payload Qdrant
+/// stores. Used by sprint 008 cross-author page queries.
+fn chrono_to_offset(ts: chrono::DateTime<chrono::Utc>) -> OffsetDateTime {
+    OffsetDateTime::from_unix_timestamp_nanos(i128::from(ts.timestamp_nanos_opt().unwrap_or(0)))
+        .unwrap_or(OffsetDateTime::UNIX_EPOCH)
+}
 use uuid::Uuid;
 
 const KEYWORD_INDEX_FIELDS: &[&str] =
@@ -948,6 +956,107 @@ impl QdrantStore {
             out.push((item, deleted_at, deleter));
         }
         Ok((out, next))
+    }
+
+    /// Sprint 008 — cross-author page for `GET /v1/memories`. Filters
+    /// by `authors` (empty ⇒ all) and `state`. The `[since, until)`
+    /// window is applied client-side on the RFC3339 `created_at`
+    /// payload because Qdrant cannot range-filter string payloads.
+    /// Pagination uses the same UUID `offset` as
+    /// `list_knowledge_by_author`.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn list_memories_knowledge_page(
+        &self,
+        authors: &[uuid::Uuid],
+        state: AuthorMemoryStateFilter,
+        since: chrono::DateTime<chrono::Utc>,
+        until: chrono::DateTime<chrono::Utc>,
+        limit: u32,
+        offset: Option<uuid::Uuid>,
+    ) -> StoreResult<(
+        Vec<(
+            KnowledgeItem,
+            uuid::Uuid,
+            Option<OffsetDateTime>,
+            Option<uuid::Uuid>,
+        )>,
+        Option<uuid::Uuid>,
+    )> {
+        let mut must: Vec<Condition> = Vec::new();
+        let mut must_not: Vec<Condition> = Vec::new();
+        let should: Vec<Condition> = authors
+            .iter()
+            .map(|a| Condition::matches("author_id", a.to_string()))
+            .collect();
+        match state {
+            AuthorMemoryStateFilter::Live => must.push(Condition::is_empty("deleted_at")),
+            AuthorMemoryStateFilter::Deleted => must_not.push(Condition::is_empty("deleted_at")),
+            AuthorMemoryStateFilter::All => {}
+        }
+        let filter = Filter {
+            must,
+            must_not,
+            should,
+            ..Default::default()
+        };
+        // Scroll wider than `limit` to compensate for the client-side
+        // window filter. Bounded at 500 to match the existing cap.
+        let scroll_limit = limit.saturating_mul(4).clamp(1, 500);
+        let mut builder = ScrollPointsBuilder::new(self.collection.clone())
+            .filter(filter)
+            .limit(scroll_limit)
+            .with_payload(true)
+            .with_vectors(false);
+        if let Some(o) = offset {
+            builder = builder.offset(PointId {
+                point_id_options: Some(PointIdOptions::Uuid(o.to_string())),
+            });
+        }
+        let resp = self
+            .client
+            .scroll(builder)
+            .await
+            .map_err(|e| StoreError::Backend(format!("qdrant scroll memories_page: {e}")))?;
+        let next_scroll = resp
+            .next_page_offset
+            .and_then(|p| match p.point_id_options? {
+                PointIdOptions::Uuid(s) => uuid::Uuid::parse_str(&s).ok(),
+                PointIdOptions::Num(_) => None,
+            });
+        let since_off = chrono_to_offset(since);
+        let until_off = chrono_to_offset(until);
+        let mut out = Vec::with_capacity(resp.result.len().min(limit as usize));
+        for p in resp.result {
+            if out.len() == limit as usize {
+                break;
+            }
+            let Some(item) = payload_to_item(&p.payload) else {
+                continue;
+            };
+            if item.created_at < since_off || item.created_at >= until_off {
+                continue;
+            }
+            let Some(author_id) = p
+                .payload
+                .get("author_id")
+                .and_then(qdrant_client::qdrant::Value::as_str)
+                .and_then(|s| uuid::Uuid::parse_str(s).ok())
+            else {
+                continue;
+            };
+            let deleted_at = p
+                .payload
+                .get("deleted_at")
+                .and_then(qdrant_client::qdrant::Value::as_str)
+                .and_then(|s| OffsetDateTime::parse(s, &Rfc3339).ok());
+            let deleter = p
+                .payload
+                .get("deleted_by_author_id")
+                .and_then(qdrant_client::qdrant::Value::as_str)
+                .and_then(|s| uuid::Uuid::parse_str(s).ok());
+            out.push((item, author_id, deleted_at, deleter));
+        }
+        Ok((out, next_scroll))
     }
 
     /// Permanently remove a knowledge point.

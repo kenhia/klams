@@ -63,6 +63,7 @@ fn router() -> axum::Router {
         ApiState {
             store: Arc::new(HealthyStore),
             queue,
+            api: klams_types::ApiConfig::default(),
             queue_capacity: 8,
             workers: 2,
             started_at: std::time::Instant::now(),
@@ -178,6 +179,7 @@ async fn healthz_includes_active_maintenance_block_with_run_id() {
     let state = ApiState {
         store: Arc::new(HealthyStore),
         queue,
+        api: klams_types::ApiConfig::default(),
         queue_capacity: 8,
         workers: 2,
         started_at: std::time::Instant::now(),

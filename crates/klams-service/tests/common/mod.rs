@@ -94,6 +94,7 @@ impl TestServer {
 
         let state = ApiState {
             store: Arc::clone(&store),
+            api: klams_types::ApiConfig::default(),
             queue,
             queue_capacity: 256,
             workers: 2,
@@ -132,6 +133,7 @@ impl TestServer {
                 Arc::clone(&store),
                 std::sync::Arc::new(klams_types::MaintenanceState::default()),
                 mcp_grants,
+                klams_types::ApiConfig::default(),
             );
             let mcp_router = klams_mcp::router(mcp_state, Vec::new()).layer(
                 axum::middleware::from_fn_with_state(auth_state.clone(), klams_api::require_bearer),

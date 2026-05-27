@@ -575,6 +575,7 @@ unchanged. Detailed contracts live under
 |------|-------|---------|
 | `register_author` | `read` | Issue / refresh the caller's author id; everything else is attributed to it. |
 | `memory_search` | `read` | Hybrid retrieval over facts + knowledge + events. |
+| `event_search` | `read` | Filter `events` by category / task / time window / payload substring. Pure SQL — never hits the embedder (FR-004). |
 | `memory_related` | `read` | Neighborhood expansion around a known memory id. |
 | `memory_context` | `read` | Token-budgeted context bundle (proxies the existing `/memory/context`). |
 | `memory_add` | `write` | Add a fact or knowledge item. Same dedupe + dissent rules as REST. |
@@ -677,3 +678,81 @@ Use it for incident review (who wrote this?), routine hygiene
 post-restore audit (every restore drill should end with a glance
 at the rogue author's `/authors/{id}` page to confirm counts
 returned to baseline).
+
+## Sprint 008 — Activity tab and `event_search`
+
+Sprint 008 (`specs/008-activity-observability/`) adds a single
+cross-author **Activity tab** to the viewport and a matching MCP
+tool (`event_search`) for cheap event lookup, both backed by the
+same shared store query (R-001 — "two surfaces, one query").
+
+### Viewport Activity tab (`/activity`)
+
+Open the viewport and pick **Activity** from the nav. The tab
+defaults to the last 24 hours across all kinds and all authors.
+
+Filters:
+
+- **From / To** — local-time pickers; sent to the service as ISO
+  8601. The service rejects windows wider than 30 days with HTTP
+  400 `WINDOW_TOO_LARGE`.
+- **Kinds** — independent toggles for `fact`, `knowledge`, `event`.
+- **State** — `live` (default), `soft-deleted`, or `all`. Soft-
+  deleted rows render with an amber badge and keep their original
+  `deleted_at` / `deleted_by` metadata (FR-015a); the row link
+  still routes to the per-kind detail page.
+- **Authors** — multi-select sourced from
+  `GET /v1/authors`. Empty selection means "all authors".
+- **Limit** — page size, 1–200.
+
+The grid uses cursor pagination — when the service returns a
+`next_cursor`, a **Load more** button appears beneath the table.
+
+Unlike the per-author `/authors/{id}` view added in sprint 007,
+the Activity tab is cross-author: the natural starting point for
+"what happened in the last hour, across every agent and every
+kind?"
+
+### `event_search` MCP tool
+
+`event_search` is the agent-facing counterpart to the Activity
+tab. Read scope. Pure SQL — it never invokes the embedder, so
+counters like `klams_tei_requests_total` must not increment for
+a search-only workload (FR-004).
+
+Arguments:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `category` | string, optional | Exact match against `events.category`. |
+| `task_id` | string, optional | Exact match against `events.payload->>'task_id'`. |
+| `since` | RFC 3339 timestamp, optional | Lower bound on `occurred_at`. Defaults to 24 hours ago. |
+| `until` | RFC 3339 timestamp, optional | Upper bound on `occurred_at`. Defaults to now. |
+| `payload_match` | string, optional | Case-insensitive substring match against the serialized payload. |
+| `limit` | u32, optional | 1–200, default 50. |
+| `cursor` | opaque string, optional | Returned by a prior call's `next_cursor`. |
+
+Use it for incident timelines (`category=Deploy`,
+`since=2026-05-26T00:00:00Z`), task drill-downs
+(`task_id=...`), and routine "what did this agent do?" queries.
+The window cap is the same 30-day limit as the HTTP surface.
+
+### Operator surface — `GET /v1/memories`
+
+The HTTP route behind the Activity tab; read scope. Identical
+filters and response shape to the Tauri wrapper, with the same
+30-day window cap and the same cursor contract. Useful when you
+want to script the same listing from the shell:
+
+```bash
+curl -sS -H "Authorization: Bearer $KLAMS_READ_TOKEN" \
+  "http://kubs0:7777/v1/memories?kinds=event&state=deleted&limit=50" | jq
+```
+
+### Performance baseline
+
+Run `just bench-seed && just bench-run` (see
+[tools/bench/README.md](../tools/bench/README.md)) to refresh
+[specs/008-activity-observability/perf-baseline.md](../specs/008-activity-observability/perf-baseline.md).
+Per FR-022, the harness always exits 0 — the baseline is a
+measurement, not a CI gate.

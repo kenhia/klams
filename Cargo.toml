@@ -10,6 +10,7 @@ members = [
     "crates/klams-scanner",
     "crates/klams-monitor",
     "crates/klams-mcp",
+    "tools/bench",
 ]
 
 [workspace.package]

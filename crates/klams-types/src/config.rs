@@ -1,4 +1,5 @@
-//! Backup feature configuration (sprint 006).
+//! Backup feature configuration (sprint 006) and shared API config
+//! (sprint 008).
 //!
 //! Lives in `klams-types` (not `klams-service`) so other crates can
 //! depend on the types without depending on the service binary, the
@@ -8,6 +9,31 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
+
+/// `[api]` block in `klams.toml` (sprint 008). Cross-crate-shared
+/// knobs for the operator/agent listing surfaces (`GET /v1/memories`,
+/// `event_search`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiConfig {
+    /// Maximum allowed window in days between `since` and `until` for
+    /// `GET /v1/memories` and `event_search` (sprint 008 FR-009).
+    /// A request exceeding this maximum returns `400 WINDOW_TOO_LARGE`
+    /// with the configured value surfaced in the error body. Default 30.
+    #[serde(default = "default_memories_max_window_days")]
+    pub memories_max_window_days: u32,
+}
+
+impl Default for ApiConfig {
+    fn default() -> Self {
+        Self {
+            memories_max_window_days: default_memories_max_window_days(),
+        }
+    }
+}
+
+const fn default_memories_max_window_days() -> u32 {
+    30
+}
 
 /// `[backup]` block in `klams.toml`. See
 /// `specs/006-maintenance-and-backups/data-model.md`.

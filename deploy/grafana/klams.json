@@ -231,6 +231,79 @@
         }
       ],
       "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "MCP writes by agent / model / kind (req/min)",
+      "description": "Per-author write throughput broken down by kind.",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 38 },
+      "datasource": { "type": "prometheus", "uid": "prometheus-default" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (agent_name, model, kind) (rate(klams_mcp_writes_total[5m])) * 60",
+          "legendFormat": "{{agent_name}} - {{model}} - {{kind}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqpm" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } }
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "MCP deletes by agent / model / mode (req/min)",
+      "description": "Soft/restored/hard delete throughput per author.",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 38 },
+      "datasource": { "type": "prometheus", "uid": "prometheus-default" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (agent_name, model, mode) (rate(klams_mcp_deletes_total[5m])) * 60",
+          "legendFormat": "{{agent_name}} - {{model}} - {{mode}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqpm" },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": ".*hard.*" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byRegexp", "options": ".*soft.*" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "yellow" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byRegexp", "options": ".*restored.*" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }
+            ]
+          }
+        ]
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } }
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "MCP searches by agent / model (req/min)",
+      "description": "Search call rate per author.",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 38 },
+      "datasource": { "type": "prometheus", "uid": "prometheus-default" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (agent_name, model) (rate(klams_mcp_search_total[5m])) * 60",
+          "legendFormat": "{{agent_name}} - {{model}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqpm" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } }
     }
   ]
 }

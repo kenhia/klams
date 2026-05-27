@@ -26,6 +26,11 @@ import type {
   UpsertResult,
   ViewportConfig
 } from './types';
+import type {
+  ActivityMemoryState,
+  ListMemoriesRequest,
+  ListMemoriesResponse
+} from './types/memories';
 
 export interface ListFactsArgs {
   fact_type?: string;
@@ -110,6 +115,33 @@ export interface ListAuthorMemoriesArgs {
   cursor?: string;
 }
 
+interface ListMemoriesArgs {
+  since?: string;
+  until?: string;
+  kinds?: string;
+  state?: ActivityMemoryState;
+  authors?: string;
+  limit?: number;
+  cursor?: string;
+}
+
+function toListMemoriesArgs(req: ListMemoriesRequest): ListMemoriesArgs {
+  const kinds =
+    req.kinds && req.kinds.length > 0 && req.kinds.length < 3
+      ? req.kinds.join(',')
+      : undefined;
+  const authors = req.authors && req.authors.length > 0 ? req.authors.join(',') : undefined;
+  return {
+    since: req.since,
+    until: req.until,
+    kinds,
+    state: req.state,
+    authors,
+    limit: req.limit,
+    cursor: req.cursor
+  };
+}
+
 export const api = {
   listFacts: (args: ListFactsArgs = {}) => invoke<FactPage>('list_facts', { args }),
   listEvents: (args: ListEventsArgs = {}) => invoke<EventPage>('list_events', { args }),
@@ -133,5 +165,7 @@ export const api = {
     invoke<AuthorPage>('list_authors', { args }),
   getAuthor: (id: string) => invoke<PublicAuthor>('get_author', { args: { id } }),
   listAuthorMemories: (args: ListAuthorMemoriesArgs) =>
-    invoke<AuthorMemoriesPage>('list_author_memories', { args })
+    invoke<AuthorMemoriesPage>('list_author_memories', { args }),
+  listMemories: (req: ListMemoriesRequest = {}) =>
+    invoke<ListMemoriesResponse>('list_memories', { args: toListMemoriesArgs(req) })
 };

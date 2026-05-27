@@ -20,4 +20,8 @@ pub struct ApiError {
     /// retry against the current canonical version. New in sprint 002.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_version: Option<i32>,
+    /// Populated for `code = "window_too_large"` with the configured
+    /// maximum allowed window length in days.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_max_days: Option<u32>,
 }

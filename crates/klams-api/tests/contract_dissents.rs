@@ -147,6 +147,7 @@ fn app_with(mode: Mode) -> axum::Router {
     build_router(
         ApiState {
             store,
+            api: klams_types::ApiConfig::default(),
             queue,
             queue_capacity: 32,
             workers: 1,

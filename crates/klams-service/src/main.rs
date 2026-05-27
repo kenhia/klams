@@ -155,6 +155,7 @@ async fn main() -> Result<()> {
 
     let state = ApiState {
         store: Arc::clone(&store),
+        api: cfg.api.clone(),
         queue,
         queue_capacity: cfg.queue.capacity,
         workers: cfg.queue.workers,
@@ -195,6 +196,7 @@ async fn main() -> Result<()> {
         Arc::clone(&store),
         std::sync::Arc::new(maintenance_state.clone()),
         mcp_grants,
+        cfg.api.clone(),
     );
     let mcp_router = klams_mcp::router(mcp_state, cfg.server.mcp_allowed_hosts.clone()).layer(
         axum::middleware::from_fn_with_state(auth_state, klams_api::require_bearer),
