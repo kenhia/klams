@@ -33,6 +33,8 @@ Windows viewport reads facts, events, and knowledge over the LAN.
   implementation plan.
 - [specs/001-initial-mvp/tasks.md](specs/001-initial-mvp/tasks.md) —
   task ledger.
+- [Performance baseline](specs/008-activity-observability/perf-baseline.md) —
+  sprint 008 `memory_search` latency snapshot.
 - [.specify/memory/constitution.md](.specify/memory/constitution.md) —
   project constitution.
 

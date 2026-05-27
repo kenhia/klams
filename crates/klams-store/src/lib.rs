@@ -215,6 +215,30 @@ pub trait Store: Send + Sync + 'static {
     ) -> StoreResult<(Vec<AuthorMemoryRow>, Option<String>)> {
         Ok((Vec::new(), None))
     }
+
+    // Sprint 008 — cross-author listing surfaces (`GET /v1/memories`
+    // and `event_search`). Default impls return empty data so test
+    // mocks need not connect to Postgres or Qdrant.
+
+    /// Cross-author memories listing for `GET /v1/memories`. Returns
+    /// rows ordered by `(created_at DESC, id DESC)` across all three
+    /// kinds with a unified opaque cursor.
+    async fn list_memories(
+        &self,
+        _q: ListMemoriesQuery,
+    ) -> StoreResult<(Vec<ListMemoriesRow>, Option<String>)> {
+        Ok((Vec::new(), None))
+    }
+
+    /// Event-only search for the `event_search` MCP tool. Returns
+    /// already-projected [`klams_types::PublicMemory`] values with an
+    /// opaque cursor for keyset continuation.
+    async fn event_search(
+        &self,
+        _q: EventSearchQuery,
+    ) -> StoreResult<(Vec<klams_types::PublicMemory>, Option<String>)> {
+        Ok((Vec::new(), None))
+    }
 }
 
 /// Query for `Store::list_authors_v1`.
@@ -278,6 +302,81 @@ pub struct AuthorMemoryRow {
 pub enum AuthorMemoryStateOut {
     Live,
     Deleted,
+}
+
+// ---------------------------------------------------------------------
+// Sprint 008 — `GET /v1/memories` + `event_search` shared types.
+
+/// Query for [`Store::list_memories`]. `since`/`until` form an
+/// inclusive-exclusive UTC window enforced by the API handler (see
+/// [`klams_types::ApiConfig::memories_max_window_days`]). An empty
+/// `kinds` vector means "all three kinds"; an empty `authors` vector
+/// means "all authors".
+#[derive(Debug, Clone)]
+pub struct ListMemoriesQuery {
+    pub since: chrono::DateTime<chrono::Utc>,
+    pub until: chrono::DateTime<chrono::Utc>,
+    pub kinds: Vec<MemoryKindFilter>,
+    pub state: MemoryStateFilter,
+    pub authors: Vec<Uuid>,
+    pub limit: u32,
+    pub cursor: Option<String>,
+}
+
+/// Which memory kinds to include in `list_memories`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryKindFilter {
+    Fact,
+    Knowledge,
+    Event,
+}
+
+/// Live/deleted filter for `list_memories`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryStateFilter {
+    Live,
+    Deleted,
+    All,
+}
+
+/// Row returned by [`Store::list_memories`].
+#[derive(Debug, Clone)]
+pub struct ListMemoriesRow {
+    pub memory: klams_types::PublicMemory,
+    pub state: MemoryStateOut,
+    pub deleted_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub deleted_by: Option<klams_types::PublicAuthorRef>,
+}
+
+/// `live` or `deleted` state tag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryStateOut {
+    Live,
+    Deleted,
+}
+
+/// Query for [`Store::event_search`]. An empty `author_ids` or
+/// `categories` vector means "no filter on that dimension".
+/// `payload_match` is an optional JSONB containment predicate
+/// (`payload @> $payload_match`).
+#[derive(Debug, Clone)]
+pub struct EventSearchQuery {
+    pub author_ids: Vec<Uuid>,
+    pub categories: Vec<String>,
+    pub since: Option<chrono::DateTime<chrono::Utc>>,
+    pub until: Option<chrono::DateTime<chrono::Utc>>,
+    pub payload_match: Option<serde_json::Value>,
+    pub limit: u32,
+    pub order: EventOrder,
+    pub cursor: Option<String>,
+}
+
+/// Sort order for `event_search` (default `Desc`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EventOrder {
+    #[default]
+    Desc,
+    Asc,
 }
 
 /// Narrow trait the decay task uses to interact with the store

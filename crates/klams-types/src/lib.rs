@@ -31,7 +31,7 @@ pub const SYSTEM_AUTHOR_ID: uuid::Uuid =
 
 pub use auth::{AuthConfigError, Scope, TokenGrantConfig};
 pub use author::{AuthorRecord, PublicAuthorRef, RegisterAuthorArgs, RegisterAuthorError};
-pub use config::{BackupConfig, BackupConfigError, SameDayStrategy, WindowStartUtc};
+pub use config::{ApiConfig, BackupConfig, BackupConfigError, SameDayStrategy, WindowStartUtc};
 pub use context::{
     ContextBundle, ContextItem, ContextRequest, ItemKind, RetrievalFilters, SectionMeta,
     SectionSource, SectionStatus, TokenEncoderId,
@@ -47,12 +47,13 @@ pub use memory::{MemoryKind, PublicMemory, PublicMemoryContent};
 pub use pipeline::{AppendEvent, IndexKnowledge, MemoryWrite, UpsertFact};
 pub use requests::{
     AppendEventRequest, IndexKnowledgeRequest, ListAuthorMemoriesParams, ListAuthorsParams,
-    ListDissentsParams, ListEventsParams, ListFactsParams, SearchRequest, UpsertFactRequest,
+    ListDissentsParams, ListEventsParams, ListFactsParams, ListMemoriesParams, SearchRequest,
+    UpsertFactRequest,
 };
 pub use responses::{
     AcceptedId, AuthorCounts, AuthorMemoriesPage, AuthorMemoryRow, AuthorPage, DissentPage,
     EventPage, EventWriteResponse, FactPage, FactWriteResponse, IndexKnowledgeResponse,
-    KnowledgeDeleteResponse, PublicAuthor, SearchResults, WritePath,
+    KnowledgeDeleteResponse, MemoriesPage, MemoryRow, PublicAuthor, SearchResults, WritePath,
 };
 pub use retrieval::{FusionStrategy, HybridQueryPlan, RetrievalSource, WeightedNorm};
 pub use search::{SearchHit, SearchType};

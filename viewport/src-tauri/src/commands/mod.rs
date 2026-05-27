@@ -13,7 +13,8 @@ use klams_types::{
     AuthorMemoriesPage, AuthorPage, ContextBundle, ContextRequest, Dissent, DissentPage,
     EventPage, Fact, FactPage, FactType, FactWriteOutcome, HealthSnapshot, KnowledgeItem,
     ListAuthorMemoriesParams, ListAuthorsParams, ListDissentsParams, ListEventsParams,
-    ListFactsParams, PublicAuthor, SearchRequest, SearchResults, Source, UpsertFactRequest,
+    ListFactsParams, ListMemoriesParams, MemoriesPage, PublicAuthor, SearchRequest,
+    SearchResults, Source, UpsertFactRequest,
 };
 use serde::Serialize;
 use std::sync::Arc;
@@ -117,6 +118,10 @@ pub trait ClientFactory: Send + Sync + std::fmt::Debug {
         id: Uuid,
         params: ListAuthorMemoriesParams,
     ) -> Result<AuthorMemoriesPage, ViewportError>;
+    async fn list_memories(
+        &self,
+        params: ListMemoriesParams,
+    ) -> Result<MemoriesPage, ViewportError>;
 
     /// Default impl walks pages of `/memory/facts` looking for `id`.
     /// Override in production once a `GET /memory/facts/{id}` lands.
@@ -268,6 +273,12 @@ impl ClientFactory for LiveClientFactory {
         params: ListAuthorMemoriesParams,
     ) -> Result<AuthorMemoriesPage, ViewportError> {
         Ok(self.client()?.list_author_memories(id, &params).await?)
+    }
+    async fn list_memories(
+        &self,
+        params: ListMemoriesParams,
+    ) -> Result<MemoriesPage, ViewportError> {
+        Ok(self.client()?.list_memories(&params).await?)
     }
 }
 

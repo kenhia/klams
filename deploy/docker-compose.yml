@@ -93,3 +93,39 @@ services:
   #     postgres: { condition: service_healthy }
   #     qdrant:   { condition: service_healthy }
   #     tei:      { condition: service_healthy }
+
+  prometheus:
+    profiles: ["observability"]
+    image: prom/prometheus:${PROMETHEUS_IMAGE_TAG:-v2.55.0}
+    container_name: klams-prometheus
+    restart: unless-stopped
+    networks:
+      klams-net:
+        aliases: [prometheus]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ${KLAMS_DATA_ROOT}/prometheus:/prometheus
+
+  grafana:
+    profiles: ["observability"]
+    image: grafana/grafana:${GRAFANA_IMAGE_TAG:-11.2.2}
+    container_name: klams-grafana
+    restart: unless-stopped
+    networks:
+      klams-net:
+        aliases: [grafana]
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+    volumes:
+      - ${KLAMS_DATA_ROOT}/grafana:/var/lib/grafana
+      - ./grafana/klams.json:/var/lib/grafana/dashboards/klams.json:ro
+    depends_on:
+      prometheus:
+        condition: service_started

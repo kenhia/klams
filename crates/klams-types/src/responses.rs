@@ -131,6 +131,26 @@ pub struct AuthorMemoriesPage {
     pub next_cursor: Option<String>,
 }
 
+/// Per-row wire shape returned by `GET /v1/memories` (sprint 008).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryRow {
+    #[serde(flatten)]
+    pub memory: PublicMemory,
+    /// `"live"` or `"deleted"`.
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_by: Option<PublicAuthorRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoriesPage {
+    pub memories: Vec<MemoryRow>,
+    #[serde(default)]
+    pub next_cursor: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResults {
     pub query: String,

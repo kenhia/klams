@@ -270,3 +270,73 @@ mcp-call tool args='{}':
             --data @- \
         | sed -n 's/^data: //p' \
         | jq -r 'select(.) | .result.content[0].text // .result // .error // .'
+
+# Copy agent memory primers into the local VS Code (stable) Copilot
+# memory-tool directory. Files are taken from .github/memories/ in
+# this repo. Safe to re-run — overwrites existing files of the same
+# name without touching unrelated memories.
+prime-vscode:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    src="{{justfile_directory()}}/.github/memories"
+    dest="$HOME/.vscode-server/data/User/globalStorage/github.copilot-chat/memory-tool/memories"
+    if [[ ! -d "$src" ]]; then echo "no .github/memories/ directory" >&2; exit 1; fi
+    mkdir -p "$dest"
+    for f in "$src"/*.md; do
+        [[ "$(basename "$f")" == "README.md" ]] && continue
+        echo "→ $dest/$(basename "$f")"
+        cp -f "$f" "$dest/"
+    done
+
+# Same as prime-vscode but targets VS Code Insiders.
+prime-vscode-insiders:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    src="{{justfile_directory()}}/.github/memories"
+    dest="$HOME/.vscode-server-insiders/data/User/globalStorage/github.copilot-chat/memory-tool/memories"
+    if [[ ! -d "$src" ]]; then echo "no .github/memories/ directory" >&2; exit 1; fi
+    mkdir -p "$dest"
+    for f in "$src"/*.md; do
+        [[ "$(basename "$f")" == "README.md" ]] && continue
+        echo "→ $dest/$(basename "$f")"
+        cp -f "$f" "$dest/"
+    done
+
+# sprint 008 — perf fixture seed (FR-019). Always exits 0 (FR-022).
+bench-seed *ARGS:
+    cargo run --release -p klams-bench --bin seed -- {{ARGS}} || true
+
+# sprint 008 — perf harness run (FR-021). Always exits 0 (FR-022) so
+# `just gate` never trips on measurement output.
+bench-run *ARGS:
+    cargo run --release -p klams-bench --bin run -- {{ARGS}} || true
+
+# Purge bench-seeded facts (UserFact/EnvFact/TaskFact payload markers from
+# tools/bench/src/lib.rs) and bench knowledge points (repo=klams, file
+# under notes/) from Postgres + Qdrant. Reads connection settings from env:
+#   PGPASSWORD, PGHOST=127.0.0.1, PGUSER=klams, PGDATABASE=klams,
+#   QDRANT_URL=http://127.0.0.1:6333, QDRANT_COLLECTION=knowledge_items.
+bench-clean:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    PGHOST="${PGHOST:-127.0.0.1}"
+    PGUSER="${PGUSER:-klams}"
+    PGDATABASE="${PGDATABASE:-klams}"
+    QDRANT_URL="${QDRANT_URL:-http://127.0.0.1:6333}"
+    QDRANT_COLLECTION="${QDRANT_COLLECTION:-knowledge_items}"
+    : "${PGPASSWORD:?PGPASSWORD must be set}"
+    export PGPASSWORD PGHOST PGUSER PGDATABASE
+    echo "→ deleting bench facts from $PGHOST/$PGDATABASE"
+    psql -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" -At <<'SQL'
+    BEGIN;
+    DELETE FROM facts WHERE
+      (type='UserFact' AND payload->>'name' LIKE 'bench-user-%')
+      OR (type='EnvFact' AND payload->>'key' LIKE 'BENCH\_%' ESCAPE '\')
+      OR (type='TaskFact' AND payload->>'task_id' LIKE 'ansible-%' AND payload ? 'seq');
+    COMMIT;
+    SQL
+    echo "→ deleting bench knowledge points from $QDRANT_URL/$QDRANT_COLLECTION"
+    curl -sS -X POST "$QDRANT_URL/collections/$QDRANT_COLLECTION/points/delete" \
+        -H "Content-Type: application/json" \
+        -d '{"filter":{"must":[{"key":"repo","match":{"value":"klams"}},{"key":"file","match":{"text":"notes/"}}]}}' \
+        | python3 -c "import sys,json;d=json.load(sys.stdin);print('  qdrant:',d.get('status','?'))"

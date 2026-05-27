@@ -15,18 +15,70 @@ for the desktop GUI plan. Items below are deferred or not yet scheduled.
       be added immediately following the seciton header
     - If the item is moved due to being cut ` **CUT**` should be added to the
       title (i.e. "## Some feature" becomes "## Some feature **CUT**")
+## Run full sprint-008 perf baseline against fixed store
 
-## SC-006 perf benchmark (T062, sprint 007)
+Sprint 008 Phase 7 (US5) committed a smoke-sized `perf-baseline.md`
+(500 facts / 2,000 knowledge items) to avoid dumping 60k synthetic
+rows into the live store while kwi work item #26
+(loopback CLOSE_WAIT leak) was open. Once that bug is resolved,
+re-run with the full contract corpus:
 
-Validate sprint-007 success criterion SC-006: load a fixture with
-≥ 10k facts + 50k knowledge items, run `memory_search` 100×, and
-record p95 latency. Attach the result to a follow-up PR or note it in
-the next sprint's spec. Do **not** start tuning work if p95 exceeds
-1 s — surface the measurement first and let the user decide whether
-the actual overshoot is "good enough" for the homelab before any
-optimization work begins.
+```bash
+just bench-seed -- --facts 10000 --knowledge 50000
+just bench-run
+```
 
-Deferred from sprint 007 ship per user decision (2026-05-25).
+Commit the refreshed `specs/008-activity-observability/perf-baseline.md`
+so the headline numbers match the `100 samples across 10 queries`
+target documented in `contracts/bench-harness.md`.
+
+## Per-token author attribution (data-integrity bug)
+
+**REST write paths are losing author identity.** Every fact/event/knowledge
+item written via `POST /v1/facts`, `POST /v1/events`, or
+`POST /v1/knowledge` is attributed to `SYSTEM_AUTHOR_ID` regardless of
+which bearer token issued the write. The worker
+([`crates/klams-core/src/worker.rs`](../../crates/klams-core/src/worker.rs))
+calls `upsert_fact_v2` / `append_event`, and both hard-code
+`SYSTEM_AUTHOR_ID` in
+[`crates/klams-store/src/postgres.rs`](../../crates/klams-store/src/postgres.rs)
+(lines 85, 105, 510). The `UpsertFact` / `AppendEvent` pipeline structs in
+`crates/klams-types/src/pipeline.rs` don't carry an `author_id` field, so
+there is no path for the handler to forward a caller identity even if it
+had one.
+
+MCP writes are unaffected: `memory_add` / `memory_append_event` require
+`author_id` in args, validate it against the `authors` table, and route
+to the `_with_author` store variants (postgres.rs:1516, 1554).
+
+**Impact**: per-author listings, author summary aggregates, and the
+sprint 008 Activity tab under-report real agents and over-report `system`
+for any REST traffic. Data already in the live store is polluted to the
+extent REST has been used (today: all 26 facts attributed to `system`).
+
+**Fix outline**:
+
+- Add `agent_name: Option<String>` to `TokenGrantConfig`
+  (`crates/klams-types/src/auth.rs`); default to `system` when absent so
+  existing deployments stay valid.
+- At service startup, resolve each grant's `agent_name` to an `author_id`
+  (create the row in `authors` if missing) and cache the mapping.
+- Add `author_id: Uuid` to the `UpsertFact`, `AppendEvent`, and
+  `IndexKnowledge` pipeline structs.
+- In the REST handlers, read the resolved `author_id` from the request
+  extension (populated by the auth middleware) and put it on the job.
+- Replace the worker's calls to `upsert_fact_v2` / `append_event` with
+  the `_with_author` variants, and add an `index_knowledge_with_author`
+  that stamps the Qdrant payload.
+- Once REST honors caller identity, register a dedicated `klams-bench`
+  grant in `/ai/klams/config/klams.toml` so the seeder writes as its own
+  author, and replace the payload-filter `just bench-clean` recipe with
+  a one-line author-based purge.
+
+Optional follow-up: a one-shot migration that re-attributes existing
+`system`-stamped rows to the correct author by replaying their `events`
+provenance — only worthwhile if anyone needs to recover the historical
+attribution, otherwise let the cutover be the dividing line.
 
 ## Phase 6 test harness isolation
 `crates/klams-service/tests/mcp_phase6.rs` share a single
@@ -38,38 +90,6 @@ randomized collection name + truncate facts table in setup, (b)
 move to `testcontainers`-style per-test ephemeral instances.
 Low-priority — the underlying delete→restore round-trip is proven by
 the other three tests and the live quickstart §8 walk.
-
-## `event_search` MCP tool **PRIORITY**
-
-Dedicated filter-based tool for event lookup. `memory_search` is
-semantic/embedding-driven over free text — events have no text body,
-only `category` + structured `payload`, so they are not surfaced via
-`memory_search` (confirmed during sprint 007 quickstart walk).
-Proposed shape:
-
-```
-event_search {
-  author_id?: string,
-  category?: string | string[],
-  since?: timestamp,
-  until?: timestamp,
-  payload_match?: { key: value, ... },   // exact-equality on payload fields
-  limit?: int (default 50, max 500),
-  order?: "desc" | "asc" (default desc)
-}
-```
-
-Read scope. Pure SQL — no embedding pipeline involved. Pick up
-immediately after sprint 007 ships.
-
-## Grafana "MCP author activity" panel: No Data **PRIORITY**
-
-Quickstart §11: counters under `klams_mcp_*` are emitted correctly by
-the service (verified via `curl /metrics`) but the Grafana dashboard
-panels render "No Data". Likely a Prometheus scrape config drift or a
-PromQL/label-name mismatch introduced when the per-author label set
-landed in sprint 007. Blocks SC-005. Investigate Prometheus scrape
-target + the panel queries in `deploy/grafana/`.
 
 ## Multi-vector embeddings (text + code)
 

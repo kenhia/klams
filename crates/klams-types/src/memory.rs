@@ -56,6 +56,17 @@ pub struct PublicMemory {
     pub author: PublicAuthorRef,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Sprint 008 FR-010 — surfaced only when the row is soft-deleted
+    /// and the caller requested `state ∈ {deleted, all}`. Omitted from
+    /// the wire shape (and `None` for live rows) by `skip_serializing_if`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<DateTime<Utc>>,
+    /// Sprint 008 FR-010 — author UUID that performed the soft-delete.
+    /// Same gating as [`Self::deleted_at`]. The richer `PublicAuthorRef`
+    /// projection is surfaced separately by the wrapper response shape
+    /// (see `klams-store::ListMemoriesRow`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_by_author_id: Option<Uuid>,
 }
 
 impl PublicMemory {

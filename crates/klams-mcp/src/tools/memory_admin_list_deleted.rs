@@ -192,6 +192,8 @@ pub async fn run(
                         author,
                         created_at: offset_to_chrono(r.fact.created_at),
                         updated_at: offset_to_chrono(r.fact.updated_at),
+                        deleted_at: None,
+                        deleted_by_author_id: None,
                     };
                     DeletedMemory {
                         memory: mem,
@@ -280,6 +282,8 @@ async fn list_knowledge(
                 author,
                 created_at: offset_to_chrono(item.created_at),
                 updated_at: offset_to_chrono(item.updated_at),
+                deleted_at: None,
+                deleted_by_author_id: None,
             };
             DeletedMemory {
                 memory: mem,

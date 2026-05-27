@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "klams.mcp/event_search",
+  "title": "event_search input",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "author_id": {
+      "oneOf": [
+        { "type": "string", "format": "uuid" },
+        {
+          "type": "array",
+          "items": { "type": "string", "format": "uuid" },
+          "uniqueItems": true
+        }
+      ]
+    },
+    "category": {
+      "oneOf": [
+        { "type": "string", "minLength": 1, "maxLength": 128 },
+        {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "uniqueItems": true
+        }
+      ]
+    },
+    "since": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC3339 timestamp; defaults to now - 24h when omitted"
+    },
+    "until": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC3339 timestamp; defaults to now when omitted"
+    },
+    "payload_match": {
+      "type": "object",
+      "description": "Exact-equality JSONB containment match on the event payload (R-010)"
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 500,
+      "default": 50
+    },
+    "order": {
+      "type": "string",
+      "enum": ["desc", "asc"],
+      "default": "desc"
+    },
+    "cursor": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Opaque pagination cursor returned by a previous call"
+    }
+  }
+}

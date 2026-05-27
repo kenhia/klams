@@ -15,6 +15,9 @@ use uuid::Uuid;
 pub const VALIDATION_ERROR: &str = "validation_error";
 pub const VERSION_CONFLICT: &str = "version_conflict";
 pub const TRUST_REQUIRED: &str = "trust_required";
+// Sprint 008 — `GET /v1/memories` window validation.
+pub const WINDOW_TOO_LARGE: &str = "window_too_large";
+pub const INVALID_WINDOW: &str = "invalid_window";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
@@ -44,6 +47,14 @@ pub enum ApiError {
     Internal { request_id: String },
     #[error("not implemented: {what}")]
     NotImplemented { what: String },
+    /// Sprint 008 — `GET /v1/memories` window size exceeds the
+    /// configured `[api.memories_max_window_days]` (default 30).
+    #[error("window too large: max {max_days} days")]
+    WindowTooLarge { max_days: u32 },
+    /// Sprint 008 — `since`/`until` invalid (e.g. `since > until`,
+    /// or unparseable RFC3339).
+    #[error("invalid window: {message}")]
+    InvalidWindow { message: String },
 }
 
 impl ApiError {
@@ -92,6 +103,9 @@ impl ApiError {
             ApiError::Gone { .. } => StatusCode::GONE,
             ApiError::Internal { .. } => StatusCode::INTERNAL_SERVER_ERROR,
             ApiError::NotImplemented { .. } => StatusCode::NOT_IMPLEMENTED,
+            ApiError::WindowTooLarge { .. } | ApiError::InvalidWindow { .. } => {
+                StatusCode::BAD_REQUEST
+            }
         }
     }
 
@@ -105,6 +119,7 @@ impl ApiError {
                 request_id: None,
                 details: None,
                 current_version: None,
+                window_max_days: None,
             },
             ApiError::ValidationDetailed { details } => WireApiError {
                 code: VALIDATION_ERROR.into(),
@@ -113,6 +128,7 @@ impl ApiError {
                 request_id: None,
                 details: Some(details.clone()),
                 current_version: None,
+                window_max_days: None,
             },
             ApiError::VersionConflict {
                 current_version, ..
@@ -123,6 +139,7 @@ impl ApiError {
                 request_id: None,
                 details: None,
                 current_version: Some(*current_version),
+                window_max_days: None,
             },
             ApiError::TrustRequired { message } => WireApiError {
                 code: TRUST_REQUIRED.into(),
@@ -131,6 +148,7 @@ impl ApiError {
                 request_id: None,
                 details: None,
                 current_version: None,
+                window_max_days: None,
             },
             ApiError::Unauthorized => WireApiError {
                 code: "unauthorized".into(),
@@ -139,6 +157,7 @@ impl ApiError {
                 request_id: None,
                 details: None,
                 current_version: None,
+                window_max_days: None,
             },
             ApiError::ScopeInsufficient { needed } => WireApiError {
                 code: "scope_insufficient".into(),
@@ -154,6 +173,7 @@ impl ApiError {
                 request_id: None,
                 details: None,
                 current_version: None,
+                window_max_days: None,
             },
             ApiError::TooLarge => WireApiError {
                 code: "payload_too_large".into(),
@@ -162,6 +182,7 @@ impl ApiError {
                 request_id: None,
                 details: None,
                 current_version: None,
+                window_max_days: None,
             },
             ApiError::QueueFull { .. } => WireApiError {
                 code: "queue_full".into(),
@@ -170,6 +191,7 @@ impl ApiError {
                 request_id: None,
                 details: None,
                 current_version: None,
+                window_max_days: None,
             },
             ApiError::AllSourcesUnavailable { .. } => WireApiError {
                 code: "all_sources_unavailable".into(),
@@ -178,6 +200,7 @@ impl ApiError {
                 request_id: None,
                 details: None,
                 current_version: None,
+                window_max_days: None,
             },
             ApiError::NotFound { resource } => WireApiError {
                 code: "not_found".into(),
@@ -186,6 +209,7 @@ impl ApiError {
                 request_id: None,
                 details: None,
                 current_version: None,
+                window_max_days: None,
             },
             ApiError::Gone { what } => WireApiError {
                 code: "gone".into(),
@@ -194,6 +218,7 @@ impl ApiError {
                 request_id: None,
                 details: None,
                 current_version: None,
+                window_max_days: None,
             },
             ApiError::Internal { request_id } => WireApiError {
                 code: "internal_error".into(),
@@ -202,6 +227,7 @@ impl ApiError {
                 request_id: Some(request_id.clone()),
                 details: None,
                 current_version: None,
+                window_max_days: None,
             },
             ApiError::NotImplemented { what } => WireApiError {
                 code: "not_implemented".into(),
@@ -210,6 +236,25 @@ impl ApiError {
                 request_id: None,
                 details: None,
                 current_version: None,
+                window_max_days: None,
+            },
+            ApiError::WindowTooLarge { max_days } => WireApiError {
+                code: WINDOW_TOO_LARGE.into(),
+                message: format!("requested window exceeds configured maximum of {max_days} days"),
+                field: Some("until".into()),
+                request_id: None,
+                details: None,
+                current_version: None,
+                window_max_days: Some(*max_days),
+            },
+            ApiError::InvalidWindow { message } => WireApiError {
+                code: INVALID_WINDOW.into(),
+                message: message.clone(),
+                field: Some("since".into()),
+                request_id: None,
+                details: None,
+                current_version: None,
+                window_max_days: None,
             },
         }
     }

@@ -186,6 +186,20 @@ impl Store for CompositeStore {
     ) -> StoreResult<(Vec<crate::AuthorMemoryRow>, Option<String>)> {
         list_author_memories_impl(self, q).await
     }
+
+    async fn list_memories(
+        &self,
+        q: crate::ListMemoriesQuery,
+    ) -> StoreResult<(Vec<crate::ListMemoriesRow>, Option<String>)> {
+        list_memories_impl(self, q).await
+    }
+
+    async fn event_search(
+        &self,
+        q: crate::EventSearchQuery,
+    ) -> StoreResult<(Vec<klams_types::PublicMemory>, Option<String>)> {
+        event_search_impl(self, q).await
+    }
 }
 
 fn authors_to_public(row: crate::postgres::AuthorWithCounts) -> crate::AuthorWithCountsOut {
@@ -323,6 +337,8 @@ async fn list_author_memories_impl(
                     author: author_ref.clone(),
                     created_at: offset_to_chrono(f.created_at),
                     updated_at: offset_to_chrono(f.updated_at),
+                    deleted_at: None,
+                    deleted_by_author_id: None,
                 };
                 crate::AuthorMemoryRow {
                     memory: mem,
@@ -376,6 +392,8 @@ async fn list_author_memories_impl(
                     author: author_ref.clone(),
                     created_at: offset_to_chrono(e.created_at),
                     updated_at: offset_to_chrono(e.created_at),
+                    deleted_at: None,
+                    deleted_by_author_id: None,
                 };
                 crate::AuthorMemoryRow {
                     memory: mem,
@@ -428,6 +446,8 @@ async fn list_author_memories_impl(
                     author: author_ref.clone(),
                     created_at: offset_to_chrono(item.created_at),
                     updated_at: offset_to_chrono(item.updated_at),
+                    deleted_at: None,
+                    deleted_by_author_id: None,
                 };
                 crate::AuthorMemoryRow {
                     memory: mem,
@@ -521,4 +541,320 @@ impl crate::SummaryStore for CompositeStore {
 // Suppress unused-import warning when not all variants are used yet.
 fn _dummy_error_ref() -> Option<StoreError> {
     None
+}
+
+// ---------------------------------------------------------------------
+// Sprint 008 — `GET /v1/memories` and `event_search` impls.
+
+fn unknown_author_ref() -> klams_types::PublicAuthorRef {
+    klams_types::PublicAuthorRef {
+        agent_name: "unknown".into(),
+        model: None,
+        repo: None,
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+async fn list_memories_impl(
+    composite: &CompositeStore,
+    q: crate::ListMemoriesQuery,
+) -> StoreResult<(Vec<crate::ListMemoriesRow>, Option<String>)> {
+    use crate::{MemoryKindFilter, MemoryStateFilter, MemoryStateOut};
+    use klams_types::{PublicMemory, PublicMemoryContent};
+
+    let limit = if q.limit == 0 { 50 } else { q.limit };
+    let pg_state = match q.state {
+        MemoryStateFilter::Live => crate::postgres::AuthorMemoryState::Live,
+        MemoryStateFilter::Deleted => crate::postgres::AuthorMemoryState::Deleted,
+        MemoryStateFilter::All => crate::postgres::AuthorMemoryState::All,
+    };
+    let qd_state = match q.state {
+        MemoryStateFilter::Live => crate::qdrant::AuthorMemoryStateFilter::Live,
+        MemoryStateFilter::Deleted => crate::qdrant::AuthorMemoryStateFilter::Deleted,
+        MemoryStateFilter::All => crate::qdrant::AuthorMemoryStateFilter::All,
+    };
+
+    let cursor = q.cursor.as_deref().and_then(decode_memory_cursor);
+    let section = cursor
+        .as_ref()
+        .map_or_else(|| "f".to_string(), |c| c.0.clone());
+
+    let want_facts = q.kinds.is_empty() || q.kinds.contains(&MemoryKindFilter::Fact);
+    let want_events = q.kinds.is_empty() || q.kinds.contains(&MemoryKindFilter::Event);
+    let want_knowledge = q.kinds.is_empty() || q.kinds.contains(&MemoryKindFilter::Knowledge);
+
+    // -- facts page --
+    if section == "f" && want_facts {
+        let pg_cursor = cursor.as_ref().and_then(|(s, ns, id)| {
+            if s == "f" {
+                Some((
+                    time::OffsetDateTime::from_unix_timestamp_nanos(*ns).ok()?,
+                    *id,
+                ))
+            } else {
+                None
+            }
+        });
+        let (rows, next) = composite
+            .postgres
+            .list_memories_facts_page(&q.authors, pg_state, q.since, q.until, limit, pg_cursor)
+            .await?;
+        let len = rows.len();
+        let mut needed: Vec<Uuid> = Vec::with_capacity(rows.len() * 2);
+        for (_, aid, _, d) in &rows {
+            needed.push(*aid);
+            if let Some(d) = d {
+                needed.push(*d);
+            }
+        }
+        let authors = bulk_fetch_authors(composite, &needed).await;
+        let out: Vec<_> = rows
+            .into_iter()
+            .map(|(f, author_id, deleted_at, deleter)| {
+                let state = if deleted_at.is_some() {
+                    MemoryStateOut::Deleted
+                } else {
+                    MemoryStateOut::Live
+                };
+                let author_ref = authors
+                    .get(&author_id)
+                    .cloned()
+                    .unwrap_or_else(unknown_author_ref);
+                let mem = PublicMemory {
+                    id: f.id,
+                    content: PublicMemoryContent::Fact {
+                        fact_type: f.fact_type.as_str().to_string(),
+                        payload: f.payload.clone(),
+                    },
+                    tags: Vec::new(),
+                    author: author_ref,
+                    created_at: offset_to_chrono(f.created_at),
+                    updated_at: offset_to_chrono(f.updated_at),
+                    deleted_at: deleted_at.map(offset_to_chrono),
+                    deleted_by_author_id: deleter,
+                };
+                crate::ListMemoriesRow {
+                    memory: mem,
+                    state,
+                    deleted_at: deleted_at.map(offset_to_chrono),
+                    deleted_by: deleter.and_then(|d| authors.get(&d).cloned()),
+                }
+            })
+            .collect();
+        let next_cursor = if let Some((ts, id)) = next {
+            Some(encode_memory_cursor("f", ts.unix_timestamp_nanos(), id))
+        } else if want_events {
+            Some(encode_memory_cursor("e", 0, Uuid::nil()))
+        } else if want_knowledge {
+            Some(encode_memory_cursor("k", 0, Uuid::nil()))
+        } else {
+            None
+        };
+        if !out.is_empty() || len > 0 {
+            return Ok((out, next_cursor));
+        }
+    }
+
+    if (section == "f" || section == "e") && want_events {
+        let pg_cursor = cursor.as_ref().and_then(|(s, ns, id)| {
+            if s == "e" {
+                Some((
+                    time::OffsetDateTime::from_unix_timestamp_nanos(*ns).ok()?,
+                    *id,
+                ))
+            } else {
+                None
+            }
+        });
+        let (rows, next) = composite
+            .postgres
+            .list_memories_events_page(&q.authors, q.since, q.until, limit, pg_cursor)
+            .await?;
+        let needed: Vec<Uuid> = rows.iter().map(|(_, aid)| *aid).collect();
+        let authors = bulk_fetch_authors(composite, &needed).await;
+        let out: Vec<_> = rows
+            .into_iter()
+            .map(|(e, author_id)| {
+                let author_ref = authors
+                    .get(&author_id)
+                    .cloned()
+                    .unwrap_or_else(unknown_author_ref);
+                let mem = PublicMemory {
+                    id: e.id,
+                    content: PublicMemoryContent::Event {
+                        category: e.category.clone(),
+                        payload: e.payload.clone(),
+                        task_id: e.task_id,
+                    },
+                    tags: Vec::new(),
+                    author: author_ref,
+                    created_at: offset_to_chrono(e.created_at),
+                    updated_at: offset_to_chrono(e.created_at),
+                    deleted_at: None,
+                    deleted_by_author_id: None,
+                };
+                crate::ListMemoriesRow {
+                    memory: mem,
+                    state: MemoryStateOut::Live,
+                    deleted_at: None,
+                    deleted_by: None,
+                }
+            })
+            .collect();
+        let next_cursor = if let Some((ts, id)) = next {
+            Some(encode_memory_cursor("e", ts.unix_timestamp_nanos(), id))
+        } else if want_knowledge {
+            Some(encode_memory_cursor("k", 0, Uuid::nil()))
+        } else {
+            None
+        };
+        if !out.is_empty() {
+            return Ok((out, next_cursor));
+        }
+    }
+
+    if want_knowledge {
+        let qd_cursor = cursor.as_ref().and_then(|(s, _, id)| {
+            if s == "k" && *id != Uuid::nil() {
+                Some(*id)
+            } else {
+                None
+            }
+        });
+        let (rows, next) = composite
+            .qdrant
+            .list_memories_knowledge_page(&q.authors, qd_state, q.since, q.until, limit, qd_cursor)
+            .await?;
+        let needed: Vec<Uuid> = rows.iter().map(|(_, aid, _, _)| *aid).collect();
+        let authors = bulk_fetch_authors(composite, &needed).await;
+        let out: Vec<_> = rows
+            .into_iter()
+            .map(|(item, author_id, deleted_at, deleter)| {
+                let state = if deleted_at.is_some() {
+                    MemoryStateOut::Deleted
+                } else {
+                    MemoryStateOut::Live
+                };
+                let author_ref = authors
+                    .get(&author_id)
+                    .cloned()
+                    .unwrap_or_else(unknown_author_ref);
+                let mem = PublicMemory {
+                    id: item.id,
+                    content: PublicMemoryContent::Knowledge {
+                        text: item.text.clone(),
+                        source_path: item.file.clone(),
+                        repo: item.repo.clone(),
+                    },
+                    tags: item.tags.clone(),
+                    author: author_ref,
+                    created_at: offset_to_chrono(item.created_at),
+                    updated_at: offset_to_chrono(item.updated_at),
+                    deleted_at: deleted_at.map(offset_to_chrono),
+                    deleted_by_author_id: deleter,
+                };
+                crate::ListMemoriesRow {
+                    memory: mem,
+                    state,
+                    deleted_at: deleted_at.map(offset_to_chrono),
+                    deleted_by: None,
+                }
+            })
+            .collect();
+        let next_cursor = next.map(|id| encode_memory_cursor("k", 0, id));
+        return Ok((out, next_cursor));
+    }
+
+    Ok((Vec::new(), None))
+}
+
+async fn event_search_impl(
+    composite: &CompositeStore,
+    q: crate::EventSearchQuery,
+) -> StoreResult<(Vec<klams_types::PublicMemory>, Option<String>)> {
+    use klams_types::{PublicMemory, PublicMemoryContent};
+
+    let limit = if q.limit == 0 { 50 } else { q.limit };
+    let ascending = matches!(q.order, crate::EventOrder::Asc);
+    let pg_cursor = q.cursor.as_deref().and_then(|raw| {
+        decode_memory_cursor(raw).and_then(|(s, ns, id)| {
+            if s == "e" {
+                Some((
+                    time::OffsetDateTime::from_unix_timestamp_nanos(ns).ok()?,
+                    id,
+                ))
+            } else {
+                None
+            }
+        })
+    });
+    let (rows, next) = composite
+        .postgres
+        .event_search_page(
+            &q.author_ids,
+            &q.categories,
+            q.since,
+            q.until,
+            q.payload_match.as_ref(),
+            limit,
+            ascending,
+            pg_cursor,
+        )
+        .await?;
+    let needed: Vec<Uuid> = rows.iter().map(|(_, aid)| *aid).collect();
+    let authors = bulk_fetch_authors(composite, &needed).await;
+    let out: Vec<_> = rows
+        .into_iter()
+        .map(|(e, author_id)| {
+            let author_ref = authors
+                .get(&author_id)
+                .cloned()
+                .unwrap_or_else(unknown_author_ref);
+            PublicMemory {
+                id: e.id,
+                content: PublicMemoryContent::Event {
+                    category: e.category.clone(),
+                    payload: e.payload.clone(),
+                    task_id: e.task_id,
+                },
+                tags: Vec::new(),
+                author: author_ref,
+                created_at: offset_to_chrono(e.created_at),
+                updated_at: offset_to_chrono(e.created_at),
+                deleted_at: None,
+                deleted_by_author_id: None,
+            }
+        })
+        .collect();
+    let next_cursor = next.map(|(ts, id)| encode_memory_cursor("e", ts.unix_timestamp_nanos(), id));
+    Ok((out, next_cursor))
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::{decode_memory_cursor, encode_memory_cursor};
+    use uuid::Uuid;
+
+    /// Sprint 008 T014 — round-trip the v2 cursor format used by
+    /// `list_memories` and `event_search`. Confirms the on-the-wire
+    /// shape (`base64_url(section:ts_nanos:uuid)`) is stable across
+    /// the three section tags.
+    #[test]
+    fn round_trips_each_section() {
+        let id = Uuid::parse_str("019470e2-fc4a-7000-8000-000000000001").unwrap();
+        for section in ["f", "k", "e"] {
+            let ts_nanos: i128 = 1_733_000_000_000_000_000;
+            let cursor = encode_memory_cursor(section, ts_nanos, id);
+            let (got_section, got_ts, got_id) = decode_memory_cursor(&cursor).unwrap();
+            assert_eq!(got_section, section);
+            assert_eq!(got_ts, ts_nanos);
+            assert_eq!(got_id, id);
+        }
+    }
+
+    #[test]
+    fn rejects_garbage_input() {
+        assert!(decode_memory_cursor("!!!not-base64!!!").is_none());
+        assert!(decode_memory_cursor("").is_none());
+    }
 }

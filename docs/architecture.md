@@ -649,6 +649,97 @@ Plan and spec live at
 and
 [specs/007-mcp-server/spec.md](../specs/007-mcp-server/spec.md).
 
+## 2f. Phase 8 deltas (sprint 008 — Activity observability)
+
+Sprint 008 (`specs/008-activity-observability/`) closes the
+observability triangle around the MCP layer added in sprint 007: one
+agent-facing tool, one operator-facing HTTP surface, and one shared
+viewport tab — all reading from the **same query path** so the
+numbers agents see and the numbers operators see can never diverge.
+No new storage; no schema changes.
+
+### 2f.1 Shared query layer
+
+A single `Store::list_memories` method on the
+[klams-store](../crates/klams-store/src/lib.rs) trait projects
+`facts`, `events` and `knowledge` rows into a uniform `PublicMemory`
+stream keyed by `(updated_at DESC, id DESC)` with an opaque cursor.
+Both `event_search` (MCP) and `GET /v1/memories` (HTTP) delegate to
+it; there is no parallel SQL anywhere. Rationale (R-001 — "two
+surfaces, one query") lives in
+[specs/008-activity-observability/research.md](../specs/008-activity-observability/research.md).
+
+```text
+   MCP event_search        HTTP GET /v1/memories       Viewport /activity
+          │                          │                          │
+          └────────────┬─────────────┴─────────────┬────────────┘
+                       ▼                           ▼
+              klams-store::list_memories     klams-store::event_search
+                       │                           │
+                       └─────────── pure SQL ──────┘   (no embedding call)
+```
+
+`event_search` is **pure-SQL on the events table** — it never invokes
+the embedder (FR-004); the `tei_requests_total` counter must not
+increment for a search-only workload. This is the contract that
+agents can rely on for cheap event lookup.
+
+### 2f.2 Operator surface — `GET /v1/memories`
+
+New read-only route on `klams-api` returning the same `PublicMemory`
+projection with bearer scope `read`. Defaults to a 24-hour window;
+windows larger than 30 days return HTTP 400 `WINDOW_TOO_LARGE`. Soft-
+deleted rows are surfaced via `state=deleted` with the original
+`deleted_at` / `deleted_by` metadata preserved (FR-015a) so operators
+can inspect what was removed without restoring it.
+
+### 2f.3 Viewport — `/activity` tab
+
+New SvelteKit route at
+[viewport/src/routes/activity/+page.svelte](../viewport/src/routes/activity/+page.svelte)
+wraps `GET /v1/memories` via a `viewport_list_memories` Tauri command.
+Filters: time window, kinds, authors, live / soft-deleted / all. Rows
+link to the per-kind detail page regardless of state so soft-deleted
+items remain navigable.
+
+### 2f.4 Grafana panel fix — author activity
+
+Sprint 007 shipped three MCP author counters
+(`klams_mcp_writes_total`, `klams_mcp_deletes_total`,
+`klams_mcp_search_total`) but no dashboard panels for them, leaving
+SC-005 ("operator can see per-author MCP activity") un-met. Sprint 008
+adds three panels to
+[deploy/grafana/klams.json](../deploy/grafana/klams.json) (writes /
+deletes / search by `agent_name`), wires
+[deploy/prometheus/prometheus.yml](../deploy/prometheus/prometheus.yml)
+to scrape `klams-service:7777/metrics`, and gates both behind the
+existing `observability` Compose profile so the production stack is
+unaffected when the profile is not selected. The handoff table in
+ansible-k's
+[`specs/klams-integration/klams-grafana.md`](https://github.com/kenhia/ansible-k/blob/main/specs/klams-integration/klams-grafana.md)
+gained matching rows for the three series — the
+`every_panel_series_appears_in_handoff_table` contract test enforces
+this going forward.
+
+### 2f.5 Performance baseline harness — `klams-bench`
+
+Non-shipping crate at [tools/bench/](../tools/bench/) with two
+binaries: `seed` (writes a deterministic
+`ChaCha20Rng::from_seed`-generated corpus via the existing write
+surfaces, with 503/queue-full exponential-backoff retry) and `run`
+(replays a representative query set against `memory_search`, records
+microsecond latencies into an HDR histogram, writes
+[specs/008-activity-observability/perf-baseline.md](../specs/008-activity-observability/perf-baseline.md)).
+Per FR-022 the harness **never gates `just gate`** — `bench-seed` and
+`bench-run` always exit 0; the artifact is a measurement, not an
+assertion. The baseline file auto-tags "Smoke run" when the corpus is
+below the canonical 10k facts / 50k knowledge target.
+
+Plan and spec live at
+[specs/008-activity-observability/plan.md](../specs/008-activity-observability/plan.md)
+and
+[specs/008-activity-observability/spec.md](../specs/008-activity-observability/spec.md).
+
 ## 3. Deployment topology on `kubs0`
 
 ```text

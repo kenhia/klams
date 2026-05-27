@@ -83,6 +83,7 @@ fn main() {
             memory::list_authors,
             memory::get_author,
             memory::list_author_memories,
+            memory::list_memories,
             health::get_health,
         ])
         .setup(|app| {
