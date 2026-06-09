@@ -132,9 +132,10 @@ async fn restore_with_force_overwrites_non_empty() {
         .ok();
     // Inject a row so target is non-empty.
     sqlx::query(
-        "INSERT INTO facts (id, type, payload, payload_hash, source) \
-         VALUES (gen_random_uuid(), 'UserFact', '{}'::jsonb, '\\x00'::bytea, 'User')",
+        "INSERT INTO facts (id, type, payload, payload_hash, source, author_id) \
+         VALUES (gen_random_uuid(), 'UserFact', '{}'::jsonb, '\\x00'::bytea, 'User', $1)",
     )
+    .bind(klams_types::SYSTEM_AUTHOR_ID)
     .execute(&pool)
     .await
     .expect("insert decoy");
