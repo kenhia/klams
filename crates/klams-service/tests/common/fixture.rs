@@ -186,6 +186,7 @@ fn gen_facts(rng: &mut Lcg, n: usize, id_salt: u128) -> Vec<UpsertFact> {
                     .wrapping_add(i as u128),
             )),
             expected_version: Some(0),
+            author_id: klams_types::SYSTEM_AUTHOR_ID,
         });
     }
     out
@@ -216,6 +217,7 @@ fn gen_knowledge(rng: &mut Lcg, n: usize, id_salt: u128) -> Vec<IndexKnowledge> 
             repo: Some(repo.to_string()),
             file: Some(format!("{prefix}note_{i:05}.md")),
             machine: None,
+            author_id: klams_types::SYSTEM_AUTHOR_ID,
         });
     }
     out
@@ -249,6 +251,7 @@ fn gen_events(rng: &mut Lcg, n: usize, days: i64, id_salt: u128) -> Vec<AppendEv
             category: category.to_string(),
             payload,
             source: Source::Controller,
+            author_id: klams_types::SYSTEM_AUTHOR_ID,
         });
     }
     out

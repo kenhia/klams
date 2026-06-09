@@ -142,6 +142,7 @@ export interface PublicAuthorRef {
 
 export interface AuthorCounts {
   writes: number;
+  knowledge: number;
   events: number;
   soft_deletes: number;
   restores_received: number;

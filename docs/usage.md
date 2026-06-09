@@ -756,3 +756,72 @@ Run `just bench-seed && just bench-run` (see
 [specs/008-activity-observability/perf-baseline.md](../specs/008-activity-observability/perf-baseline.md).
 Per FR-022, the harness always exits 0 — the baseline is a
 measurement, not a CI gate.
+
+## Sprint 009 — Stability, attribution, and bench-clean
+
+Sprint 009 (`specs/009-stability-attribution/`) adds three operator
+recipes: a loopback soak to validate FR-001/SC-001, an
+author-based bench-clean, and a one-shot re-attribution CLI for
+historical REST writes.
+
+### `just soak` — loopback CLOSE_WAIT regression harness
+
+[`tools/soak/`](../tools/soak/) drives sustained loopback traffic at
+the live service and samples the host's file-descriptor and
+`CLOSE_WAIT` counts at the start and end of the window. The 18-hour
+run is the SC-001 regression for kwi #26:
+
+```bash
+just soak --duration 18h 2>&1 | tee /tmp/soak-018h.log
+```
+
+Shorter windows are useful for smoke checks (`--duration 15m`).
+Record the start/end fd/CLOSE_WAIT samples and the SC-001 verdict
+in
+[specs/009-stability-attribution/soak-report.md](../specs/009-stability-attribution/soak-report.md).
+The harness exits 0 regardless of outcome — like `bench-run`, it is
+a measurement, not a gate.
+
+### Author-based `just bench-clean`
+
+With sprint 009's attribution wiring landed, the bench seeder writes
+as its own `agent_name = "klams-bench"` author (configured in
+`klams.toml`; see [setup.md](setup.md#sprint-009--stability--attribution)).
+`just bench-clean` is now a single author-scoped purge instead of
+the payload-filter walk it used in sprint 008:
+
+```bash
+# Requires PGPASSWORD; reads PGHOST/PGUSER/PGDATABASE/QDRANT_URL
+# from env (defaults: 127.0.0.1, klams, klams, http://127.0.0.1:6333).
+export PGPASSWORD=<from /ai/klams/config/klams.toml [postgres].url>
+just bench-clean
+```
+
+It deletes every row where `author_id = (SELECT id FROM authors
+WHERE agent_name = 'klams-bench')` from `facts`/`events`, and every
+Qdrant point whose `author_id` payload matches the same UUID. No-op
+when the `klams-bench` author has no rows.
+
+### `reattribute-system` — one-shot historical repair
+
+For deployments with REST writes from before sprint 009 (all
+stamped as `system`), the standalone
+[`tools/reattribute-system/`](../tools/reattribute-system/) CLI
+reassigns each row to the author of the `register_author` event
+that immediately preceded the write. Rows with no resolvable
+antecedent land on the seeded `lost-author` identity rather than
+staying on `system`.
+
+```bash
+# Dry-run — prints per-author reassignment counts plus the
+# `lost-author` bucket without touching the store:
+cargo run --release -p reattribute-system
+
+# Commit:
+cargo run --release -p reattribute-system -- --apply
+```
+
+The repair is idempotent (a second `--apply` is a no-op) and is
+intended as a one-time cutover step. Setup details and the
+`agent_name` token config live in
+[setup.md § Sprint 009](setup.md#sprint-009--stability--attribution).

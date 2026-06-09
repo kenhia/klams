@@ -5,13 +5,14 @@
 //! awaiting persistence. Failures during the worker stage increment a
 //! metric (defined in US5) and are logged.
 
+use crate::auth::AuthenticatedAuthor;
 use crate::router::ApiState;
 use crate::ApiError;
 use axum::{
     extract::{Query, State},
     http::StatusCode,
     response::IntoResponse,
-    Json,
+    Extension, Json,
 };
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
@@ -28,6 +29,7 @@ use uuid::Uuid;
 /// freshly assigned id. Fire-and-forget; no oneshot reply.
 pub async fn append<S: Store>(
     State(state): State<ApiState<S>>,
+    Extension(author): Extension<AuthenticatedAuthor>,
     Json(req): Json<AppendEventRequest>,
 ) -> Result<(StatusCode, Json<EventWriteResponse>), ApiError> {
     validate(&req)?;
@@ -39,6 +41,7 @@ pub async fn append<S: Store>(
         category: req.category,
         payload: req.payload,
         source: req.source,
+        author_id: author.author_id,
     };
     let req_source = append.source;
     let probe = MemoryWrite::AppendEvent(append.clone());

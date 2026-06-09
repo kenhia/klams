@@ -574,10 +574,7 @@ mod tests {
                 maintenance: None,
             })
         }
-        async fn list_dissents(
-            &self,
-            p: ListDissentsParams,
-        ) -> Result<DissentPage, ViewportError> {
+        async fn list_dissents(&self, p: ListDissentsParams) -> Result<DissentPage, ViewportError> {
             if let Some(e) = self.fail.lock().unwrap().clone() {
                 return Err(e);
             }
@@ -678,10 +675,7 @@ mod tests {
                 next_cursor: None,
             })
         }
-        async fn get_author(
-            &self,
-            _id: Uuid,
-        ) -> Result<klams_types::PublicAuthor, ViewportError> {
+        async fn get_author(&self, _id: Uuid) -> Result<klams_types::PublicAuthor, ViewportError> {
             Err(ViewportError::Server {
                 status: 404,
                 message: "no".into(),
@@ -877,12 +871,7 @@ mod tests {
         let mock = Arc::new(MockFactory::default());
         let id = Uuid::now_v7();
         let _ = mock
-            .edit_fact(
-                id,
-                FactType::UserFact,
-                serde_json::json!({"k": "v2"}),
-                3,
-            )
+            .edit_fact(id, FactType::UserFact, serde_json::json!({"k": "v2"}), 3)
             .await
             .unwrap();
         let (cid, _ft, _p, ver) = mock.last_edit.lock().unwrap().clone().unwrap();
@@ -917,8 +906,7 @@ mod tests {
             kinds: Some("event,knowledge".into()),
             state: Some("all".into()),
             authors: Some(
-                "00000000-0000-0000-0000-000000000001,00000000-0000-0000-0000-000000000002"
-                    .into(),
+                "00000000-0000-0000-0000-000000000001,00000000-0000-0000-0000-000000000002".into(),
             ),
             limit: Some(75),
             cursor: Some("opaque-cursor".into()),

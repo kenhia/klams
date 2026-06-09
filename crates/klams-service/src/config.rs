@@ -26,6 +26,13 @@ pub enum ConfigError {
         #[source]
         source: url::ParseError,
     },
+    #[error("service.limits.{key} out of range: got {value}, allowed {min}..={max}")]
+    InvalidLimit {
+        key: &'static str,
+        value: u64,
+        min: u64,
+        max: u64,
+    },
 }
 
 impl From<figment::Error> for ConfigError {
@@ -60,6 +67,91 @@ pub struct Config {
     /// omit `[api]`.
     #[serde(default)]
     pub api: ApiConfig,
+    /// Sprint 009 — service-wide knobs (currently just connection
+    /// limits). Optional; missing `[service]` block applies all
+    /// defaults.
+    #[serde(default)]
+    pub service: ServiceConfig,
+}
+
+/// Sprint 009 — `[service]` namespace. Currently houses
+/// connection-limits only; future service-wide knobs land here.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ServiceConfig {
+    #[serde(default)]
+    pub limits: LimitsConfig,
+}
+
+/// Sprint 009 — `[service.limits]` per
+/// `specs/009-stability-attribution/contracts/connection-limits.md`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LimitsConfig {
+    #[serde(default = "default_header_read_timeout_secs")]
+    pub header_read_timeout_secs: u64,
+    #[serde(default = "default_keep_alive_timeout_secs")]
+    pub keep_alive_timeout_secs: u64,
+    #[serde(default = "default_per_peer_max_concurrent")]
+    pub per_peer_max_concurrent: u32,
+}
+
+impl Default for LimitsConfig {
+    fn default() -> Self {
+        Self {
+            header_read_timeout_secs: default_header_read_timeout_secs(),
+            keep_alive_timeout_secs: default_keep_alive_timeout_secs(),
+            per_peer_max_concurrent: default_per_peer_max_concurrent(),
+        }
+    }
+}
+
+impl LimitsConfig {
+    /// Validate range bounds documented in the contract.
+    ///
+    /// # Errors
+    /// Returns [`ConfigError::InvalidLimit`] for the first key out of range.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        check_range(
+            "header_read_timeout_secs",
+            self.header_read_timeout_secs,
+            1,
+            600,
+        )?;
+        check_range(
+            "keep_alive_timeout_secs",
+            self.keep_alive_timeout_secs,
+            1,
+            3600,
+        )?;
+        check_range(
+            "per_peer_max_concurrent",
+            u64::from(self.per_peer_max_concurrent),
+            1,
+            10_000,
+        )?;
+        Ok(())
+    }
+}
+
+fn check_range(key: &'static str, value: u64, min: u64, max: u64) -> Result<(), ConfigError> {
+    if value < min || value > max {
+        return Err(ConfigError::InvalidLimit {
+            key,
+            value,
+            min,
+            max,
+        });
+    }
+    Ok(())
+}
+
+fn default_header_read_timeout_secs() -> u64 {
+    30
+}
+fn default_keep_alive_timeout_secs() -> u64 {
+    75
+}
+fn default_per_peer_max_concurrent() -> u32 {
+    64
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -284,10 +376,11 @@ impl Config {
     /// (double underscore separates nested keys, e.g.
     /// `KLAMS_SERVER__PORT=8000`).
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
-        let cfg = Figment::new()
+        let cfg: Self = Figment::new()
             .merge(Toml::file(path.as_ref()))
             .merge(Env::prefixed("KLAMS_").split("__"))
             .extract()?;
+        cfg.service.limits.validate()?;
         Ok(cfg)
     }
 }

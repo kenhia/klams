@@ -150,6 +150,7 @@ async fn tools_list_admin_sees_everything() {
         "memory_search",
         "memory_related",
         "memory_append_event",
+        "event_search",
         "memory_delete",
         "memory_admin_restore",
         "memory_admin_hard_delete",
@@ -174,6 +175,7 @@ async fn tools_list_read_only_sees_only_read_tools() {
     assert_eq!(
         sorted,
         vec![
+            "event_search".to_string(),
             "memory_related".to_string(),
             "memory_search".to_string(),
             "register_author".to_string(),
@@ -192,6 +194,7 @@ async fn tools_list_write_sees_read_and_write_no_admin() {
     assert_eq!(
         sorted,
         vec![
+            "event_search".to_string(),
             "memory_add".to_string(),
             "memory_append_event".to_string(),
             "memory_delete".to_string(),

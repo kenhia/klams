@@ -113,7 +113,7 @@ impl Validator for EnvFactValidator {
                 // blob (~5 KB observed for kubs0 storage / network)
                 // with headroom; revisit when host counts or array
                 // depths grow.
-                let serialized_len = serde_json::to_string(v).map(|s| s.len()).unwrap_or(0);
+                let serialized_len = serde_json::to_string(v).map_or(0, |s| s.len());
                 if serialized_len > ENV_FACT_VALUE_MAX_BYTES {
                     acc.push(detail(
                         "payload.value",

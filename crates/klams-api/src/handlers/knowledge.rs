@@ -8,12 +8,13 @@
 //! embed-and-index job (`deduped: false`). Either way the response
 //! is `202 Accepted` per the `OpenAPI` contract.
 
+use crate::auth::AuthenticatedAuthor;
 use crate::router::ApiState;
 use crate::ApiError;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    Json,
+    Extension, Json,
 };
 use klams_core::{metrics as m, WriteJob};
 use klams_store::Store;
@@ -36,6 +37,7 @@ const MAX_TAG_LEN: usize = 64;
 
 pub async fn index<S: Store>(
     State(state): State<ApiState<S>>,
+    Extension(author): Extension<AuthenticatedAuthor>,
     Json(req): Json<IndexKnowledgeRequest>,
 ) -> Result<(StatusCode, Json<IndexKnowledgeResponse>), ApiError> {
     let normalized = normalize_text(&req.text)?;
@@ -76,6 +78,7 @@ pub async fn index<S: Store>(
         repo: req.repo,
         file: req.file,
         machine: req.machine,
+        author_id: author.author_id,
     });
     state.queue.try_enqueue(job).map_err(|_| {
         m::incr_writes_failed("knowledge", "queue_full");

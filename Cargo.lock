@@ -1823,6 +1823,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "klams-reattribute-system"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "klams-store",
+ "klams-types",
+ "qdrant-client",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "klams-scanner"
 version = "0.1.0"
 dependencies = [
@@ -1856,6 +1872,8 @@ dependencies = [
  "chrono",
  "figment",
  "filetime",
+ "hyper",
+ "hyper-util",
  "jsonschema",
  "klams-api",
  "klams-client",
@@ -1867,6 +1885,7 @@ dependencies = [
  "metrics",
  "metrics-exporter-prometheus",
  "nix",
+ "qdrant-client",
  "reqwest",
  "serde",
  "serde_json",
@@ -1877,11 +1896,22 @@ dependencies = [
  "tokio",
  "tokio-util",
  "toml",
+ "tower 0.5.3",
  "tracing",
  "tracing-subscriber",
  "ulid",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "klams-soak"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "humantime",
+ "tokio",
 ]
 
 [[package]]

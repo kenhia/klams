@@ -77,6 +77,7 @@
         <th>Repo</th>
         <th>Last seen</th>
         <th>Writes</th>
+        <th>Knowledge</th>
         <th>Events</th>
         <th>Soft deletes</th>
         <th>Restores</th>
@@ -90,6 +91,7 @@
           <td>{a.repo ?? ''}</td>
           <td>{new Date(a.last_seen_at).toLocaleString()}</td>
           <td>{a.counts.writes}</td>
+          <td>{a.counts.knowledge}</td>
           <td>{a.counts.events}</td>
           <td>{a.counts.soft_deletes}</td>
           <td>{a.counts.restores_received}</td>

@@ -33,6 +33,7 @@ async fn task_fact_decays_faster_than_user_fact() {
             source: Source::User,
             explicit_id: None,
             expected_version: None,
+            author_id: klams_types::SYSTEM_AUTHOR_ID,
         })
         .await
         .expect("user upsert");
@@ -47,6 +48,7 @@ async fn task_fact_decays_faster_than_user_fact() {
             source: Source::Task,
             explicit_id: None,
             expected_version: None,
+            author_id: klams_types::SYSTEM_AUTHOR_ID,
         })
         .await
         .expect("task upsert");
@@ -111,6 +113,7 @@ async fn tick_is_monotonically_non_increasing() {
             source: Source::Task,
             explicit_id: None,
             expected_version: None,
+            author_id: klams_types::SYSTEM_AUTHOR_ID,
         })
         .await
         .expect("seed");
@@ -163,6 +166,7 @@ async fn search_orders_user_above_task_for_shared_term() {
             source: Source::User,
             explicit_id: None,
             expected_version: None,
+            author_id: klams_types::SYSTEM_AUTHOR_ID,
         })
         .await
         .expect("user");
@@ -177,6 +181,7 @@ async fn search_orders_user_above_task_for_shared_term() {
             source: Source::Task,
             explicit_id: None,
             expected_version: None,
+            author_id: klams_types::SYSTEM_AUTHOR_ID,
         })
         .await
         .expect("task");

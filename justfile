@@ -57,6 +57,13 @@ service-validate-config:
 test:
     cargo test --workspace
 
+# Sprint 009 — run the loopback half-close soak harness against the
+# configured target (defaults to 127.0.0.1:7777, 10m duration, 32
+# concurrent half-open connections at 4/s). Forward extra `ARGS`
+# (e.g. `--duration 18h`) directly to the binary.
+soak *ARGS:
+    cargo run --release -p klams-soak -- {{ARGS}}
+
 # Constitution pre-commit gate — fail-fast on fmt, clippy, or tests.
 # CI invokes exactly this recipe (no inline duplication).
 gate:
@@ -311,9 +318,11 @@ bench-seed *ARGS:
 bench-run *ARGS:
     cargo run --release -p klams-bench --bin run -- {{ARGS}} || true
 
-# Purge bench-seeded facts (UserFact/EnvFact/TaskFact payload markers from
-# tools/bench/src/lib.rs) and bench knowledge points (repo=klams, file
-# under notes/) from Postgres + Qdrant. Reads connection settings from env:
+# sprint 009 — purge every row written by the `klams-bench` agent
+# (FR-011 attribution). Resolves the author_id by agent_name, then
+# DELETEs from facts / events / knowledge_items in Postgres and from
+# the Qdrant collection by `author_id` payload filter. No payload-
+# pattern fallback. Reads connection settings from env:
 #   PGPASSWORD, PGHOST=127.0.0.1, PGUSER=klams, PGDATABASE=klams,
 #   QDRANT_URL=http://127.0.0.1:6333, QDRANT_COLLECTION=knowledge_items.
 bench-clean:
@@ -326,17 +335,21 @@ bench-clean:
     QDRANT_COLLECTION="${QDRANT_COLLECTION:-knowledge_items}"
     : "${PGPASSWORD:?PGPASSWORD must be set}"
     export PGPASSWORD PGHOST PGUSER PGDATABASE
-    echo "→ deleting bench facts from $PGHOST/$PGDATABASE"
-    psql -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" -At <<'SQL'
+    author_id=$(psql -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" -At \
+        -c "SELECT id FROM authors WHERE agent_name = 'klams-bench' ORDER BY last_seen_at DESC LIMIT 1;")
+    if [[ -z "$author_id" ]]; then
+        echo "bench-clean: no author row for agent_name='klams-bench'; nothing to purge" >&2
+        exit 0
+    fi
+    echo "→ purging rows authored by klams-bench (author_id=$author_id) from $PGHOST/$PGDATABASE"
+    psql -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" -At -v ON_ERROR_STOP=1 -v aid="$author_id" <<'SQL'
     BEGIN;
-    DELETE FROM facts WHERE
-      (type='UserFact' AND payload->>'name' LIKE 'bench-user-%')
-      OR (type='EnvFact' AND payload->>'key' LIKE 'BENCH\_%' ESCAPE '\')
-      OR (type='TaskFact' AND payload->>'task_id' LIKE 'ansible-%' AND payload ? 'seq');
+    DELETE FROM facts  WHERE author_id = :'aid'::uuid;
+    DELETE FROM events WHERE author_id = :'aid'::uuid;
     COMMIT;
     SQL
     echo "→ deleting bench knowledge points from $QDRANT_URL/$QDRANT_COLLECTION"
-    curl -sS -X POST "$QDRANT_URL/collections/$QDRANT_COLLECTION/points/delete" \
+    curl -sS -X POST "$QDRANT_URL/collections/$QDRANT_COLLECTION/points/delete?wait=true" \
         -H "Content-Type: application/json" \
-        -d '{"filter":{"must":[{"key":"repo","match":{"value":"klams"}},{"key":"file","match":{"text":"notes/"}}]}}' \
+        -d "{\"filter\":{\"must\":[{\"key\":\"author_id\",\"match\":{\"value\":\"$author_id\"}}]}}" \
         | python3 -c "import sys,json;d=json.load(sys.stdin);print('  qdrant:',d.get('status','?'))"

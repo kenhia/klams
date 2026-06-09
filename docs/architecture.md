@@ -740,6 +740,91 @@ Plan and spec live at
 and
 [specs/008-activity-observability/spec.md](../specs/008-activity-observability/spec.md).
 
+## 2g. Phase 9 deltas (sprint 009 — Stability & attribution)
+
+Sprint 009 (`specs/009-stability-attribution/`) closes three
+production wounds left open after sprint 008: the loopback CLOSE_WAIT
+leak that exhausted file descriptors under sustained traffic
+(kwi #26), the REST attribution gap that stamped every non-MCP write
+as `system` (kwi #28), and a viewport drilldown 404 from the Authors
+view. No new storage, no schema changes — every fix is in the
+service plumbing.
+
+### 2g.1 Connection-limits layer
+
+A per-peer `ConnectionLimits` tower layer wraps the axum service in
+[`klams-service::main`](../crates/klams-service/src/main.rs). The
+layer caps concurrent in-flight requests per remote IP and trims
+idle keep-alive connections so a misbehaving client (or a long-lived
+loopback writer that fails to close) cannot accumulate sockets in
+`CLOSE_WAIT` indefinitely. The packaged systemd unit raises
+`LimitNOFILE=65536` (see [deploy/klams-service.service](../deploy/klams-service.service))
+so the in-app cap is reached before the kernel-level fd cap is hit.
+Validated by an 18-hour loopback soak harness exposed as
+`just soak --duration 18h` ([tools/soak/](../tools/soak/)).
+
+### 2g.2 Attribution flow — bearer → author_id
+
+```text
+client HTTP request                 service startup
+   Authorization: Bearer <tok>          │
+              │                          ▼
+              ▼                  [auth.tokens] grants
+     require_bearer middleware           │ each grant
+   resolves token → TokenGrant           ▼ with agent_name
+              │                  AuthorBinding cache
+              ▼                  agent_name → author_id
+     Request::extensions.insert(             (one row in
+          AuthorBinding { author_id })       authors table)
+              │
+              ▼
+     REST handler extracts AuthorBinding
+              │
+              ▼
+     UpsertFact { author_id, .. } → worker
+     AppendEvent { author_id, .. } → worker
+     IndexKnowledge { author_id, .. } → worker
+              │
+              ▼
+     PostgresStore::upsert_fact_with_author(... author_id ...)
+     QdrantStore::index_knowledge_with_author(... author_id ...)
+```
+
+Each `[[auth.tokens]]` entry now carries an optional `agent_name`
+([crates/klams-types/src/auth.rs](../crates/klams-types/src/auth.rs))
+validated at startup against a strict charset (lowercase, digits,
+`-`/`_`) so a typo never reaches the cache. Tokens without
+`agent_name` fall back to `system`. The legacy `bearer_token` field
+is materialized as a `system`-bound grant, so existing deployments
+keep working with no config change. Multiple tokens may share an
+`agent_name`; they all resolve to the same `author_id`.
+
+### 2g.3 One-shot re-attribution repair
+
+For deployments with historical `system`-stamped REST writes,
+[tools/reattribute-system/](../tools/reattribute-system/) ships a
+standalone CLI that walks `facts`/`events`/`knowledge_items`, finds
+the `register_author` event that immediately preceded each write,
+and reassigns the row to that author. Rows with no resolvable
+antecedent land on the new `lost-author` seed identity rather than
+staying on `system`, keeping the bucket sum invariant intact. The
+repair is idempotent and dry-run by default; `--apply` commits. The
+store-level invariant tests live in [crates/klams-store/src/repair.rs](../crates/klams-store/src/repair.rs).
+
+### 2g.4 Test isolation
+
+The Phase 6 MCP test harness ([crates/klams-service/tests/common/mod.rs](../crates/klams-service/tests/common/mod.rs))
+gained `TestServer::spawn_isolated()`: each test gets a per-test
+Qdrant collection (`klams_test_{uuid}`) and a truncated Postgres
+between runs, with the seeded `system` and `lost-author` identities
+preserved so attribution invariants still hold. Validated 10/10
+under default parallelism.
+
+Plan and spec live at
+[specs/009-stability-attribution/plan.md](../specs/009-stability-attribution/plan.md)
+and
+[specs/009-stability-attribution/spec.md](../specs/009-stability-attribution/spec.md).
+
 ## 3. Deployment topology on `kubs0`
 
 ```text

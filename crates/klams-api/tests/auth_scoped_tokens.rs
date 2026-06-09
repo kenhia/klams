@@ -31,11 +31,15 @@ fn with_grants_preserves_per_token_scope_set() {
             token_bytes: Arc::new(b"read-only-token".to_vec()),
             scopes: Arc::new(vec![Scope::Read]),
             label: Some("viewer".into()),
+            author_id: klams_types::SYSTEM_AUTHOR_ID,
+            agent_name: Arc::new("system".into()),
         },
         TokenGrant {
             token_bytes: Arc::new(b"writer-token".to_vec()),
             scopes: Arc::new(vec![Scope::Read, Scope::Write]),
             label: Some("agent".into()),
+            author_id: klams_types::SYSTEM_AUTHOR_ID,
+            agent_name: Arc::new("system".into()),
         },
     ];
     let state = AuthState::with_grants(grants);

@@ -3,7 +3,8 @@
   import { api } from '$lib/api';
   import type { PublicAuthor } from '$lib/types';
   import type { ListMemoriesResponse, MemoryItem } from '$lib/types/memories';
-  import { hrefFor, summaryFor } from './row';
+  import { summaryFor } from './row';
+  import MemoryDetails from '$lib/components/MemoryDetails.svelte';
 
   let fromValue = $state('');
   let toValue = $state('');
@@ -168,7 +169,12 @@
           </td>
           <td>{row.kind}</td>
           <td>{row.author.agent_name}</td>
-          <td><a href={hrefFor(row)}>{summaryFor(row)}</a></td>
+          <td>
+            <details>
+              <summary>{summaryFor(row)}</summary>
+              <MemoryDetails item={row} />
+            </details>
+          </td>
           <td>{new Date(row.updated_at).toLocaleString()}</td>
           <td>{row.tags?.join(', ') ?? ''}</td>
         </tr>

@@ -30,7 +30,13 @@ fn dry_run_prints_planned_actions() {
     let bin_dir = tmp.path().join("bin");
     std::fs::create_dir_all(&bin_dir).unwrap();
     for b in ["klams-service", "klams-scanner", "klams-monitor"] {
-        std::fs::write(bin_dir.join(b), "#!/bin/sh\n").unwrap();
+        let p = bin_dir.join(b);
+        std::fs::write(&p, "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
     }
 
     let out = Command::new("bash")
@@ -66,7 +72,13 @@ fn dry_run_is_idempotent() {
     let bin_dir = tmp.path().join("bin");
     std::fs::create_dir_all(&bin_dir).unwrap();
     for b in ["klams-service", "klams-scanner", "klams-monitor"] {
-        std::fs::write(bin_dir.join(b), "#!/bin/sh\n").unwrap();
+        let p = bin_dir.join(b);
+        std::fs::write(&p, "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
     }
 
     let run = || -> Option<String> {
@@ -86,9 +98,30 @@ fn dry_run_is_idempotent() {
         return;
     };
     let second = run().expect("second dry-run");
-    // The temp dir name is identical across the two runs, so output
-    // must be byte-identical.
-    assert_eq!(first, second, "dry-run is not idempotent");
+    let normalise = |s: String| -> String {
+        // STAGE_DIR is `/tmp/klams-stage-$$`, so the bash PID leaks
+        // into every dry-run; mask it so consecutive runs compare equal.
+        let mut out = String::with_capacity(s.len());
+        let needle = "/tmp/klams-stage-";
+        let mut rest = s.as_str();
+        while let Some(idx) = rest.find(needle) {
+            out.push_str(&rest[..idx]);
+            out.push_str(needle);
+            out.push_str("PID");
+            let after = &rest[idx + needle.len()..];
+            let end = after
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(after.len());
+            rest = &after[end..];
+        }
+        out.push_str(rest);
+        out
+    };
+    assert_eq!(
+        normalise(first),
+        normalise(second),
+        "dry-run is not idempotent",
+    );
 }
 
 #[test]

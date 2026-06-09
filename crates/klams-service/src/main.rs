@@ -182,10 +182,19 @@ async fn main() -> Result<()> {
         ));
     }
     for g in &cfg.auth.tokens {
-        all_grants.push(klams_api::auth::TokenGrant::new(
+        let (author_id, agent_name) = resolve_token_author(&store, g).await?;
+        tracing::info!(
+            token_label = %g.label.as_deref().unwrap_or(""),
+            agent_name = %agent_name,
+            %author_id,
+            "bound bearer to author"
+        );
+        all_grants.push(klams_api::auth::TokenGrant::new_with_author(
             g.token.clone(),
             g.scopes.clone(),
             g.label.clone(),
+            author_id,
+            agent_name,
         ));
     }
     let auth_state = klams_api::auth::AuthState::with_grants(all_grants.clone());
@@ -257,10 +266,14 @@ async fn main() -> Result<()> {
         .with_context(|| format!("bind {addr}"))?;
     info!(%addr, "listening");
 
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("axum serve")?;
+    klams_service::limits::serve_with_limits(
+        listener,
+        router,
+        cfg.service.limits.clone(),
+        shutdown_signal(),
+    )
+    .await
+    .context("serve_with_limits")?;
 
     info!("klams-service stopped");
     Ok(())
@@ -283,6 +296,45 @@ async fn shutdown_signal() {
         () = ctrl_c => {}
         () = terminate => {}
     }
+}
+
+/// Sprint 009 — resolve a bearer token's bound author. If the grant
+/// carries an `agent_name`, look it up in the `authors` table (or
+/// register a fresh `Uuid::now_v7()` row if absent) and bind the
+/// token to that author. Otherwise the grant attributes writes to
+/// `system`.
+async fn resolve_token_author(
+    store: &CompositeStore,
+    g: &klams_types::TokenGrantConfig,
+) -> Result<(uuid::Uuid, String)> {
+    let Some(name) = g.agent_name.as_deref() else {
+        return Ok((klams_types::SYSTEM_AUTHOR_ID, "system".to_string()));
+    };
+    klams_types::validate_agent_name(name)
+        .map_err(|e| anyhow::anyhow!("auth.tokens agent_name {name:?}: {e:?}"))?;
+    if let Some(existing) = store
+        .postgres
+        .get_author_by_agent_name(name)
+        .await
+        .map_err(|e| anyhow::anyhow!("lookup author {name:?}: {e}"))?
+    {
+        return Ok((existing.id, existing.agent_name));
+    }
+    let args = klams_types::RegisterAuthorArgs {
+        agent_name: name.to_string(),
+        model: None,
+        session_title: g.label.clone(),
+        repo: None,
+        client_app: Some("klams-service".to_string()),
+        client_version: None,
+        extra: serde_json::json!({}),
+    };
+    let row = store
+        .postgres
+        .insert_author(args, None)
+        .await
+        .map_err(|e| anyhow::anyhow!("register author {name:?}: {e}"))?;
+    Ok((row.id, row.agent_name))
 }
 
 /// Sprint 007 — `klams-service --validate-config`.

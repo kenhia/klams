@@ -11,6 +11,8 @@ members = [
     "crates/klams-monitor",
     "crates/klams-mcp",
     "tools/bench",
+    "tools/soak",
+    "tools/reattribute-system",
 ]
 
 [workspace.package]
@@ -48,6 +50,7 @@ axum = { version = "0.7", features = ["macros"] }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["trace", "request-id", "util"] }
 hyper = "1"
+hyper-util = { version = "0.1", features = ["tokio", "server", "server-graceful", "service", "http1"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
 axum-prometheus = "0.7"
 

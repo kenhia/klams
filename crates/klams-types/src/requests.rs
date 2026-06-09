@@ -184,3 +184,53 @@ pub struct ListMemoriesParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Sprint 009 FR-010: a client-supplied `author_id` field in the
+    // request body must be silently ignored. None of the request
+    // DTOs (UpsertFactRequest, AppendEventRequest,
+    // IndexKnowledgeRequest) expose an `author_id` field, and they
+    // are not `deny_unknown_fields`, so serde drops the value during
+    // deserialization. The handler then stamps the bound author from
+    // the bearer token instead.
+    #[test]
+    fn upsert_fact_request_ignores_client_author_id() {
+        let body = serde_json::json!({
+            "type": "UserFact",
+            "payload": {"k": "v"},
+            "source": "AgentProposal",
+            "author_id": "00000000-0000-0000-0000-000000000999"
+        });
+        let parsed: UpsertFactRequest = serde_json::from_value(body).unwrap();
+        let round = serde_json::to_value(&parsed).unwrap();
+        assert!(round.get("author_id").is_none());
+    }
+
+    #[test]
+    fn append_event_request_ignores_client_author_id() {
+        let body = serde_json::json!({
+            "category": "task.created",
+            "payload": {},
+            "source": "AgentProposal",
+            "author_id": "00000000-0000-0000-0000-000000000999"
+        });
+        let parsed: AppendEventRequest = serde_json::from_value(body).unwrap();
+        let round = serde_json::to_value(&parsed).unwrap();
+        assert!(round.get("author_id").is_none());
+    }
+
+    #[test]
+    fn index_knowledge_request_ignores_client_author_id() {
+        let body = serde_json::json!({
+            "text": "hello",
+            "source": "AgentProposal",
+            "author_id": "00000000-0000-0000-0000-000000000999"
+        });
+        let parsed: IndexKnowledgeRequest = serde_json::from_value(body).unwrap();
+        let round = serde_json::to_value(&parsed).unwrap();
+        assert!(round.get("author_id").is_none());
+    }
+}

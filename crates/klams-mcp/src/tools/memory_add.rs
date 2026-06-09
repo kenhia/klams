@@ -1,10 +1,10 @@
 //! `memory_add` MCP tool (sprint 007 T033/T034).
 //!
 //! Discriminated by `kind`:
-//!   * `fact` — Postgres `upsert_fact_with_author` (dedupe on
+//!   * `fact` — Postgres `upsert_fact` (dedupe on
 //!     `(type, payload_hash)`).
-//!   * `knowledge` — TEI embedding then Qdrant `index_knowledge` then
-//!     `set_author_payload` to attribute the point.
+//!   * `knowledge` — TEI embedding then Qdrant `index_knowledge`,
+//!     which stamps `author_id` into the point payload atomically.
 //!
 //! Maintenance window short-circuits the entire path with
 //! `MAINTENANCE_WINDOW_ACTIVE` + `retry_after_seconds` (R-007).
@@ -116,11 +116,12 @@ pub async fn run(state: &McpState, args: MemoryAddArgs) -> Result<PublicMemory, 
                 source: Source::AgentProposal,
                 explicit_id: None,
                 expected_version: None,
+                author_id: author.id,
             };
             let fact = state
                 .store
                 .postgres
-                .upsert_fact_with_author(req, author.id)
+                .upsert_fact(req)
                 .await
                 .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("upsert_fact: {e}")))?;
             mcp_metrics::record_write(
@@ -152,8 +153,8 @@ pub async fn run(state: &McpState, args: MemoryAddArgs) -> Result<PublicMemory, 
                 repo,
                 file: source_path,
                 machine: None,
+                author_id: author.id,
             };
-            let id = req.id;
             let embedding = state.store.embedder.embed(&req.text).await.map_err(|e| {
                 crate::errors::envelope_with_retry(
                     errors::EMBEDDING_UNAVAILABLE,
@@ -167,10 +168,6 @@ pub async fn run(state: &McpState, args: MemoryAddArgs) -> Result<PublicMemory, 
                 .index_knowledge(req, embedding)
                 .await
                 .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("qdrant: {e}")))?;
-            // Attribute the point to the author (FR-007).
-            if let Err(e) = state.store.qdrant.set_author_payload(id, author.id).await {
-                tracing::warn!(error = %e, "set_author_payload failed (memory_add knowledge)");
-            }
             mcp_metrics::record_write(
                 &author.agent_name,
                 author.model.as_deref(),

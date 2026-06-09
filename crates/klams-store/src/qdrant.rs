@@ -6,9 +6,9 @@ use klams_types::{
 };
 use qdrant_client::qdrant::{
     point_id::PointIdOptions, points_selector::PointsSelectorOneOf, value::Kind as ValueKind,
-    Condition, CreateCollectionBuilder, DeletePointsBuilder, Distance, FieldType, Filter,
-    ListValue, PointId, PointStruct, PointsIdsList, ScrollPointsBuilder, SearchPointsBuilder,
-    SetPayloadPointsBuilder, UpsertPointsBuilder, Value, VectorParamsBuilder,
+    Condition, CountPointsBuilder, CreateCollectionBuilder, DeletePointsBuilder, Distance,
+    FieldType, Filter, ListValue, PointId, PointStruct, PointsIdsList, ScrollPointsBuilder,
+    SearchPointsBuilder, SetPayloadPointsBuilder, UpsertPointsBuilder, Value, VectorParamsBuilder,
 };
 use qdrant_client::Qdrant;
 use std::collections::HashMap;
@@ -25,8 +25,18 @@ fn chrono_to_offset(ts: chrono::DateTime<chrono::Utc>) -> OffsetDateTime {
 }
 use uuid::Uuid;
 
-const KEYWORD_INDEX_FIELDS: &[&str] =
-    &["content_hash", "source", "tags", "repo", "machine", "file"];
+const KEYWORD_INDEX_FIELDS: &[&str] = &[
+    "content_hash",
+    "source",
+    "tags",
+    "repo",
+    "machine",
+    "file",
+    // Sprint 009 (kwi #32 followup, T048): enable fast filtered
+    // count/scroll by author so `/v1/authors` can include
+    // `counts.knowledge` without a full payload scan.
+    "author_id",
+];
 
 /// Filter for `list_knowledge_by_author`.
 #[derive(Debug, Clone, Copy)]
@@ -139,7 +149,8 @@ impl QdrantStore {
             created_at: now,
             updated_at: now,
         };
-        let payload = item_to_payload(&item);
+        let mut payload = item_to_payload(&item);
+        payload.insert("author_id".into(), Value::from(req.author_id.to_string()));
         let point = PointStruct::new(
             PointId {
                 point_id_options: Some(PointIdOptions::Uuid(item.id.to_string())),
@@ -599,34 +610,6 @@ fn payload_to_digest(payload: &HashMap<String, Value>) -> Option<KnowledgeDigest
 // ---------- sprint 007: author attribution + soft-delete ----------
 
 impl QdrantStore {
-    /// Stamp `author_id` into a knowledge point's payload after
-    /// `index_knowledge` returns. Idempotent; overwrites any prior
-    /// value. Used by `memory_add` (kind = knowledge) so that MCP
-    /// writes are attributed without changing the `IndexKnowledge`
-    /// request shape consumed by older REST callers.
-    pub async fn set_author_payload(
-        &self,
-        id: uuid::Uuid,
-        author_id: uuid::Uuid,
-    ) -> StoreResult<()> {
-        let mut payload = std::collections::HashMap::new();
-        payload.insert("author_id".to_string(), Value::from(author_id.to_string()));
-        let points = PointsIdsList {
-            ids: vec![PointId {
-                point_id_options: Some(PointIdOptions::Uuid(id.to_string())),
-            }],
-        };
-        self.client
-            .set_payload(
-                SetPayloadPointsBuilder::new(self.collection.clone(), payload)
-                    .points_selector(points)
-                    .wait(true),
-            )
-            .await
-            .map_err(|e| StoreError::Backend(format!("qdrant set_author_payload: {e}")))?;
-        Ok(())
-    }
-
     /// Soft-delete a knowledge point by stamping `deleted_at` (RFC-3339)
     /// and `deleted_by_author_id` (UUID string) into its payload. The
     /// vector and other fields are untouched. Returns `Ok(())` on
@@ -890,6 +873,31 @@ impl QdrantStore {
             out.push((item, deleted_at, deleter, author));
         }
         Ok((out, next))
+    }
+
+    /// Sprint 009 (kwi #32): count live knowledge points authored by
+    /// `author_id`. Used by `/v1/authors/:id` so the per-author detail
+    /// view can show a `knowledge` write count alongside facts/events.
+    /// Uses Qdrant's exact-count endpoint with a payload filter on
+    /// `author_id` + `is_empty(deleted_at)`.
+    pub async fn count_live_knowledge_by_author(&self, author_id: uuid::Uuid) -> StoreResult<u64> {
+        let filter = Filter {
+            must: vec![
+                Condition::matches("author_id", author_id.to_string()),
+                Condition::is_empty("deleted_at"),
+            ],
+            ..Default::default()
+        };
+        let resp = self
+            .client
+            .count(
+                CountPointsBuilder::new(self.collection.clone())
+                    .filter(filter)
+                    .exact(true),
+            )
+            .await
+            .map_err(|e| StoreError::Backend(format!("qdrant count by_author: {e}")))?;
+        Ok(resp.result.map_or(0, |r| r.count))
     }
 
     /// Scroll the collection for knowledge points authored by

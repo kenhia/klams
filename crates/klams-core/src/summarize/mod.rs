@@ -212,8 +212,7 @@ impl SummarizationTask {
         }
         let lag = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|d| d.as_secs_f64())
-            .unwrap_or(0.0)
+            .map_or(0.0, |d| d.as_secs_f64())
             - start.elapsed().as_secs_f64();
         m::record_summarization_lag(lag.max(0.0));
         let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -328,7 +327,7 @@ mod tests {
             rec("kubs1", "pod", "oom", 0),
         ];
         let mut out = cluster_events(&recs);
-        out.sort_by(|a, b| (a.host.clone(), a.day_bucket).cmp(&(b.host.clone(), b.day_bucket)));
+        out.sort_by_key(|a| (a.host.clone(), a.day_bucket));
         assert_eq!(out.len(), 3);
         let day0 = out
             .iter()

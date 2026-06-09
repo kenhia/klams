@@ -37,6 +37,7 @@ pub struct PublicAuthor {
 #[derive(Debug, Clone, Serialize)]
 pub struct AuthorCounts {
     pub writes: i64,
+    pub knowledge: i64,
     pub events: i64,
     pub soft_deletes: i64,
     pub restores_received: i64,
@@ -55,6 +56,7 @@ fn to_public(row: AuthorWithCountsOut) -> PublicAuthor {
         last_seen_at: row.author.last_seen_at,
         counts: AuthorCounts {
             writes: row.writes_facts,
+            knowledge: row.writes_knowledge,
             events: row.events,
             soft_deletes: row.soft_deletes_authored,
             restores_received: row.restores_received,

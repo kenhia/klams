@@ -264,7 +264,7 @@ fn weighted(
     let mut score: HashMap<Uuid, f32> = HashMap::new();
     for rows in sources {
         let normalized = normalise_scores(&rows, norm);
-        for (row, ns) in rows.into_iter().zip(normalized.into_iter()) {
+        for (row, ns) in rows.into_iter().zip(normalized) {
             let w = match row.source {
                 klams_types::RetrievalSource::Vector => w_vector,
                 klams_types::RetrievalSource::Fts => w_fts,

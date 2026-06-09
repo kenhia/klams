@@ -127,6 +127,7 @@ mod tests {
             source: Source::User,
             explicit_id: None,
             expected_version: Some(0),
+            author_id: klams_types::SYSTEM_AUTHOR_ID,
         })
     }
 

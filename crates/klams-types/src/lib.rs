@@ -29,7 +29,26 @@ pub mod validation;
 pub const SYSTEM_AUTHOR_ID: uuid::Uuid =
     uuid::Uuid::from_u128(0x0000_0000_0000_7000_8000_0000_0000_0001_u128);
 
-pub use auth::{AuthConfigError, Scope, TokenGrantConfig};
+/// UUID of the seeded `lost-author` identity (sprint 009, FR-016a).
+/// The one-shot re-attribution repair routes rows whose true writer
+/// cannot be unambiguously recovered (no provenance, ambiguous
+/// provenance, or recovered author deleted) to this author so the
+/// unrecoverable bucket stays queryable instead of hiding inside the
+/// `system` author's share. Seeded by migration `0008`.
+pub const LOST_AUTHOR_ID: uuid::Uuid =
+    uuid::Uuid::from_u128(0x0000_0000_0000_7000_8000_0000_0000_0002_u128);
+
+/// Helper used as a `#[serde(default = "...")]` for pipeline
+/// structs' `author_id` field. Provides back-compat for serialized
+/// payloads written before sprint 009 added the field.
+#[must_use]
+pub fn system_author_id() -> uuid::Uuid {
+    SYSTEM_AUTHOR_ID
+}
+
+pub use auth::{
+    validate_agent_name, AgentNameInvalidReason, AuthConfigError, Scope, TokenGrantConfig,
+};
 pub use author::{AuthorRecord, PublicAuthorRef, RegisterAuthorArgs, RegisterAuthorError};
 pub use config::{ApiConfig, BackupConfig, BackupConfigError, SameDayStrategy, WindowStartUtc};
 pub use context::{

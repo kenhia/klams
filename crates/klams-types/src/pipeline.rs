@@ -26,6 +26,12 @@ pub struct UpsertFact {
     /// validation when a canonical fact already exists (FR-008 / A1).
     #[serde(default)]
     pub expected_version: Option<i32>,
+    /// Sprint 009 (FR-018) — author attributed for this write.
+    /// REST handlers stamp [`crate::SYSTEM_AUTHOR_ID`] (or the token
+    /// grant's resolved author); MCP handlers stamp the
+    /// session-authenticated author.
+    #[serde(default = "crate::system_author_id")]
+    pub author_id: Uuid,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,6 +41,9 @@ pub struct AppendEvent {
     pub category: String,
     pub payload: serde_json::Value,
     pub source: Source,
+    /// Sprint 009 (FR-018) — see [`UpsertFact::author_id`].
+    #[serde(default = "crate::system_author_id")]
+    pub author_id: Uuid,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,4 +56,7 @@ pub struct IndexKnowledge {
     pub repo: Option<String>,
     pub file: Option<String>,
     pub machine: Option<String>,
+    /// Sprint 009 (FR-018) — see [`UpsertFact::author_id`].
+    #[serde(default = "crate::system_author_id")]
+    pub author_id: Uuid,
 }
