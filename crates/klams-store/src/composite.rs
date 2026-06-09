@@ -397,7 +397,9 @@ async fn list_author_memories_impl(
 
     if (section == "f" || section == "e") && want_events {
         let pg_cursor = cursor.as_ref().and_then(|(s, ns, id)| {
-            if s == "e" {
+            // Section-handoff sentinel: (ns=0, id=nil) means "start of
+            // events section", not "after epoch-0/nil" — skip the cursor.
+            if s == "e" && !(*ns == 0 && *id == Uuid::nil()) {
                 Some((
                     time::OffsetDateTime::from_unix_timestamp_nanos(*ns).ok()?,
                     *id,
@@ -689,7 +691,9 @@ async fn list_memories_impl(
 
     if (section == "f" || section == "e") && want_events {
         let pg_cursor = cursor.as_ref().and_then(|(s, ns, id)| {
-            if s == "e" {
+            // Section-handoff sentinel: (ns=0, id=nil) means "start of
+            // events section", not "after epoch-0/nil" — skip the cursor.
+            if s == "e" && !(*ns == 0 && *id == Uuid::nil()) {
                 Some((
                     time::OffsetDateTime::from_unix_timestamp_nanos(*ns).ok()?,
                     *id,

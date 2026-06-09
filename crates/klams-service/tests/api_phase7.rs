@@ -64,6 +64,7 @@ async fn authors_list_returns_registered_author_with_counts() {
     let server = TestServer::spawn().await;
     let state = mcp_state_from(&server);
     let author = make_author(&state, "GHCP-phase7-list").await;
+    let uniq = Uuid::now_v7();
 
     // Write one fact + one event so counts are non-zero.
     memory_add(
@@ -72,7 +73,7 @@ async fn authors_list_returns_registered_author_with_counts() {
             author_id: author,
             content: MemoryAddContent::Fact {
                 fact_type: FactTypeArg::EnvFact,
-                payload: serde_json::json!({"key": "phase7-list", "value": "x"}),
+                payload: serde_json::json!({"key": format!("phase7-list-{uniq}"), "value": "x"}),
             },
         },
     )
@@ -132,6 +133,7 @@ async fn authors_memories_lists_facts_and_events() {
     let server = TestServer::spawn().await;
     let state = mcp_state_from(&server);
     let author = make_author(&state, "GHCP-phase7-memories").await;
+    let uniq = Uuid::now_v7();
 
     let fact = memory_add(
         &state,
@@ -139,7 +141,7 @@ async fn authors_memories_lists_facts_and_events() {
             author_id: author,
             content: MemoryAddContent::Fact {
                 fact_type: FactTypeArg::EnvFact,
-                payload: serde_json::json!({"key": "phase7-mem", "value": "y"}),
+                payload: serde_json::json!({"key": format!("phase7-mem-{uniq}"), "value": "y"}),
             },
         },
     )
@@ -157,13 +159,21 @@ async fn authors_memories_lists_facts_and_events() {
     .await
     .expect("event");
 
-    let (status, body) = http_get(
-        &server,
-        &format!("/v1/authors/{author}/memories?kinds=fact,event&state=live&limit=50"),
-    )
-    .await;
-    assert_eq!(status, 200);
-    let memories = body["memories"].as_array().expect("memories");
+    let mut memories: Vec<serde_json::Value> = Vec::new();
+    let mut path = format!("/v1/authors/{author}/memories?kinds=fact,event&state=live&limit=50");
+    loop {
+        let (status, body) = http_get(&server, &path).await;
+        assert_eq!(status, 200);
+        for m in body["memories"].as_array().expect("memories") {
+            memories.push(m.clone());
+        }
+        let Some(cursor) = body["next_cursor"].as_str() else {
+            break;
+        };
+        path = format!(
+            "/v1/authors/{author}/memories?kinds=fact,event&state=live&limit=50&cursor={cursor}"
+        );
+    }
     assert!(
         memories
             .iter()
@@ -175,7 +185,7 @@ async fn authors_memories_lists_facts_and_events() {
         "event should appear in memories list"
     );
     // All live rows.
-    for m in memories {
+    for m in &memories {
         assert_eq!(m["state"].as_str(), Some("live"));
     }
 }
