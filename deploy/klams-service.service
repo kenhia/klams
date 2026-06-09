@@ -1,9 +1,8 @@
 [Unit]
 Description=klams memory service
 Documentation=https://github.com/kenhia/klams
-After=postgresql.service qdrant.service network-online.target
-Wants=network-online.target
-Requires=postgresql.service qdrant.service
+After=docker.service network-online.target
+Wants=network-online.target docker.service
 
 [Service]
 Type=simple
@@ -16,6 +15,11 @@ RestartSec=5
 StateDirectory=klams
 StandardOutput=journal
 StandardError=journal
+
+# Sprint 009 (FR-005, SC-002): raise the fd cap above the host
+# default so the connection-limits layer reaches its per-peer budget
+# before the kernel does.
+LimitNOFILE=65536
 
 # Hardening
 NoNewPrivileges=true

@@ -20,6 +20,7 @@ pub mod composite;
 pub mod embeddings;
 pub mod postgres;
 pub mod qdrant;
+pub mod repair;
 
 pub use composite::CompositeStore;
 pub use embeddings::TeiEmbedder;
@@ -256,6 +257,11 @@ pub struct AuthorListQuery {
 pub struct AuthorWithCountsOut {
     pub author: klams_types::AuthorRecord,
     pub writes_facts: i64,
+    /// Live knowledge points authored by this author (Qdrant payload
+    /// filter on `author_id` with `is_empty(deleted_at)`). Populated
+    /// only by `get_author_v1` (single-author detail). For
+    /// `list_authors_v1` this stays 0 to avoid N Qdrant round-trips.
+    pub writes_knowledge: i64,
     pub events: i64,
     pub soft_deletes_authored: i64,
     pub restores_received: i64,

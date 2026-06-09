@@ -22,6 +22,7 @@ use klams_store::{CompositeStore, PostgresStore, QdrantStore, TeiEmbedder};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
+use uuid::Uuid;
 
 pub mod fixture;
 pub mod seed;
@@ -37,6 +38,13 @@ pub struct TestServer {
     /// Write+Read scope token (sprint 007 T066).
     pub write_token: String,
     pub store: Arc<TestStore>,
+    /// gRPC Qdrant URL — retained so `cleanup()` can drop the
+    /// per-test collection on teardown (sprint 009 T039 / FR-021).
+    qdrant_url: String,
+    /// Qdrant collection name this server bound to. For
+    /// `spawn_isolated` this is `klams_test_{uuid}`; for the shared
+    /// helpers it is `knowledge_items_test`.
+    qdrant_collection: String,
 }
 
 impl std::fmt::Debug for TestServer {
@@ -48,7 +56,7 @@ impl std::fmt::Debug for TestServer {
             .field("write_token", &"<redacted>")
             .field("client", &"<klams_client>")
             .field("store", &"<CompositeStore>")
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -61,6 +69,31 @@ impl TestServer {
     /// so the events section can substitute raw rows for summaries
     /// (sprint 005 T039 + T033).
     pub async fn spawn_with_summary_store(with_summary_store: bool) -> Self {
+        Self::spawn_inner(
+            with_summary_store,
+            "knowledge_items_test".to_string(),
+            false,
+        )
+        .await
+    }
+
+    /// Sprint 009 T039 (FR-021 / SC-008) — per-test isolation.
+    /// Creates an ephemeral Qdrant collection `klams_test_{uuid}`
+    /// (dropped via [`Self::cleanup`]) and TRUNCATEs the shared
+    /// Postgres test tables so concurrent tests cannot observe
+    /// each other's facts/events/summaries/dissents/authors.
+    /// Seeded `system` + `lost-author` authors are preserved.
+    pub async fn spawn_isolated() -> Self {
+        let collection = format!("klams_test_{}", Uuid::new_v4().simple());
+        Self::spawn_inner(false, collection, true).await
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn spawn_inner(
+        with_summary_store: bool,
+        qdrant_collection: String,
+        truncate_postgres: bool,
+    ) -> Self {
         let pg_url = std::env::var("TEST_DATABASE_URL")
             .unwrap_or_else(|_| "postgres://klams:klams_test@127.0.0.1:55432/klams".into());
         let qdrant_url =
@@ -74,7 +107,22 @@ impl TestServer {
         let postgres = PostgresStore::connect(&pg_url, 4)
             .await
             .expect("postgres connect");
-        let qdrant = QdrantStore::connect(&qdrant_url, "knowledge_items_test", 384)
+        if truncate_postgres {
+            // Wipe per-test mutable state. `authors` keeps the two
+            // seeded identities ('system', 'lost-author') so the
+            // re-attribution invariants still hold.
+            sqlx::query(
+                "TRUNCATE TABLE facts, events, summaries, dissents RESTART IDENTITY CASCADE",
+            )
+            .execute(postgres.pool())
+            .await
+            .expect("truncate postgres");
+            sqlx::query("DELETE FROM authors WHERE agent_name NOT IN ('system', 'lost-author')")
+                .execute(postgres.pool())
+                .await
+                .expect("prune authors");
+        }
+        let qdrant = QdrantStore::connect(&qdrant_url, &qdrant_collection, 384)
             .await
             .expect("qdrant connect");
         let embedder = TeiEmbedder::new(tei_url, 384).expect("tei client");
@@ -155,6 +203,21 @@ impl TestServer {
             read_token,
             write_token,
             store,
+            qdrant_url,
+            qdrant_collection,
         }
+    }
+
+    /// Sprint 009 T039 — drop the per-test Qdrant collection.
+    /// Safe to call on a `spawn()`-built server too; it will skip
+    /// the shared `knowledge_items_test` collection.
+    pub async fn cleanup(self) {
+        if self.qdrant_collection == "knowledge_items_test" {
+            return;
+        }
+        let client = qdrant_client::Qdrant::from_url(&self.qdrant_url)
+            .build()
+            .expect("qdrant client for cleanup");
+        let _ = client.delete_collection(self.qdrant_collection).await;
     }
 }

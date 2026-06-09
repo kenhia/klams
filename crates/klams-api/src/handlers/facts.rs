@@ -1,12 +1,13 @@
 //! HTTP handlers for `/memory/facts` (POST upsert + GET list).
 
+use crate::auth::AuthenticatedAuthor;
 use crate::router::ApiState;
 use crate::ApiError;
 use axum::{
     extract::{Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
+    Extension, Json,
 };
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
@@ -24,6 +25,7 @@ use uuid::Uuid;
 /// fact via a oneshot reply channel.
 pub async fn upsert<S: Store>(
     State(state): State<ApiState<S>>,
+    Extension(author): Extension<AuthenticatedAuthor>,
     Json(req): Json<UpsertFactRequest>,
 ) -> Result<Response, ApiError> {
     validate_payload(&req.payload)?;
@@ -33,6 +35,7 @@ pub async fn upsert<S: Store>(
         source: req.source,
         explicit_id: req.explicit_id,
         expected_version: req.expected_version,
+        author_id: author.author_id,
     };
     let probe = MemoryWrite::UpsertFact(upsert.clone());
     if let Err(details) = state.validators.validate_write(&probe) {

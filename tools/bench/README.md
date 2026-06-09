@@ -19,19 +19,22 @@ for the rules governing `queries.txt`.
 
 - `just bench-seed` → `cargo run --release -p klams-bench --bin seed`
 - `just bench-run`  → `cargo run --release -p klams-bench --bin run`
-- `just bench-clean` → purge bench-seeded facts (Postgres) and bench
-  knowledge points (Qdrant). Needs `PGPASSWORD`; honors `PGHOST`,
+- `just bench-clean` → purge every row authored by `klams-bench`
+  from Postgres (`facts` / `events` / `knowledge_items` `WHERE
+  author_id = (SELECT id FROM authors WHERE agent_name =
+  'klams-bench')`) and from the Qdrant collection (payload filter
+  `author_id = <uuid>`). Needs `PGPASSWORD`; honors `PGHOST`,
   `PGUSER`, `PGDATABASE`, `QDRANT_URL`, `QDRANT_COLLECTION`.
 
 The seed/run recipes always exit 0 (per FR-022) — the harness surfaces
 measurement but never gates `just gate`.
 
-Bench rows are identified by their generator payload markers
-(`tools/bench/src/lib.rs`): `UserFact.name = "bench-user-*"`,
-`EnvFact.key = "BENCH_*"`, `TaskFact.task_id = "ansible-*"` with a `seq`
-field, and Qdrant points where `repo = "klams"` and `file` starts with
-`notes/`. See backlog item "Per-token author attribution" for the
-durable fix that would let cleanup target a dedicated author instead.
+Bench rows are identified by author attribution (sprint 009 FR-011):
+the bench `$KLAMS_TOKEN` is bound to a dedicated `klams-bench`
+agent_name via `klams.toml`, so every fact, event, and knowledge
+point it writes carries `author_id = <klams-bench-uuid>`. `just
+bench-clean` resolves that UUID and deletes by it directly — no
+payload-pattern fallback.
 
 ## Environment
 
@@ -39,6 +42,12 @@ durable fix that would let cleanup target a dedicated author instead.
 |---------------|------------|-----------------------------------------|
 | `KLAMS_URL`   | seed, run  | Defaults to `http://127.0.0.1:7777`.     |
 | `KLAMS_TOKEN` | seed, run  | Required. Use a token with `read,write`. |
+
+> **Sprint 009 (FR-007):** the bench `$KLAMS_TOKEN` should be bound
+> to a dedicated author. Configure it in `klams.toml` as a scoped
+> grant with `agent_name = "klams-bench"` so the rows it writes are
+> attributed away from the operational `system` author. See
+> [specs/009-stability-attribution/contracts/token-grant-config.md](../../specs/009-stability-attribution/contracts/token-grant-config.md).
 
 ## seed flags
 

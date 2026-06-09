@@ -1,6 +1,9 @@
 <script lang="ts">
   import { page as pageStore } from '$app/stores';
   import { api } from '$lib/api';
+  import { summaryFor } from '../../activity/row';
+  import MemoryDetails from '$lib/components/MemoryDetails.svelte';
+  import type { MemoryItem } from '$lib/types/memories';
   import type {
     AuthorMemoriesPage,
     AuthorMemoryRow,
@@ -89,26 +92,11 @@
     return { label: 'hard-deleted', cls: 'badge hard' };
   }
 
-  function hrefFor(row: AuthorMemoryRow): string {
-    switch (row.kind) {
-      case 'fact':
-        return `/facts/${row.id}`;
-      case 'knowledge':
-        return `/knowledge/${row.id}`;
-      case 'event':
-        return `/events/${row.id}`;
-    }
-  }
-
-  function summaryFor(row: AuthorMemoryRow): string {
-    switch (row.kind) {
-      case 'fact':
-        return `${row.type}: ${JSON.stringify(row.payload).slice(0, 120)}`;
-      case 'knowledge':
-        return row.text.slice(0, 160);
-      case 'event':
-        return `${row.category}: ${JSON.stringify(row.payload).slice(0, 120)}`;
-    }
+  // Share rendering with the Activity view. `AuthorMemoryRow` is
+  // structurally identical to `MemoryItem` for the fields summaryFor
+  // and MemoryDetails read.
+  function rowAsMemory(row: AuthorMemoryRow): MemoryItem {
+    return row as unknown as MemoryItem;
   }
 
   $effect(() => {
@@ -135,6 +123,7 @@
     <dt>Counts</dt>
     <dd>
       writes={author.counts.writes}
+      &middot; knowledge={author.counts.knowledge}
       &middot; events={author.counts.events}
       &middot; soft-deletes={author.counts.soft_deletes}
       &middot; restores={author.counts.restores_received}
@@ -179,7 +168,12 @@
         <tr>
           <td><span class={b.cls}>{b.label}</span></td>
           <td>{row.kind}</td>
-          <td><a href={hrefFor(row)}>{summaryFor(row)}</a></td>
+          <td>
+            <details>
+              <summary>{summaryFor(rowAsMemory(row))}</summary>
+              <MemoryDetails item={rowAsMemory(row)} />
+            </details>
+          </td>
           <td>{new Date(row.updated_at).toLocaleString()}</td>
           <td>{row.tags?.join(', ') ?? ''}</td>
         </tr>

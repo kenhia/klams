@@ -83,11 +83,12 @@ pub async fn run(
         category,
         payload: args.payload,
         source: Source::AgentProposal,
+        author_id: author.id,
     };
     let event = state
         .store
         .postgres
-        .append_event_with_author(req, author.id)
+        .append_event(req)
         .await
         .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("append_event: {e}")))?;
 

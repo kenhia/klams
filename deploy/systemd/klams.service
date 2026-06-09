@@ -16,6 +16,11 @@ RestartSec=5
 StandardOutput=journal
 StandardError=journal
 
+# Sprint 009 (FR-005, SC-002): raise the fd cap above the host
+# default so the connection-limits layer reaches its per-peer budget
+# before the kernel does.
+LimitNOFILE=65536
+
 # Hardening
 NoNewPrivileges=true
 PrivateTmp=true

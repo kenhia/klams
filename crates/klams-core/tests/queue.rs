@@ -82,6 +82,7 @@ fn sample_event() -> AppendEvent {
         category: "Execution".into(),
         payload: serde_json::json!({"step": "init"}),
         source: Source::Controller,
+        author_id: klams_types::SYSTEM_AUTHOR_ID,
     }
 }
 

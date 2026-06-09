@@ -24,6 +24,7 @@ use axum::{
 use klams_types::Scope;
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
+use uuid::Uuid;
 
 /// Materialized form of a `TokenGrantConfig`. The token bytes are
 /// retained as `Vec<u8>` (not zeroized) so that constant-time compare
@@ -33,15 +34,41 @@ pub struct TokenGrant {
     pub token_bytes: Arc<Vec<u8>>,
     pub scopes: Arc<Vec<Scope>>,
     pub label: Option<String>,
+    /// Author that writes via this grant are attributed to. Defaults
+    /// to `SYSTEM_AUTHOR_ID` ("system") for grants without an explicit
+    /// `agent_name` binding.
+    pub author_id: Uuid,
+    pub agent_name: Arc<String>,
 }
 
 impl TokenGrant {
+    /// Back-compat constructor: binds the grant to the system author.
     #[must_use]
     pub fn new(token: impl Into<String>, scopes: Vec<Scope>, label: Option<String>) -> Self {
+        Self::new_with_author(
+            token,
+            scopes,
+            label,
+            klams_types::SYSTEM_AUTHOR_ID,
+            "system",
+        )
+    }
+
+    /// Sprint 009: bind the grant to a specific author.
+    #[must_use]
+    pub fn new_with_author(
+        token: impl Into<String>,
+        scopes: Vec<Scope>,
+        label: Option<String>,
+        author_id: Uuid,
+        agent_name: impl Into<String>,
+    ) -> Self {
         Self {
             token_bytes: Arc::new(token.into().into_bytes()),
             scopes: Arc::new(scopes),
             label,
+            author_id,
+            agent_name: Arc::new(agent_name.into()),
         }
     }
 }
@@ -52,6 +79,8 @@ impl std::fmt::Debug for TokenGrant {
             .field("token_len", &self.token_bytes.len())
             .field("scopes", &*self.scopes)
             .field("label", &self.label)
+            .field("author_id", &self.author_id)
+            .field("agent_name", &*self.agent_name)
             .finish()
     }
 }
@@ -61,6 +90,15 @@ impl std::fmt::Debug for TokenGrant {
 /// [`require_scope`] when gating individual routes.
 #[derive(Clone, Debug)]
 pub struct AuthenticatedScopes(pub Arc<Vec<Scope>>);
+
+/// Sprint 009 — author bound to the request's bearer token. Inserted
+/// into request extensions by [`require_bearer`]; consumed by REST
+/// write handlers to stamp `author_id` on enqueued jobs.
+#[derive(Clone, Debug)]
+pub struct AuthenticatedAuthor {
+    pub author_id: Uuid,
+    pub agent_name: Arc<String>,
+}
 
 #[derive(Clone)]
 pub struct AuthState {
@@ -138,6 +176,7 @@ pub async fn require_bearer(
     // length or content mismatch so observable timing is grant-count
     // dependent only, not token-shape dependent.
     let mut matched: Option<Arc<Vec<Scope>>> = None;
+    let mut matched_author: Option<(Uuid, Arc<String>)> = None;
     let mut any_match: u8 = 0;
     for g in state.grants() {
         let len_eq = u8::from(provided.len() == g.token_bytes.len());
@@ -152,6 +191,7 @@ pub async fn require_bearer(
         any_match |= m;
         if m == 1 && matched.is_none() {
             matched = Some(g.scopes.clone());
+            matched_author = Some((g.author_id, g.agent_name.clone()));
         }
     }
 
@@ -161,6 +201,12 @@ pub async fn require_bearer(
 
     if let Some(scopes) = matched {
         req.extensions_mut().insert(AuthenticatedScopes(scopes));
+    }
+    if let Some((author_id, agent_name)) = matched_author {
+        req.extensions_mut().insert(AuthenticatedAuthor {
+            author_id,
+            agent_name,
+        });
     }
     Ok(next.run(req).await)
 }

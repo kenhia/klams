@@ -98,6 +98,13 @@ pub struct PublicAuthor {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthorCounts {
     pub writes: i64,
+    /// Live knowledge points authored by this author. Sprint 009
+    /// (kwi #32): populated by `/v1/authors/{id}` via Qdrant count;
+    /// `/v1/authors` list keeps this at 0 to avoid N round-trips.
+    /// `#[serde(default)]` so older service responses (pre-009) still
+    /// deserialize.
+    #[serde(default)]
+    pub knowledge: i64,
     pub events: i64,
     pub soft_deletes: i64,
     pub restores_received: i64,

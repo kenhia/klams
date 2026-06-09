@@ -52,7 +52,7 @@ async fn make_author(state: &McpState, name: &str) -> Uuid {
 #[ignore = "requires docker compose stack"]
 #[tokio::test]
 async fn memory_delete_soft_smoke() {
-    let server = TestServer::spawn().await;
+    let server = TestServer::spawn_isolated().await;
     let state = mcp_state_from(&server);
     let author = make_author(&state, "GHCP-phase6-delete").await;
 
@@ -146,12 +146,14 @@ async fn memory_delete_soft_smoke() {
     .await
     .expect_err("expected NOT_FOUND");
     assert_eq!(err.meta.error_code, "NOT_FOUND");
+
+    server.cleanup().await;
 }
 
 #[ignore = "requires docker compose stack"]
 #[tokio::test]
 async fn memory_admin_restore_smoke() {
-    let server = TestServer::spawn().await;
+    let server = TestServer::spawn_isolated().await;
     let state = mcp_state_from(&server);
     let author = make_author(&state, "GHCP-phase6-restore").await;
 
@@ -214,12 +216,14 @@ async fn memory_admin_restore_smoke() {
         .await
         .expect_err("expected NOT_FOUND");
     assert_eq!(err.meta.error_code, "NOT_FOUND");
+
+    server.cleanup().await;
 }
 
 #[ignore = "requires docker compose stack"]
 #[tokio::test]
 async fn memory_admin_hard_delete_smoke() {
-    let server = TestServer::spawn().await;
+    let server = TestServer::spawn_isolated().await;
     let state = mcp_state_from(&server);
     let author = make_author(&state, "GHCP-phase6-hard").await;
 
@@ -265,12 +269,14 @@ async fn memory_admin_hard_delete_smoke() {
         .await
         .expect_err("expected EVENTS_NOT_DELETABLE");
     assert_eq!(err.meta.error_code, "EVENTS_NOT_DELETABLE");
+
+    server.cleanup().await;
 }
 
 #[ignore = "requires docker compose stack"]
 #[tokio::test]
 async fn memory_admin_list_deleted_smoke() {
-    let server = TestServer::spawn().await;
+    let server = TestServer::spawn_isolated().await;
     let state = mcp_state_from(&server);
     let author = make_author(&state, "GHCP-phase6-list").await;
 
@@ -346,4 +352,6 @@ async fn memory_admin_list_deleted_smoke() {
     for id in &ids {
         assert!(returned.contains(id), "missing soft-deleted id {id}");
     }
+
+    server.cleanup().await;
 }

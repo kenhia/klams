@@ -426,3 +426,103 @@ This stops Prometheus and Grafana only; the postgres/qdrant/tei
 services keep running. The on-disk volumes under
 `${KLAMS_DATA_ROOT}/prometheus` and `${KLAMS_DATA_ROOT}/grafana`
 persist across restarts.
+
+## Sprint 009 — Stability & attribution
+
+Sprint 009 (`specs/009-stability-attribution/`) introduces three
+operator-visible configuration knobs: the raised file-descriptor cap
+in the systemd unit, the `agent_name` field on bearer tokens, and the
+one-shot re-attribution CLI.
+
+### Raised file-descriptor cap (`LimitNOFILE=65536`)
+
+The shipped [`deploy/klams-service.service`](../deploy/klams-service.service)
+unit sets `LimitNOFILE=65536` so the connection-limits layer can
+reach its per-peer budget before the kernel-level fd cap is hit
+(FR-005, SC-002). After deploying a new copy of the unit:
+
+```bash
+sudo install -m 0644 deploy/klams-service.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl restart klams-service
+cat /proc/$(pidof klams-service)/limits | grep -i 'open files'
+# Expect: Max open files            65536    65536    files
+```
+
+If the running process shows a lower cap (e.g. the host default of
+1024), `systemctl daemon-reload` was missed, or another drop-in unit
+is overriding the value. Check with
+`systemctl cat klams-service.service`.
+
+> **Note for hosts where postgres/qdrant run under Docker** (the
+> `kubs0` topology): the upstream unit hard-required
+> `postgresql.service` and `qdrant.service`. If you manage those
+> dependencies via Compose instead of native systemd units, drop the
+> `Requires=` line and switch `After=` to `docker.service network-online.target`.
+> Otherwise systemctl will refuse to start the service citing
+> missing dependencies.
+
+### Token attribution (`agent_name`)
+
+Each `[[auth.tokens]]` entry in `klams.toml` now accepts an optional
+`agent_name` field. The agent name is resolved to an `author_id` at
+service startup (the row is created in the `authors` table if it
+doesn't already exist) and cached for the life of the process.
+Every REST write under that bearer is then attributed to the
+resolved author.
+
+```toml
+[[auth.tokens]]
+token = "ghcp-write-XXXXXXXXXXXXXXXX"
+scopes = ["read", "write"]
+agent_name = "ghcp"            # ← NEW; lowercase, digits, '-' or '_'
+
+[[auth.tokens]]
+token = "viewport-read-XXXXXXXXXXXXXXXX"
+scopes = ["read"]
+agent_name = "viewport"
+
+[[auth.tokens]]
+token = "bench-XXXXXXXXXXXXXXXX"
+scopes = ["read", "write"]
+agent_name = "klams-bench"      # required for author-based bench-clean
+```
+
+Rules (enforced at startup; the service refuses to start on
+violation):
+
+- Charset: `[a-z0-9_-]+`. Uppercase, dots, spaces, and other
+  punctuation are rejected with a clear error before the listener
+  binds.
+- Length: 1–128 characters.
+- Multiple tokens may share an `agent_name` — they all resolve to
+  the same `author_id`. Useful for rotating tokens without losing
+  attribution continuity.
+- Tokens without `agent_name` fall back to the seeded `system`
+  author so existing deployments keep working unchanged.
+- The legacy single `[auth].bearer_token` field is always
+  materialized as a `system`-bound grant.
+
+### One-shot re-attribution repair
+
+Deployments with historical REST writes from before sprint 009
+shipped will have those rows stamped as `system`. The standalone
+[`tools/reattribute-system/`](../tools/reattribute-system/) CLI
+walks the affected rows and reassigns each to the author of the
+`register_author` event that immediately preceded the write. Rows
+with no resolvable antecedent land on the new seeded `lost-author`
+identity rather than staying on `system`, preserving the per-author
+bucket sum (FR-016, FR-016a).
+
+```bash
+# Dry-run; prints the per-author reassignment plan and the
+# `lost-author` bucket count without touching the store.
+cargo run --release -p reattribute-system
+
+# Commit:
+cargo run --release -p reattribute-system -- --apply
+```
+
+The repair is **idempotent** — a second `--apply` is a no-op once
+every row has been classified. Run once as part of the cutover; no
+recurring schedule is needed.

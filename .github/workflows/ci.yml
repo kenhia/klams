@@ -31,19 +31,43 @@ jobs:
         run: docker compose -f tests/docker-compose.test.yml up -d
 
       - name: Wait for test stack
+        # Probe published ports from the host. We do NOT rely on
+        # `docker compose ps`'s health column because the qdrant image
+        # ships without `curl`, so its in-container healthcheck never
+        # reports `healthy` even when the service is fine (same gotcha
+        # documented in .scratch/user-tests.md). pg_isready and curl
+        # are preinstalled on ubuntu-latest runners.
         run: |
           set -e
+          echo -n "postgres: "
           for i in $(seq 1 60); do
-            unhealthy=$(docker compose -f tests/docker-compose.test.yml ps --format json \
-              | jq -r '. | select(.Health != "" and .Health != "healthy") | .Name' || true)
-            if [ -z "$unhealthy" ]; then
-              echo "all healthy"; exit 0
+            if pg_isready -h 127.0.0.1 -p 55432 -U klams >/dev/null 2>&1; then
+              echo "ok"; break
             fi
-            echo "waiting on: $unhealthy"
-            sleep 5
+            sleep 1
           done
-          docker compose -f tests/docker-compose.test.yml ps
-          exit 1
+          echo -n "qdrant:   "
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:56333/readyz >/dev/null 2>&1; then
+              echo "ok"; break
+            fi
+            sleep 1
+          done
+          echo -n "tei:      "
+          for i in $(seq 1 120); do
+            if curl -fsS http://127.0.0.1:57070/health >/dev/null 2>&1; then
+              echo "ok"; break
+            fi
+            sleep 1
+          done
+          # Final verification — fail loudly if any service is still unresponsive
+          pg_isready -h 127.0.0.1 -p 55432 -U klams >/dev/null \
+            || { echo "postgres unreachable"; docker compose -f tests/docker-compose.test.yml ps; exit 1; }
+          curl -fsS http://127.0.0.1:56333/readyz >/dev/null \
+            || { echo "qdrant unreachable"; docker compose -f tests/docker-compose.test.yml ps; exit 1; }
+          curl -fsS http://127.0.0.1:57070/health >/dev/null \
+            || { echo "tei unreachable"; docker compose -f tests/docker-compose.test.yml ps; exit 1; }
+          echo "stack ready"
 
       - name: Install just
         run: cargo install just --locked

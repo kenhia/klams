@@ -7,7 +7,7 @@ use crate::{DissentQuery, EventQuery, FactQuery, StoreError, StoreResult, TextHi
 use async_trait::async_trait;
 use klams_types::{
     canonical_json_hash, AppendEvent, AuthorRecord, Dissent, DissentStatus, Event, Fact, FactType,
-    FactWriteOutcome, RegisterAuthorArgs, Source, UpsertFact, SYSTEM_AUTHOR_ID,
+    FactWriteOutcome, RegisterAuthorArgs, Source, UpsertFact,
 };
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
@@ -82,7 +82,7 @@ impl PostgresStore {
         .bind(&req.payload)
         .bind(&hash[..])
         .bind(req.source.as_str())
-        .bind(SYSTEM_AUTHOR_ID)
+        .bind(req.author_id)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| StoreError::Backend(format!("upsert_fact: {e}")))?;
@@ -102,7 +102,7 @@ impl PostgresStore {
         .bind(&req.category)
         .bind(&req.payload)
         .bind(req.source.as_str())
-        .bind(SYSTEM_AUTHOR_ID)
+        .bind(req.author_id)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| StoreError::Backend(format!("append_event: {e}")))?;
@@ -507,7 +507,7 @@ impl PostgresStore {
         .bind(&req.payload)
         .bind(&hash[..])
         .bind(req.source.as_str())
-        .bind(SYSTEM_AUTHOR_ID)
+        .bind(req.author_id)
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| StoreError::Backend(format!("upsert_fact_v2 insert: {e}")))?;
@@ -988,6 +988,30 @@ impl PostgresStore {
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| StoreError::Backend(format!("get_author_by_id: {e}")))?;
+        row.map(|r| row_to_author(&r)).transpose()
+    }
+
+    /// Sprint 009 — look up an author by `agent_name`. If multiple
+    /// rows share the name (legacy data), returns the most recently
+    /// touched one. Used by the REST bearer-binding resolver at
+    /// service startup.
+    pub async fn get_author_by_agent_name(
+        &self,
+        agent_name: &str,
+    ) -> StoreResult<Option<AuthorRecord>> {
+        let row = sqlx::query(
+            r"SELECT id, agent_name, model, session_title, repo,
+                     client_app, client_version, extra,
+                     created_at, last_seen_at
+              FROM authors
+              WHERE agent_name = $1
+              ORDER BY last_seen_at DESC
+              LIMIT 1",
+        )
+        .bind(agent_name)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| StoreError::Backend(format!("get_author_by_agent_name: {e}")))?;
         row.map(|r| row_to_author(&r)).transpose()
     }
 
@@ -1510,69 +1534,6 @@ pub enum AuthorMemoryState {
 }
 
 impl PostgresStore {
-    /// MCP write path for facts — same dedupe semantics as `upsert_fact`
-    /// but attributes the row to `author_id` instead of `SYSTEM_AUTHOR_ID`.
-    pub async fn upsert_fact_with_author(
-        &self,
-        req: UpsertFact,
-        author_id: Uuid,
-    ) -> StoreResult<Fact> {
-        let hash = canonical_json_hash(req.fact_type.as_str(), &req.payload);
-        let id = req.explicit_id.unwrap_or_else(Uuid::now_v7);
-        let row = sqlx::query(
-            r"
-            INSERT INTO facts (id, type, payload, payload_hash, source, version, author_id)
-            VALUES ($1, $2, $3, $4, $5, 1, $6)
-            ON CONFLICT (type, payload_hash) DO UPDATE
-                SET updated_at = now(),
-                    version = facts.version + CASE
-                        WHEN facts.payload <> EXCLUDED.payload THEN 1
-                        ELSE 0
-                    END,
-                    payload = EXCLUDED.payload
-            RETURNING
-                id, type, payload, version, source,
-                confidence, decay_weight, use_count,
-                last_used_at, created_at, updated_at
-            ",
-        )
-        .bind(id)
-        .bind(req.fact_type.as_str())
-        .bind(&req.payload)
-        .bind(&hash[..])
-        .bind(req.source.as_str())
-        .bind(author_id)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| StoreError::Backend(format!("upsert_fact_with_author: {e}")))?;
-        row_to_fact(&row)
-    }
-
-    /// MCP write path for events — append with an explicit author.
-    pub async fn append_event_with_author(
-        &self,
-        req: AppendEvent,
-        author_id: Uuid,
-    ) -> StoreResult<Event> {
-        let row = sqlx::query(
-            r"
-            INSERT INTO events (id, task_id, category, payload, source, author_id)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            RETURNING id, task_id, category, payload, source, created_at
-            ",
-        )
-        .bind(req.id)
-        .bind(req.task_id)
-        .bind(&req.category)
-        .bind(&req.payload)
-        .bind(req.source.as_str())
-        .bind(author_id)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| StoreError::Backend(format!("append_event_with_author: {e}")))?;
-        row_to_event(&row)
-    }
-
     /// Returns `true` if a fact row with `id` exists, regardless of
     /// its soft-delete state. Used by `memory_delete` to distinguish
     /// `NOT_FOUND` from "already soft-deleted" (FR-014).
@@ -1823,6 +1784,7 @@ mod fts_tests {
                     category: "fts-tie-test".into(),
                     payload: json!({"note": "deterministic ordering matters", "n": n}),
                     source: Source::Controller,
+                    author_id: klams_types::SYSTEM_AUTHOR_ID,
                 })
                 .await
                 .expect("event");

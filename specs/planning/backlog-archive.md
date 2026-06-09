@@ -2,6 +2,46 @@
 
 Items that have been moved to spec/sprint or cut from consideration.
 
+## Run full sprint-008 perf baseline against fixed store
+
+[specs/009-stability-attribution/spec.md](../009-stability-attribution/spec.md)
+
+Sprint 008 Phase 7 (US5) committed a smoke-sized `perf-baseline.md`
+(500 facts / 2,000 knowledge items) to avoid dumping 60k synthetic
+rows into the live store while kwi work item #26 (loopback CLOSE_WAIT
+leak) was open. Sprint 009 fixed #26 and re-ran the full corpus
+(10k facts / 50k knowledge items); the refreshed baseline ships in
+[specs/008-activity-observability/perf-baseline.md](../008-activity-observability/perf-baseline.md).
+
+## Per-token author attribution (data-integrity bug)
+
+[specs/009-stability-attribution/spec.md](../009-stability-attribution/spec.md)
+
+REST write paths (`POST /v1/facts`, `POST /v1/events`,
+`POST /v1/knowledge`) stamped every row as `SYSTEM_AUTHOR_ID`
+regardless of which bearer token issued the write, because the
+`UpsertFact` / `AppendEvent` / `IndexKnowledge` pipeline structs had no
+`author_id` field. Sprint 009 added `agent_name` to `TokenGrantConfig`,
+resolves each grant to an `author_id` at startup, threads it through
+the pipeline, and switches the worker to the `_with_author` store
+variants. The bench seeder now writes as a dedicated `klams-bench`
+author and `just bench-clean` is a one-line author-scoped purge. The
+standalone [`tools/reattribute-system/`](../../tools/reattribute-system/)
+CLI repairs historical `system`-stamped rows.
+
+## Phase 6 test harness isolation
+
+[specs/009-stability-attribution/spec.md](../009-stability-attribution/spec.md)
+
+`crates/klams-service/tests/mcp_phase6.rs` shared a single
+`knowledge_items_test` Qdrant collection and a single test Postgres
+database, so earlier tests' rows skewed counter assertions and forced
+the suite to run under `--test-threads=1`. Sprint 009 added
+`TestServer::spawn_isolated()` (per-test `klams_test_{uuid}` Qdrant
+collection plus truncated Postgres between runs, with the `system` and
+`lost-author` seed identities preserved). Verified 10/10 under default
+parallelism.
+
 ## `event_search` MCP tool **PRIORITY**
 
 [specs/008-activity-observability/spec.md](../008-activity-observability/spec.md)

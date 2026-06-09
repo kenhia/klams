@@ -167,17 +167,48 @@ impl Store for CompositeStore {
             .postgres
             .list_authors_with_counts_filtered(limit, q.since, q.agent_name.as_deref(), cursor)
             .await?;
-        let out: Vec<_> = rows.into_iter().map(authors_to_public).collect();
+        let mut out: Vec<_> = rows.into_iter().map(authors_to_public).collect();
+        // Sprint 009 (kwi #32 followup, T049): populate Qdrant knowledge
+        // counts in parallel. The `author_id` payload index (T048)
+        // makes each filtered count O(matches) rather than a full scan,
+        // so 50 parallel calls stay well under the SC-006 1 s budget.
+        // Fail-soft per author: a Qdrant error leaves the count at 0.
+        let handles: Vec<_> = out
+            .iter()
+            .map(|a| {
+                let qd = self.qdrant.clone();
+                let id = a.author.id;
+                tokio::spawn(async move { (id, qd.count_live_knowledge_by_author(id).await) })
+            })
+            .collect();
+        let mut counts: std::collections::HashMap<Uuid, i64> =
+            std::collections::HashMap::with_capacity(handles.len());
+        for h in handles {
+            if let Ok((id, Ok(n))) = h.await {
+                counts.insert(id, i64::try_from(n).unwrap_or(i64::MAX));
+            }
+        }
+        for a in &mut out {
+            if let Some(&n) = counts.get(&a.author.id) {
+                a.writes_knowledge = n;
+            }
+        }
         let next_cursor = next.map(|(ts, id)| encode_author_cursor(ts, id));
         Ok((out, next_cursor))
     }
 
     async fn get_author_v1(&self, id: Uuid) -> StoreResult<Option<crate::AuthorWithCountsOut>> {
-        Ok(self
-            .postgres
-            .get_author_with_counts(id)
-            .await?
-            .map(authors_to_public))
+        let Some(row) = self.postgres.get_author_with_counts(id).await? else {
+            return Ok(None);
+        };
+        let mut out = authors_to_public(row);
+        // Populate knowledge count from Qdrant; fail-soft to 0 on
+        // backend errors so the detail page still renders.
+        out.writes_knowledge = match self.qdrant.count_live_knowledge_by_author(id).await {
+            Ok(n) => i64::try_from(n).unwrap_or(i64::MAX),
+            Err(_) => 0,
+        };
+        Ok(Some(out))
     }
 
     async fn list_author_memories(
@@ -206,6 +237,7 @@ fn authors_to_public(row: crate::postgres::AuthorWithCounts) -> crate::AuthorWit
     crate::AuthorWithCountsOut {
         author: row.author,
         writes_facts: row.fact_count,
+        writes_knowledge: 0,
         events: row.event_count,
         soft_deletes_authored: row.soft_deletes_authored,
         restores_received: row.restores_received,
