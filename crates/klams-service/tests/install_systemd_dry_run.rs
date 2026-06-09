@@ -30,7 +30,13 @@ fn dry_run_prints_planned_actions() {
     let bin_dir = tmp.path().join("bin");
     std::fs::create_dir_all(&bin_dir).unwrap();
     for b in ["klams-service", "klams-scanner", "klams-monitor"] {
-        std::fs::write(bin_dir.join(b), "#!/bin/sh\n").unwrap();
+        let p = bin_dir.join(b);
+        std::fs::write(&p, "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
     }
 
     let out = Command::new("bash")
@@ -66,7 +72,13 @@ fn dry_run_is_idempotent() {
     let bin_dir = tmp.path().join("bin");
     std::fs::create_dir_all(&bin_dir).unwrap();
     for b in ["klams-service", "klams-scanner", "klams-monitor"] {
-        std::fs::write(bin_dir.join(b), "#!/bin/sh\n").unwrap();
+        let p = bin_dir.join(b);
+        std::fs::write(&p, "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
     }
 
     let run = || -> Option<String> {
