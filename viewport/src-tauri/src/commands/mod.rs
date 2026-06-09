@@ -10,11 +10,11 @@ pub mod memory;
 use async_trait::async_trait;
 use klams_client::{Client, ClientError};
 use klams_types::{
-    AuthorMemoriesPage, AuthorPage, ContextBundle, ContextRequest, Dissent, DissentPage,
-    EventPage, Fact, FactPage, FactType, FactWriteOutcome, HealthSnapshot, KnowledgeItem,
+    AuthorMemoriesPage, AuthorPage, ContextBundle, ContextRequest, Dissent, DissentPage, EventPage,
+    Fact, FactPage, FactType, FactWriteOutcome, HealthSnapshot, KnowledgeItem,
     ListAuthorMemoriesParams, ListAuthorsParams, ListDissentsParams, ListEventsParams,
-    ListFactsParams, ListMemoriesParams, MemoriesPage, PublicAuthor, SearchRequest,
-    SearchResults, Source, UpsertFactRequest,
+    ListFactsParams, ListMemoriesParams, MemoriesPage, PublicAuthor, SearchRequest, SearchResults,
+    Source, UpsertFactRequest,
 };
 use serde::Serialize;
 use std::sync::Arc;
@@ -40,7 +40,9 @@ impl From<ClientError> for ViewportError {
     fn from(e: ClientError) -> Self {
         match e {
             ClientError::InvalidUrl(m) => ViewportError::NotConfigured { message: m },
-            ClientError::Transport(t) => ViewportError::Network { message: t.to_string() },
+            ClientError::Transport(t) => ViewportError::Network {
+                message: t.to_string(),
+            },
             ClientError::Decode(m) => ViewportError::Deserialization { message: m },
             ClientError::NotImplemented(m) => ViewportError::Server {
                 status: 501,
@@ -72,16 +74,11 @@ pub trait ClientFactory: Send + Sync + std::fmt::Debug {
     async fn health(&self) -> Result<HealthSnapshot, ViewportError>;
 
     /// Sprint 005 — `POST /memory/context` typed call.
-    async fn memory_context(
-        &self,
-        req: ContextRequest,
-    ) -> Result<ContextBundle, ViewportError>;
+    async fn memory_context(&self, req: ContextRequest) -> Result<ContextBundle, ViewportError>;
 
     // -- Sprint 002: dissents + canonical writes ---------------------
-    async fn list_dissents(
-        &self,
-        params: ListDissentsParams,
-    ) -> Result<DissentPage, ViewportError>;
+    async fn list_dissents(&self, params: ListDissentsParams)
+        -> Result<DissentPage, ViewportError>;
     async fn get_dissent(&self, id: Uuid) -> Result<Dissent, ViewportError>;
     async fn promote_dissent(
         &self,
@@ -94,10 +91,7 @@ pub trait ClientFactory: Send + Sync + std::fmt::Debug {
         id: Uuid,
         caller_source: Source,
     ) -> Result<Dissent, ViewportError>;
-    async fn upsert_fact(
-        &self,
-        req: UpsertFactRequest,
-    ) -> Result<FactWriteOutcome, ViewportError>;
+    async fn upsert_fact(&self, req: UpsertFactRequest) -> Result<FactWriteOutcome, ViewportError>;
     async fn delete_fact(&self, id: Uuid) -> Result<(), ViewportError>;
     async fn edit_fact(
         &self,
@@ -108,10 +102,7 @@ pub trait ClientFactory: Send + Sync + std::fmt::Debug {
     ) -> Result<FactWriteOutcome, ViewportError>;
 
     // -- Sprint 007: viewport `/v1/authors` drilldown -----------------
-    async fn list_authors(
-        &self,
-        params: ListAuthorsParams,
-    ) -> Result<AuthorPage, ViewportError>;
+    async fn list_authors(&self, params: ListAuthorsParams) -> Result<AuthorPage, ViewportError>;
     async fn get_author(&self, id: Uuid) -> Result<PublicAuthor, ViewportError>;
     async fn list_author_memories(
         &self,
@@ -181,8 +172,9 @@ impl LiveClientFactory {
     #[allow(clippy::unused_self)] // method form is ergonomic for the factory trait
     fn client(&self) -> Result<Client, ViewportError> {
         let cfg = crate::config::load();
-        let token = crate::config::read_token()
-            .ok_or_else(|| ViewportError::NotConfigured { message: "no bearer token in keyring".into() })?;
+        let token = crate::config::read_token().ok_or_else(|| ViewportError::NotConfigured {
+            message: "no bearer token in keyring".into(),
+        })?;
         Client::new(&cfg.klams_url, token).map_err(Into::into)
     }
 }
@@ -204,10 +196,7 @@ impl ClientFactory for LiveClientFactory {
     async fn health(&self) -> Result<HealthSnapshot, ViewportError> {
         Ok(self.client()?.health().await?)
     }
-    async fn memory_context(
-        &self,
-        req: ContextRequest,
-    ) -> Result<ContextBundle, ViewportError> {
+    async fn memory_context(&self, req: ContextRequest) -> Result<ContextBundle, ViewportError> {
         Ok(self.client()?.memory_context(&req).await?)
     }
     async fn list_dissents(
@@ -237,10 +226,7 @@ impl ClientFactory for LiveClientFactory {
     ) -> Result<Dissent, ViewportError> {
         Ok(self.client()?.discard_dissent(id, caller_source).await?)
     }
-    async fn upsert_fact(
-        &self,
-        req: UpsertFactRequest,
-    ) -> Result<FactWriteOutcome, ViewportError> {
+    async fn upsert_fact(&self, req: UpsertFactRequest) -> Result<FactWriteOutcome, ViewportError> {
         Ok(self.client()?.upsert_fact(&req).await?)
     }
     async fn delete_fact(&self, id: Uuid) -> Result<(), ViewportError> {
@@ -258,10 +244,7 @@ impl ClientFactory for LiveClientFactory {
             .edit_fact(id, fact_type, payload, expected_version)
             .await?)
     }
-    async fn list_authors(
-        &self,
-        params: ListAuthorsParams,
-    ) -> Result<AuthorPage, ViewportError> {
+    async fn list_authors(&self, params: ListAuthorsParams) -> Result<AuthorPage, ViewportError> {
         Ok(self.client()?.list_authors(&params).await?)
     }
     async fn get_author(&self, id: Uuid) -> Result<PublicAuthor, ViewportError> {

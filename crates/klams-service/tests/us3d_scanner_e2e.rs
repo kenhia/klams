@@ -30,11 +30,7 @@ async fn poll_hits(server: &TestServer, nonce: &str, target: usize) -> usize {
         let hits = res
             .results
             .iter()
-            .filter(|h| {
-                serde_json::to_string(h)
-                    .map(|s| s.contains(nonce))
-                    .unwrap_or(false)
-            })
+            .filter(|h| serde_json::to_string(h).is_ok_and(|s| s.contains(nonce)))
             .count();
         if hits == target || std::time::Instant::now() > deadline {
             return hits;
