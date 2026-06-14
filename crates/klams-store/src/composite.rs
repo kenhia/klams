@@ -231,6 +231,10 @@ impl Store for CompositeStore {
     ) -> StoreResult<(Vec<klams_types::PublicMemory>, Option<String>)> {
         event_search_impl(self, q).await
     }
+
+    async fn touch_author_last_seen_at(&self, id: Uuid) -> StoreResult<u64> {
+        self.postgres.touch_author_last_seen_at(id).await
+    }
 }
 
 fn authors_to_public(row: crate::postgres::AuthorWithCounts) -> crate::AuthorWithCountsOut {

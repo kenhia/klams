@@ -6,6 +6,7 @@
 pub const FILES_PROCESSED: &str = "klams_scanner_files_processed_total";
 pub const FILES_SKIPPED: &str = "klams_scanner_files_skipped_total";
 pub const CHUNKS_INDEXED: &str = "klams_scanner_chunks_indexed_total";
+pub const CHUNK_RETRIES: &str = "klams_scanner_chunk_retries_total";
 pub const LAST_RUN_TS: &str = "klams_scanner_last_run_timestamp_seconds";
 
 pub fn incr_processed() {
@@ -18,6 +19,10 @@ pub fn incr_skipped(reason: &'static str) {
 
 pub fn add_chunks(n: u64) {
     metrics::counter!(CHUNKS_INDEXED).increment(n);
+}
+
+pub fn incr_retry(reason: &'static str) {
+    metrics::counter!(CHUNK_RETRIES, "reason" => reason).increment(1);
 }
 
 pub fn record_last_run(ts_seconds: f64) {

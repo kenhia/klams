@@ -658,8 +658,8 @@ The viewport gains an `Authors` nav entry that drills into per-agent
 state:
 
 1. **`/authors`** — table of every registered author with rolling
-   counts (writes, events, soft-deletes, restores received). Filter
-   by `agent_name` substring or `since` timestamp.
+   counts (writes, knowledge, events, soft-deletes, restores
+   received). Filter by `agent_name` substring or `since` timestamp.
 2. **`/authors/{id}`** — author header (model, repo, client app,
    first/last seen, counts) plus a memories table. Each row carries
    a state badge (`live` | `soft-deleted` | `hard-deleted`),
@@ -667,6 +667,13 @@ state:
    that lands on `/facts/{id}`, `/knowledge/{id}`, or
    `/events/{id}` so you can pivot into the existing per-kind
    inspectors (FR-025).
+
+> **Sprint 010 (US4):** both surfaces now render `counts.knowledge`
+> as a distinct **Knowledge** measure alongside **Writes** (facts).
+> They are shown separately, never summed — so an author that has only
+> indexed knowledge (e.g. `klams-scanner`, `writes=0`) shows its real
+> knowledge count instead of `0`. The two pages share one render helper
+> (`viewport/src/routes/authors/counts.ts`).
 
 Filter controls on the detail page: kinds checkboxes
 (`fact` / `knowledge` / `event`) and a state selector

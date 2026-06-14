@@ -2,6 +2,7 @@
   import { page as pageStore } from '$app/stores';
   import { api } from '$lib/api';
   import { summaryFor } from '../../activity/row';
+  import { authorCountCells } from '../counts';
   import MemoryDetails from '$lib/components/MemoryDetails.svelte';
   import type { MemoryItem } from '$lib/types/memories';
   import type {
@@ -122,11 +123,7 @@
     <dt>Last seen</dt><dd>{new Date(author.last_seen_at).toLocaleString()}</dd>
     <dt>Counts</dt>
     <dd>
-      writes={author.counts.writes}
-      &middot; knowledge={author.counts.knowledge}
-      &middot; events={author.counts.events}
-      &middot; soft-deletes={author.counts.soft_deletes}
-      &middot; restores={author.counts.restores_received}
+      {#each authorCountCells(author.counts) as c, i (c.key)}{i > 0 ? ' · ' : ''}{c.label}={c.value}{/each}
     </dd>
   </dl>
 {/if}
