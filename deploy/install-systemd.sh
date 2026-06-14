@@ -11,9 +11,11 @@
 #   4. Install unit + timer files into /etc/systemd/system.
 #   5. systemctl daemon-reload + enable --now the units.
 #
-# Required deps: `postgresql.service` must exist on the host. We do not
-# install it for you; we only verify the unit file is on disk so the
-# After=/Requires= in klams-service.service can be satisfied.
+# Required deps: `docker.service` must exist on the host. Postgres, Qdrant,
+# and the embeddings backend run as Docker containers (see compose files),
+# so `klams-service.service` declares `After=/Wants=docker.service`. We do
+# not install Docker for you; we only verify the unit is on disk so the
+# After=/Wants= in klams-service.service can be satisfied.
 
 set -eu
 
@@ -59,9 +61,10 @@ fail() {
 
 # --- 0. Pre-flight checks -------------------------------------------------
 
-# postgresql.service must be known to systemd (per plan.md Constraints).
-if ! systemctl cat postgresql.service >/dev/null 2>&1; then
-    fail "postgresql.service not found on this host; install postgres first"
+# docker.service must be known to systemd: the datastores run as Docker
+# containers and klams-service.service declares After=/Wants=docker.service.
+if ! systemctl cat docker.service >/dev/null 2>&1; then
+    fail "docker.service not found on this host; install Docker first"
 fi
 
 for bin in $BIN_LIST; do

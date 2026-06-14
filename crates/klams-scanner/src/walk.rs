@@ -9,9 +9,23 @@ use std::path::{Path, PathBuf};
 const ALWAYS_SKIP: &[&str] = &[
     "target",
     "node_modules",
+    ".pnpm-store",
     ".git",
     "__pycache__",
     ".venv",
+    "venv",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".tox",
+    ".gradle",
+    ".idea",
+    ".svelte-kit",
+    ".next",
+    ".nuxt",
+    ".cache",
+    ".terraform",
+    ".obsidian",
     "dist",
     "build",
 ];
@@ -34,7 +48,16 @@ pub fn walk(root: &Path) -> Vec<WalkedFile> {
         .git_exclude(true)
         .require_git(false)
         .hidden(false)
-        .add_custom_ignore_filename(".klamsignore");
+        .add_custom_ignore_filename(".klamsignore")
+        // Prune always-skip directories *before* descending into them.
+        // Filtering only after the walker yields entries still forces a
+        // full traversal of e.g. `.venv/site-packages` (hundreds of
+        // thousands of files) just to discard them — pruning here means
+        // the walker never enters those subtrees at all.
+        .filter_entry(|entry| {
+            let name = entry.file_name().to_string_lossy();
+            !ALWAYS_SKIP.contains(&name.as_ref())
+        });
     let walker = b.build();
     for entry in walker {
         let Ok(entry) = entry else { continue };

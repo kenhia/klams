@@ -70,19 +70,37 @@ pub async fn scan_root(
             }
         }
 
+        let mut publish_failed = false;
         for c in &chunks {
             if let Err(e) = publish_chunk(client, &repo, &abs, &c.text).await {
                 tracing::warn!(path = %abs, idx = c.index, %e, "publish_chunk failed");
+                publish_failed = true;
             }
+        }
+        if publish_failed {
+            // Leave the cursor unadvanced so the next scan retries this
+            // file — otherwise the mtime/hash short-circuit would skip it
+            // forever and the dropped chunks would never be ingested.
+            tracing::warn!(path = %abs, "publish incomplete; leaving cursor unadvanced for retry");
+            metrics::incr_skipped("publish_failed");
+            continue;
         }
         metrics::add_chunks(chunks.len() as u64);
         cursor.upsert(&abs, &file_hash, f.mtime_ns, now_seconds_i64())?;
         metrics::incr_processed();
     }
 
-    // Prune vanished files.
+    // Prune vanished files — but ONLY within the current root's subtree.
+    // `cursor.list_all()` spans every configured root while `seen` holds
+    // just this root's paths, so without the prefix guard a multi-root
+    // scan would treat every *other* root's files as "vanished" and
+    // delete them from knowledge (each root would wipe the previous one).
     for prev in cursor.list_all()? {
         if seen.contains(&prev.absolute_path) {
+            continue;
+        }
+        if !Path::new(&prev.absolute_path).starts_with(root) {
+            // Belongs to a different root; not this scan's responsibility.
             continue;
         }
         match publish_delete(base_url, bearer, &prev.absolute_path).await {

@@ -1,0 +1,42 @@
+# klams-monitor configuration (sprint 010).
+#
+# Deploy as /etc/klams/monitor.toml and point the systemd unit's
+# Environment=KLAMS_CONFIG at it. See
+# specs/010-operationalize-ingestion/contracts/monitor-parity.md.
+
+# klams service base URL (loopback).
+url = "http://127.0.0.1:7777"
+
+# Scoped monitor bearer. MUST resolve to a registered author so the
+# emitted Service events are attributable. Placeholder only.
+token = "changeme-monitor-bearer"
+
+# Watched systemd units. The legacy python looper watched the single
+# "klams" service, so klams-service.service is the parity-critical unit
+# (monitor-parity.md). Add the other klams units to observe their
+# lifecycle too once the cutover is complete.
+units = ["klams-service.service"]
+
+# Poll cadence. The legacy looper polled every 30s; match it so the
+# parity comparison (R4) is like-for-like.
+interval_secs = 30
+
+# ── kpidash dashboard reporting (optional, sprint 010 / T024) ─────────
+# Uncomment to make klams-monitor take over the legacy python looper:
+# it polls <url>/healthz and publishes a status card to the kpidash
+# Redis dashboard at key `kpidash:services:<name>:<host>`. The whole
+# section is inert when omitted — a clone without a Redis server never
+# connects and emits no warnings (the `kpidash` cargo feature is on by
+# default; build with `--no-default-features` to drop the redis crate).
+#
+# [kpidash]
+# redis_host   = "rpi53"        # host backing the kpidash dashboard
+# redis_port   = 6379           # optional, default 6379
+# name         = "klams"        # middle segment of the Redis key
+# host         = "_"            # key host segment; "_" = no host line
+# icon         = 8              # dashboard card icon index 0..15
+# interval_secs = 30            # report cadence (own clock; default 30)
+# healthz_url  = "http://127.0.0.1:7777/healthz"  # optional; defaults to url + /healthz
+# Provide the Redis password via the REDISCLI_AUTH environment variable
+# on the systemd unit (preferred, keeps it out of this file) or, as a
+# fallback, an inline `password = "..."` key here.

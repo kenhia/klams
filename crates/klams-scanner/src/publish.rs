@@ -2,10 +2,23 @@
 //! `index_knowledge` (one POST per chunk) and `delete_knowledge`
 //! (one POST per vanished file).
 
+use crate::metrics;
 use anyhow::{Context, Result};
-use klams_client::Client;
+use klams_client::{Client, ClientError};
 use klams_types::{IndexKnowledgeRequest, Source};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
+use std::time::Duration;
+
+/// Aggressive, drain-oriented backoff for the service's `503 queue_full`
+/// backpressure. The scanner is a background task, so completeness beats
+/// latency: we wait long enough for the bounded write queue to actually
+/// drain (the 4 workers each do embed + qdrant + postgres) rather than
+/// racing to refill the few slots that just opened. Worst case ~3 min of
+/// sleeping per chunk before we give up and leave the file's cursor
+/// unadvanced so the next scan retries it.
+const RETRY_MAX_ATTEMPTS: u32 = 12;
+const RETRY_INITIAL_DELAY: Duration = Duration::from_secs(2);
+const RETRY_MAX_DELAY: Duration = Duration::from_secs(60);
 
 pub async fn publish_chunk(
     client: &Client,
@@ -21,11 +34,34 @@ pub async fn publish_chunk(
         file: Some(source_file.to_owned()),
         machine: None,
     };
-    client
-        .index_knowledge(&req)
-        .await
-        .context("POST /memory/knowledge/index")?;
-    Ok(())
+
+    let mut delay = RETRY_INITIAL_DELAY;
+    for attempt in 1..=RETRY_MAX_ATTEMPTS {
+        match client.index_knowledge(&req).await {
+            Ok(_) => return Ok(()),
+            Err(ClientError::Api { status, .. }) if status.as_u16() == 503 => {
+                if attempt == RETRY_MAX_ATTEMPTS {
+                    anyhow::bail!(
+                        "POST /memory/knowledge/index: queue_full after {attempt} attempts"
+                    );
+                }
+                metrics::incr_retry("queue_full");
+                tracing::debug!(
+                    path = %source_file,
+                    attempt,
+                    delay_ms = delay.as_millis(),
+                    "queue_full; backing off to let the write queue drain"
+                );
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(RETRY_MAX_DELAY);
+            }
+            Err(e) => {
+                return Err(anyhow::Error::new(e).context("POST /memory/knowledge/index"));
+            }
+        }
+    }
+    // The loop returns or bails on the final attempt.
+    unreachable!("publish_chunk retry loop exhausted without returning")
 }
 
 /// `POST /memory/knowledge/delete?source_file=<abs>` — used at the

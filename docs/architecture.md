@@ -315,6 +315,44 @@ Plan and spec live at
 and
 [specs/003-non-agentic-writes/spec.md](../specs/003-non-agentic-writes/spec.md).
 
+### Sprint 010 — ingestion operationalized
+
+Sprint 010 (`specs/010-operationalize-ingestion/`) takes the sprint-003
+scanner and monitor from "buildable" to **live on `kubs0`**:
+
+* `klams-scanner.timer` fires the scanner hourly (`Type=oneshot`); the
+  scanner walks `/home/ken/src` + `/home/ken/obsidian`, pruning heavy
+  dependency/cache trees (`target`, `node_modules`, `.pnpm-store`,
+  `.venv`, `__pycache__`, `.obsidian`, …) **before** descent and
+  honouring `.gitignore` + a repo-root `.klamsignore`. End-to-end
+  ingestion (index, attribution, ignore-handling, idempotency, delete-
+  on-vanish) is verified by sentinel-note acceptance probes.
+* `klams-monitor.service` (`Type=simple`) polls `klams-service.service`
+  and posts typed `Service` events on edge transitions. **Known
+  limitation:** because the monitor posts events to `klams-service`
+  itself, it cannot record `klams-service`'s own *Down* (the sink is
+  unavailable during the outage) — tracked as kwi #55; Service events
+  also currently carry `host=unknown` (kwi #56).
+* The units declare `After=/Wants=docker.service` — Postgres, Qdrant,
+  and the TEI embedder run in Docker; there is no host
+  `postgresql.service`.
+* The legacy python looper (`~/src/tools/ksvc-looper/klams_monitor.py`)
+  is a **kpidash app-health reporter** (polls `/healthz` → dashboard),
+  not a klams event source, so it is *not* replaced by the Rust monitor's
+  event path — the two observe different signals. That kpidash path is
+  now **re-homed into the Rust monitor** behind the default-on `kpidash`
+  cargo feature: an optional `[kpidash]` config section makes
+  `klams-monitor` poll `/healthz` and publish the same
+  `kpidash:services:<name>:<host>` Redis card the looper wrote (identical
+  `{ts,state,text,host,icon}` JSON). It lives in the monitor — not the
+  service — so it stays an *external* observer that can still report
+  `down` when `klams-service` is offline (the kpidash Redis sink is on a
+  separate host, side-stepping the kwi #55 self-dependency). The whole
+  section is inert when omitted, so a clone without Redis never connects.
+  See [`crates/klams-monitor/src/kpidash.rs`](../crates/klams-monitor/src/kpidash.rs).
+  Live cutover (stop the looper, deploy the configured monitor) is the
+  remaining operator step.
+
 ## 2c. Phase 5 deltas (sprint 005 — advanced retrieval)
 
 Sprint 005 adds **hybrid retrieval, summarization, and a unified

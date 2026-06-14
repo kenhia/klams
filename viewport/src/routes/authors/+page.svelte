@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api } from '$lib/api';
   import type { AuthorPage } from '$lib/types';
+  import { authorCountCells } from './counts';
 
   let agentName = $state('');
   let since = $state('');
@@ -76,11 +77,9 @@
         <th>Model</th>
         <th>Repo</th>
         <th>Last seen</th>
-        <th>Writes</th>
-        <th>Knowledge</th>
-        <th>Events</th>
-        <th>Soft deletes</th>
-        <th>Restores</th>
+        {#each authorCountCells({ writes: 0, knowledge: 0, events: 0, soft_deletes: 0, restores_received: 0 }) as c (c.key)}
+          <th>{c.label}</th>
+        {/each}
       </tr>
     </thead>
     <tbody>
@@ -90,11 +89,9 @@
           <td>{a.model ?? ''}</td>
           <td>{a.repo ?? ''}</td>
           <td>{new Date(a.last_seen_at).toLocaleString()}</td>
-          <td>{a.counts.writes}</td>
-          <td>{a.counts.knowledge}</td>
-          <td>{a.counts.events}</td>
-          <td>{a.counts.soft_deletes}</td>
-          <td>{a.counts.restores_received}</td>
+          {#each authorCountCells(a.counts) as c (c.key)}
+            <td>{c.value}</td>
+          {/each}
         </tr>
       {/each}
     </tbody>

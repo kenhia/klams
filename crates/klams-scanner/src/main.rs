@@ -21,7 +21,7 @@ use tracing_subscriber::EnvFilter;
     about = "Walks ~/src and ~/obsidian, indexes changed files, deletes vanished ones."
 )]
 struct Args {
-    #[arg(long, env = "KLAMS_SCANNER_CONFIG")]
+    #[arg(long, env = "KLAMS_CONFIG")]
     config: Option<PathBuf>,
     /// Scan once and exit.
     #[arg(long)]

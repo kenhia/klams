@@ -240,6 +240,15 @@ pub trait Store: Send + Sync + 'static {
     ) -> StoreResult<(Vec<klams_types::PublicMemory>, Option<String>)> {
         Ok((Vec::new(), None))
     }
+
+    /// Sprint 010 — bump `last_seen_at` for an authenticated author on
+    /// an HTTP write (knowledge/facts/events), mirroring the MCP write
+    /// path so background daemons (scanner/monitor) that write over HTTP
+    /// show fresh activity. Default no-op (returns 0 rows affected) so
+    /// test mocks need not implement it.
+    async fn touch_author_last_seen_at(&self, _id: Uuid) -> StoreResult<u64> {
+        Ok(0)
+    }
 }
 
 /// Query for `Store::list_authors_v1`.

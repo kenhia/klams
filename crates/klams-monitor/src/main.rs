@@ -26,7 +26,7 @@ use tracing_subscriber::EnvFilter;
 )]
 struct Args {
     /// Path to the TOML config file.
-    #[arg(long, env = "KLAMS_MONITOR_CONFIG")]
+    #[arg(long, env = "KLAMS_CONFIG")]
     config: PathBuf,
     /// Poll once and exit (useful for cron / one-shot systemd timers).
     #[arg(long)]
@@ -45,6 +45,11 @@ struct Config {
     interval_secs: u64,
     #[serde(default = "default_host")]
     host: String,
+    /// Optional kpidash dashboard reporting (sprint 010 / T024). Absent in a
+    /// fresh clone, so nothing connects to Redis unless the operator opts in.
+    #[cfg(feature = "kpidash")]
+    #[serde(default)]
+    kpidash: Option<klams_monitor::kpidash::KpidashConfig>,
 }
 
 fn default_interval() -> u64 {
@@ -75,6 +80,26 @@ async fn main() -> Result<()> {
         once = args.once,
         "klams-monitor starting"
     );
+    // kpidash dashboard reporter (sprint 010 / T024): polls healthz and writes
+    // a status card to Redis, replacing the legacy python looper. Inert unless
+    // a `[kpidash]` config section is present.
+    #[cfg(feature = "kpidash")]
+    if let Some(reporter) = cfg
+        .kpidash
+        .clone()
+        .map(|kc| klams_monitor::kpidash::Reporter::new(kc, &cfg.url))
+    {
+        tracing::info!(
+            interval_secs = reporter.interval().as_secs(),
+            "kpidash reporter enabled"
+        );
+        if args.once {
+            let mut reporter = reporter;
+            reporter.report_once().await;
+        } else {
+            tokio::spawn(reporter.run());
+        }
+    }
     loop {
         for unit in &cfg.units {
             match is_active(unit).await {

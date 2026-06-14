@@ -34,6 +34,14 @@ pub async fn append<S: Store>(
 ) -> Result<(StatusCode, Json<EventWriteResponse>), ApiError> {
     validate(&req)?;
     let _guard = m::LatencyGuard::with_type(m::WRITE_LATENCY, "event");
+
+    // Sprint 010: bump last_seen_at on authenticated HTTP writes
+    // (fire-and-forget), mirroring the MCP write path.
+    let _ = state
+        .store
+        .touch_author_last_seen_at(author.author_id)
+        .await;
+
     let id = Uuid::now_v7();
     let append = AppendEvent {
         id,

@@ -1,0 +1,34 @@
+# klams-scanner configuration (sprint 010).
+#
+# Deploy as /etc/klams/scanner.toml and point the systemd unit's
+# Environment=KLAMS_CONFIG at it. See
+# specs/010-operationalize-ingestion/contracts/scanner-config.md.
+#
+# IMPORTANT (research.md §R2): the scanner runs as User=klams with
+# ProtectHome=read-only. `~` would expand to the klams user's home,
+# NOT /home/ken — so roots MUST be ABSOLUTE paths, and the klams user
+# must be able to read them (ProtectHome=read-only permits reads, but
+# Unix permissions still apply; grant least-broad read access if the
+# home dir is 0700).
+
+# klams service base URL (loopback; the service binds 127.0.0.1:7777).
+url = "http://127.0.0.1:7777"
+
+# Scoped scanner bearer. MUST resolve to a registered author so the
+# scanner's knowledge writes are attributable on the per-author surface.
+# Treat as a secret — this example carries a placeholder only.
+token = "changeme-scanner-bearer"
+
+# Absolute roots to walk. NOT "~/src" / "~/obsidian".
+roots = ["/home/ken/src", "/home/ken/obsidian"]
+
+# Seconds between cycles when run as a long-lived loop. The deployed
+# unit runs `--once` under klams-scanner.timer, so the timer's cadence
+# governs in production; this value only applies to ad-hoc loop runs.
+interval_secs = 3600
+
+# SQLite cursor home. MUST align with the unit's StateDirectory=klams so
+# the mtime cursor persists across runs and re-scans stay idempotent
+# (scanner-config.md C4). The binary reads this value directly (it does
+# not consume $STATE_DIRECTORY), so set it explicitly.
+state_dir = "/var/lib/klams"

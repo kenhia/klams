@@ -49,6 +49,14 @@ pub async fn index<S: Store>(
     let _guard = m::LatencyGuard::with_type(m::WRITE_LATENCY, "knowledge");
     let content_hash = sha256_hex(&normalized);
 
+    // Sprint 010: bump the author's last_seen_at on every authenticated
+    // HTTP write (fire-and-forget), mirroring the MCP write path so
+    // daemons writing over HTTP (scanner/monitor) show fresh activity.
+    let _ = state
+        .store
+        .touch_author_last_seen_at(author.author_id)
+        .await;
+
     if let Some(existing) = state
         .store
         .find_knowledge_by_content_hash(&content_hash)

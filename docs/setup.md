@@ -182,7 +182,9 @@ The script is **idempotent** and:
 Required preconditions (the script aborts loudly if any are
 missing):
 
-* `postgresql.service` is known to systemd on the host.
+* `docker.service` is known to systemd on the host — Postgres, Qdrant,
+  and the TEI embedding server run in Docker (the units declare
+  `After=/Wants=docker.service`). There is no host `postgresql.service`.
 * Release binaries exist at `target/release/klams-{service,scanner,monitor}`.
 * All four unit files exist under `deploy/`.
 
@@ -194,9 +196,24 @@ missing):
 ```toml
 url = "http://127.0.0.1:7777"
 token = "<bearer from /etc/klams/klams.toml>"
-roots = ["/home/ken/src", "/home/ken/obsidian"]
+roots = ["/home/ken/src", "/home/ken/obsidian"]   # MUST be absolute
 interval_secs = 3600            # ignored when running with --once
 state_dir = "/var/lib/klams"    # SQLite cursor lives here
+```
+
+`roots` **must be absolute paths**. The walker honours `.gitignore`
+and a repo-root `.klamsignore`, and always prunes heavy dependency /
+cache trees (`target`, `node_modules`, `.pnpm-store`, `.venv`,
+`__pycache__`, `.obsidian`, `dist`, `build`, …) *before* descent.
+
+**Read access:** the scanner runs as the `klams` system user, so every
+path under `roots` must be readable by `klams`. For files owned by
+another user (e.g. `ken`), grant a default ACL so newly-created files
+stay readable, e.g.:
+
+```sh
+sudo setfacl -R  -m u:klams:rX /home/ken/src /home/ken/obsidian
+sudo setfacl -R -d -m u:klams:rX /home/ken/src /home/ken/obsidian   # inherit
 ```
 
 For ad-hoc runs (outside the timer): `just scanner-once`.
@@ -208,16 +225,24 @@ For ad-hoc runs (outside the timer): `just scanner-once`.
 ```toml
 url = "http://127.0.0.1:7777"
 token = "<bearer>"
-poll_interval_secs = 30
-services = [
-    "klams-service.service",
-    "postgresql.service",
-    "docker.service",
-]
+units = ["klams-service.service"]   # systemd units to watch
+interval_secs = 30
+# host = "kubs0"                     # optional; defaults to $HOSTNAME
 ```
 
-The monitor only POSTs **edge transitions** — steady-state polls
+The config keys are `units` (the systemd units to poll) and
+`interval_secs` (poll cadence). The monitor only POSTs **edge
+transitions** (Up / Down / VersionChanged) — steady-state polls
 generate zero traffic. For a one-off probe: `just monitor-once`.
+
+### Config file permissions
+
+`/etc/klams/klams.toml`, `scanner.toml`, and `monitor.toml` hold bearer
+tokens and the Postgres DSN. They MUST be `root:klams 0640` (owner
+root, group `klams`, group-readable) so the `klams`-user daemons can
+read them while keeping the secrets off world-read. A wrong owner/mode
+(e.g. `root:root 0600`) makes a daemon crash-loop with
+`read config …: Permission denied (os error 13)`.
 
 ### Logs
 

@@ -13,6 +13,13 @@ path = "src/main.rs"
 [lints]
 workspace = true
 
+[features]
+default = ["kpidash"]
+# Health reporting to the kpidash Redis dashboard. Compiled by default so it
+# never bit-rots, but entirely inert at runtime unless a `[kpidash]` config
+# section is present — a fresh clone with no Redis server never connects.
+kpidash = ["dep:redis"]
+
 [dependencies]
 klams-types = { workspace = true }
 klams-client = { workspace = true }
@@ -26,6 +33,7 @@ toml = { workspace = true }
 reqwest = { workspace = true }
 anyhow = { workspace = true }
 time = { workspace = true }
+redis = { workspace = true, optional = true }
 
 [dev-dependencies]
 which = "6"

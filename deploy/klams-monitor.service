@@ -10,6 +10,12 @@ User=klams
 Group=klams
 ExecStart=/usr/local/bin/klams-monitor
 Environment=KLAMS_CONFIG=/etc/klams/monitor.toml
+# kpidash dashboard reporting (optional, sprint 010 / T024): uncomment and
+# supply the Redis password so the [kpidash] section in monitor.toml can
+# publish status cards. Prefer an EnvironmentFile (root:klams 0640) over an
+# inline value so the secret never lands in the unit text.
+# EnvironmentFile=/etc/klams/monitor.env
+# Environment=REDISCLI_AUTH=changeme-redis-password
 Restart=on-failure
 RestartSec=5
 StateDirectory=klams

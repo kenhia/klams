@@ -116,6 +116,10 @@ install-systemd:
     cargo build --release --bin klams-service --bin klams-scanner --bin klams-monitor
     sudo deploy/install-systemd.sh
 
+# Restart the long-running systemd services (service + monitor).
+restart:
+    sudo systemctl restart klams-service klams-monitor
+
 scanner-once:
     KLAMS_URL={{klams_url}} KLAMS_TOKEN={{klams_token}} \
         cargo run --release --bin klams-scanner -- --once

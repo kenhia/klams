@@ -45,6 +45,13 @@ pub async fn upsert<S: Store>(
     }
     let _guard = m::LatencyGuard::with_type(m::WRITE_LATENCY, "fact");
 
+    // Sprint 010: bump last_seen_at on authenticated HTTP writes
+    // (fire-and-forget), mirroring the MCP write path.
+    let _ = state
+        .store
+        .touch_author_last_seen_at(author.author_id)
+        .await;
+
     let req_source = upsert.source;
     let (job, rx) = WriteJob::upsert_fact_with_reply(upsert);
     state.queue.try_enqueue(job).map_err(|_| {
