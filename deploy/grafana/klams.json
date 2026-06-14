@@ -1,6 +1,6 @@
 {
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "uid": "klams-006",
   "title": "klams",
   "tags": ["klams", "sprint-006"],
@@ -21,11 +21,11 @@
       "type": "timeseries",
       "title": "Event queue depth",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
-      "datasource": { "type": "prometheus", "uid": "prometheus-default" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "refId": "A",
-          "expr": "klams_event_queue_depth",
+          "expr": "klams_queue_depth",
           "legendFormat": "depth"
         }
       ],
@@ -37,11 +37,11 @@
       "type": "timeseries",
       "title": "Worker utilization (active workers)",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
-      "datasource": { "type": "prometheus", "uid": "prometheus-default" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "refId": "A",
-          "expr": "klams_worker_active",
+          "expr": "klams_workers_active",
           "legendFormat": "active"
         }
       ],
@@ -52,12 +52,12 @@
       "type": "timeseries",
       "title": "Write throughput by endpoint (non-GET req/s)",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
-      "datasource": { "type": "prometheus", "uid": "prometheus-default" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (route) (rate(klams_http_requests_total{method!=\"GET\"}[5m]))",
-          "legendFormat": "{{route}}"
+          "expr": "sum by (endpoint) (rate(axum_http_requests_total{method!=\"GET\"}[5m]))",
+          "legendFormat": "{{endpoint}}"
         }
       ],
       "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] }
@@ -67,22 +67,22 @@
       "type": "timeseries",
       "title": "Search + context latency (p50/p95/p99)",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
-      "datasource": { "type": "prometheus", "uid": "prometheus-default" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.50, sum by (le, route) (rate(klams_http_request_duration_seconds_bucket{route=~\"/memory/(search|context)\"}[5m])))",
-          "legendFormat": "p50 {{route}}"
+          "expr": "histogram_quantile(0.50, sum by (le, endpoint) (rate(axum_http_requests_duration_seconds_bucket{endpoint=~\"/memory/(search|context)\"}[5m])))",
+          "legendFormat": "p50 {{endpoint}}"
         },
         {
           "refId": "B",
-          "expr": "histogram_quantile(0.95, sum by (le, route) (rate(klams_http_request_duration_seconds_bucket{route=~\"/memory/(search|context)\"}[5m])))",
-          "legendFormat": "p95 {{route}}"
+          "expr": "histogram_quantile(0.95, sum by (le, endpoint) (rate(axum_http_requests_duration_seconds_bucket{endpoint=~\"/memory/(search|context)\"}[5m])))",
+          "legendFormat": "p95 {{endpoint}}"
         },
         {
           "refId": "C",
-          "expr": "histogram_quantile(0.99, sum by (le, route) (rate(klams_http_request_duration_seconds_bucket{route=~\"/memory/(search|context)\"}[5m])))",
-          "legendFormat": "p99 {{route}}"
+          "expr": "histogram_quantile(0.99, sum by (le, endpoint) (rate(axum_http_requests_duration_seconds_bucket{endpoint=~\"/memory/(search|context)\"}[5m])))",
+          "legendFormat": "p99 {{endpoint}}"
         }
       ],
       "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }
@@ -92,11 +92,11 @@
       "type": "timeseries",
       "title": "Error rate by status (5xx req/s)",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
-      "datasource": { "type": "prometheus", "uid": "prometheus-default" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (status) (rate(klams_http_requests_total{status=~\"5..\"}[5m]))",
+          "expr": "sum by (status) (rate(axum_http_requests_total{status=~\"5..\"}[5m]))",
           "legendFormat": "{{status}}"
         }
       ],
@@ -107,7 +107,7 @@
       "type": "stat",
       "title": "Last backup age",
       "gridPos": { "h": 6, "w": 6, "x": 12, "y": 16 },
-      "datasource": { "type": "prometheus", "uid": "prometheus-default" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "refId": "A",
@@ -142,7 +142,7 @@
       "type": "stat",
       "title": "Maintenance mode",
       "gridPos": { "h": 6, "w": 6, "x": 18, "y": 16 },
-      "datasource": { "type": "prometheus", "uid": "prometheus-default" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "refId": "A",
@@ -177,7 +177,7 @@
       "type": "stat",
       "title": "Summarization lag",
       "gridPos": { "h": 6, "w": 6, "x": 0, "y": 22 },
-      "datasource": { "type": "prometheus", "uid": "prometheus-default" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "refId": "A",
@@ -192,7 +192,7 @@
       "type": "timeseries",
       "title": "Backup duration by artifact (p95 seconds)",
       "gridPos": { "h": 8, "w": 12, "x": 6, "y": 22 },
-      "datasource": { "type": "prometheus", "uid": "prometheus-default" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "refId": "A",
@@ -207,7 +207,7 @@
       "type": "timeseries",
       "title": "Backup runs (24h, by outcome)",
       "gridPos": { "h": 8, "w": 6, "x": 18, "y": 22 },
-      "datasource": { "type": "prometheus", "uid": "prometheus-default" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "refId": "A",
@@ -222,7 +222,7 @@
       "type": "timeseries",
       "title": "status_hook invocations (24h, by event + outcome)",
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 30 },
-      "datasource": { "type": "prometheus", "uid": "prometheus-default" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "refId": "A",
@@ -238,7 +238,7 @@
       "title": "MCP writes by agent / model / kind (req/min)",
       "description": "Per-author write throughput broken down by kind.",
       "gridPos": { "h": 8, "w": 8, "x": 0, "y": 38 },
-      "datasource": { "type": "prometheus", "uid": "prometheus-default" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "refId": "A",
@@ -255,7 +255,7 @@
       "title": "MCP deletes by agent / model / mode (req/min)",
       "description": "Soft/restored/hard delete throughput per author.",
       "gridPos": { "h": 8, "w": 8, "x": 8, "y": 38 },
-      "datasource": { "type": "prometheus", "uid": "prometheus-default" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "refId": "A",
@@ -294,7 +294,7 @@
       "title": "MCP searches by agent / model (req/min)",
       "description": "Search call rate per author.",
       "gridPos": { "h": 8, "w": 8, "x": 16, "y": 38 },
-      "datasource": { "type": "prometheus", "uid": "prometheus-default" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "refId": "A",

@@ -81,8 +81,8 @@ fn dashboard_json_parses_and_has_panels() {
     for p in panels {
         let ds_uid = &p["datasource"]["uid"];
         assert_eq!(
-            ds_uid, "prometheus-default",
-            "every panel must pin the prometheus-default datasource UID"
+            ds_uid, "prometheus",
+            "every panel must pin the `prometheus` datasource UID"
         );
         let targets = p["targets"].as_array().expect("targets[]");
         assert!(!targets.is_empty(), "panel {} has no targets", p["title"]);

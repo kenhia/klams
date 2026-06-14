@@ -19,7 +19,7 @@ use klams_store::SummaryStore;
 use klams_types::{EventSummary, SummaryMechanism};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 use time::{Date, OffsetDateTime};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
@@ -210,11 +210,12 @@ impl SummarizationTask {
             written += 1;
             m::incr_summarization_runs(s.mechanism.as_str());
         }
-        let lag = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_or(0.0, |d| d.as_secs_f64())
-            - start.elapsed().as_secs_f64();
-        m::record_summarization_lag(lag.max(0.0));
+        // Wall-clock duration of this cycle; rises as the event
+        // backlog grows under load. (Previously this subtracted the
+        // cycle duration from the absolute UNIX epoch, so the gauge
+        // reported ~`time()` ≈ 56 years.)
+        let lag = start.elapsed().as_secs_f64();
+        m::record_summarization_lag(lag);
         let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         info!(written, elapsed_ms, "summarization cycle finished");
         Ok(written)
