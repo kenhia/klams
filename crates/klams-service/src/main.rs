@@ -120,6 +120,25 @@ async fn main() -> Result<()> {
     let (queue, rx) = MemoryQueue::new(cfg.queue.capacity);
     let _workers = spawn_workers(cfg.queue.workers, rx, Arc::clone(&store));
 
+    // Sprint 011 — resample the queue gauges on a light interval so
+    // `klams_queue_depth` tracks worker drain, not just the last
+    // enqueue. The per-write update in the handlers only refreshes the
+    // gauge when a write arrives, so a burst that subsequently drains
+    // leaves a stale (high) reading until the next write. A 2s sampler
+    // keeps the gauge honest between writes.
+    {
+        let queue = queue.clone();
+        let capacity = cfg.queue.capacity;
+        let workers = cfg.queue.workers;
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+            loop {
+                tick.tick().await;
+                klams_core::metrics::record_queue(queue.depth(), capacity, workers);
+            }
+        });
+    }
+
     let token_mode = klams_core::tokens::TokenMode::from_config_str(&cfg.tokens.mode);
     let token_counter = klams_core::tokens::TokenCounter::new(token_mode);
     info!(

@@ -452,6 +452,38 @@ services keep running. The on-disk volumes under
 `${KLAMS_DATA_ROOT}/prometheus` and `${KLAMS_DATA_ROOT}/grafana`
 persist across restarts.
 
+### Production scrape path (kubsdb Prometheus + Grafana)
+
+The bundled `observability` profile above is for a self-contained
+dev/test stack. In the live deployment the dashboard is rendered by a
+**central** Prometheus + Grafana running on `kubsdb`, not by the
+compose profile:
+
+- **Prometheus** (`kubsdb:9090`) scrapes the service over the network
+  via a `klams-service` job whose target is `kubs0:7777`
+  (`metrics_path: /metrics`, label `service: klams-service`). The
+  Prometheus container resolves `kubs0` through an `extra_hosts`
+  entry. `--web.enable-lifecycle` is on, so config changes hot-reload
+  with `curl -X POST http://kubsdb:9090/-/reload` (no restart). The
+  infra-as-code source is the ansible-k repo
+  (`roles/prometheus/templates/prometheus.yml.j2`).
+- **Grafana** (`kubsdb:3000`) holds the klams dashboard (uid
+  `klams-006`). Panels pin the datasource by uid `prometheus`. The
+  repo copy [`deploy/grafana/klams.json`](../deploy/grafana/klams.json)
+  is the source of truth; push updates with the Grafana HTTP API
+  (`POST /api/dashboards/db`, `overwrite: true`).
+
+The service exposes the metric names the dashboard expects:
+`klams_queue_depth`, `klams_workers_active`,
+`klams_summarization_lag_seconds`, the `klams_mcp_*` counters, and the
+HTTP/latency series under the `axum_http_requests_total` /
+`axum_http_requests_duration_seconds_bucket` families (labelled by
+`endpoint`). The backup/maintenance panels
+(`klams_backup_*`, `klams_maintenance_mode_active`) are emitted
+**lazily** by the backup hook subsystem — they appear only after the
+first backup/maintenance event since service start, so those panels
+read "No Data" on a freshly restarted service until a backup runs.
+
 ## Sprint 009 — Stability & attribution
 
 Sprint 009 (`specs/009-stability-attribution/`) introduces three
