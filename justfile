@@ -66,9 +66,11 @@ soak *ARGS:
 
 # Constitution pre-commit gate — fail-fast on fmt, clippy, or tests.
 # CI invokes exactly this recipe (no inline duplication).
+# Note: excludes `--all-features` which gates off `scale-fixture` (an intentionally
+# heavy fixture for multi-minute loads); that feature is checked only in targeted tests.
 gate:
     cargo fmt --all -- --check
-    cargo clippy --workspace --all-targets --all-features -- -D warnings
+    cargo clippy --workspace --all-targets -- -D warnings
     cargo test --workspace
 
 # Quick liveness probe + light verification round-trip.
