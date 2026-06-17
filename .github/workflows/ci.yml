@@ -27,6 +27,16 @@ jobs:
         with:
           shared-key: service
 
+      - name: Free up disk space for test stack
+        run: |
+          echo "=== Disk space before cleanup ==="
+          df -h /
+          echo "=== Removing system packages and old docker artifacts ==="
+          docker system prune -f --volumes || true
+          docker image prune -f --all || true
+          echo "=== Disk space after cleanup ==="
+          df -h /
+
       - name: Report disk space before test stack
         run: |
           echo "=== Disk usage before test stack ==="
