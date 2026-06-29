@@ -4,6 +4,14 @@ Documentation=https://github.com/kenhia/klams
 After=docker.service network-online.target
 Wants=network-online.target docker.service
 
+# Cap crash-looping: if start fails 10x within 5min (e.g. [backup]
+# backup_dir on an unmounted NAS), stop retrying instead of flooding
+# the journal. If backup_dir is a network mount, also add a drop-in:
+#   RequiresMountsFor=/path/to/backup_dir
+# so the service waits for the mount (use x-systemd.automount in fstab).
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
 [Service]
 Type=simple
 User=klams
@@ -11,7 +19,7 @@ Group=klams
 ExecStart=/usr/local/bin/klams-service
 Environment=KLAMS_CONFIG=/etc/klams/klams.toml
 Restart=on-failure
-RestartSec=5
+RestartSec=15
 StateDirectory=klams
 StandardOutput=journal
 StandardError=journal
