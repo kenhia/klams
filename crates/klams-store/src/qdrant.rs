@@ -99,6 +99,21 @@ impl QdrantStore {
                 .await;
         }
 
+        // #54: a datetime index on the RFC3339 `created_at` payload lets the
+        // memories feed scroll newest-first via `order_by` (see
+        // `list_memories_knowledge_page`). Idempotent — Qdrant builds it over
+        // existing points; a re-run or an already-present index is a no-op, so
+        // the error is ignored exactly like the keyword indexes above.
+        let _ = client
+            .create_field_index(
+                qdrant_client::qdrant::CreateFieldIndexCollectionBuilder::new(
+                    collection.to_string(),
+                    "created_at".to_string(),
+                    FieldType::Datetime,
+                ),
+            )
+            .await;
+
         Ok(Self {
             client: Arc::new(client),
             collection: collection.to_string(),
@@ -966,12 +981,18 @@ impl QdrantStore {
         Ok((out, next))
     }
 
-    /// Sprint 008 — cross-author page for `GET /v1/memories`. Filters
-    /// by `authors` (empty ⇒ all) and `state`. The `[since, until)`
-    /// window is applied client-side on the RFC3339 `created_at`
-    /// payload because Qdrant cannot range-filter string payloads.
-    /// Pagination uses the same UUID `offset` as
-    /// `list_knowledge_by_author`.
+    /// Sprint 008 / #54 — cross-author page for `GET /v1/memories`,
+    /// **newest-first**. Filters by `authors` (empty ⇒ all) and `state`, and
+    /// orders by the `created_at` datetime payload index (created in `connect`)
+    /// so the page is `created_at DESC` instead of point-id order (which is
+    /// oldest-first and put new knowledge at the bottom of the feed).
+    ///
+    /// `cursor` is the `(created_at, id)` keyset of the last row the composite
+    /// merge emitted (or `None` for the first page). The Qdrant scan starts at
+    /// that timestamp; the exact keyset and the `[since, until)` window are
+    /// enforced client-side on the RFC3339 payload (`start_from` is inclusive and
+    /// millisecond-granular). Returns rows `created_at DESC` plus the keyset of
+    /// the last row when a further page may exist.
     #[allow(clippy::too_many_arguments)]
     pub async fn list_memories_knowledge_page(
         &self,
@@ -980,7 +1001,7 @@ impl QdrantStore {
         since: chrono::DateTime<chrono::Utc>,
         until: chrono::DateTime<chrono::Utc>,
         limit: u32,
-        offset: Option<uuid::Uuid>,
+        cursor: Option<(OffsetDateTime, uuid::Uuid)>,
     ) -> StoreResult<(
         Vec<(
             KnowledgeItem,
@@ -988,8 +1009,10 @@ impl QdrantStore {
             Option<OffsetDateTime>,
             Option<uuid::Uuid>,
         )>,
-        Option<uuid::Uuid>,
+        Option<(OffsetDateTime, uuid::Uuid)>,
     )> {
+        use qdrant_client::qdrant::{start_from, Direction, OrderBy, StartFrom};
+
         let mut must: Vec<Condition> = Vec::new();
         let mut must_not: Vec<Condition> = Vec::new();
         let should: Vec<Condition> = authors
@@ -1007,42 +1030,56 @@ impl QdrantStore {
             should,
             ..Default::default()
         };
-        // Scroll wider than `limit` to compensate for the client-side
-        // window filter. Bounded at 500 to match the existing cap.
+
+        let since_off = chrono_to_offset(since);
+        let until_off = chrono_to_offset(until);
+        // Descend from the cursor timestamp (or the window's upper bound on the
+        // first page); the precise keyset/window are applied below.
+        let start = cursor.map_or(until_off, |(ts, _)| ts);
+        let order_by = OrderBy {
+            key: "created_at".to_string(),
+            direction: Some(Direction::Desc as i32),
+            start_from: Some(StartFrom {
+                value: Some(start_from::Value::Datetime(
+                    start.format(&Rfc3339).unwrap_or_default(),
+                )),
+            }),
+        };
+        // Over-fetch to absorb the client-side window + keyset filtering.
         let scroll_limit = limit.saturating_mul(4).clamp(1, 500);
-        let mut builder = ScrollPointsBuilder::new(self.collection.clone())
+        let builder = ScrollPointsBuilder::new(self.collection.clone())
             .filter(filter)
+            .order_by(order_by)
             .limit(scroll_limit)
             .with_payload(true)
             .with_vectors(false);
-        if let Some(o) = offset {
-            builder = builder.offset(PointId {
-                point_id_options: Some(PointIdOptions::Uuid(o.to_string())),
-            });
-        }
         let resp = self
             .client
             .scroll(builder)
             .await
             .map_err(|e| StoreError::Backend(format!("qdrant scroll memories_page: {e}")))?;
-        let next_scroll = resp
-            .next_page_offset
-            .and_then(|p| match p.point_id_options? {
-                PointIdOptions::Uuid(s) => uuid::Uuid::parse_str(&s).ok(),
-                PointIdOptions::Num(_) => None,
-            });
-        let since_off = chrono_to_offset(since);
-        let until_off = chrono_to_offset(until);
+        // If the raw scroll filled its cap, older rows may lie beyond it.
+        let hit_cap = resp.result.len() >= scroll_limit as usize;
         let mut out = Vec::with_capacity(resp.result.len().min(limit as usize));
+        let mut more = false;
         for p in resp.result {
-            if out.len() == limit as usize {
-                break;
-            }
             let Some(item) = payload_to_item(&p.payload) else {
                 continue;
             };
             if item.created_at < since_off || item.created_at >= until_off {
                 continue;
+            }
+            // Keyset: strictly older than the last row the merge already emitted
+            // (`start_from` is inclusive, so drop the boundary point and any tie
+            // with a higher id).
+            if let Some((cts, cid)) = cursor {
+                if (item.created_at, item.id) >= (cts, cid) {
+                    continue;
+                }
+            }
+            if out.len() == limit as usize {
+                more = true;
+                break;
             }
             let Some(author_id) = p
                 .payload
@@ -1064,7 +1101,14 @@ impl QdrantStore {
                 .and_then(|s| uuid::Uuid::parse_str(s).ok());
             out.push((item, author_id, deleted_at, deleter));
         }
-        Ok((out, next_scroll))
+        // Offer a next keyset when this page is full or the scroll was capped;
+        // the composite merge treats it only as a saturation hint.
+        let next = if (more || hit_cap) && !out.is_empty() {
+            out.last().map(|(item, _, _, _)| (item.created_at, item.id))
+        } else {
+            None
+        };
+        Ok((out, next))
     }
 
     /// Permanently remove a knowledge point.

@@ -47,3 +47,5 @@ specs/006-maintenance-and-backups/dashboard-smoke.md
 *.tmp
 *.swp
 .idea/
+
+.korg-sprint-proposal

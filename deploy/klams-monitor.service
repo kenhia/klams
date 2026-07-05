@@ -10,6 +10,10 @@ User=klams
 Group=klams
 ExecStart=/usr/local/bin/klams-monitor
 Environment=KLAMS_CONFIG=/etc/klams/monitor.toml
+# The monitor now reads the live hostname from procfs (#56); this is only a
+# fallback for the $HOSTNAME env path. systemd does not export $HOSTNAME on its
+# own, so %H (the system hostname) keeps that fallback correct too.
+Environment=HOSTNAME=%H
 # kpidash dashboard reporting (optional, sprint 010 / T024): uncomment and
 # supply the Redis password so the [kpidash] section in monitor.toml can
 # publish status cards. Prefer an EnvironmentFile (root:klams 0640) over an

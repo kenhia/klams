@@ -592,6 +592,59 @@ fn unknown_author_ref() -> klams_types::PublicAuthorRef {
     }
 }
 
+/// Encode the unified newest-first cursor for `list_memories` (#54): the
+/// `(created_at_nanos, id)` keyset of the last row returned. Format
+/// `base64_url("ns:uuid")`; supersedes the old per-section `section:ns:uuid`
+/// cursor, whose stale form is still tolerated on decode across a deploy.
+fn encode_merged_cursor(ts_nanos: i128, id: Uuid) -> String {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine as _;
+    URL_SAFE_NO_PAD.encode(format!("{ts_nanos}:{id}"))
+}
+
+fn decode_merged_cursor(raw: &str) -> Option<(i128, Uuid)> {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine as _;
+    let bytes = URL_SAFE_NO_PAD.decode(raw).ok()?;
+    let s = std::str::from_utf8(&bytes).ok()?;
+    // Accept the current `ns:uuid` form and, for resilience across a deploy, the
+    // legacy `section:ns:uuid` form (the section tag is ignored).
+    let parts: Vec<&str> = s.split(':').collect();
+    let (ns, id) = match parts.as_slice() {
+        [ns, id] => (*ns, *id),
+        [_section, ns, id] => (*ns, *id),
+        _ => return None,
+    };
+    Some((ns.parse().ok()?, Uuid::parse_str(id).ok()?))
+}
+
+/// Merge already-per-source newest-first rows into one global newest-first page.
+/// Each source has supplied up to `limit` rows ordered `created_at DESC, id DESC`
+/// after the *same* keyset, so the global top-`limit` is guaranteed to lie within
+/// the union: sort, take `limit`, and return the `(created_at_nanos, id)` of the
+/// last emitted row as the next keyset — only when a further page may exist
+/// (either the union was truncated, or some source signalled saturation).
+fn take_merged_page<T>(
+    mut cands: Vec<(i128, Uuid, T)>,
+    limit: usize,
+    any_saturated: bool,
+) -> (Vec<T>, Option<(i128, Uuid)>) {
+    cands.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    let truncated = cands.len() > limit;
+    let emit = limit.min(cands.len());
+    let next = if (truncated || any_saturated) && emit == limit {
+        cands.get(emit - 1).map(|(ns, id, _)| (*ns, *id))
+    } else {
+        None
+    };
+    let out = cands
+        .into_iter()
+        .take(emit)
+        .map(|(_, _, row)| row)
+        .collect();
+    (out, next)
+}
+
 #[allow(clippy::too_many_lines)]
 async fn list_memories_impl(
     composite: &CompositeStore,
@@ -612,32 +665,39 @@ async fn list_memories_impl(
         MemoryStateFilter::All => crate::qdrant::AuthorMemoryStateFilter::All,
     };
 
-    let cursor = q.cursor.as_deref().and_then(decode_memory_cursor);
-    let section = cursor
-        .as_ref()
-        .map_or_else(|| "f".to_string(), |c| c.0.clone());
+    // Unified newest-first keyset across all three kinds (#54). The previous
+    // implementation emitted whole sections in a fixed order (all facts, then
+    // all events, then all knowledge), so a brand-new knowledge item sorted
+    // below every fact and event, and the knowledge section itself came back
+    // oldest-first (Qdrant point-id order). Now each kind is paged
+    // `created_at DESC` after the same `(created_at, id)` keyset and merged.
+    let keyset: Option<(time::OffsetDateTime, Uuid)> = q
+        .cursor
+        .as_deref()
+        .and_then(decode_merged_cursor)
+        .and_then(|(ns, id)| {
+            Some((
+                time::OffsetDateTime::from_unix_timestamp_nanos(ns).ok()?,
+                id,
+            ))
+        });
 
     let want_facts = q.kinds.is_empty() || q.kinds.contains(&MemoryKindFilter::Fact);
     let want_events = q.kinds.is_empty() || q.kinds.contains(&MemoryKindFilter::Event);
     let want_knowledge = q.kinds.is_empty() || q.kinds.contains(&MemoryKindFilter::Knowledge);
 
-    // -- facts page --
-    if section == "f" && want_facts {
-        let pg_cursor = cursor.as_ref().and_then(|(s, ns, id)| {
-            if s == "f" {
-                Some((
-                    time::OffsetDateTime::from_unix_timestamp_nanos(*ns).ok()?,
-                    *id,
-                ))
-            } else {
-                None
-            }
-        });
+    let mut candidates: Vec<crate::ListMemoriesRow> = Vec::new();
+    // A source "saturated" (returned a full page) may have more rows just past
+    // this page, so the merge must offer a next cursor even if the union fit.
+    let mut saturated = false;
+
+    // -- facts (Postgres, created_at DESC keyset) --
+    if want_facts {
         let (rows, next) = composite
             .postgres
-            .list_memories_facts_page(&q.authors, pg_state, q.since, q.until, limit, pg_cursor)
+            .list_memories_facts_page(&q.authors, pg_state, q.since, q.until, limit, keyset)
             .await?;
-        let len = rows.len();
+        saturated |= next.is_some();
         let mut needed: Vec<Uuid> = Vec::with_capacity(rows.len() * 2);
         for (_, aid, _, d) in &rows {
             needed.push(*aid);
@@ -646,166 +706,129 @@ async fn list_memories_impl(
             }
         }
         let authors = bulk_fetch_authors(composite, &needed).await;
-        let out: Vec<_> = rows
-            .into_iter()
-            .map(|(f, author_id, deleted_at, deleter)| {
-                let state = if deleted_at.is_some() {
-                    MemoryStateOut::Deleted
-                } else {
-                    MemoryStateOut::Live
-                };
-                let author_ref = authors
-                    .get(&author_id)
-                    .cloned()
-                    .unwrap_or_else(unknown_author_ref);
-                let mem = PublicMemory {
-                    id: f.id,
-                    content: PublicMemoryContent::Fact {
-                        fact_type: f.fact_type.as_str().to_string(),
-                        payload: f.payload.clone(),
-                    },
-                    tags: Vec::new(),
-                    author: author_ref,
-                    created_at: offset_to_chrono(f.created_at),
-                    updated_at: offset_to_chrono(f.updated_at),
-                    deleted_at: deleted_at.map(offset_to_chrono),
-                    deleted_by_author_id: deleter,
-                };
-                crate::ListMemoriesRow {
-                    memory: mem,
-                    state,
-                    deleted_at: deleted_at.map(offset_to_chrono),
-                    deleted_by: deleter.and_then(|d| authors.get(&d).cloned()),
-                }
-            })
-            .collect();
-        let next_cursor = if let Some((ts, id)) = next {
-            Some(encode_memory_cursor("f", ts.unix_timestamp_nanos(), id))
-        } else if want_events {
-            Some(encode_memory_cursor("e", 0, Uuid::nil()))
-        } else if want_knowledge {
-            Some(encode_memory_cursor("k", 0, Uuid::nil()))
-        } else {
-            None
-        };
-        if !out.is_empty() || len > 0 {
-            return Ok((out, next_cursor));
+        for (f, author_id, deleted_at, deleter) in rows {
+            let state = if deleted_at.is_some() {
+                MemoryStateOut::Deleted
+            } else {
+                MemoryStateOut::Live
+            };
+            let author_ref = authors
+                .get(&author_id)
+                .cloned()
+                .unwrap_or_else(unknown_author_ref);
+            let mem = PublicMemory {
+                id: f.id,
+                content: PublicMemoryContent::Fact {
+                    fact_type: f.fact_type.as_str().to_string(),
+                    payload: f.payload.clone(),
+                },
+                tags: Vec::new(),
+                author: author_ref,
+                created_at: offset_to_chrono(f.created_at),
+                updated_at: offset_to_chrono(f.updated_at),
+                deleted_at: deleted_at.map(offset_to_chrono),
+                deleted_by_author_id: deleter,
+            };
+            candidates.push(crate::ListMemoriesRow {
+                memory: mem,
+                state,
+                deleted_at: deleted_at.map(offset_to_chrono),
+                deleted_by: deleter.and_then(|d| authors.get(&d).cloned()),
+            });
         }
     }
 
-    if (section == "f" || section == "e") && want_events {
-        let pg_cursor = cursor.as_ref().and_then(|(s, ns, id)| {
-            // Section-handoff sentinel: (ns=0, id=nil) means "start of
-            // events section", not "after epoch-0/nil" — skip the cursor.
-            if s == "e" && !(*ns == 0 && *id == Uuid::nil()) {
-                Some((
-                    time::OffsetDateTime::from_unix_timestamp_nanos(*ns).ok()?,
-                    *id,
-                ))
-            } else {
-                None
-            }
-        });
+    // -- events (Postgres, created_at DESC keyset) --
+    if want_events {
         let (rows, next) = composite
             .postgres
-            .list_memories_events_page(&q.authors, q.since, q.until, limit, pg_cursor)
+            .list_memories_events_page(&q.authors, q.since, q.until, limit, keyset)
             .await?;
+        saturated |= next.is_some();
         let needed: Vec<Uuid> = rows.iter().map(|(_, aid)| *aid).collect();
         let authors = bulk_fetch_authors(composite, &needed).await;
-        let out: Vec<_> = rows
-            .into_iter()
-            .map(|(e, author_id)| {
-                let author_ref = authors
-                    .get(&author_id)
-                    .cloned()
-                    .unwrap_or_else(unknown_author_ref);
-                let mem = PublicMemory {
-                    id: e.id,
-                    content: PublicMemoryContent::Event {
-                        category: e.category.clone(),
-                        payload: e.payload.clone(),
-                        task_id: e.task_id,
-                    },
-                    tags: Vec::new(),
-                    author: author_ref,
-                    created_at: offset_to_chrono(e.created_at),
-                    updated_at: offset_to_chrono(e.created_at),
-                    deleted_at: None,
-                    deleted_by_author_id: None,
-                };
-                crate::ListMemoriesRow {
-                    memory: mem,
-                    state: MemoryStateOut::Live,
-                    deleted_at: None,
-                    deleted_by: None,
-                }
-            })
-            .collect();
-        let next_cursor = if let Some((ts, id)) = next {
-            Some(encode_memory_cursor("e", ts.unix_timestamp_nanos(), id))
-        } else if want_knowledge {
-            Some(encode_memory_cursor("k", 0, Uuid::nil()))
-        } else {
-            None
-        };
-        if !out.is_empty() {
-            return Ok((out, next_cursor));
+        for (e, author_id) in rows {
+            let author_ref = authors
+                .get(&author_id)
+                .cloned()
+                .unwrap_or_else(unknown_author_ref);
+            let mem = PublicMemory {
+                id: e.id,
+                content: PublicMemoryContent::Event {
+                    category: e.category.clone(),
+                    payload: e.payload.clone(),
+                    task_id: e.task_id,
+                },
+                tags: Vec::new(),
+                author: author_ref,
+                created_at: offset_to_chrono(e.created_at),
+                updated_at: offset_to_chrono(e.created_at),
+                deleted_at: None,
+                deleted_by_author_id: None,
+            };
+            candidates.push(crate::ListMemoriesRow {
+                memory: mem,
+                state: MemoryStateOut::Live,
+                deleted_at: None,
+                deleted_by: None,
+            });
         }
     }
 
+    // -- knowledge (Qdrant, created_at DESC via datetime-index order_by) --
     if want_knowledge {
-        let qd_cursor = cursor.as_ref().and_then(|(s, _, id)| {
-            if s == "k" && *id != Uuid::nil() {
-                Some(*id)
-            } else {
-                None
-            }
-        });
         let (rows, next) = composite
             .qdrant
-            .list_memories_knowledge_page(&q.authors, qd_state, q.since, q.until, limit, qd_cursor)
+            .list_memories_knowledge_page(&q.authors, qd_state, q.since, q.until, limit, keyset)
             .await?;
+        saturated |= next.is_some();
         let needed: Vec<Uuid> = rows.iter().map(|(_, aid, _, _)| *aid).collect();
         let authors = bulk_fetch_authors(composite, &needed).await;
-        let out: Vec<_> = rows
-            .into_iter()
-            .map(|(item, author_id, deleted_at, deleter)| {
-                let state = if deleted_at.is_some() {
-                    MemoryStateOut::Deleted
-                } else {
-                    MemoryStateOut::Live
-                };
-                let author_ref = authors
-                    .get(&author_id)
-                    .cloned()
-                    .unwrap_or_else(unknown_author_ref);
-                let mem = PublicMemory {
-                    id: item.id,
-                    content: PublicMemoryContent::Knowledge {
-                        text: item.text.clone(),
-                        source_path: item.file.clone(),
-                        repo: item.repo.clone(),
-                    },
-                    tags: item.tags.clone(),
-                    author: author_ref,
-                    created_at: offset_to_chrono(item.created_at),
-                    updated_at: offset_to_chrono(item.updated_at),
-                    deleted_at: deleted_at.map(offset_to_chrono),
-                    deleted_by_author_id: deleter,
-                };
-                crate::ListMemoriesRow {
-                    memory: mem,
-                    state,
-                    deleted_at: deleted_at.map(offset_to_chrono),
-                    deleted_by: None,
-                }
-            })
-            .collect();
-        let next_cursor = next.map(|id| encode_memory_cursor("k", 0, id));
-        return Ok((out, next_cursor));
+        for (item, author_id, deleted_at, deleter) in rows {
+            let state = if deleted_at.is_some() {
+                MemoryStateOut::Deleted
+            } else {
+                MemoryStateOut::Live
+            };
+            let author_ref = authors
+                .get(&author_id)
+                .cloned()
+                .unwrap_or_else(unknown_author_ref);
+            let mem = PublicMemory {
+                id: item.id,
+                content: PublicMemoryContent::Knowledge {
+                    text: item.text.clone(),
+                    source_path: item.file.clone(),
+                    repo: item.repo.clone(),
+                },
+                tags: item.tags.clone(),
+                author: author_ref,
+                created_at: offset_to_chrono(item.created_at),
+                updated_at: offset_to_chrono(item.updated_at),
+                deleted_at: deleted_at.map(offset_to_chrono),
+                deleted_by_author_id: deleter,
+            };
+            candidates.push(crate::ListMemoriesRow {
+                memory: mem,
+                state,
+                deleted_at: deleted_at.map(offset_to_chrono),
+                deleted_by: None,
+            });
+        }
     }
 
-    Ok((Vec::new(), None))
+    // Global newest-first merge across the three kinds.
+    let keyed: Vec<(i128, Uuid, crate::ListMemoriesRow)> = candidates
+        .into_iter()
+        .map(|row| {
+            let ns = i128::from(row.memory.created_at.timestamp_nanos_opt().unwrap_or(0));
+            let id = row.memory.id;
+            (ns, id, row)
+        })
+        .collect();
+    let (out, next_key) = take_merged_page(keyed, limit as usize, saturated);
+    let next_cursor = next_key.map(|(ns, id)| encode_merged_cursor(ns, id));
+    Ok((out, next_cursor))
 }
 
 async fn event_search_impl(
@@ -896,5 +919,76 @@ mod cursor_tests {
     fn rejects_garbage_input() {
         assert!(decode_memory_cursor("!!!not-base64!!!").is_none());
         assert!(decode_memory_cursor("").is_none());
+    }
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::{decode_merged_cursor, encode_merged_cursor, take_merged_page};
+    use uuid::Uuid;
+
+    fn id(n: u128) -> Uuid {
+        Uuid::from_u128(n)
+    }
+
+    /// #54 — the unified `(ns:uuid)` cursor round-trips, and a legacy
+    /// per-section `section:ns:uuid` cursor still decodes (section ignored) so
+    /// in-flight cursors survive a deploy.
+    #[test]
+    fn merged_cursor_round_trip_and_legacy() {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine as _;
+
+        let c = encode_merged_cursor(1_733_000_000_000_000_000, id(7));
+        assert_eq!(
+            decode_merged_cursor(&c),
+            Some((1_733_000_000_000_000_000, id(7)))
+        );
+        // legacy 3-part form (base64 of "k:123:<uuid>")
+        let legacy = URL_SAFE_NO_PAD.encode(format!("k:123:{}", id(9)));
+        assert_eq!(decode_merged_cursor(&legacy), Some((123, id(9))));
+        assert!(decode_merged_cursor("!!!").is_none());
+    }
+
+    /// The merge interleaves the three per-source (already DESC) inputs into one
+    /// globally newest-first page and hands back the last row's keyset.
+    #[test]
+    fn merges_kinds_globally_newest_first() {
+        // facts, events, knowledge each arrive newest-first from their store.
+        let facts = vec![(300i128, id(1), 'A'), (100, id(2), 'D')];
+        let events = vec![(250, id(3), 'B')];
+        let knowledge = vec![(280, id(4), 'C'), (120, id(5), 'E')];
+        let cands: Vec<_> = facts.into_iter().chain(events).chain(knowledge).collect();
+        let (out, next) = take_merged_page(cands, 3, true);
+        assert_eq!(out, vec!['A', 'C', 'B']); // 300, 280, 250
+        assert_eq!(next, Some((250, id(3)))); // last emitted -> next keyset
+    }
+
+    /// Ties on `created_at` break by id DESC, consistently across sources.
+    #[test]
+    fn ties_break_by_id_desc() {
+        let cands = vec![(100i128, id(1), 'x'), (100, id(9), 'y'), (100, id(5), 'z')];
+        let (out, _next) = take_merged_page(cands, 3, false);
+        assert_eq!(out, vec!['y', 'z', 'x']); // id 9 > 5 > 1
+    }
+
+    /// A fully-drained union (nothing saturated, fewer than `limit`) ends the
+    /// feed with no next cursor.
+    #[test]
+    fn drained_union_has_no_next() {
+        let cands = vec![(300i128, id(1), 'A'), (200, id(2), 'B')];
+        let (out, next) = take_merged_page(cands, 10, false);
+        assert_eq!(out, vec!['A', 'B']);
+        assert_eq!(next, None);
+    }
+
+    /// A full page with a saturated source keeps paging even when the union
+    /// exactly equals `limit`.
+    #[test]
+    fn saturated_source_offers_next_at_exact_limit() {
+        let cands = vec![(300i128, id(1), 'A'), (200, id(2), 'B')];
+        let (out, next) = take_merged_page(cands, 2, true);
+        assert_eq!(out, vec!['A', 'B']);
+        assert_eq!(next, Some((200, id(2))));
     }
 }
