@@ -4,6 +4,22 @@
 //! `Service` events to a running klams API whenever the in-memory
 //! state diff produces one. Use `--once` for one-shot polls under
 //! `cron`/`systemd.timer`; otherwise it loops forever.
+//!
+//! ## Known limitation: the monitor cannot record its own sink's `Down` (#55)
+//!
+//! Events are published to `klams-service` itself. When `klams-service` is the
+//! monitored unit and it goes down, the `Down` publish fails and is dropped —
+//! there is no local buffer or retry, and the state cache advances regardless
+//! (see the `publish failed` branch below), so the very outage the monitor
+//! exists to observe is the one it cannot post.
+//!
+//! This is documented rather than fixed (a durable spool was deliberately out of
+//! scope for sprint 012). It is tolerable because a `klams-service` outage is
+//! still **reconstructable from the gap**: when the service recovers, the next
+//! poll diffs `Down -> Up` and successfully posts the recovery `Up`. The window
+//! between the last good `Up` (e.g. the cold-start event) and that recovery `Up`
+//! brackets the downtime. Other monitored units are unaffected — their events go
+//! to a sink independent of them, so their `Down` records normally.
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -56,7 +72,21 @@ fn default_interval() -> u64 {
     15
 }
 
+/// Best-effort host identity stamped on every `Service` event.
+///
+/// systemd does not export `$HOSTNAME` to service units, so the old
+/// `std::env::var("HOSTNAME")` fallback always yielded `"unknown"` and stripped
+/// host attribution from every event (#56). Read the kernel's live hostname from
+/// procfs instead — identical to the `gethostname(2)` syscall on Linux, with no
+/// unit/config dependency and no extra crate. `$HOSTNAME` (also set via
+/// `Environment=HOSTNAME=%H` in the unit) is kept as a fallback, then `unknown`.
 fn default_host() -> String {
+    if let Ok(h) = std::fs::read_to_string("/proc/sys/kernel/hostname") {
+        let h = h.trim();
+        if !h.is_empty() {
+            return h.to_string();
+        }
+    }
     std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".into())
 }
 
@@ -114,9 +144,17 @@ async fn main() -> Result<()> {
                     if let Some(payload) = diff(entry, &obs) {
                         tracing::info!(unit = %unit, ?payload, "state change");
                         if let Err(e) = publish(&client, &payload).await {
+                            // #55: no local buffer/retry — a failed publish is
+                            // dropped. When `unit` is the sink (klams-service)
+                            // itself, its `Down` is unrecordable here; it stays
+                            // reconstructable from the gap to the recovery `Up`.
+                            // See the module-level "Known limitation" note.
                             tracing::warn!(unit = %unit, error = %e, "publish failed");
                         }
                     }
+                    // Advances even after a failed publish (see #55 note above):
+                    // intentional so a persistently-down sink doesn't re-emit the
+                    // same dropped `Down` every tick.
                     apply(entry, &obs);
                 }
                 Err(e) => tracing::warn!(unit = %unit, error = %e, "poll failed"),

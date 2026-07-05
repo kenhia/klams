@@ -227,7 +227,7 @@ url = "http://127.0.0.1:7777"
 token = "<bearer>"
 units = ["klams-service.service"]   # systemd units to watch
 interval_secs = 30
-# host = "kubs0"                     # optional; defaults to $HOSTNAME
+# host = "kubs0"                     # optional; defaults to the system hostname (/proc/sys/kernel/hostname)
 ```
 
 The config keys are `units` (the systemd units to poll) and

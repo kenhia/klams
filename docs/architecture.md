@@ -331,8 +331,10 @@ scanner and monitor from "buildable" to **live on `kubs0`**:
   and posts typed `Service` events on edge transitions. **Known
   limitation:** because the monitor posts events to `klams-service`
   itself, it cannot record `klams-service`'s own *Down* (the sink is
-  unavailable during the outage) — tracked as kwi #55; Service events
-  also currently carry `host=unknown` (kwi #56).
+  unavailable during the outage) — a documented known limitation
+  (kwi #55); the outage stays reconstructable from the gap to the
+  recovery *Up*. Service events now carry the real host (read from
+  `/proc/sys/kernel/hostname`), not `host=unknown` (kwi #56, fixed).
 * The units declare `After=/Wants=docker.service` — Postgres, Qdrant,
   and the TEI embedder run in Docker; there is no host
   `postgresql.service`.
@@ -701,9 +703,12 @@ No new storage; no schema changes.
 A single `Store::list_memories` method on the
 [klams-store](../crates/klams-store/src/lib.rs) trait projects
 `facts`, `events` and `knowledge` rows into a uniform `PublicMemory`
-stream keyed by `(updated_at DESC, id DESC)` with an opaque cursor.
-Both `event_search` (MCP) and `GET /v1/memories` (HTTP) delegate to
-it; there is no parallel SQL anywhere. Rationale (R-001 — "two
+stream, globally newest-first: each kind is paged `created_at DESC`
+after one shared `(created_at, id)` keyset and merged, behind an opaque
+cursor (kwi #54 — knowledge, in Qdrant, is ordered via a `created_at`
+datetime index rather than point-id order). Both `event_search` (MCP)
+and `GET /v1/memories` (HTTP) delegate to it; there is no parallel SQL
+anywhere. Rationale (R-001 — "two
 surfaces, one query") lives in
 [specs/008-activity-observability/research.md](../specs/008-activity-observability/research.md).
 
