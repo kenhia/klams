@@ -4,6 +4,7 @@
 //! that backs `tools/list` and `tools/call`, plus the [`McpState`]
 //! that carries shared backend handles into per-tool modules.
 
+pub mod dissent_propose;
 pub mod event_search;
 pub mod memory_add;
 pub mod memory_admin_hard_delete;
@@ -33,7 +34,7 @@ use std::sync::Arc;
 pub fn required_scope(tool: &str) -> Option<Scope> {
     Some(match tool {
         "register_author" | "memory_search" | "memory_related" | "event_search" => Scope::Read,
-        "memory_add" | "memory_append_event" | "memory_delete" => Scope::Write,
+        "memory_add" | "memory_append_event" | "memory_delete" | "dissent_propose" => Scope::Write,
         "memory_admin_restore" | "memory_admin_hard_delete" | "memory_admin_list_deleted" => {
             Scope::Admin
         }
@@ -157,6 +158,10 @@ impl ServerHandler for ToolRegistry {
                 "memory_delete",
                 "Soft-delete a fact or knowledge memory by id (FR-014). Idempotent. Events are append-only.",
             ),
+            tool_descriptor::<dissent_propose::DissentProposeArgs>(
+                "dissent_propose",
+                "File a dissent against a live canonical fact (proposed correction + reason). Lands as a pending AgentProposal; a human resolves it in the viewport.",
+            ),
             tool_descriptor::<memory_admin_restore::MemoryAdminRestoreArgs>(
                 "memory_admin_restore",
                 "Admin: restore a soft-deleted memory by id (clears deleted_at).",
@@ -262,6 +267,21 @@ impl ServerHandler for ToolRegistry {
                     }
                 };
                 match memory_search::run(&self.state, args).await {
+                    Ok(out) => Ok(json_result(&out)),
+                    Err(env) => Ok(envelope_result(&env)),
+                }
+            }
+            "dissent_propose" => {
+                let args = match serde_json::from_value(args_value) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        return Ok(envelope_result(&crate::errors::envelope(
+                            crate::errors::SCHEMA_VALIDATION_FAILED,
+                            format!("invalid dissent_propose arguments: {e}"),
+                        )))
+                    }
+                };
+                match dissent_propose::run(&self.state, args).await {
                     Ok(out) => Ok(json_result(&out)),
                     Err(env) => Ok(envelope_result(&env)),
                 }

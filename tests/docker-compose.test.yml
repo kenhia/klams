@@ -33,7 +33,7 @@ services:
       retries: 30
 
   qdrant:
-    image: qdrant/qdrant:v1.12.4
+    image: qdrant/qdrant:v1.18.0
     networks: [klams-test-net]
     ports:
       - "127.0.0.1:56333:6333"

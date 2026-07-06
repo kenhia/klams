@@ -344,6 +344,9 @@ fn row_to_dissent(row: &sqlx::postgres::PgRow) -> StoreResult<Dissent> {
         submission_count: row.try_get("submission_count").map_err(map_decode)?,
         resolved_at: row.try_get("resolved_at").map_err(map_decode)?,
         resolved_by_source,
+        reason: row.try_get("reason").map_err(map_decode)?,
+        contradicting_memory_id: row.try_get("contradicting_memory_id").map_err(map_decode)?,
+        author_id: row.try_get("author_id").map_err(map_decode)?,
     })
 }
 
@@ -526,7 +529,8 @@ impl PostgresStore {
         let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
             "SELECT id, fact_id, proposed_payload, source, status,
                     submitted_at, last_seen_at, submission_count,
-                    resolved_at, resolved_by_source
+                    resolved_at, resolved_by_source,
+                    reason, contradicting_memory_id, author_id
              FROM dissents WHERE 1=1",
         );
         if let Some(fid) = q.fact_id {
@@ -558,11 +562,74 @@ impl PostgresStore {
         Ok((items, q.cursor))
     }
 
+    /// Sprint 015 — file a dissent directly against a live canonical
+    /// fact (MCP `dissent_propose`). Reuses the pending dedupe index:
+    /// an identical `(fact_id, payload)` proposal bumps
+    /// `submission_count` / `last_seen_at` and keeps the original
+    /// reason/author. Returns `Ok(None)` when the fact does not exist
+    /// or is soft-deleted; otherwise `(dissent_id, deduped)`.
+    pub async fn propose_dissent(
+        &self,
+        fact_id: Uuid,
+        proposed_payload: &serde_json::Value,
+        author_id: Uuid,
+        reason: &str,
+        contradicting_memory_id: Option<Uuid>,
+    ) -> StoreResult<Option<(Uuid, bool)>> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StoreError::Backend(format!("propose begin: {e}")))?;
+
+        let fact: Option<(String,)> = sqlx::query_as(
+            "SELECT type FROM facts WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
+        )
+        .bind(fact_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| StoreError::Backend(format!("propose select fact: {e}")))?;
+        let Some((fact_type,)) = fact else {
+            return Ok(None);
+        };
+
+        let hash = canonical_json_hash(&fact_type, proposed_payload);
+        let row = sqlx::query(
+            r"INSERT INTO dissents
+                (id, fact_id, proposed_payload, payload_hash, source,
+                 reason, contradicting_memory_id, author_id)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+              ON CONFLICT (fact_id, payload_hash) WHERE status='pending'
+              DO UPDATE SET
+                submission_count = dissents.submission_count + 1,
+                last_seen_at = now()
+              RETURNING id, submission_count",
+        )
+        .bind(Uuid::now_v7())
+        .bind(fact_id)
+        .bind(proposed_payload)
+        .bind(&hash[..])
+        .bind(Source::AgentProposal.as_str())
+        .bind(reason)
+        .bind(contradicting_memory_id)
+        .bind(author_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| StoreError::Backend(format!("propose insert: {e}")))?;
+        let dissent_id: Uuid = row.try_get("id").map_err(map_decode)?;
+        let submission_count: i32 = row.try_get("submission_count").map_err(map_decode)?;
+        tx.commit()
+            .await
+            .map_err(|e| StoreError::Backend(format!("propose commit: {e}")))?;
+        Ok(Some((dissent_id, submission_count > 1)))
+    }
+
     pub async fn get_dissent(&self, id: Uuid) -> StoreResult<Option<Dissent>> {
         let row = sqlx::query(
             "SELECT id, fact_id, proposed_payload, source, status,
                     submitted_at, last_seen_at, submission_count,
-                    resolved_at, resolved_by_source
+                    resolved_at, resolved_by_source,
+                    reason, contradicting_memory_id, author_id
              FROM dissents WHERE id = $1",
         )
         .bind(id)
@@ -675,7 +742,8 @@ impl PostgresStore {
               WHERE id=$1 AND status='pending'
               RETURNING id, fact_id, proposed_payload, source, status,
                         submitted_at, last_seen_at, submission_count,
-                        resolved_at, resolved_by_source",
+                        resolved_at, resolved_by_source,
+                        reason, contradicting_memory_id, author_id",
         )
         .bind(dissent_id)
         .bind(caller_source.as_str())

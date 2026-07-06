@@ -2,7 +2,7 @@
 
 **Status:** Active — this is the pointer document: the top entry under
 "Sprint queue" is the next sprint.  
-**Date:** 2026-07-06 (014 moved out — in flight on `014-serving-pivot`)  
+**Date:** 2026-07-06 (014 shipped; 015 moved out — in flight on `015-companion-enablement`)  
 **Related:** [wi259-recommendation.md](wi259-recommendation.md) ·
 [wi259-three-project-review.md](wi259-three-project-review.md) ·
 [plan.md](plan.md) (original phased plan, now historical) ·
@@ -31,55 +31,13 @@ Standing decisions (from the WI #259 review, 2026-07-05):
 - krag and kris are retired; salvage notes live in
   [wi259-three-project-review.md](wi259-three-project-review.md) §4.
 
-Open bugs: kwi #31 (viewport memory-detail routes 404), #32 (author
-`counts.writes` excludes knowledge). (#33, `bench-clean` `?wait=true`,
-was found already fixed during sprint 014 — close the kwi item.)
+Open bugs: none tracked here. kwi #31 fixed in sprint 015; #32 verified
+fixed in production during 015 (knowledge counts populate — close it);
+#33 found already fixed during 014 (close it).
 
 ## Sprint queue
 
-### 015 — Companion enablement (klams-mind onboarding) (next)
-
-Give klams-mind what it needs to operate as a first-class, attributable
-agent. Scope is demand-driven by klams-mind sprints 001–004 — implement
-what it actually needs, no speculative surface.
-
-**Surface map (learned in klams-mind 001 — keep both sprint docs on
-this):** klams has *two* inbound surfaces, split by design since sprint
-007. The **agent surface is MCP-only** (`/mcp`, Streamable HTTP):
-`register_author`, `memory_add`, `memory_search`, `memory_related`,
-`event_search`, etc., all speaking the `PublicMemory` projection that
-strips internals. The **REST surface is the controller/operator API**
-speaking internal shapes with trust semantics: `POST /v1/facts`,
-`/memory/knowledge/index`, `/memory/search`, `/memory/context`,
-`GET /v1/memories` (paged bulk read), dissent promote/discard, author
-routes. There is no REST `memory_add` — that's the projection boundary,
-not a gap. klams-mind therefore uses MCP for agent tools and REST only
-for bulk reads; new agent capability in this sprint lands as MCP tools.
-
-1. Scoped token + `agent_name = klams-mind` grant; registered author.
-   (Mechanism exists — sprint 009 binds token `agent_name` → author on
-   REST too, so both surfaces attribute correctly.)
-2. **External dissent proposal (new MCP tool)**: today dissents only
-   arise from trust-rank conflicts on the *same* fact at write time.
-   klams-mind's semantic contradiction detection needs to file a
-   dissent against an existing fact (proposed correction + reason,
-   optionally citing the contradicting memory). Design the contract in
-   the sprint doc before building; resolution stays human, in the
-   viewport `/dissents` page.
-3. Bulk/paged reads for consolidation passes — REST `GET /v1/memories`
-   may already suffice; verify against klams-mind's consolidation
-   design and extend (filters, kind/window paging) only if it falls
-   short.
-4. Ride-alongs: kwi #31, #32 (both are read-surface bugs klams-mind and
-   the viewport share; note sprint 009 already populated author
-   knowledge counts on the list path — confirm what remains of #32
-   before coding).
-
-Acceptance: klams-mind can search, add, propose a dissent, and page the
-corpus using its own identity; its writes appear under its author in the
-viewport.
-
-### 016 — Retrieval quality support
+### 016 — Retrieval quality support (next)
 
 klams-mind sprint 002 ports krag's eval-harness design (TOML query suites;
 `substring` / `source_cited` / `no_hallucination` checks) and runs it

@@ -46,6 +46,14 @@ pub struct Dissent {
     pub resolved_at: Option<OffsetDateTime>,
     #[serde(default)]
     pub resolved_by_source: Option<Source>,
+    /// Sprint 015 — set only on externally-proposed dissents
+    /// (MCP `dissent_propose`); NULL on write-path dissents.
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub contradicting_memory_id: Option<Uuid>,
+    #[serde(default)]
+    pub author_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

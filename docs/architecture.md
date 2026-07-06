@@ -627,7 +627,7 @@ by `klams_mcp_scope_denied_total{scope,tool}`.
 | Tool family | Scope |
 |-------------|-------|
 | `register_author`, `memory_search`, `memory_related`, `memory_context` | `Read` |
-| `memory_add`, `memory_event`, `memory_delete` (own writes) | `Write` |
+| `memory_add`, `memory_event`, `memory_delete` (own writes), `dissent_propose` (sprint 015) | `Write` |
 | `memory_admin_*` (restore, hard_delete, list_deleted) | `Admin` |
 
 ### 2e.4 Soft-delete representation
@@ -897,6 +897,36 @@ a build choice. No schema changes; no new storage.
   per-embed `expected_dim` check); changing the embedding model is a
   deliberate re-embed event — procedure in
   [sprints/014-serving-pivot/re-embed-runbook.md](../sprints/014-serving-pivot/re-embed-runbook.md).
+
+## 2i. Sprint 015 deltas — companion enablement
+
+Sprint 015 ([sprints/015-companion-enablement/](../sprints/015-companion-enablement/sprint.md))
+onboards `klams-mind` (the Python/LangChain companion at
+`~/src/ai/klams-mind`) as a first-class, attributable agent.
+
+* **`dissent_propose` MCP tool** (`Write` scope) — file a dissent
+  directly against a live canonical fact: proposed correction +
+  required `reason`, optional `contradicting_memory_id`. This is the
+  external path for *semantic* contradiction detection; the write-path
+  trigger (§2.1) still handles same-fact trust conflicts. Proposals
+  land as `Source::AgentProposal`, reuse the pending
+  `(fact_id, payload_hash)` dedupe, and resolve only through the
+  viewport `/dissents` promote/discard flow. Migration
+  `0009_dissent_proposals.sql` adds nullable `reason` /
+  `contradicting_memory_id` / `author_id` provenance columns;
+  write-path dissents leave them NULL.
+* **Viewport detail routes** (kwi #31) — `/facts/{id}`, `/events/{id}`,
+  `/knowledge/{id}` pages now exist (the `hrefFor()` links from the
+  Activity/Authors views previously 404'd); a vitest route-existence
+  guard prevents future dangling links. Fact details link to their
+  pending dissents.
+* **Token grant** — the example config gains a commented
+  `klams-mind` read+write `[[auth.tokens]]` block with
+  `agent_name = "klams-mind"`.
+* **Surface split (binding)** — the agent surface is MCP-only
+  (`PublicMemory` projection); REST is the controller/operator surface.
+  klams-mind uses REST only for `GET /v1/memories` bulk reads and
+  `/healthz`.
 
 ## 3. Deployment topology on `kubs0`
 
