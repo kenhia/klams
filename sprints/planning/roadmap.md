@@ -41,19 +41,39 @@ was found already fixed during sprint 014 — close the kwi item.)
 
 Give klams-mind what it needs to operate as a first-class, attributable
 agent. Scope is demand-driven by klams-mind sprints 001–004 — implement
-what it actually needs, no speculative surface:
+what it actually needs, no speculative surface.
+
+**Surface map (learned in klams-mind 001 — keep both sprint docs on
+this):** klams has *two* inbound surfaces, split by design since sprint
+007. The **agent surface is MCP-only** (`/mcp`, Streamable HTTP):
+`register_author`, `memory_add`, `memory_search`, `memory_related`,
+`event_search`, etc., all speaking the `PublicMemory` projection that
+strips internals. The **REST surface is the controller/operator API**
+speaking internal shapes with trust semantics: `POST /v1/facts`,
+`/memory/knowledge/index`, `/memory/search`, `/memory/context`,
+`GET /v1/memories` (paged bulk read), dissent promote/discard, author
+routes. There is no REST `memory_add` — that's the projection boundary,
+not a gap. klams-mind therefore uses MCP for agent tools and REST only
+for bulk reads; new agent capability in this sprint lands as MCP tools.
 
 1. Scoped token + `agent_name = klams-mind` grant; registered author.
-2. **External dissent proposal**: today dissents only arise from trust-rank
-   conflicts on the *same* fact at write time. klams-mind's semantic
-   contradiction detection needs a way to file a dissent linking two
-   existing memories (or a fact + proposed correction) via MCP/REST.
-   Design the contract in the sprint doc before building.
-3. Bulk/paged reads for consolidation passes — `GET /v1/memories` may
-   already suffice; verify against klams-mind's consolidation design and
-   extend (filters, kind/window paging) only if it falls short.
-4. Ride-alongs: kwi #31, #32 (both are read-surface bugs klams-mind and the
-   viewport share).
+   (Mechanism exists — sprint 009 binds token `agent_name` → author on
+   REST too, so both surfaces attribute correctly.)
+2. **External dissent proposal (new MCP tool)**: today dissents only
+   arise from trust-rank conflicts on the *same* fact at write time.
+   klams-mind's semantic contradiction detection needs to file a
+   dissent against an existing fact (proposed correction + reason,
+   optionally citing the contradicting memory). Design the contract in
+   the sprint doc before building; resolution stays human, in the
+   viewport `/dissents` page.
+3. Bulk/paged reads for consolidation passes — REST `GET /v1/memories`
+   may already suffice; verify against klams-mind's consolidation
+   design and extend (filters, kind/window paging) only if it falls
+   short.
+4. Ride-alongs: kwi #31, #32 (both are read-surface bugs klams-mind and
+   the viewport share; note sprint 009 already populated author
+   knowledge counts on the list path — confirm what remains of #32
+   before coding).
 
 Acceptance: klams-mind can search, add, propose a dissent, and page the
 corpus using its own identity; its writes appear under its author in the
