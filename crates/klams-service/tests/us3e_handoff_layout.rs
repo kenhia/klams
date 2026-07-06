@@ -11,7 +11,7 @@ fn handoff_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
-        .join("specs")
+        .join("sprints")
         .join("003-non-agentic-writes")
         .join("handoff")
 }
@@ -38,7 +38,7 @@ fn handoff_directory_layout_matches_contract() {
 fn handoff_pinned_version_header_present() {
     let body = std::fs::read_to_string(handoff_dir().join("README.md")).unwrap();
     let expected = "This document is pinned to klams sprint-003 API surface\n\
-                    (specs/003-non-agentic-writes/spec.md in the klams repo).\n\
+                    (sprints/003-non-agentic-writes/spec.md in the klams repo).\n\
                     If GET /healthz?contract=v1 ever returns anything other than\n\
                     200 with {\"contract\":\"v1\"}, the contract this document describes\n\
                     is no longer guaranteed.";

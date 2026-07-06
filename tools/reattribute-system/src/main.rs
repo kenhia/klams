@@ -1,6 +1,6 @@
 //! Sprint 009 T029 — `reattribute-system` admin CLI.
 //!
-//! Contract: [`specs/009-stability-attribution/contracts/reattribution-cli.md`].
+//! Contract: [`sprints/009-stability-attribution/contracts/reattribution-cli.md`].
 
 use anyhow::Context;
 use clap::Parser;

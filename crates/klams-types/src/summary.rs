@@ -1,6 +1,6 @@
 //! Summarization records: `EventSummary` (Postgres) and `KnowledgeDigest` (Qdrant).
 //!
-//! Sprint 005 (Phase 4) — see specs/005-advanced-retrieval/data-model.md §3–§4.
+//! Sprint 005 (Phase 4) — see sprints/005-advanced-retrieval/data-model.md §3–§4.
 
 use serde::{Deserialize, Serialize};
 use time::{Date, OffsetDateTime};

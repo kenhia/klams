@@ -35,8 +35,8 @@ deploy/compose.env
 **/*.dump.partial
 **/*.snapshot
 **/*.snapshot.partial
-specs/006-maintenance-and-backups/sizing.md
-specs/006-maintenance-and-backups/dashboard-smoke.md
+sprints/006-maintenance-and-backups/sizing.md
+sprints/006-maintenance-and-backups/dashboard-smoke.md
 
 # Storage root ($KLAMS_ROOT, default /ai/klams/) lives outside the repo.
 

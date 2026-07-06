@@ -15,7 +15,7 @@
 //!    request and then goes silent is closed within the configured
 //!    window.
 //!
-//! Contract: `specs/009-stability-attribution/contracts/connection-limits.md`.
+//! Contract: `sprints/009-stability-attribution/contracts/connection-limits.md`.
 
 use std::collections::HashMap;
 use std::future::Future;

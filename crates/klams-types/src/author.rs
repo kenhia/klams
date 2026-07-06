@@ -2,7 +2,7 @@
 //!
 //! `AuthorRecord` mirrors the `authors` Postgres table. `RegisterAuthorArgs`
 //! is the validated input for the `register_author` MCP tool; validation
-//! enforces the constraints from `specs/007-mcp-server/data-model.md` §1.
+//! enforces the constraints from `sprints/007-mcp-server/data-model.md` §1.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

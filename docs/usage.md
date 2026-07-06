@@ -3,7 +3,7 @@
 This document covers the runtime behaviour of `klams-service`:
 authentication, health/metrics endpoints, exit codes, and the
 recommended systemd deployment. For HTTP request/response shapes
-see [specs/001-initial-mvp/contracts/openapi.yaml](../specs/001-initial-mvp/contracts/openapi.yaml).
+see [sprints/001-initial-mvp/contracts/openapi.yaml](../sprints/001-initial-mvp/contracts/openapi.yaml).
 
 ## Authentication
 
@@ -145,7 +145,7 @@ or detail view.
 | `POST /memory/dissents/{id}/discard` | `User` or `Controller` | Marks dissent `discarded`. Fact untouched. Same 403/410 rules. |
 
 The Phase 2 quickstart walks the full flow:
-[specs/002-safety-and-write-ops/quickstart.md §5](../specs/002-safety-and-write-ops/quickstart.md#5-story-2--dissent-on-lower-trust-contradiction-promote-later).
+[sprints/002-safety-and-write-ops/quickstart.md §5](../sprints/002-safety-and-write-ops/quickstart.md#5-story-2--dissent-on-lower-trust-contradiction-promote-later).
 
 ## Viewport: provenance panel + Dissents page
 
@@ -203,8 +203,8 @@ work against a local stack or a remote `kubs0`.
 
 ## Reference
 
-- HTTP contract: [openapi.yaml](../specs/001-initial-mvp/contracts/openapi.yaml)
-- Spec: [spec.md](../specs/001-initial-mvp/spec.md) (US5 — Observability & Operations)
+- HTTP contract: [openapi.yaml](../sprints/001-initial-mvp/contracts/openapi.yaml)
+- Spec: [spec.md](../sprints/001-initial-mvp/spec.md) (US5 — Observability & Operations)
 - Functional requirements FR-017..FR-020 cover `/healthz`, `/metrics`,
   exit codes, and journal output.
 
@@ -264,7 +264,7 @@ zero chunks.
 ### ansible-k handoff
 
 The sprint-003 handoff document for the ansible-k integrator lives
-at [specs/003-non-agentic-writes/handoff/](../specs/003-non-agentic-writes/handoff/).
+at [sprints/003-non-agentic-writes/handoff/](../sprints/003-non-agentic-writes/handoff/).
 It is self-contained markdown + a runnable POSIX `sh` example, ready
 to `cp -r` to `/home/ken/ansible-k/specs/klams-integration/`.
 
@@ -284,7 +284,7 @@ to `cp -r` to `/home/ken/ansible-k/specs/klams-integration/`.
 Returns a single token-budgeted bundle of facts + knowledge + events
 that an agent can drop straight into a prompt. The wire shape is
 defined in
-[specs/005-advanced-retrieval/contracts/memory-context.openapi.yaml](../specs/005-advanced-retrieval/contracts/memory-context.openapi.yaml).
+[sprints/005-advanced-retrieval/contracts/memory-context.openapi.yaml](../sprints/005-advanced-retrieval/contracts/memory-context.openapi.yaml).
 
 ```sh
 curl -fsS https://kubs0:7777/memory/context \
@@ -402,7 +402,7 @@ non-critical writes while a backup is in flight, and a generic
 exec-with-JSON status hook so any external observer (kpidash, an SRE
 script, ansible-k) can subscribe to the lifecycle. End-to-end walkthrough
 lives at
-[specs/006-maintenance-and-backups/quickstart.md](../specs/006-maintenance-and-backups/quickstart.md).
+[sprints/006-maintenance-and-backups/quickstart.md](../sprints/006-maintenance-and-backups/quickstart.md).
 
 ### `[backup]` config block
 
@@ -437,7 +437,7 @@ just backup-validate-config
 | `restore-from <date> [--force]` | Restores `postgres-<date>.dump` + `qdrant-<date>.snapshot` from `[backup].backup_dir`. Refuses non-empty targets without `--force`. |
 | `backup-validate-config`  | Loads `klams.toml`, runs `BackupConfig::validate()`, exits `0` on OK / `2` on validation error. |
 | `backup-verify [<date>]`  | Read-only integrity check of a committed pair (default: today UTC). Runs `pg_restore --list` on the dump and `tar tf` on the snapshot, asserts both produce a non-empty listing. Exits `0` on OK / `1` on missing or unreadable artifact. |
-| `backup-size`             | Brings up the test stack, loads the scale fixture, times one `run_once`, prints `kind | bytes | seconds`, and appends a dated entry to `specs/006-maintenance-and-backups/sizing.md`. |
+| `backup-size`             | Brings up the test stack, loads the scale fixture, times one `run_once`, prints `kind | bytes | seconds`, and appends a dated entry to `sprints/006-maintenance-and-backups/sizing.md`. |
 
 ### Maintenance-mode error envelope
 
@@ -461,7 +461,7 @@ running backup completes (computed from `RunningSnapshot.expected_end_at`)
 with a 30-second floor. Reads (`GET /memory/*`) and User-source dissent
 resolution (`POST /memory/dissents/{id}/promote|discard`) pass through
 unchanged — see
-[specs/006-maintenance-and-backups/quickstart.md §3](../specs/006-maintenance-and-backups/quickstart.md#3-observe-maintenance-mode-behavior).
+[sprints/006-maintenance-and-backups/quickstart.md §3](../sprints/006-maintenance-and-backups/quickstart.md#3-observe-maintenance-mode-behavior).
 
 ### `/healthz` extension
 
@@ -491,7 +491,7 @@ it three times per run — `event ∈ {started, finished, failed}` — with
 a versioned JSON payload streamed to its stdin and the run's
 identifiers exposed via environment variables (`KLAMS_BACKUP_RUN_ID`,
 `KLAMS_BACKUP_EVENT`). The schema is the single source of truth:
-[`contracts/backup-status-hook.schema.json`](../specs/006-maintenance-and-backups/contracts/backup-status-hook.schema.json).
+[`contracts/backup-status-hook.schema.json`](../sprints/006-maintenance-and-backups/contracts/backup-status-hook.schema.json).
 
 ```jsonc
 // finished example (lifecycle events match the schema's examples[])
@@ -556,7 +556,7 @@ What it actually checks:
 For the strongest possible verification — exercising the same
 `restore::run_from` code path the once-exercised drill validates —
 follow the manual procedure in
-[specs/006-maintenance-and-backups/quickstart.md §5](../specs/006-maintenance-and-backups/quickstart.md#5-restore-from-a-snapshot-fr-016)
+[sprints/006-maintenance-and-backups/quickstart.md §5](../sprints/006-maintenance-and-backups/quickstart.md#5-restore-from-a-snapshot-fr-016)
 against a throwaway compose stack and compare row counts.
 
 ## Sprint 007 — MCP server
@@ -567,7 +567,7 @@ klams memories through a uniform tool interface. The MCP server is
 **additive**: every existing REST endpoint, the viewport, and the
 non-agentic writers (`klams-scanner`, `klams-monitor`) keep working
 unchanged. Detailed contracts live under
-[specs/007-mcp-server/contracts/](../specs/007-mcp-server/contracts/).
+[sprints/007-mcp-server/contracts/](../sprints/007-mcp-server/contracts/).
 
 ### Tool surface
 
@@ -649,7 +649,7 @@ Facts and knowledge items support **soft delete** via `memory_delete`:
 
 This means a rogue write+scope agent can hide memories but cannot
 destroy them. The DR drill at
-[specs/007-mcp-server/quickstart.md §12](../specs/007-mcp-server/quickstart.md#12-restore-from-rogue-agent-drill)
+[sprints/007-mcp-server/quickstart.md §12](../sprints/007-mcp-server/quickstart.md#12-restore-from-rogue-agent-drill)
 walks through detecting and reversing a mass-delete.
 
 ### Viewport `/authors` review workflow
@@ -688,7 +688,7 @@ returned to baseline).
 
 ## Sprint 008 — Activity tab and `event_search`
 
-Sprint 008 (`specs/008-activity-observability/`) adds a single
+Sprint 008 (`sprints/008-activity-observability/`) adds a single
 cross-author **Activity tab** to the viewport and a matching MCP
 tool (`event_search`) for cheap event lookup, both backed by the
 same shared store query (R-001 — "two surfaces, one query").
@@ -760,13 +760,13 @@ curl -sS -H "Authorization: Bearer $KLAMS_READ_TOKEN" \
 
 Run `just bench-seed && just bench-run` (see
 [tools/bench/README.md](../tools/bench/README.md)) to refresh
-[specs/008-activity-observability/perf-baseline.md](../specs/008-activity-observability/perf-baseline.md).
+[sprints/008-activity-observability/perf-baseline.md](../sprints/008-activity-observability/perf-baseline.md).
 Per FR-022, the harness always exits 0 — the baseline is a
 measurement, not a CI gate.
 
 ## Sprint 009 — Stability, attribution, and bench-clean
 
-Sprint 009 (`specs/009-stability-attribution/`) adds three operator
+Sprint 009 (`sprints/009-stability-attribution/`) adds three operator
 recipes: a loopback soak to validate FR-001/SC-001, an
 author-based bench-clean, and a one-shot re-attribution CLI for
 historical REST writes.
@@ -785,7 +785,7 @@ just soak --duration 18h 2>&1 | tee /tmp/soak-018h.log
 Shorter windows are useful for smoke checks (`--duration 15m`).
 Record the start/end fd/CLOSE_WAIT samples and the SC-001 verdict
 in
-[specs/009-stability-attribution/soak-report.md](../specs/009-stability-attribution/soak-report.md).
+[sprints/009-stability-attribution/soak-report.md](../sprints/009-stability-attribution/soak-report.md).
 The harness exits 0 regardless of outcome — like `bench-run`, it is
 a measurement, not a gate.
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # verify-mvp.sh — walk the SC-001..SC-009 smoke checks from
-# specs/001-initial-mvp/quickstart.md §9 and print a pass/fail summary.
+# sprints/001-initial-mvp/quickstart.md §9 and print a pass/fail summary.
 #
 # Configuration via env:
 #   KLAMS_URL     base URL of the running service   (default http://127.0.0.1:7777)

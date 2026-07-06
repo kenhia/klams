@@ -4,7 +4,7 @@
 //! unit and feed `(prev, current)` into [`diff`]. The result is
 //! [`Some(ServiceEventPayload)`](ServiceEventPayload) when a transition
 //! is worth recording and `None` for steady-state polls. See
-//! `specs/003-non-agentic-writes/data-model.md` §7.
+//! `sprints/003-non-agentic-writes/data-model.md` §7.
 
 use crate::poll::UnitState;
 use serde::{Deserialize, Serialize};

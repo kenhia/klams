@@ -2,14 +2,14 @@
 
 This document covers initial provisioning of the klams storage root
 and runtime configuration. It is the manual counterpart to
-[quickstart.md](../specs/001-initial-mvp/quickstart.md), pulled out
+[quickstart.md](../sprints/001-initial-mvp/quickstart.md), pulled out
 so it can be linked from the README.
 
 ## Storage root model
 
 All klams persistent state lives under a single configurable directory
 tree, by default `/ai/klams/`. See
-[research.md §12](../specs/001-initial-mvp/research.md#12-storage-root)
+[research.md §12](../sprints/001-initial-mvp/research.md#12-storage-root)
 for the rationale.
 
 ```text
@@ -84,7 +84,7 @@ discoverable via `just --list` and is the same command CI invokes.
 Install [`just`](https://github.com/casey/just) once per developer
 machine before running any Phase 2+ workflow (this is the install
 referenced from sprint 002 task T001 and from
-[specs/002-safety-and-write-ops/quickstart.md §Prerequisites](../specs/002-safety-and-write-ops/quickstart.md#prerequisites)).
+[sprints/002-safety-and-write-ops/quickstart.md §Prerequisites](../sprints/002-safety-and-write-ops/quickstart.md#prerequisites)).
 
 ```bash
 # Debian / Ubuntu (and WSL Ubuntu): use the cargo install path so
@@ -268,8 +268,8 @@ The nightly backup task lands `postgres-<UTC-date>.dump` and
 the `[backup]` config block). Restoring from one of those pairs is
 the once-exercised DR drill that satisfies **FR-016** and is
 walked end-to-end in
-[specs/006-maintenance-and-backups/quickstart.md §5](../specs/006-maintenance-and-backups/quickstart.md#5-restore-from-a-snapshot-fr-016).
-See [specs/006-maintenance-and-backups/spec.md](../specs/006-maintenance-and-backups/spec.md)
+[sprints/006-maintenance-and-backups/quickstart.md §5](../sprints/006-maintenance-and-backups/quickstart.md#5-restore-from-a-snapshot-fr-016).
+See [sprints/006-maintenance-and-backups/spec.md](../sprints/006-maintenance-and-backups/spec.md)
 for the requirements this procedure satisfies.
 
 ```bash
@@ -318,7 +318,7 @@ shape) and the service is running, register klams with each MCP
 client you want to wire in.
 
 Step-by-step walkthrough lives at
-[specs/007-mcp-server/quickstart.md](../specs/007-mcp-server/quickstart.md).
+[sprints/007-mcp-server/quickstart.md](../sprints/007-mcp-server/quickstart.md).
 
 ### VS Code (`.vscode/mcp.json`)
 
@@ -345,7 +345,7 @@ to the scopes the token grants — `read` + `write` for `ghcp`).
 VS Code's "MCP: klams" Output panel will log two harmless warnings
 on startup (`Could not fetch resource metadata` and
 `Failed to parse message: ""`) — see
-[specs/007-mcp-server/research-vscode-mcp-http.md](../specs/007-mcp-server/research-vscode-mcp-http.md)
+[sprints/007-mcp-server/research-vscode-mcp-http.md](../sprints/007-mcp-server/research-vscode-mcp-http.md)
 §6–§7 for what they mean. They can be ignored.
 
 If you connect via a non-loopback hostname and want belt-and-suspenders
@@ -486,7 +486,7 @@ read "No Data" on a freshly restarted service until a backup runs.
 
 ## Sprint 009 — Stability & attribution
 
-Sprint 009 (`specs/009-stability-attribution/`) introduces three
+Sprint 009 (`sprints/009-stability-attribution/`) introduces three
 operator-visible configuration knobs: the raised file-descriptor cap
 in the systemd unit, the `agent_name` field on bearer tokens, and the
 one-shot re-attribution CLI.

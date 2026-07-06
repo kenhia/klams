@@ -15,4 +15,4 @@ cargo test -p klams-service --features scale-fixture \
 
 `just backup-size` invokes the loader, runs one `backup::run_once`,
 and prints a `kind | bytes | seconds` table (plus appends a dated
-entry to [`specs/006-maintenance-and-backups/sizing.md`](../../specs/006-maintenance-and-backups/sizing.md)).
+entry to [`sprints/006-maintenance-and-backups/sizing.md`](../../sprints/006-maintenance-and-backups/sizing.md)).

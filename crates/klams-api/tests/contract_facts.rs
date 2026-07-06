@@ -2,7 +2,7 @@
 //!
 //! Exercises the live axum router via `tower::ServiceExt::oneshot`
 //! with an in-memory mock `Store`, and asserts the HTTP request/
-//! response shapes match `specs/001-initial-mvp/contracts/openapi.yaml`.
+//! response shapes match `sprints/001-initial-mvp/contracts/openapi.yaml`.
 
 use async_trait::async_trait;
 use axum::body::{to_bytes, Body};

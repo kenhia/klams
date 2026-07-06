@@ -1,7 +1,7 @@
 //! Per-event-category validators (`Service`, `Execution`).
 //!
 //! Sprint 003 (T024) tightened these to match
-//! `specs/003-non-agentic-writes/data-model.md` §3 & §4:
+//! `sprints/003-non-agentic-writes/data-model.md` §3 & §4:
 //!
 //! - `ServiceEventValidator` — required `service`, `event` (enum of
 //!   `up|down|restart|version_changed`), `host` (hostname-shape);

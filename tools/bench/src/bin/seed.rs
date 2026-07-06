@@ -1,6 +1,6 @@
 //! `klams-bench seed` — deterministic seeded fixture generator (US5).
 //!
-//! See `specs/008-activity-observability/contracts/bench-harness.md`.
+//! See `sprints/008-activity-observability/contracts/bench-harness.md`.
 
 use anyhow::{Context, Result};
 use klams_bench::{

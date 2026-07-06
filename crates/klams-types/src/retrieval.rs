@@ -1,6 +1,6 @@
 //! Hybrid-retrieval query plan and fusion strategy.
 //!
-//! Sprint 005 (Phase 4) — see specs/005-advanced-retrieval/data-model.md §6–§7.
+//! Sprint 005 (Phase 4) — see sprints/005-advanced-retrieval/data-model.md §6–§7.
 
 use crate::context::RetrievalFilters;
 use serde::{Deserialize, Serialize};

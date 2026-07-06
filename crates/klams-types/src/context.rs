@@ -1,6 +1,6 @@
 //! `POST /memory/context` request and response shapes.
 //!
-//! Sprint 005 (Phase 4) — see specs/005-advanced-retrieval/data-model.md §1–§2.
+//! Sprint 005 (Phase 4) — see sprints/005-advanced-retrieval/data-model.md §1–§2.
 
 use crate::entities::{FactType, Source};
 use serde::{Deserialize, Serialize};

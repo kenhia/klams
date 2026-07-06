@@ -36,7 +36,7 @@ const fn default_memories_max_window_days() -> u32 {
 }
 
 /// `[backup]` block in `klams.toml`. See
-/// `specs/006-maintenance-and-backups/data-model.md`.
+/// `sprints/006-maintenance-and-backups/data-model.md`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackupConfig {
     /// Master switch. Default `false` — zero runtime cost when off.

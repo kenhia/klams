@@ -4,7 +4,7 @@ Sprint 008 checked-in Prometheus scrape config for the homelab
 klams instance.
 
 Contract reference:
-specs/008-activity-observability/contracts/prometheus-scrape.md
+sprints/008-activity-observability/contracts/prometheus-scrape.md
 
 ## Files
 

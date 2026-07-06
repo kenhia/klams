@@ -6,8 +6,8 @@ they are deployed on the production host `kubs0`. It complements
 [setup.md](setup.md) (provisioning) and
 [usage.md](usage.md) (operator-facing recipes), and is the operator-
 oriented counterpart to the formal design records in
-[specs/001-initial-mvp/plan.md](../specs/001-initial-mvp/plan.md) and
-[specs/001-initial-mvp/research.md](../specs/001-initial-mvp/research.md).
+[sprints/001-initial-mvp/plan.md](../sprints/001-initial-mvp/plan.md) and
+[sprints/001-initial-mvp/research.md](../sprints/001-initial-mvp/research.md).
 
 ## 1. Components
 
@@ -101,7 +101,7 @@ bundled SvelteKit assets and stays at `about:blank`.
 services, all attached to a single user-defined bridge network
 `klams-net` with deterministic DNS aliases (`postgres`, `qdrant`,
 `tei`). The default `bridge` network is intentionally not used —
-rationale in [research.md §13](../specs/001-initial-mvp/research.md#13-docker-network).
+rationale in [research.md §13](../sprints/001-initial-mvp/research.md#13-docker-network).
 
 | Service | Container | Bind | Volume | Notes |
 |---------|-----------|------|--------|-------|
@@ -218,7 +218,7 @@ overrides live under `[decay]` in `klams.toml`.
 
 ## 2a. Phase 2 deltas (sprint 002)
 
-Sprint 002 (`specs/002-safety-and-write-ops/`) layers safety, drift
+Sprint 002 (`sprints/002-safety-and-write-ops/`) layers safety, drift
 control, and viewport curation on top of the Phase 1 pipeline without
 changing the crate boundaries:
 
@@ -245,13 +245,13 @@ changing the crate boundaries:
   constitution's fmt/clippy/test gate (SC-006, SC-007).
 
 Plan and spec live at
-[specs/002-safety-and-write-ops/plan.md](../specs/002-safety-and-write-ops/plan.md)
+[sprints/002-safety-and-write-ops/plan.md](../sprints/002-safety-and-write-ops/plan.md)
 and
-[specs/002-safety-and-write-ops/spec.md](../specs/002-safety-and-write-ops/spec.md).
+[sprints/002-safety-and-write-ops/spec.md](../sprints/002-safety-and-write-ops/spec.md).
 
 ## 2b. Phase 3 deltas (sprint 003)
 
-Sprint 003 (`specs/003-non-agentic-writes/`) adds **non-agentic
+Sprint 003 (`sprints/003-non-agentic-writes/`) adds **non-agentic
 writers** (a filesystem scanner, a systemd-state monitor) that feed
 klams without an LLM in the write path, plus a deployment story to
 land all three klams binaries under systemd on `kubs0`. The crate
@@ -301,7 +301,7 @@ boundaries do not change; two new binaries live under `crates/`.
   rotates the previous binary to `<bin>.prev` so `just rollback`
   works (SC-004).
 * **ansible-k handoff (FR-019..FR-022)** — self-contained directory at
-  `specs/003-non-agentic-writes/handoff/` (README + spec + api-contract
+  `sprints/003-non-agentic-writes/handoff/` (README + spec + api-contract
   + example script) ready to `cp -r` to
   `/home/ken/ansible-k/specs/klams-integration/`. The pinned-version
   header references `GET /healthz?contract=v1` as the drift-detection
@@ -311,13 +311,13 @@ boundaries do not change; two new binaries live under `crates/`.
   the `path` field is additive and `MemoryPolicy` is a new endpoint.
 
 Plan and spec live at
-[specs/003-non-agentic-writes/plan.md](../specs/003-non-agentic-writes/plan.md)
+[sprints/003-non-agentic-writes/plan.md](../sprints/003-non-agentic-writes/plan.md)
 and
-[specs/003-non-agentic-writes/spec.md](../specs/003-non-agentic-writes/spec.md).
+[sprints/003-non-agentic-writes/spec.md](../sprints/003-non-agentic-writes/spec.md).
 
 ### Sprint 010 — ingestion operationalized
 
-Sprint 010 (`specs/010-operationalize-ingestion/`) takes the sprint-003
+Sprint 010 (`sprints/010-operationalize-ingestion/`) takes the sprint-003
 scanner and monitor from "buildable" to **live on `kubs0`**:
 
 * `klams-scanner.timer` fires the scanner hourly (`Type=oneshot`); the
@@ -361,7 +361,7 @@ Sprint 005 adds **hybrid retrieval, summarization, and a unified
 `/memory/context` bundler** so an agent can ask "give me the most
 useful context for this query under N tokens" instead of paging
 through raw rows. The wire contract lives at
-[specs/005-advanced-retrieval/contracts/memory-context.openapi.yaml](../specs/005-advanced-retrieval/contracts/memory-context.openapi.yaml).
+[sprints/005-advanced-retrieval/contracts/memory-context.openapi.yaml](../sprints/005-advanced-retrieval/contracts/memory-context.openapi.yaml).
 
 ### 2c.1 Hybrid retrieval (US2)
 
@@ -436,7 +436,7 @@ scope for this sprint (D-007).
 A new pane at `/preview` calls `POST /memory/context` and renders
 the bundle with per-section status pills, a 250 ms-debounced
 token-budget slider (D-009), and a raw-vs-summarized toggle.
-See [`viewport.md` §6](../specs/planning/viewport.md#6-phase-4--context-preview).
+See [`viewport.md` §6](../sprints/planning/viewport.md#6-phase-4--context-preview).
 
 ### 2c.6 Metrics added
 
@@ -449,9 +449,9 @@ See [`viewport.md` §6](../specs/planning/viewport.md#6-phase-4--context-preview
 | `klams_decay_config_reload_total` | counter | successful config loads at startup |
 
 Plan and spec for this delta live at
-[specs/005-advanced-retrieval/plan.md](../specs/005-advanced-retrieval/plan.md)
+[sprints/005-advanced-retrieval/plan.md](../sprints/005-advanced-retrieval/plan.md)
 and
-[specs/005-advanced-retrieval/spec.md](../specs/005-advanced-retrieval/spec.md).
+[sprints/005-advanced-retrieval/spec.md](../sprints/005-advanced-retrieval/spec.md).
 
 ## 2d. Phase 6 deltas (sprint 006 — maintenance & backups)
 
@@ -525,7 +525,7 @@ not change.
   `unsafe_code = forbid` rules out `libc::kill` directly). Hook
   failure is observability, not control flow — see
   `crates/klams-service/src/backup/hook.rs`. Schema:
-  [`contracts/backup-status-hook.schema.json`](../specs/006-maintenance-and-backups/contracts/backup-status-hook.schema.json).
+  [`contracts/backup-status-hook.schema.json`](../sprints/006-maintenance-and-backups/contracts/backup-status-hook.schema.json).
 * **Retention (FR-005)** — filename-as-truth date parsing keeps the
   newest `daily_count` distinct dates + the newest `weekly_count`
   Sundays per kind; treats `same_day_strategy = "suffix"` runs as the
@@ -550,13 +550,13 @@ not change.
   list. SC-008's cross-link assertion is satisfied by this paragraph.
 
 Plan and spec live at
-[specs/006-maintenance-and-backups/plan.md](../specs/006-maintenance-and-backups/plan.md)
+[sprints/006-maintenance-and-backups/plan.md](../sprints/006-maintenance-and-backups/plan.md)
 and
-[specs/006-maintenance-and-backups/spec.md](../specs/006-maintenance-and-backups/spec.md).
+[sprints/006-maintenance-and-backups/spec.md](../sprints/006-maintenance-and-backups/spec.md).
 
 ## 2e. Phase 7 deltas (sprint 007 — MCP projection layer)
 
-Sprint 007 (`specs/007-mcp-server/`) exposes klams over the **Model
+Sprint 007 (`sprints/007-mcp-server/`) exposes klams over the **Model
 Context Protocol** without changing the underlying Postgres/Qdrant
 schemas. The MCP surface is a new public projection on top of the
 existing stores; everything below it (decay, dissents, dedupe,
@@ -569,7 +569,7 @@ every memory to the agent that wrote it. `facts.author_id` and
 `events.author_id` become NOT NULL FKs after a backfill to the
 seeded `SYSTEM_AUTHOR_ID` (`00000000-0000-7000-8000-000000000001`);
 Qdrant points carry `author_id` in payload. Schema reference:
-[specs/007-mcp-server/data-model.md §1–§4](../specs/007-mcp-server/data-model.md).
+[sprints/007-mcp-server/data-model.md §1–§4](../sprints/007-mcp-server/data-model.md).
 
 Authors are registered via the `register_author` MCP tool. The
 returned UUID is the caller's identity for every subsequent
@@ -616,7 +616,7 @@ Every MCP tool is gated by a `Scope` (`Read | Write | Admin`)
 checked from the bearer token's `TokenGrant`. The legacy single
 `bearer_token` field is materialized at load time into one grant
 with all scopes set; the new `[[auth.tokens]]` array (see
-[data-model.md §5](../specs/007-mcp-server/data-model.md#5-configuration-extension-klams-typesauthconfig))
+[data-model.md §5](../sprints/007-mcp-server/data-model.md#5-configuration-extension-klams-typesauthconfig))
 issues per-purpose tokens (read-only viewport, read+write GHCP,
 admin for `ken-admin`). Insufficient-scope calls return a
 deterministic `permission_denied` error; scope failures are counted
@@ -682,16 +682,16 @@ No OAuth metadata is served. VS Code Insiders' `"type": "http"`
 client accepts a static `headers.Authorization` in `mcp.json` and
 treats the absent `/.well-known/oauth-protected-resource` as a
 harmless warning. The handshake walkthrough lives at
-[specs/007-mcp-server/research-vscode-mcp-http.md](../specs/007-mcp-server/research-vscode-mcp-http.md).
+[sprints/007-mcp-server/research-vscode-mcp-http.md](../sprints/007-mcp-server/research-vscode-mcp-http.md).
 
 Plan and spec live at
-[specs/007-mcp-server/plan.md](../specs/007-mcp-server/plan.md)
+[sprints/007-mcp-server/plan.md](../sprints/007-mcp-server/plan.md)
 and
-[specs/007-mcp-server/spec.md](../specs/007-mcp-server/spec.md).
+[sprints/007-mcp-server/spec.md](../sprints/007-mcp-server/spec.md).
 
 ## 2f. Phase 8 deltas (sprint 008 — Activity observability)
 
-Sprint 008 (`specs/008-activity-observability/`) closes the
+Sprint 008 (`sprints/008-activity-observability/`) closes the
 observability triangle around the MCP layer added in sprint 007: one
 agent-facing tool, one operator-facing HTTP surface, and one shared
 viewport tab — all reading from the **same query path** so the
@@ -710,7 +710,7 @@ datetime index rather than point-id order). Both `event_search` (MCP)
 and `GET /v1/memories` (HTTP) delegate to it; there is no parallel SQL
 anywhere. Rationale (R-001 — "two
 surfaces, one query") lives in
-[specs/008-activity-observability/research.md](../specs/008-activity-observability/research.md).
+[sprints/008-activity-observability/research.md](../sprints/008-activity-observability/research.md).
 
 ```text
    MCP event_search        HTTP GET /v1/memories       Viewport /activity
@@ -759,7 +759,7 @@ to scrape `klams-service:7777/metrics`, and gates both behind the
 existing `observability` Compose profile so the production stack is
 unaffected when the profile is not selected. The handoff table in
 ansible-k's
-[`specs/klams-integration/klams-grafana.md`](https://github.com/kenhia/ansible-k/blob/main/specs/klams-integration/klams-grafana.md)
+[`sprints/klams-integration/klams-grafana.md`](https://github.com/kenhia/ansible-k/blob/main/specs/klams-integration/klams-grafana.md)
 gained matching rows for the three series — the
 `every_panel_series_appears_in_handoff_table` contract test enforces
 this going forward.
@@ -772,20 +772,20 @@ binaries: `seed` (writes a deterministic
 surfaces, with 503/queue-full exponential-backoff retry) and `run`
 (replays a representative query set against `memory_search`, records
 microsecond latencies into an HDR histogram, writes
-[specs/008-activity-observability/perf-baseline.md](../specs/008-activity-observability/perf-baseline.md)).
+[sprints/008-activity-observability/perf-baseline.md](../sprints/008-activity-observability/perf-baseline.md)).
 Per FR-022 the harness **never gates `just gate`** — `bench-seed` and
 `bench-run` always exit 0; the artifact is a measurement, not an
 assertion. The baseline file auto-tags "Smoke run" when the corpus is
 below the canonical 10k facts / 50k knowledge target.
 
 Plan and spec live at
-[specs/008-activity-observability/plan.md](../specs/008-activity-observability/plan.md)
+[sprints/008-activity-observability/plan.md](../sprints/008-activity-observability/plan.md)
 and
-[specs/008-activity-observability/spec.md](../specs/008-activity-observability/spec.md).
+[sprints/008-activity-observability/spec.md](../sprints/008-activity-observability/spec.md).
 
 ## 2g. Phase 9 deltas (sprint 009 — Stability & attribution)
 
-Sprint 009 (`specs/009-stability-attribution/`) closes three
+Sprint 009 (`sprints/009-stability-attribution/`) closes three
 production wounds left open after sprint 008: the loopback CLOSE_WAIT
 leak that exhausted file descriptors under sustained traffic
 (kwi #26), the REST attribution gap that stamped every non-MCP write
@@ -864,9 +864,9 @@ preserved so attribution invariants still hold. Validated 10/10
 under default parallelism.
 
 Plan and spec live at
-[specs/009-stability-attribution/plan.md](../specs/009-stability-attribution/plan.md)
+[sprints/009-stability-attribution/plan.md](../sprints/009-stability-attribution/plan.md)
 and
-[specs/009-stability-attribution/spec.md](../specs/009-stability-attribution/spec.md).
+[sprints/009-stability-attribution/spec.md](../sprints/009-stability-attribution/spec.md).
 
 ## 3. Deployment topology on `kubs0`
 
@@ -907,7 +907,7 @@ The split between **systemd-managed klams-service** and
   via the published Compose ports.
 
 Rationale in
-[research.md §3](../specs/001-initial-mvp/research.md#3-klams-service-deployment).
+[research.md §3](../sprints/001-initial-mvp/research.md#3-klams-service-deployment).
 
 ### 3.1 Network exposure
 
@@ -926,7 +926,7 @@ Rationale in
 * Postgres password: in `compose.env` (mode `0600`) and inlined into
   the service's `postgres.url`.
 * No TLS in MVP — LAN-only deployment, see
-  [research.md §7](../specs/001-initial-mvp/research.md#7-auth-model-for-mvp).
+  [research.md §7](../sprints/001-initial-mvp/research.md#7-auth-model-for-mvp).
 
 ## 4. Where to look next
 
@@ -934,6 +934,6 @@ Rationale in
 * Day-to-day operator recipes (start/stop, log inspection, viewport
   install): [usage.md](usage.md).
 * MVP smoke checks mapped to success criteria:
-  [specs/001-initial-mvp/quickstart.md §9](../specs/001-initial-mvp/quickstart.md#9-smoke-test-the-user-stories).
+  [sprints/001-initial-mvp/quickstart.md §9](../sprints/001-initial-mvp/quickstart.md#9-smoke-test-the-user-stories).
 * Per-decision rationale:
-  [specs/001-initial-mvp/research.md](../specs/001-initial-mvp/research.md).
+  [sprints/001-initial-mvp/research.md](../sprints/001-initial-mvp/research.md).

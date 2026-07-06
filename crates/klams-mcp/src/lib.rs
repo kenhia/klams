@@ -4,7 +4,7 @@
 //! by `klams-service`. The public entry point is [`router`], which
 //! returns an [`axum::Router`] ready to nest under `/mcp`.
 //!
-//! Module map (see `specs/007-mcp-server/`):
+//! Module map (see `sprints/007-mcp-server/`):
 //! - [`auth_bridge`] — translates `klams_api` bearer scopes into
 //!   per-tool gating decisions.
 //! - [`errors`] — canonical MCP error codes & envelope helpers.

@@ -21,7 +21,7 @@ Prerequisites on Linux: `cargo install cargo-xwin` plus
 (gitignored). No MSI is produced; only the raw `.exe` per FR-022
 (`bundle.active = false` in `tauri.conf.json`).
 
-See [quickstart.md §6](../specs/001-initial-mvp/quickstart.md) for the
+See [quickstart.md §6](../sprints/001-initial-mvp/quickstart.md) for the
 full walkthrough and [docs/memory.md](docs/memory.md) for the in-app
 usage guide.
 

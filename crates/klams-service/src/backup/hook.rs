@@ -1,7 +1,7 @@
 //! `status_hook` lifecycle executor (sprint 006 T045/T046).
 //!
 //! Builds JSON payloads matching
-//! `specs/006-maintenance-and-backups/contracts/backup-status-hook.schema.json`
+//! `sprints/006-maintenance-and-backups/contracts/backup-status-hook.schema.json`
 //! and pipes them to an arbitrary executable. Hook failures are
 //! observability (counters + tracing), never control flow.
 

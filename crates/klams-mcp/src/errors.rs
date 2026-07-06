@@ -1,6 +1,6 @@
 //! Canonical MCP error codes (sprint 007).
 //!
-//! Mirrors `specs/007-mcp-server/contracts/error-codes.md`. These
+//! Mirrors `sprints/007-mcp-server/contracts/error-codes.md`. These
 //! constants form the machine-readable contract surfaced via
 //! `_meta.error_code` in the standard MCP error envelope.
 

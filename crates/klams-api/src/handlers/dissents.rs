@@ -1,7 +1,7 @@
 //! HTTP handlers for `/memory/dissents` (sprint 002, US2).
 //!
 //! These wire the persistence layer in `klams_store::Store` to the
-//! REST surface defined in `specs/002-safety-and-write-ops/contracts/openapi.yaml`.
+//! REST surface defined in `sprints/002-safety-and-write-ops/contracts/openapi.yaml`.
 
 use crate::router::ApiState;
 use crate::ApiError;

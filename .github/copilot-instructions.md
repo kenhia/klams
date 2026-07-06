@@ -1,5 +1,4 @@
-<!-- SPECKIT START -->
-For additional context about technologies to be used, project structure,
-shell commands, and other important information, read the current plan:
-[specs/011-restore-telemetry/plan.md](../specs/011-restore-telemetry/plan.md)
-<!-- SPECKIT END -->
+Follow the project working agreement in [AGENTS.md](../AGENTS.md) at
+the repo root: sprint workflow (branch + `sprints/###-<short-stub>/`
+directory, chronicle in markdown), TDD, the `just gate` code-standards
+gate, docs-as-definition-of-done, and YAGNI.
