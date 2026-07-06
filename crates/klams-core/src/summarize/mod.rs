@@ -1,7 +1,8 @@
 //! Background summarization task: event clusters + stale knowledge clusters.
 //!
 //! Sprint 005 (Phase 4) — T036. The task wakes on a fixed interval,
-//! probes Ollama (if `llm_fallback = true`), then writes one
+//! probes the configured OpenAI-compat chat endpoint (if
+//! `llm_fallback = true`), then writes one
 //! `EventSummary` per detected `(host, category, day_bucket)`
 //! cluster. Cycles never lap — a `tokio::sync::Mutex<()>` guards
 //! the run loop.
@@ -31,8 +32,10 @@ pub struct SummarizationConfig {
     pub event_cluster_min: u32,
     pub llm_fallback: bool,
     pub task_interval: Duration,
-    pub ollama_url: String,
-    pub ollama_model: String,
+    /// OpenAI-compat base including `/v1` (sprint 014).
+    pub llm_url: String,
+    pub llm_model: String,
+    pub llm_api_key: Option<String>,
 }
 
 /// Cluster key emitted by a source-supplied iterator of `EventRecord`s.
@@ -172,14 +175,18 @@ impl SummarizationTask {
         };
         let start = Instant::now();
 
-        // Optional Ollama probe (kept for D-010); the result only
-        // affects the `mechanism` label below.
+        // Optional chat-endpoint probe (kept for D-010); the result
+        // only affects the `mechanism` label below.
         let llm_ok = if self.cfg.llm_fallback {
-            let client = llm::OllamaClient::new(&self.cfg.ollama_url, &self.cfg.ollama_model);
+            let client = llm::OpenAiChatClient::new(
+                &self.cfg.llm_url,
+                &self.cfg.llm_model,
+                self.cfg.llm_api_key.clone(),
+            );
             match client.probe().await {
                 Ok(()) => true,
                 Err(e) => {
-                    warn!(error = %e, "ollama probe failed; falling back to extractive");
+                    warn!(error = %e, "chat endpoint probe failed; falling back to extractive");
                     false
                 }
             }

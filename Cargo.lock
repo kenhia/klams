@@ -1807,6 +1807,7 @@ dependencies = [
  "tracing",
  "unicode-normalization",
  "uuid",
+ "wiremock",
 ]
 
 [[package]]
@@ -1969,6 +1970,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "uuid",
+ "wiremock",
 ]
 
 [[package]]

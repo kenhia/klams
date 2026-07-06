@@ -49,10 +49,17 @@ grpc_url = "http://127.0.0.1:6334"
 collection = "knowledge_items"
 
 [embeddings]
-# TEI inference server. Loopback in production.
+# Embedding endpoint. `api` selects the wire dialect (sprint 014):
+#   "tei"    — TEI-native POST /embed; `url` is the TEI base.
+#   "openai" — OpenAI-compat POST {url}/embeddings (vLLM, TEI's /v1
+#              route, Ollama /v1); `url` must include the /v1
+#              segment, e.g. "http://127.0.0.1:7070/v1". Set
+#              `api_key` for endpoints started with --api-key.
+# Loopback in production.
 url = "http://127.0.0.1:7070"
 model_id = "BAAI/bge-small-en-v1.5"
 vector_dim = 384
+api = "tei"
 
 [queue]
 # Bounded mpsc capacity for the worker pool. When full, the API
@@ -112,9 +119,13 @@ enabled                = true
 event_cluster_min      = 50     # min events per (host, category, day_bucket) to summarize
 knowledge_stale_days   = 90     # last_used_at AND updated_at older than this = stale
 knowledge_cluster_min  = 20     # min stale chunks per (repo, file_prefix) cluster
-llm_fallback           = true   # use Ollama Phi-3-medium when extractive output is inadequate
-ollama_url             = "http://127.0.0.1:11434"
-ollama_model           = "phi3:medium"
+llm_fallback           = true   # use the chat LLM when extractive output is inadequate
+# OpenAI-compat chat base *including* /v1 (sprint 014). Works with
+# Ollama's /v1 route (shown), vLLM, or kvllm on kai. Set
+# `llm_api_key` for endpoints that require a bearer key. The legacy
+# `ollama_url`/`ollama_model` keys still parse as aliases.
+llm_url                = "http://127.0.0.1:11434/v1"
+llm_model              = "phi3:medium"
 task_interval_seconds  = 3600
 
 # ---------------------------------------------------------------------------

@@ -311,7 +311,7 @@ Response sketch:
     "facts":     { "count": 4, "tokens_spent":  568, "source": "raw",     "status": "ok" },
     "knowledge": { "count": 3, "tokens_spent": 1224, "source": "mixed",   "status": "ok" },
     "events":    { "count": 1, "tokens_spent":   88, "source": "summary", "status": "degraded",
-                   "degraded_reason": "ollama unreachable; fell back to extractive" }
+                   "degraded_reason": "chat endpoint unreachable; fell back to extractive" }
   }
 }
 ```
@@ -372,12 +372,19 @@ apply a new `[decay]` block.
 enabled              = true
 task_interval        = "60s"   # also accepts "5m", "1h"
 event_cluster_min    = 3       # only summarize ≥ N events
-llm_fallback         = true    # try Ollama; on failure use extractive
-ollama_url           = "http://kubs0:11434"
-ollama_model         = "phi3:medium"
+llm_fallback         = true    # try the chat LLM; on failure use extractive
+llm_url              = "http://kubs0:11434/v1"   # OpenAI-compat base incl. /v1
+llm_model            = "phi3:medium"
 ```
 
-When Ollama is unreachable, the task records `mechanism = "extractive"`
+Sprint 014: the chat endpoint speaks the OpenAI-compatible dialect
+(`GET {llm_url}/models` probe, `POST {llm_url}/chat/completions`), so
+`llm_url` works with Ollama's `/v1` route, vLLM, or kvllm on kai; set
+`llm_api_key` if the endpoint requires a bearer key. The legacy
+`ollama_url` / `ollama_model` keys still parse as aliases — but note
+the URL must now include the `/v1` segment.
+
+When the chat endpoint is unreachable, the task records `mechanism = "extractive"`
 and `klams_summarization_runs_total{mechanism="extractive"}` increments;
 the events section in `/memory/context` keeps shipping headlines
 ("3x compile, 2x test"). Watch `klams_summarization_lag_seconds` for

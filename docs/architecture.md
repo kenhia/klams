@@ -413,10 +413,12 @@ Retry-After: 5` (FR-011).
 * Clusters by `(host, category, day_bucket)` and emits an
   extractive headline ("3x compile, 2x test, 1x lint") via
   `summarize::extractive::event_headline()`.
-* Probes Ollama (`GET /api/tags`) at the configured `ollama_url`;
-  on success, marks the summary mechanism `Llm` (the LLM call
-  itself is wired through `OllamaClient::generate()`); on failure,
-  records `Extractive` and the digest still ships.
+* Probes the configured OpenAI-compat chat endpoint
+  (`GET {llm_url}/models`); on success, marks the summary mechanism
+  `Llm` (the LLM call itself is wired through
+  `OpenAiChatClient::generate()` — sprint 014, previously
+  Ollama-native); on failure, records `Extractive` and the digest
+  still ships.
 * Upserts active summaries via `SummaryStore::upsert_event_summary`
   into the new `summaries` table (migration `0004_summaries.sql`).
 
@@ -867,6 +869,34 @@ Plan and spec live at
 [sprints/009-stability-attribution/plan.md](../sprints/009-stability-attribution/plan.md)
 and
 [sprints/009-stability-attribution/spec.md](../sprints/009-stability-attribution/spec.md).
+
+## 2h. Sprint 014 deltas — serving pivot
+
+Sprint 014 ([sprints/014-serving-pivot/](../sprints/014-serving-pivot/sprint.md))
+decouples klams from vendor-native model-serving APIs so the engine
+behind embeddings and summarization is a **configuration choice**, not
+a build choice. No schema changes; no new storage.
+
+* **`Embedder` trait** ([crates/klams-store/src/embeddings.rs](../crates/klams-store/src/embeddings.rs))
+  — `CompositeStore.embedder` is now `Arc<dyn Embedder>`. Two impls:
+  `TeiEmbedder` (TEI-native `POST /embed`, the production default) and
+  `OpenAiCompatEmbedder` (`POST {url}/embeddings`, OpenAI shapes,
+  optional bearer key). Selected via `[embeddings] api = "tei" | "openai"`;
+  for `openai` the `url` must include the version segment (TEI's own
+  `/v1` route, vLLM, and Ollama `/v1` all work).
+* **Chat client** ([crates/klams-core/src/summarize/llm.rs](../crates/klams-core/src/summarize/llm.rs))
+  — `OpenAiChatClient` (`GET {llm_url}/models` probe,
+  `POST {llm_url}/chat/completions`) replaces the Ollama-native
+  client. Config: `[summarization] llm_url` / `llm_model` /
+  `llm_api_key`; the legacy `ollama_url` / `ollama_model` keys parse
+  as serde aliases, but the URL value must now include `/v1`.
+* **Embedding topology decision** — embeddings stay local to `kubs0`
+  (TEI container, GPU-capable); the OpenAI-compat path exists so a
+  future switch to vLLM/kvllm is a URL change. `vector_dim` remains
+  config-driven end-to-end (config → Qdrant collection bootstrap →
+  per-embed `expected_dim` check); changing the embedding model is a
+  deliberate re-embed event — procedure in
+  [sprints/014-serving-pivot/re-embed-runbook.md](../sprints/014-serving-pivot/re-embed-runbook.md).
 
 ## 3. Deployment topology on `kubs0`
 
