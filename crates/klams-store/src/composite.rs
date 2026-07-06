@@ -1,6 +1,6 @@
-//! Composite store wiring Postgres + Qdrant + TEI.
+//! Composite store wiring Postgres + Qdrant + a configured embedder.
 
-use crate::embeddings::TeiEmbedder;
+use crate::embeddings::Embedder;
 use crate::postgres::PostgresStore;
 use crate::qdrant::QdrantStore;
 use crate::{DissentQuery, EventQuery, FactQuery, Store, StoreError, StoreResult, TextHit};
@@ -9,6 +9,7 @@ use klams_types::{
     AppendEvent, Dissent, Event, Fact, FactWriteOutcome, IndexKnowledge, KnowledgeItem, Source,
     UpsertFact,
 };
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -16,7 +17,7 @@ use uuid::Uuid;
 pub struct CompositeStore {
     pub postgres: PostgresStore,
     pub qdrant: QdrantStore,
-    pub embedder: TeiEmbedder,
+    pub embedder: Arc<dyn Embedder>,
     /// Optional outbound channel for `last_used_at` bumps. The
     /// `klams-core::DecayTask` drains the receiver. Reads that
     /// produce facts call `try_send` (drop-on-full).
@@ -24,7 +25,7 @@ pub struct CompositeStore {
 }
 
 impl CompositeStore {
-    pub fn new(postgres: PostgresStore, qdrant: QdrantStore, embedder: TeiEmbedder) -> Self {
+    pub fn new(postgres: PostgresStore, qdrant: QdrantStore, embedder: Arc<dyn Embedder>) -> Self {
         Self {
             postgres,
             qdrant,

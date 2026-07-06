@@ -125,7 +125,7 @@ impl TestServer {
         let qdrant = QdrantStore::connect(&qdrant_url, &qdrant_collection, 384)
             .await
             .expect("qdrant connect");
-        let embedder = TeiEmbedder::new(tei_url, 384).expect("tei client");
+        let embedder = Arc::new(TeiEmbedder::new(tei_url, 384).expect("tei client"));
         let store = Arc::new(CompositeStore::new(postgres, qdrant, embedder));
 
         let (queue, rx) = MemoryQueue::new(256);

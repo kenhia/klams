@@ -25,3 +25,6 @@ sha2 = { workspace = true }
 unicode-normalization = { workspace = true }
 tiktoken-rs = { workspace = true }
 reqwest = { workspace = true }
+
+[dev-dependencies]
+wiremock = { workspace = true }

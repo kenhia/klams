@@ -20,8 +20,8 @@ pub enum ConfigError {
         "retrieval fusion strategy `{value}` is not recognized (expected \"rrf\" or \"weighted\")"
     )]
     RetrievalFusionUnknown { value: String },
-    #[error("summarization.ollama_url `{value}` is not a valid URL: {source}")]
-    SummarizationOllamaUrlInvalid {
+    #[error("summarization.llm_url `{value}` is not a valid URL: {source}")]
+    SummarizationLlmUrlInvalid {
         value: String,
         #[source]
         source: url::ParseError,
@@ -200,11 +200,35 @@ fn default_collection() -> String {
     "knowledge_items".into()
 }
 
+/// Which wire dialect the embedding endpoint speaks (sprint 014).
+/// `tei` is the TEI-native `POST /embed`; `openai` is the
+/// OpenAI-compatible `POST {url}/embeddings` served by vLLM, TEI's
+/// `/v1` route, Ollama, etc.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EmbeddingsApi {
+    #[default]
+    Tei,
+    Openai,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddingsConfig {
+    /// For `api = "tei"`: the TEI base (e.g. `http://127.0.0.1:7070`).
+    /// For `api = "openai"`: the OpenAI-compat base *including* the
+    /// version segment (e.g. `http://127.0.0.1:7070/v1`,
+    /// `http://kai:8000/v1`).
     pub url: String,
+    /// Sent as the `model` field on OpenAI-compat requests; purely
+    /// documentary for TEI (the container decides the model).
     pub model_id: String,
     pub vector_dim: u32,
+    #[serde(default)]
+    pub api: EmbeddingsApi,
+    /// Optional bearer key for `api = "openai"` endpoints that
+    /// require one (e.g. vLLM started with `--api-key`).
+    #[serde(default)]
+    pub api_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -302,10 +326,16 @@ pub struct SummarizationConfig {
     pub knowledge_cluster_min: u32,
     #[serde(default = "default_true")]
     pub llm_fallback: bool,
-    #[serde(default = "default_ollama_url")]
-    pub ollama_url: String,
-    #[serde(default = "default_ollama_model")]
-    pub ollama_model: String,
+    /// OpenAI-compat base *including* `/v1` (sprint 014 — was the
+    /// Ollama-native base). The old `ollama_url` key still parses via
+    /// alias, but its value must gain the `/v1` suffix at deploy time.
+    #[serde(default = "default_llm_url", alias = "ollama_url")]
+    pub llm_url: String,
+    #[serde(default = "default_llm_model", alias = "ollama_model")]
+    pub llm_model: String,
+    /// Optional bearer key for endpoints that require one.
+    #[serde(default)]
+    pub llm_api_key: Option<String>,
     #[serde(default = "default_summarization_interval")]
     pub task_interval_seconds: u64,
 }
@@ -322,10 +352,11 @@ fn default_knowledge_stale_days() -> u32 {
 fn default_knowledge_cluster_min() -> u32 {
     20
 }
-fn default_ollama_url() -> String {
-    "http://127.0.0.1:11434".into()
+fn default_llm_url() -> String {
+    // Ollama's OpenAI-compatible route on kubs0.
+    "http://127.0.0.1:11434/v1".into()
 }
-fn default_ollama_model() -> String {
+fn default_llm_model() -> String {
     "phi3:medium".into()
 }
 fn default_summarization_interval() -> u64 {
@@ -340,8 +371,9 @@ impl Default for SummarizationConfig {
             knowledge_stale_days: default_knowledge_stale_days(),
             knowledge_cluster_min: default_knowledge_cluster_min(),
             llm_fallback: true,
-            ollama_url: default_ollama_url(),
-            ollama_model: default_ollama_model(),
+            llm_url: default_llm_url(),
+            llm_model: default_llm_model(),
+            llm_api_key: None,
             task_interval_seconds: default_summarization_interval(),
         }
     }
@@ -426,7 +458,89 @@ mod tests {
         assert_eq!(cfg.retrieval.rrf_k, 60);
         assert_eq!(cfg.tokens.mode, "tiktoken");
         assert!(cfg.summarization.enabled);
-        assert_eq!(cfg.summarization.ollama_model, "phi3:medium");
+        assert_eq!(cfg.summarization.llm_model, "phi3:medium");
+        // Sprint 014: the shipped example speaks OpenAI-compat for the
+        // chat endpoint and defaults the embedder to TEI-native.
+        assert!(cfg.summarization.llm_url.ends_with("/v1"));
+        assert_eq!(cfg.embeddings.api, EmbeddingsApi::Tei);
+    }
+
+    /// Sprint 014 — `[embeddings] api` selector defaults to `tei` and
+    /// parses `openai`; `[summarization]` accepts the legacy
+    /// `ollama_url` / `ollama_model` keys as aliases.
+    #[test]
+    fn serving_pivot_config_surface() {
+        let base = r#"
+            [server]
+            listen_addr = "127.0.0.1"
+            port = 7777
+            [auth]
+            bearer_token = "test"
+            [postgres]
+            url = "postgres://x/y"
+            [qdrant]
+            grpc_url = "http://127.0.0.1:6334"
+            [queue]
+            capacity = 64
+            workers = 1
+            [logging]
+            format = "json"
+            level = "info"
+        "#;
+
+        // Default api = tei; no api_key.
+        let toml = format!(
+            r#"{base}
+            [embeddings]
+            url = "http://127.0.0.1:7070"
+            model_id = "BAAI/bge-small-en-v1.5"
+            vector_dim = 384
+        "#
+        );
+        let cfg: Config = Figment::new()
+            .merge(Toml::string(&toml))
+            .extract()
+            .expect("parse");
+        assert_eq!(cfg.embeddings.api, EmbeddingsApi::Tei);
+        assert!(cfg.embeddings.api_key.is_none());
+        assert_eq!(cfg.summarization.llm_url, "http://127.0.0.1:11434/v1");
+
+        // api = "openai" with a key.
+        let toml = format!(
+            r#"{base}
+            [embeddings]
+            url = "http://kai:8000/v1"
+            model_id = "BAAI/bge-small-en-v1.5"
+            vector_dim = 384
+            api = "openai"
+            api_key = "sk-test"
+        "#
+        );
+        let cfg: Config = Figment::new()
+            .merge(Toml::string(&toml))
+            .extract()
+            .expect("parse");
+        assert_eq!(cfg.embeddings.api, EmbeddingsApi::Openai);
+        assert_eq!(cfg.embeddings.api_key.as_deref(), Some("sk-test"));
+
+        // Legacy [summarization] keys parse via alias.
+        let toml = format!(
+            r#"{base}
+            [embeddings]
+            url = "http://127.0.0.1:7070"
+            model_id = "m"
+            vector_dim = 384
+            [summarization]
+            ollama_url = "http://kubs0:11434/v1"
+            ollama_model = "llama3.2:latest"
+        "#
+        );
+        let cfg: Config = Figment::new()
+            .merge(Toml::string(&toml))
+            .extract()
+            .expect("parse");
+        assert_eq!(cfg.summarization.llm_url, "http://kubs0:11434/v1");
+        assert_eq!(cfg.summarization.llm_model, "llama3.2:latest");
     }
 
     /// T012(a): a config with no `[decay]` block loads defaults.

@@ -29,8 +29,9 @@ fn extractive_cfg() -> SummarizationConfig {
         event_cluster_min: 2,
         llm_fallback: false,
         task_interval: Duration::from_secs(3600),
-        ollama_url: "http://127.0.0.1:1".into(), // never contacted with llm_fallback=false
-        ollama_model: "unused".into(),
+        llm_url: "http://127.0.0.1:1/v1".into(), // never contacted with llm_fallback=false
+        llm_model: "unused".into(),
+        llm_api_key: None,
     }
 }
 

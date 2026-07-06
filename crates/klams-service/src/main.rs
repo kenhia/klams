@@ -10,7 +10,9 @@ use klams_service::{config, logging};
 use anyhow::{Context, Result};
 use klams_api::{build_router_with_auth, with_metrics, ApiState};
 use klams_core::{spawn_workers, DecayTask, LastUsedBumper, MemoryQueue, ValidatorRegistry};
-use klams_store::{CompositeStore, PostgresStore, QdrantStore, TeiEmbedder};
+use klams_store::{
+    CompositeStore, Embedder, OpenAiCompatEmbedder, PostgresStore, QdrantStore, TeiEmbedder,
+};
 use std::sync::Arc;
 use tokio::signal;
 use tracing::info;
@@ -91,11 +93,27 @@ async fn main() -> Result<()> {
     )
     .await
     .context("connecting to qdrant")?;
-    let embedder = TeiEmbedder::new(
-        cfg.embeddings.url.clone(),
-        cfg.embeddings.vector_dim as usize,
-    )
-    .context("building TEI client")?;
+    // Sprint 014 — the embedder engine is a config choice; `tei`
+    // keeps the pre-014 behavior, `openai` speaks the OpenAI-compat
+    // dialect (vLLM, TEI's /v1 route, …).
+    let embedder: Arc<dyn Embedder> = match cfg.embeddings.api {
+        config::EmbeddingsApi::Tei => Arc::new(
+            TeiEmbedder::new(
+                cfg.embeddings.url.clone(),
+                cfg.embeddings.vector_dim as usize,
+            )
+            .context("building TEI client")?,
+        ),
+        config::EmbeddingsApi::Openai => Arc::new(
+            OpenAiCompatEmbedder::new(
+                cfg.embeddings.url.clone(),
+                cfg.embeddings.model_id.clone(),
+                cfg.embeddings.vector_dim as usize,
+                cfg.embeddings.api_key.clone(),
+            )
+            .context("building OpenAI-compat embedding client")?,
+        ),
+    };
     let (bumper, bumps_rx) = LastUsedBumper::channel();
     let store =
         Arc::new(CompositeStore::new(postgres, qdrant, embedder).with_bump_sender(bumper.sender()));
@@ -161,8 +179,9 @@ async fn main() -> Result<()> {
             event_cluster_min: cfg.summarization.event_cluster_min,
             llm_fallback: cfg.summarization.llm_fallback,
             task_interval: std::time::Duration::from_secs(cfg.summarization.task_interval_seconds),
-            ollama_url: cfg.summarization.ollama_url.clone(),
-            ollama_model: cfg.summarization.ollama_model.clone(),
+            llm_url: cfg.summarization.llm_url.clone(),
+            llm_model: cfg.summarization.llm_model.clone(),
+            llm_api_key: cfg.summarization.llm_api_key.clone(),
         };
         let task = SummarizationTask::new(
             scfg,

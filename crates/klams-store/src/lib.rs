@@ -23,7 +23,7 @@ pub mod qdrant;
 pub mod repair;
 
 pub use composite::CompositeStore;
-pub use embeddings::TeiEmbedder;
+pub use embeddings::{Embedder, OpenAiCompatEmbedder, TeiEmbedder};
 pub use postgres::PostgresStore;
 pub use qdrant::QdrantStore;
 

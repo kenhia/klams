@@ -1,39 +1,46 @@
-//! Ollama HTTP client for LLM-fallback summarization (Phi-3-medium on kubs0).
+//! OpenAI-compatible chat client for LLM-fallback summarization.
 //!
-//! Sprint 005 (Phase 4) — T035. Direct `reqwest` POST to
-//! `[summarization] ollama_url`; one-shot `probe()` at task start
-//! that disables fallback for the cycle on failure (research.md
-//! D-010). The client is intentionally minimal — no streaming,
-//! no retries — since the surrounding `SummarizationTask` already
-//! handles graceful degradation.
+//! Sprint 014 — replaces the Ollama-native client so the serving
+//! engine (Ollama `/v1`, vLLM, kvllm on kai, …) is a config choice.
+//! One-shot `probe()` at task start disables fallback for the cycle
+//! on failure (research.md D-010, unchanged). The client is
+//! intentionally minimal — no streaming, no retries — since the
+//! surrounding `SummarizationTask` already handles graceful
+//! degradation.
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub enum OllamaError {
-    #[error("ollama transport error: {0}")]
+pub enum ChatError {
+    #[error("chat endpoint transport error: {0}")]
     Transport(String),
-    #[error("ollama returned status {status}: {body}")]
+    #[error("chat endpoint returned status {status}: {body}")]
     Status { status: u16, body: String },
-    #[error("ollama response missing required field `response`")]
+    #[error("chat response missing message content")]
     MissingResponse,
 }
 
-pub type OllamaResult<T> = Result<T, OllamaError>;
+pub type ChatResult<T> = Result<T, ChatError>;
 
 #[derive(Debug, Clone)]
-pub struct OllamaClient {
+pub struct OpenAiChatClient {
+    /// OpenAI-compat base *including* `/v1`, e.g.
+    /// `http://127.0.0.1:11434/v1` (Ollama) or `http://kai:8000/v1` (vLLM).
     base_url: String,
     model: String,
+    api_key: Option<String>,
     http: reqwest::Client,
 }
 
-impl OllamaClient {
-    /// Build a new client. `base_url` is e.g. `http://kubs0:11434`.
+impl OpenAiChatClient {
     #[must_use]
-    pub fn new(base_url: impl Into<String>, model: impl Into<String>) -> Self {
+    pub fn new(
+        base_url: impl Into<String>,
+        model: impl Into<String>,
+        api_key: Option<String>,
+    ) -> Self {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(60))
             .build()
@@ -41,125 +48,216 @@ impl OllamaClient {
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             model: model.into(),
+            api_key,
             http,
         }
     }
 
-    /// One-shot probe: `GET /api/tags` and check the configured model
-    /// is present. Used to gate the cycle's LLM fallback flag.
-    pub async fn probe(&self) -> OllamaResult<()> {
-        let url = format!("{}/api/tags", self.base_url);
+    fn authed(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match &self.api_key {
+            Some(k) => req.bearer_auth(k),
+            None => req,
+        }
+    }
+
+    /// One-shot probe: `GET {base}/models` and check the configured
+    /// model is present. Used to gate the cycle's LLM fallback flag.
+    pub async fn probe(&self) -> ChatResult<()> {
+        let url = format!("{}/models", self.base_url);
         let resp = self
-            .http
-            .get(&url)
+            .authed(self.http.get(&url))
             .send()
             .await
-            .map_err(|e| OllamaError::Transport(e.to_string()))?;
+            .map_err(|e| ChatError::Transport(e.to_string()))?;
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(OllamaError::Status {
+            return Err(ChatError::Status {
                 status: status.as_u16(),
                 body,
             });
         }
-        let tags: TagsResponse = resp
+        let models: ModelsResponse = resp
             .json()
             .await
-            .map_err(|e| OllamaError::Transport(e.to_string()))?;
-        if tags
-            .models
+            .map_err(|e| ChatError::Transport(e.to_string()))?;
+        if models
+            .data
             .iter()
-            .any(|m| m.name == self.model || m.name.starts_with(&format!("{}:", self.model)))
+            .any(|m| m.id == self.model || m.id.starts_with(&format!("{}:", self.model)))
         {
             Ok(())
         } else {
-            Err(OllamaError::Status {
+            Err(ChatError::Status {
                 status: 404,
                 body: format!("model `{}` not present", self.model),
             })
         }
     }
 
-    /// Generate a single completion via `POST /api/generate`.
-    pub async fn generate(&self, prompt: &str) -> OllamaResult<String> {
-        let url = format!("{}/api/generate", self.base_url);
-        let body = GenerateRequest {
+    /// Generate a single completion via `POST {base}/chat/completions`.
+    pub async fn generate(&self, prompt: &str) -> ChatResult<String> {
+        let url = format!("{}/chat/completions", self.base_url);
+        let body = ChatRequest {
             model: &self.model,
-            prompt,
+            messages: vec![ChatMessage {
+                role: "user",
+                content: prompt,
+            }],
             stream: false,
         };
         let resp = self
-            .http
-            .post(&url)
-            .json(&body)
+            .authed(self.http.post(&url).json(&body))
             .send()
             .await
-            .map_err(|e| OllamaError::Transport(e.to_string()))?;
+            .map_err(|e| ChatError::Transport(e.to_string()))?;
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(OllamaError::Status {
+            return Err(ChatError::Status {
                 status: status.as_u16(),
                 body,
             });
         }
-        let parsed: GenerateResponse = resp
+        let parsed: ChatResponse = resp
             .json()
             .await
-            .map_err(|e| OllamaError::Transport(e.to_string()))?;
-        if parsed.response.trim().is_empty() {
-            Err(OllamaError::MissingResponse)
+            .map_err(|e| ChatError::Transport(e.to_string()))?;
+        let content = parsed
+            .choices
+            .into_iter()
+            .next()
+            .map(|c| c.message.content)
+            .unwrap_or_default();
+        if content.trim().is_empty() {
+            Err(ChatError::MissingResponse)
         } else {
-            Ok(parsed.response)
+            Ok(content)
         }
     }
 }
 
 #[derive(Serialize)]
-struct GenerateRequest<'a> {
+struct ChatRequest<'a> {
     model: &'a str,
-    prompt: &'a str,
+    messages: Vec<ChatMessage<'a>>,
     stream: bool,
 }
 
-#[derive(Deserialize)]
-struct GenerateResponse {
-    #[serde(default)]
-    response: String,
+#[derive(Serialize)]
+struct ChatMessage<'a> {
+    role: &'a str,
+    content: &'a str,
 }
 
 #[derive(Deserialize)]
-struct TagsResponse {
+struct ChatResponse {
     #[serde(default)]
-    models: Vec<TagModel>,
+    choices: Vec<ChatChoice>,
 }
 
 #[derive(Deserialize)]
-struct TagModel {
-    name: String,
+struct ChatChoice {
+    message: ChatChoiceMessage,
+}
+
+#[derive(Deserialize)]
+struct ChatChoiceMessage {
+    #[serde(default)]
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct ModelsResponse {
+    #[serde(default)]
+    data: Vec<ModelEntry>,
+}
+
+#[derive(Deserialize)]
+struct ModelEntry {
+    id: String,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wiremock::matchers::{body_partial_json, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[tokio::test]
     async fn probe_to_unreachable_host_returns_transport_error() {
         // 127.0.0.1:1 is closed on virtually any host → immediate
-        // ECONNREFUSED, no waiting for a SYN ACK. Avoids relying
-        // on RFC 5737 ranges that may behave differently per CI.
-        let c = OllamaClient::new("http://127.0.0.1:1", "phi3:medium");
+        // ECONNREFUSED, no waiting for a SYN ACK.
+        let c = OpenAiChatClient::new("http://127.0.0.1:1/v1", "phi3:medium", None);
         let err = tokio::time::timeout(Duration::from_secs(5), c.probe())
             .await
             .expect("probe should not hang")
             .expect_err("unreachable host must error");
-        assert!(matches!(err, OllamaError::Transport(_)), "got {err:?}");
+        assert!(matches!(err, ChatError::Transport(_)), "got {err:?}");
     }
 
     #[test]
     fn new_strips_trailing_slash() {
-        let c = OllamaClient::new("http://host:11434/", "m");
-        assert_eq!(c.base_url, "http://host:11434");
+        let c = OpenAiChatClient::new("http://host:11434/v1/", "m", None);
+        assert_eq!(c.base_url, "http://host:11434/v1");
+    }
+
+    #[tokio::test]
+    async fn probe_accepts_listed_model_and_rejects_absent() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "object": "list",
+                "data": [ { "id": "phi3:medium", "object": "model" } ]
+            })))
+            .mount(&server)
+            .await;
+
+        let present = OpenAiChatClient::new(format!("{}/v1", server.uri()), "phi3:medium", None);
+        present.probe().await.unwrap();
+
+        let absent = OpenAiChatClient::new(format!("{}/v1", server.uri()), "nope", None);
+        let err = absent.probe().await.unwrap_err();
+        assert!(
+            matches!(err, ChatError::Status { status: 404, .. }),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn generate_parses_chat_completion() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(body_partial_json(serde_json::json!({
+                "model": "phi3:medium",
+                "messages": [ { "role": "user", "content": "summarize this" } ]
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [ { "message": { "role": "assistant", "content": "a summary" } } ]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let c = OpenAiChatClient::new(format!("{}/v1", server.uri()), "phi3:medium", None);
+        assert_eq!(c.generate("summarize this").await.unwrap(), "a summary");
+    }
+
+    #[tokio::test]
+    async fn generate_empty_content_is_missing_response() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [ { "message": { "role": "assistant", "content": "  " } } ]
+            })))
+            .mount(&server)
+            .await;
+
+        let c = OpenAiChatClient::new(format!("{}/v1", server.uri()), "m", None);
+        let err = c.generate("x").await.unwrap_err();
+        assert!(matches!(err, ChatError::MissingResponse), "{err:?}");
     }
 }
