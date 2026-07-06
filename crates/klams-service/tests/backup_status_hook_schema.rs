@@ -12,7 +12,7 @@ use klams_service::backup::hook::{BackupHookEvent, HookArtifact, HookEventKind};
 fn load_schema() -> JSONSchema {
     let raw = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../specs/006-maintenance-and-backups/contracts/backup-status-hook.schema.json"
+        "/../../sprints/006-maintenance-and-backups/contracts/backup-status-hook.schema.json"
     ))
     .expect("read schema");
     let value: serde_json::Value = serde_json::from_str(&raw).expect("parse schema");
@@ -22,7 +22,7 @@ fn load_schema() -> JSONSchema {
 fn raw_schema() -> serde_json::Value {
     let raw = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../specs/006-maintenance-and-backups/contracts/backup-status-hook.schema.json"
+        "/../../sprints/006-maintenance-and-backups/contracts/backup-status-hook.schema.json"
     ))
     .expect("read schema");
     serde_json::from_str(&raw).expect("parse schema")

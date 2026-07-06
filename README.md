@@ -27,16 +27,16 @@ human-facing window into klams state.
 Initial MVP shipped. The service runs under systemd on `kubs0` and the
 Windows viewport reads facts, events, and knowledge over the LAN.
 
-- [specs/001-initial-mvp/spec.md](specs/001-initial-mvp/spec.md) —
+- [sprints/001-initial-mvp/spec.md](sprints/001-initial-mvp/spec.md) —
   MVP specification + success criteria (SC-001..SC-009).
-- [specs/001-initial-mvp/plan.md](specs/001-initial-mvp/plan.md) —
+- [sprints/001-initial-mvp/plan.md](sprints/001-initial-mvp/plan.md) —
   implementation plan.
-- [specs/001-initial-mvp/tasks.md](specs/001-initial-mvp/tasks.md) —
+- [sprints/001-initial-mvp/tasks.md](sprints/001-initial-mvp/tasks.md) —
   task ledger.
-- [Performance baseline](specs/008-activity-observability/perf-baseline.md) —
+- [Performance baseline](sprints/008-activity-observability/perf-baseline.md) —
   sprint 008 `memory_search` latency snapshot.
-- [.specify/memory/constitution.md](.specify/memory/constitution.md) —
-  project constitution.
+- [AGENTS.md](AGENTS.md) — project working agreement (principles,
+  quality gate, sprint workflow).
 
 ## Running the MVP
 
@@ -74,11 +74,11 @@ quickstart. The short version:
    devtools and enable diagnostic logging.
 
 5. **Smoke-test** against the success criteria using
-   [specs/001-initial-mvp/quickstart.md §9](specs/001-initial-mvp/quickstart.md#9-smoke-test-the-user-stories).
+   [sprints/001-initial-mvp/quickstart.md §9](sprints/001-initial-mvp/quickstart.md#9-smoke-test-the-user-stories).
 
 ### Sprint 002 quick reference
 
-Sprint 002 (`specs/002-safety-and-write-ops/`) adds a top-level
+Sprint 002 (`sprints/002-safety-and-write-ops/`) adds a top-level
 [`justfile`](justfile) so every routine task — bringing the stack up,
 running the service, exercising the pre-commit gate, smoke-testing
 the API — is a single discoverable recipe and is the same command CI
@@ -103,11 +103,11 @@ Available recipes:
 
 The full sprint 002 walkthrough (validation, dissents, decay,
 viewport curation, `just gate`) lives at
-[specs/002-safety-and-write-ops/quickstart.md](specs/002-safety-and-write-ops/quickstart.md).
+[sprints/002-safety-and-write-ops/quickstart.md](sprints/002-safety-and-write-ops/quickstart.md).
 
 ### Sprint 003 quick reference
 
-Sprint 003 (`specs/003-non-agentic-writes/`) ships two new binaries —
+Sprint 003 (`sprints/003-non-agentic-writes/`) ships two new binaries —
 `klams-scanner` (filesystem indexer, hourly via a systemd timer) and
 `klams-monitor` (systemd-state edge-transition poller) — plus the
 unit files + `install-systemd.sh` helper to land all three klams
@@ -136,7 +136,7 @@ Available recipes:
 
 The full sprint 003 walkthrough (scanner, monitor, systemd install,
 rollback path, ansible-k handoff) lives at
-[specs/003-non-agentic-writes/quickstart.md](specs/003-non-agentic-writes/quickstart.md).
+[sprints/003-non-agentic-writes/quickstart.md](sprints/003-non-agentic-writes/quickstart.md).
 
 Architecture overview and component map:
 [docs/architecture.md](docs/architecture.md). Day-to-day operator

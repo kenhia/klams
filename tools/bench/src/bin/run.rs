@@ -33,7 +33,7 @@ fn parse_args() -> Result<Args> {
         klams_token: env::var("KLAMS_TOKEN").unwrap_or_default(),
         queries_path: PathBuf::from("tools/bench/queries.txt"),
         repeats: 10,
-        output: PathBuf::from("specs/008-activity-observability/perf-baseline.md"),
+        output: PathBuf::from("sprints/008-activity-observability/perf-baseline.md"),
         facts: DEFAULT_FACTS,
         knowledge: DEFAULT_KNOWLEDGE,
         seed: DEFAULT_SEED,

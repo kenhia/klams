@@ -2,9 +2,9 @@
 
 This is the user-facing guide for browsing klams memory from the
 Windows desktop app. It maps to the acceptance scenarios in
-[viewport.md §4](../../specs/planning/viewport.md) deliverable 4 and
+[viewport.md §4](../../sprints/planning/viewport.md) deliverable 4 and
 the requirements for User Story 6 in
-[spec.md](../../specs/001-initial-mvp/spec.md).
+[spec.md](../../sprints/001-initial-mvp/spec.md).
 
 ## First-run setup
 

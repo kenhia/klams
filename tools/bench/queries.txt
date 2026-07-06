@@ -1,7 +1,7 @@
 # Sprint 008 perf baseline — query set (US5).
 # One query per line; blank lines and `#` comments ignored.
 # 10 queries × 10 repeats = 100 samples. See
-# specs/008-activity-observability/contracts/bench-harness.md.
+# sprints/008-activity-observability/contracts/bench-harness.md.
 
 widget deploy outcome
 kubs0 backup window

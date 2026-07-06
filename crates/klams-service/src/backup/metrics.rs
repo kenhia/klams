@@ -1,6 +1,6 @@
 //! Backup feature Prometheus series (sprint 006 T012).
 //!
-//! Names + labels per `specs/006-maintenance-and-backups/data-model.md`
+//! Names + labels per `sprints/006-maintenance-and-backups/data-model.md`
 //! "Prometheus series schema". All five series are described once at
 //! service start so they appear in `/metrics` before the first
 //! backup runs.

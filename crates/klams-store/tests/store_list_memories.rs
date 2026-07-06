@@ -3,7 +3,7 @@
 //!
 //! Wires up a fresh per-test schema and verifies the cross-author +
 //! multi-kind + cursor-continuity + soft-deleted projection contract
-//! defined in `specs/008-activity-observability/data-model.md §2`.
+//! defined in `sprints/008-activity-observability/data-model.md §2`.
 //!
 //! Gated on `TEST_DATABASE_URL` and the `#[ignore]` flag (lift with
 //! `cargo test -p klams-store -- --ignored`).

@@ -2,7 +2,7 @@
 #
 # All services attach to the single user-defined bridge network
 # `klams-net` with DNS aliases matching the service name. See
-# specs/001-initial-mvp/research.md §13.
+# sprints/001-initial-mvp/research.md §13.
 #
 # All persistent data is bind-mounted under ${KLAMS_DATA_ROOT}
 # (default /ai/klams/data; provisioned by scripts/provision-storage-root.sh).

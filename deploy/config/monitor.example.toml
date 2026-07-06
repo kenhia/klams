@@ -2,7 +2,7 @@
 #
 # Deploy as /etc/klams/monitor.toml and point the systemd unit's
 # Environment=KLAMS_CONFIG at it. See
-# specs/010-operationalize-ingestion/contracts/monitor-parity.md.
+# sprints/010-operationalize-ingestion/contracts/monitor-parity.md.
 
 # klams service base URL (loopback).
 url = "http://127.0.0.1:7777"

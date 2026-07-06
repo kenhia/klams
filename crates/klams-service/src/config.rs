@@ -83,7 +83,7 @@ pub struct ServiceConfig {
 }
 
 /// Sprint 009 — `[service.limits]` per
-/// `specs/009-stability-attribution/contracts/connection-limits.md`.
+/// `sprints/009-stability-attribution/contracts/connection-limits.md`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LimitsConfig {
     #[serde(default = "default_header_read_timeout_secs")]

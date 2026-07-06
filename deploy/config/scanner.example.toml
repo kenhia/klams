@@ -2,7 +2,7 @@
 #
 # Deploy as /etc/klams/scanner.toml and point the systemd unit's
 # Environment=KLAMS_CONFIG at it. See
-# specs/010-operationalize-ingestion/contracts/scanner-config.md.
+# sprints/010-operationalize-ingestion/contracts/scanner-config.md.
 #
 # IMPORTANT (research.md §R2): the scanner runs as User=klams with
 # ProtectHome=read-only. `~` would expand to the klams user's home,

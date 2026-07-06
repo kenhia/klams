@@ -80,7 +80,7 @@ impl std::fmt::Display for AgentNameInvalidReason {
 }
 
 /// Validate a bearer-token `agent_name` per
-/// `specs/009-stability-attribution/contracts/token-grant-config.md`:
+/// `sprints/009-stability-attribution/contracts/token-grant-config.md`:
 /// non-empty after trim, 2..=64 bytes, charset `[a-z0-9_-]`.
 ///
 /// # Errors
@@ -112,7 +112,7 @@ impl TokenGrantConfig {
     /// 16 characters, [`AuthConfigError::EmptyScopes`] if `scopes` is
     /// empty, or [`AuthConfigError::InvalidAgentName`] if a non-None
     /// `agent_name` fails the rules in
-    /// `specs/009-stability-attribution/contracts/token-grant-config.md`.
+    /// `sprints/009-stability-attribution/contracts/token-grant-config.md`.
     pub fn validate(&self) -> Result<(), AuthConfigError> {
         if self.token.len() < 16 {
             return Err(AuthConfigError::TokenTooShort);

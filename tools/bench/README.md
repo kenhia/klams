@@ -2,9 +2,9 @@
 
 Sprint 008 — non-shipping perf fixture + harness for `memory_search`
 (FR-019..FR-022). See
-[`specs/008-activity-observability/contracts/bench-harness.md`](../../specs/008-activity-observability/contracts/bench-harness.md)
+[`sprints/008-activity-observability/contracts/bench-harness.md`](../../sprints/008-activity-observability/contracts/bench-harness.md)
 for the authoritative CLI surface and output format, and
-[`specs/008-activity-observability/contracts/bench-harness.md#query-set-governance`](../../specs/008-activity-observability/contracts/bench-harness.md#query-set-governance)
+[`sprints/008-activity-observability/contracts/bench-harness.md#query-set-governance`](../../sprints/008-activity-observability/contracts/bench-harness.md#query-set-governance)
 for the rules governing `queries.txt`.
 
 ## Binaries
@@ -13,7 +13,7 @@ for the rules governing `queries.txt`.
   facts + 50k knowledge items, seed `0x0000_C0FF_EE00_0008`.
 - `run` — runs the queries in `queries.txt` (10 queries × 10 repeats
   = 100 samples) against `klams-service`, writes
-  `specs/008-activity-observability/perf-baseline.md`.
+  `sprints/008-activity-observability/perf-baseline.md`.
 
 ## Recipes
 
@@ -47,7 +47,7 @@ payload-pattern fallback.
 > to a dedicated author. Configure it in `klams.toml` as a scoped
 > grant with `agent_name = "klams-bench"` so the rows it writes are
 > attributed away from the operational `system` author. See
-> [specs/009-stability-attribution/contracts/token-grant-config.md](../../specs/009-stability-attribution/contracts/token-grant-config.md).
+> [sprints/009-stability-attribution/contracts/token-grant-config.md](../../sprints/009-stability-attribution/contracts/token-grant-config.md).
 
 ## seed flags
 
@@ -71,7 +71,7 @@ backoff so a slow embedder doesn't drop rows.
 | `--klams-token`  | `$KLAMS_TOKEN`                                       | Bearer token. |
 | `--queries`      | `tools/bench/queries.txt`                             | Query file. |
 | `--repeats`      | `10`                                                  | Calls per query. |
-| `--output`       | `specs/008-activity-observability/perf-baseline.md`   | Markdown output. |
+| `--output`       | `sprints/008-activity-observability/perf-baseline.md`   | Markdown output. |
 | `--facts`        | `10000`                                               | Header metadata only. |
 | `--knowledge`    | `50000`                                               | Header metadata only. |
 | `--seed`         | `0x0000_C0FF_EE00_0008`                                | Header metadata only. |

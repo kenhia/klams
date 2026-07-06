@@ -50,7 +50,7 @@ impl<S: Store> HybridStore for StoreHybridAdapter<S> {
         // Sprint 005 T026/T027 — filter pre-pruning. The store
         // contracts don't yet take filters, so we over-fetch (×3)
         // and apply payload-side post-filtering. DB-side pushdown
-        // is tracked as a follow-up (see specs/005-advanced-retrieval
+        // is tracked as a follow-up (see sprints/005-advanced-retrieval
         // research.md D-004); the behavioural contract — that filters
         // narrow the result set — is honoured here.
         let fetch_cap = per_source_top_k.saturating_mul(3).max(per_source_top_k);

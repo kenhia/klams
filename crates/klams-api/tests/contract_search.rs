@@ -1,7 +1,7 @@
 //! Contract test for `POST /memory/search`.
 //!
 //! Verifies the unified search endpoint accepts the request shape
-//! described in `specs/001-initial-mvp/contracts/openapi.yaml`,
+//! described in `sprints/001-initial-mvp/contracts/openapi.yaml`,
 //! emits a `SearchResults` envelope with `query`/`total`/`results`/
 //! `degraded` fields, normalises mixed-type hits into a single
 //! interleaved list, and honours the `types` filter.

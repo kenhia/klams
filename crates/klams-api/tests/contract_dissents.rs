@@ -1,7 +1,7 @@
 //! Contract tests for `/memory/dissents/*` endpoints (T022).
 //!
 //! Validates wire-shape conformance against
-//! `specs/002-safety-and-write-ops/contracts/openapi.yaml` using an
+//! `sprints/002-safety-and-write-ops/contracts/openapi.yaml` using an
 //! in-memory mock `Store`.
 
 use async_trait::async_trait;

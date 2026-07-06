@@ -1,5 +1,5 @@
 -- Sprint 005 (Phase 4) — summaries table.
--- See specs/005-advanced-retrieval/data-model.md §3.
+-- See sprints/005-advanced-retrieval/data-model.md §3.
 
 CREATE TABLE IF NOT EXISTS summaries (
     id              UUID PRIMARY KEY,

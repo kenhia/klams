@@ -4,7 +4,7 @@
 //! - `seed` — deterministic seeded fixture generator (≥ 10k facts +
 //!   ≥ 50k knowledge items).
 //! - `run` — 100-call `memory_search` latency harness; writes
-//!   `specs/008-activity-observability/perf-baseline.md`.
+//!   `sprints/008-activity-observability/perf-baseline.md`.
 //!
 //! This crate is not a dependency of any shipping binary. It is a
 //! workspace member so `just gate` keeps it compilable.

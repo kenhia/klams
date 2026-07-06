@@ -1,6 +1,6 @@
 //! T022 — state diff coverage for `klams-monitor::state::diff`.
 //!
-//! Mirrors the table in `specs/003-non-agentic-writes/data-model.md` §7.
+//! Mirrors the table in `sprints/003-non-agentic-writes/data-model.md` §7.
 
 use klams_monitor::poll::UnitState;
 use klams_monitor::state::{apply, diff, PollObservation, PreviousState, ServiceEventKind};

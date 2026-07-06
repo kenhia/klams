@@ -1,8 +1,8 @@
 //! Shared DTOs and pipeline types for the klams memory service.
 //!
 //! Wire formats here are the source of truth; the `OpenAPI` contract is
-//! kept aligned manually. See `specs/001-initial-mvp/data-model.md`
-//! and `specs/001-initial-mvp/contracts/openapi.yaml`.
+//! kept aligned manually. See `sprints/001-initial-mvp/data-model.md`
+//! and `sprints/001-initial-mvp/contracts/openapi.yaml`.
 
 pub mod auth;
 pub mod author;

@@ -1,7 +1,7 @@
 //! Dissent DTOs and the `FactWriteOutcome` enum returned by the
 //! worker for canonical-write paths.
 //!
-//! See `specs/002-safety-and-write-ops/data-model.md` for the full
+//! See `sprints/002-safety-and-write-ops/data-model.md` for the full
 //! state-machine and storage shape.
 
 use crate::entities::{Fact, Source};
