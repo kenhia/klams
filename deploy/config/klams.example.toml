@@ -37,6 +37,15 @@ bearer_token = "changeme-rendered-by-provision-script"
 # token  = "ken-admin-XXXXXXXXXXXXXXXXXX"
 # scopes = ["read", "write", "admin"]
 # label  = "ken-admin"
+#
+# Sprint 015 — the klams-mind companion gets its own read+write grant.
+# `agent_name` binds REST writes to the klams-mind author (sprint 009);
+# MCP writes attribute via its register_author identity.
+# [[auth.tokens]]
+# token      = "klams-mind-XXXXXXXXXXXXXXXX"
+# scopes     = ["read", "write"]
+# label      = "klams-mind"
+# agent_name = "klams-mind"
 
 [postgres]
 url = "postgres://klams:changeme@127.0.0.1:5432/klams"

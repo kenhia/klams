@@ -1,6 +1,6 @@
 -- Initial schema for klams MVP: facts + events.
 -- All tables ship with the indexes called out in
--- sprints/001-initial-mvp/data-model.md.
+-- specs/001-initial-mvp/data-model.md.
 
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 

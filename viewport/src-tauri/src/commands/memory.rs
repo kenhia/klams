@@ -628,6 +628,9 @@ mod tests {
                 submission_count: 1,
                 resolved_at: Some(time::OffsetDateTime::UNIX_EPOCH),
                 resolved_by_source: Some(caller_source),
+                reason: None,
+                contradicting_memory_id: None,
+                author_id: None,
             })
         }
         async fn upsert_fact(

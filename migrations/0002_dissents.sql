@@ -1,5 +1,5 @@
 -- Sprint 002: dissents table + facts.dissent_count + triggers.
--- See sprints/002-safety-and-write-ops/data-model.md.
+-- See specs/002-safety-and-write-ops/data-model.md.
 
 -- ---------- facts.dissent_count ----------
 ALTER TABLE facts
