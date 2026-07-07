@@ -18,8 +18,11 @@ klams_token   := env_var_or_default('KLAMS_TOKEN', 'dev-token')
 compose_file  := 'deploy/docker-compose.yml'
 
 # Windows viewport host (cleo) + deploy target used by viewport-deploy.
-viewport_host      := env_var_or_default('VIEWPORT_HOST',      'kenhi@cleo')
-viewport_deploy_dir := env_var_or_default('VIEWPORT_DEPLOY_DIR', 'c:\tools\bin')
+# viewport_source_host is how cleo reaches *this* build machine to
+# pull the exe (see the recipe comment for why it's a pull, not a push).
+viewport_host        := env_var_or_default('VIEWPORT_HOST',        'kenhi@cleo')
+viewport_deploy_dir  := env_var_or_default('VIEWPORT_DEPLOY_DIR',  'c:\tools\bin')
+viewport_source_host := env_var_or_default('VIEWPORT_SOURCE_HOST', 'ken@kubs0')
 
 # Bring the Postgres+Qdrant+TEI stack up in the background.
 compose-up:
@@ -109,69 +112,36 @@ viewport-build:
 
 # Cross-compile the viewport and ship klams-viewport.exe to the
 # Windows host (cleo) at VIEWPORT_DEPLOY_DIR. Override VIEWPORT_HOST /
-# VIEWPORT_DEPLOY_DIR to target a different machine/path. Close a
-# running viewport on the target first — Windows locks the .exe of a
-# running process and the copy will fail.
+# VIEWPORT_DEPLOY_DIR / VIEWPORT_SOURCE_HOST to target a different
+# machine/path. Close a running viewport on the target first —
+# Windows locks the .exe of a running process and the copy will fail.
 #
-# cleo's Win32-OpenSSH has a broken sftp subsystem (sftp-server.exe
-# exits immediately, root cause not found) and a separate stdin-relay
-# bug when data is piped through its DefaultShell-wrapped exec channel
-# (hangs past ~8KB) — so both scp and sftp are unusable there. This
-# recipe works around both: the file is split into small chunks sent
-# as command-line arguments (never piped over stdin), written to their
-# byte offset in a `.part` file in parallel, then hash-verified and
-# atomically moved into place. ~150-200s for the ~14MB exe; slower
-# than a real scp but reliable. If cleo's ssh setup ever gets fixed,
-# simplify this back to a plain `scp`.
+# This is a *pull*, not a push: cleo's Win32-OpenSSH has a broken sftp
+# subsystem (sftp-server.exe exits immediately on invocation; root
+# cause not found), which breaks both `scp` and `sftp` *into* cleo.
+# Pulling instead — `ssh cleo "scp {{viewport_source_host}}:... dest"`
+# — has cleo's scp *client* talk to this machine's ordinary Linux
+# sshd, sidestepping the broken code path entirely. Confirmed reliable
+# over 10 consecutive runs (hash-verified each time); completes in a
+# few seconds.
 viewport-deploy: viewport-build
     #!/usr/bin/env bash
     set -euo pipefail
     exe="viewport/target/x86_64-pc-windows-msvc/release/klams-viewport.exe"
+    exe_abs="$(realpath "$exe")"
     host="{{viewport_host}}"
     dest_dir="$(echo '{{viewport_deploy_dir}}' | tr '\\' '/' | sed 's:/*$::')"
-    dest_part="$dest_dir/klams-viewport.exe.part"
     dest_final="$dest_dir/klams-viewport.exe"
-    chunk=20000
-    concurrency=8
+    echo "→ pulling $exe onto $host:$dest_final (from {{viewport_source_host}})"
 
-    size=$(stat -c%s "$exe")
-    nchunks=$(( (size + chunk - 1) / chunk ))
-    echo "→ sending $exe ($size bytes, $nchunks chunks) to $host:$dest_final"
-
-    ssh "$host" "\$fs = [IO.File]::Open('$dest_part','Create'); \$fs.SetLength($size); \$fs.Close()"
-
-    send_chunk() {
-        local idx="$1" exe="$2" host="$3" dest_part="$4" chunk="$5"
-        local offset=$((idx * chunk))
-        local b64
-        b64=$(dd if="$exe" bs="$chunk" skip="$idx" count=1 2>/dev/null | base64 -w0)
-        # Sent as raw script text (no nested `pwsh -Command "..."`
-        # wrapper) so cleo's DefaultShell-wrapping sshd is the only
-        # PowerShell parse pass; a nested double-quoted -Command
-        # string gets its $vars interpolated away by the *outer*
-        # pwsh before the inner one ever runs. The resulting
-        # per-chunk oh-my-posh profile-race warning on stderr is
-        # cosmetic (concurrent chunks each load $PROFILE) — harmless,
-        # verified via hash match.
-        local remote_cmd="\$fs = [IO.File]::Open('$dest_part','Open','Write','ReadWrite'); \$fs.Position = $offset; \$b = [Convert]::FromBase64String('$b64'); \$fs.Write(\$b,0,\$b.Length); \$fs.Close()"
-        local err
-        if ! err=$(ssh "$host" "$remote_cmd" 2>&1 >/dev/null); then
-            echo "✗ chunk $idx (offset $offset) failed: $err" >&2
-            return 1
-        fi
-    }
-    export -f send_chunk
-
-    seq 0 $((nchunks - 1)) | xargs -P "$concurrency" -I{} bash -c \
-        'send_chunk "$1" "$2" "$3" "$4" "$5"' _ {} "$exe" "$host" "$dest_part" "$chunk"
+    ssh "$host" "scp {{viewport_source_host}}:$exe_abs $dest_final"
 
     local_hash=$(sha256sum "$exe" | awk '{print $1}')
-    remote_hash=$(ssh "$host" "Get-FileHash '$dest_part' -Algorithm SHA256 | Select-Object -ExpandProperty Hash" | tr 'A-F' 'a-f' | tr -d '\r')
+    remote_hash=$(ssh "$host" "Get-FileHash '$dest_final' -Algorithm SHA256 | Select-Object -ExpandProperty Hash" | tr 'A-F' 'a-f' | tr -d '\r')
     if [ "$local_hash" != "$remote_hash" ]; then
-        echo "✗ hash mismatch (local $local_hash, remote $remote_hash) — not moving into place" >&2
+        echo "✗ hash mismatch (local $local_hash, remote $remote_hash)" >&2
         exit 1
     fi
-    ssh "$host" "Move-Item -Path '$dest_part' -Destination '$dest_final' -Force"
     echo "→ deployed and hash-verified. Relaunch klams-viewport.exe on the target to pick up the build."
 
 # Native Linux build of the viewport (webkit2gtk).
