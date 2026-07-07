@@ -106,6 +106,14 @@ three fields as `Option`s — additive for viewport/REST readers.
 
 ## Chronicle
 
+- (2026-07-07, ship) CI caught a compile error `just gate` missed: the
+  viewport's Tauri backend (`viewport/src-tauri`, a *separate* Cargo
+  workspace) has a mock `discard_dissent` that constructs a `Dissent`
+  literal, so the three new fields broke it. Root-cause was a gate gap
+  — `just gate` mirrors only CI's `service` job, not its `viewport`
+  job. Fixed the literal and added `gate-viewport` + `gate-all`
+  recipes so a shared-type change can't slip past local checks again.
+
 - (2026-07-06) Sprint opened on top of merged 014 (PR #15). Contract
   designed against the sprint-002 dissent model: reuse the pending
   dedupe index and state machine; add proposal provenance columns

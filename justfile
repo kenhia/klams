@@ -65,13 +65,31 @@ soak *ARGS:
     cargo run --release -p klams-soak -- {{ARGS}}
 
 # Constitution pre-commit gate — fail-fast on fmt, clippy, or tests.
-# CI invokes exactly this recipe (no inline duplication).
+# Mirrors CI's `service` job exactly. NOTE: the root workspace does NOT
+# include the viewport (viewport/src-tauri is its own Cargo workspace),
+# so this recipe does not gate viewport code — use `gate-viewport` for
+# that, or `gate-all` for both. A change to a `klams_types` shape the
+# viewport consumes can pass `gate` and still break CI's viewport job.
 # Note: excludes `--all-features` which gates off `scale-fixture` (an intentionally
 # heavy fixture for multi-minute loads); that feature is checked only in targeted tests.
 gate:
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets -- -D warnings
     cargo test --workspace
+
+# Mirrors CI's `viewport` job exactly (svelte + tauri). Needs pnpm and
+# the Tauri Linux deps (libwebkit2gtk-4.1-dev etc.); slower than `gate`,
+# so it's separate rather than folded in. Run it whenever a change
+# touches the viewport or a shared type the viewport serializes.
+gate-viewport:
+    cd viewport && pnpm install --frozen-lockfile && pnpm check && pnpm build
+    cd viewport/src-tauri && cargo fmt --all -- --check
+    cd viewport/src-tauri && cargo clippy --all-targets --features custom-protocol -- -D warnings
+    cd viewport/src-tauri && cargo test --features custom-protocol
+
+# The complete gate — both CI jobs. Use before shipping anything that
+# spans the service and the viewport.
+gate-all: gate gate-viewport
 
 # Quick liveness probe + light verification round-trip.
 health:
