@@ -134,6 +134,15 @@ three fields as `Option`s — additive for viewport/REST readers.
   dedupes with original reason kept; NOT_FOUND on missing/soft-deleted
   facts; validation errors; discard flow unchanged); `us2_dissents`
   still green; viewport vitest 45/45 + svelte-check clean.
+- (2026-07-06) **Post-PR fix:** `just viewport-build` failed — the
+  root `+layout.ts` sets `prerender = true` (static adapter), and
+  dynamic `[id]` routes can't be prerendered. Same solution as
+  `authors/[id]`: per-route `+page.ts` with
+  `prerender = false; ssr = false` (the SPA `index.html` fallback
+  serves them at runtime). All three detail routes gained the file;
+  cross-compile build green. Note the vitest route guard checks
+  `+page.svelte` existence, not buildability — `just viewport-build`
+  remains the real gate for new routes.
 - (2026-07-06) **kwi #32 verified fixed in production** (read-only
   probe of `GET /v1/authors`): `klams-scanner` reports
   `counts.knowledge = 52794` — the sprint-009 T048/T049 fix covers it;
