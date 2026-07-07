@@ -108,7 +108,7 @@ async fn memory_delete_soft_smoke() {
     .await
     .expect("memory_search");
     assert!(
-        hits.iter().all(|m| m.id != fact.id),
+        hits.iter().all(|h| h.memory.id != fact.id),
         "soft-deleted fact still surfaced by search"
     );
 
@@ -207,7 +207,7 @@ async fn memory_admin_restore_smoke() {
     .await
     .expect("memory_search");
     assert!(
-        hits.iter().any(|m| m.id == fact.id),
+        hits.iter().any(|h| h.memory.id == fact.id),
         "restored fact missing from search"
     );
 

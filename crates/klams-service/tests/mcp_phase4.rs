@@ -28,6 +28,7 @@ fn mcp_state_from(server: &TestServer) -> McpState {
 
 #[ignore = "requires docker compose stack"]
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // comprehensive smoke: shape + filters + leak
 async fn memory_search_smoke() {
     let server = TestServer::spawn().await;
     let state = mcp_state_from(&server);
@@ -90,11 +91,22 @@ async fn memory_search_smoke() {
     .await
     .expect("memory_search");
     assert!(!hits.is_empty(), "expected at least one search hit");
-    // FR-011: projection must not leak internal fields. PublicMemory
-    // has no version / confidence / decay_weight by construction;
-    // round-trip through serde and confirm.
-    let json = serde_json::to_value(&hits[0]).expect("serialize");
-    let obj = json.as_object().expect("object");
+    // Sprint 016: each result is a SearchHit envelope. The score is
+    // present (finite) and source_rank is a real per-source rank.
+    let hit = serde_json::to_value(&hits[0]).expect("serialize");
+    let obj = hit.as_object().expect("object");
+    assert!(obj.contains_key("score"), "SearchHit missing score");
+    assert!(
+        obj.contains_key("source_rank"),
+        "SearchHit missing source_rank"
+    );
+    assert!(obj.contains_key("memory"), "SearchHit missing memory");
+    // source_kind would duplicate memory.kind — must NOT be a field.
+    assert!(!obj.contains_key("source_kind"));
+    assert!(hits[0].score.is_finite(), "score must be finite");
+    // FR-011: the wrapped projection must not leak internal fields.
+    let mem = &obj["memory"];
+    let mem_obj = mem.as_object().expect("memory object");
     for forbidden in [
         "version",
         "confidence",
@@ -103,7 +115,7 @@ async fn memory_search_smoke() {
         "deleted_at",
     ] {
         assert!(
-            !obj.contains_key(forbidden),
+            !mem_obj.contains_key(forbidden),
             "PublicMemory leaked `{forbidden}`"
         );
     }
@@ -122,7 +134,7 @@ async fn memory_search_smoke() {
     .expect("memory_search knowledge-only");
     assert!(only_knowledge
         .iter()
-        .all(|m| m.kind() == MemoryKind::Knowledge));
+        .all(|h| h.memory.kind() == MemoryKind::Knowledge));
 
     // Tag filter is honored.
     let tagged = memory_search(
@@ -136,7 +148,9 @@ async fn memory_search_smoke() {
     )
     .await
     .expect("memory_search tagged");
-    assert!(tagged.iter().all(|m| m.tags.iter().any(|t| t == "phase4")));
+    assert!(tagged
+        .iter()
+        .all(|h| h.memory.tags.iter().any(|t| t == "phase4")));
 }
 
 #[ignore = "requires docker compose stack"]
