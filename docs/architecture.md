@@ -928,6 +928,31 @@ onboards `klams-mind` (the Python/LangChain companion at
   klams-mind uses REST only for `GET /v1/memories` bulk reads and
   `/healthz`.
 
+## 2j. Sprint 016 deltas — retrieval diagnostics
+
+Sprint 016 ([sprints/016-retrieval-diagnostics/](../sprints/016-retrieval-diagnostics/sprint.md))
+makes `memory_search` results diagnosable for klams-mind's retrieval
+eval harness. No storage or schema change.
+
+* **`memory_search` now returns `klams_types::ScoredMemory` envelopes**
+  (`{ score, source_rank, memory }`) instead of bare `PublicMemory`.
+  The tool previously computed a per-hit relevance score and discarded
+  it; now it surfaces `score` and `source_rank` (the hit's 0-based rank
+  within its own source's result list, before cross-source fusion — the
+  global rank is the array index). The wrapped `memory` is unchanged;
+  its `kind` doubles as the source discriminator, so there is no
+  separate `source_kind`. Distinct from the REST `/memory/search`
+  `SearchHit` (a flattened preview/payload shape), which is untouched.
+* **Known limitation — cross-kind score scale.** The merged sort mixes
+  Qdrant cosine similarity (knowledge, ~0..1) with Postgres `ts_rank`
+  (facts/events, unbounded, typically ≪1), biasing the order toward
+  knowledge. Sprint 016 *exposes* this via `score` + `memory.kind`
+  rather than correcting it (roadmap item-2 / YAGNI — no failing eval
+  metric demands a fusion fix yet). Compare scores only within a kind.
+* **Consumer**: klams-mind's client + eval runner update in lockstep;
+  the contract change is recorded in that repo at
+  `sprints/planning/001-cross-project-note.md`.
+
 ## 3. Deployment topology on `kubs0`
 
 ```text

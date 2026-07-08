@@ -2,7 +2,7 @@
 
 **Status:** Active — this is the pointer document: the top entry under
 "Sprint queue" is the next sprint.  
-**Date:** 2026-07-06 (014 shipped; 015 moved out — in flight on `015-companion-enablement`)  
+**Date:** 2026-07-07 (014 + 015 shipped; 016 moved out — in flight on `016-retrieval-diagnostics`)  
 **Related:** [wi259-recommendation.md](wi259-recommendation.md) ·
 [wi259-three-project-review.md](wi259-three-project-review.md) ·
 [plan.md](plan.md) (original phased plan, now historical) ·
@@ -37,22 +37,22 @@ fixed in production during 015 (knowledge counts populate — close it);
 
 ## Sprint queue
 
-### 016 — Retrieval quality support (next)
+_The queue is empty — 016 is in flight (`016-retrieval-diagnostics`),
+delivering its item 1. Pull the next entry from Later/unscheduled below
+(likely the graph-memory / TokenMaster spike, or a fusion-scoring fix if
+016's exposed scores show the eval numbers demand it — see the score
+scale caveat in `sprints/016-retrieval-diagnostics/sprint.md`)._
 
-klams-mind sprint 002 ports krag's eval-harness design (TOML query suites;
-`substring` / `source_cited` / `no_hallucination` checks) and runs it
-against `memory_search`. The klams side:
+### 016 — Retrieval quality support (in flight)
 
-1. Debug/score metadata on search responses (per-source ranks, fusion
-   scores) so eval failures are diagnosable — krag's sprint 015 learned
-   this the hard way.
-2. Whatever the first baseline report flags: candidate items already known
-   are D-004 (DB-side filter pushdown instead of ×3 over-fetch) and a
-   reranking stage; **do not pre-build these** — let the eval numbers
-   pick the work (YAGNI).
-
-Acceptance: a committed baseline eval report exists (in klams-mind), and
-each klams change in this sprint moves a named metric.
+klams-mind sprint 002 ported krag's eval-harness design and committed a
+baseline. Sprint 016 delivers **item 1** — surface per-hit `score` +
+`source_rank` on `memory_search` (`ScoredMemory` envelope) so eval
+failures are diagnosable. Item 2 (reranking / D-004 pushdown /
+cross-kind score normalization) is **deferred, not built**: the baseline
+passes 4/4, so no failing metric demands it yet. 016 *exposed* the
+cosine-vs-`ts_rank` scale mismatch as a documented known limitation; a
+future sprint acts if the eval numbers call for it (YAGNI).
 
 ### Later / unscheduled (from [backlog.md](backlog.md))
 
