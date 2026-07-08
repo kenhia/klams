@@ -79,6 +79,23 @@ async fn memory_search_smoke() {
     .await
     .expect("seed knowledge");
 
+    // Sprint 017: a second knowledge item so the knowledge-only query
+    // below returns >=2 hits with distinct, real per-source ranks.
+    memory_add(
+        &state,
+        MemoryAddArgs {
+            author_id: author.author_id,
+            content: MemoryAddContent::Knowledge {
+                text: "a second needle knowledge entry for ranking".into(),
+                tags: vec!["phase4".into()],
+                source_path: None,
+                repo: None,
+            },
+        },
+    )
+    .await
+    .expect("seed knowledge 2");
+
     let hits = memory_search(
         &state,
         MemorySearchArgs {
@@ -91,19 +108,26 @@ async fn memory_search_smoke() {
     .await
     .expect("memory_search");
     assert!(!hits.is_empty(), "expected at least one search hit");
-    // Sprint 016: each result is a SearchHit envelope. The score is
+    // Sprint 016: each result is a ScoredMemory envelope. The score is
     // present (finite) and source_rank is a real per-source rank.
     let hit = serde_json::to_value(&hits[0]).expect("serialize");
     let obj = hit.as_object().expect("object");
-    assert!(obj.contains_key("score"), "SearchHit missing score");
+    assert!(obj.contains_key("score"), "ScoredMemory missing score");
     assert!(
         obj.contains_key("source_rank"),
-        "SearchHit missing source_rank"
+        "ScoredMemory missing source_rank"
     );
-    assert!(obj.contains_key("memory"), "SearchHit missing memory");
+    assert!(obj.contains_key("memory"), "ScoredMemory missing memory");
     // source_kind would duplicate memory.kind — must NOT be a field.
     assert!(!obj.contains_key("source_kind"));
     assert!(hits[0].score.is_finite(), "score must be finite");
+    // Sprint 017: the merged result list is ordered by score descending
+    // — the cross-source fusion invariant the eval harness relies on.
+    // Assert the behavior, not just that the field exists.
+    assert!(
+        hits.windows(2).all(|w| w[0].score >= w[1].score),
+        "merged results must be sorted by score descending"
+    );
     // FR-011: the wrapped projection must not leak internal fields.
     let mem = &obj["memory"];
     let mem_obj = mem.as_object().expect("memory object");
@@ -135,6 +159,28 @@ async fn memory_search_smoke() {
     assert!(only_knowledge
         .iter()
         .all(|h| h.memory.kind() == MemoryKind::Knowledge));
+    // Sprint 017: with two seeded knowledge items the single-source
+    // result carries real per-source ranks. `source_rank` must reflect
+    // that source's own ordering: the ranks form a 0-based contiguous
+    // set, and a lower rank carries a higher-or-equal score.
+    assert!(
+        only_knowledge.len() >= 2,
+        "expected >=2 knowledge hits to exercise per-source ranking"
+    );
+    let mut rank_score: Vec<(usize, f32)> = only_knowledge
+        .iter()
+        .map(|h| (h.source_rank as usize, h.score))
+        .collect();
+    rank_score.sort_by_key(|(r, _)| *r);
+    assert_eq!(
+        rank_score.iter().map(|(r, _)| *r).collect::<Vec<_>>(),
+        (0..only_knowledge.len()).collect::<Vec<_>>(),
+        "single-source `source_rank`s must be 0-based and contiguous"
+    );
+    assert!(
+        rank_score.windows(2).all(|w| w[0].1 >= w[1].1),
+        "a lower source_rank must carry a higher-or-equal score"
+    );
 
     // Tag filter is honored.
     let tagged = memory_search(
