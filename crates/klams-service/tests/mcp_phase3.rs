@@ -9,7 +9,7 @@ mod common;
 use common::TestServer;
 use klams_mcp::tools::memory_add::run as memory_add;
 use klams_mcp::tools::{
-    memory_add::{FactTypeArg, MemoryAddArgs, MemoryAddContent},
+    memory_add::{FactTypeArg, MemoryAddArgs},
     register_author::{run as register, RegisterAuthorInput},
     McpState,
 };
@@ -21,7 +21,6 @@ fn mcp_state_from(server: &TestServer) -> McpState {
     McpState::new(
         Arc::clone(&server.store),
         Arc::new(MaintenanceState::default()),
-        Arc::new(vec![]),
         klams_types::ApiConfig::default(),
     )
 }
@@ -73,13 +72,11 @@ async fn memory_add_fact_smoke() {
 
     let mem = memory_add(
         &state,
-        MemoryAddArgs {
-            author_id: author.author_id,
-            content: MemoryAddContent::Fact {
-                fact_type: FactTypeArg::EnvFact,
-                payload: serde_json::json!({"key": "phase3-smoke", "value": "ok"}),
-            },
-        },
+        MemoryAddArgs::fact(
+            author.author_id,
+            FactTypeArg::EnvFact,
+            serde_json::json!({"key": "phase3-smoke", "value": "ok"}),
+        ),
     )
     .await
     .expect("memory_add fact");
@@ -94,13 +91,11 @@ async fn memory_add_fact_smoke() {
     // UNKNOWN_AUTHOR_ID path.
     let err = memory_add(
         &state,
-        MemoryAddArgs {
-            author_id: Uuid::now_v7(),
-            content: MemoryAddContent::Fact {
-                fact_type: FactTypeArg::EnvFact,
-                payload: serde_json::json!({"k": 1}),
-            },
-        },
+        MemoryAddArgs::fact(
+            Uuid::now_v7(),
+            FactTypeArg::EnvFact,
+            serde_json::json!({"k": 1}),
+        ),
     )
     .await
     .expect_err("expected UNKNOWN_AUTHOR_ID");
@@ -130,13 +125,10 @@ async fn memory_add_knowledge_smoke() {
     let mem = memory_add(
         &state,
         MemoryAddArgs {
-            author_id: author.author_id,
-            content: MemoryAddContent::Knowledge {
-                text: "klams-mcp phase 3 smoke knowledge point".into(),
-                tags: vec!["phase3".into()],
-                source_path: Some("/tmp/x.md".into()),
-                repo: Some("/tmp/x".into()),
-            },
+            tags: vec!["phase3".into()],
+            source_path: Some("/tmp/x.md".into()),
+            repo: Some("/tmp/x".into()),
+            ..MemoryAddArgs::knowledge(author.author_id, "klams-mcp phase 3 smoke knowledge point")
         },
     )
     .await

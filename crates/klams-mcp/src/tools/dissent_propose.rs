@@ -21,7 +21,11 @@ const MAX_REASON_CHARS: usize = 2000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct DissentProposeArgs {
-    #[schemars(with = "String")]
+    /// Optional: defaults to the author bound to the caller's bearer
+    /// token (WI #62). Pass explicitly to write as a different
+    /// registered author.
+    #[serde(default)]
+    #[schemars(with = "Option<String>")]
     pub author_id: Uuid,
     /// The canonical fact being disputed; must exist and be live.
     #[schemars(with = "String")]

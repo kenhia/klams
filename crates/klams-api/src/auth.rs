@@ -100,9 +100,15 @@ pub struct AuthenticatedAuthor {
     pub agent_name: Arc<String>,
 }
 
+/// Sprint 018 (WI #61) — the grant table sits behind an `RwLock` so
+/// `[[auth.tokens]]` edits can be hot-reloaded (SIGHUP) without a
+/// service restart. All clones (REST layer, `/mcp` layer, the reload
+/// task) share one table; [`AuthState::replace_grants`] swaps it
+/// atomically. In-flight requests hold at most a snapshot `Arc` for
+/// the duration of their own auth check.
 #[derive(Clone)]
 pub struct AuthState {
-    grants: Arc<Vec<TokenGrant>>,
+    grants: Arc<std::sync::RwLock<Arc<Vec<TokenGrant>>>>,
 }
 
 impl AuthState {
@@ -115,9 +121,7 @@ impl AuthState {
             vec![Scope::Read, Scope::Write, Scope::Admin],
             Some("legacy".into()),
         );
-        Self {
-            grants: Arc::new(vec![grant]),
-        }
+        Self::with_grants(vec![grant])
     }
 
     /// New multi-token constructor. Order of grants is irrelevant; the
@@ -125,12 +129,29 @@ impl AuthState {
     #[must_use]
     pub fn with_grants(grants: Vec<TokenGrant>) -> Self {
         Self {
-            grants: Arc::new(grants),
+            grants: Arc::new(std::sync::RwLock::new(Arc::new(grants))),
         }
     }
 
-    fn grants(&self) -> &[TokenGrant] {
-        &self.grants
+    /// Atomically swap the grant table (WI #61 hot-reload). Visible to
+    /// every clone of this `AuthState` — the next auth check on any
+    /// route uses the new table; requests already past their auth
+    /// check are unaffected.
+    pub fn replace_grants(&self, grants: Vec<TokenGrant>) {
+        let mut w = self
+            .grants
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *w = Arc::new(grants);
+    }
+
+    /// Snapshot the current grant table. The snapshot is immutable and
+    /// outlives a concurrent [`Self::replace_grants`].
+    fn grants(&self) -> Arc<Vec<TokenGrant>> {
+        self.grants
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Test-only accessor for the installed grant list. Exposed via a
@@ -138,15 +159,15 @@ impl AuthState {
     /// stays free to evolve.
     #[doc(hidden)]
     #[must_use]
-    pub fn grants_for_test(&self) -> &[TokenGrant] {
-        &self.grants
+    pub fn grants_for_test(&self) -> Arc<Vec<TokenGrant>> {
+        self.grants()
     }
 }
 
 impl std::fmt::Debug for AuthState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AuthState")
-            .field("grant_count", &self.grants.len())
+            .field("grant_count", &self.grants().len())
             .finish()
     }
 }
@@ -178,7 +199,8 @@ pub async fn require_bearer(
     let mut matched: Option<Arc<Vec<Scope>>> = None;
     let mut matched_author: Option<(Uuid, Arc<String>)> = None;
     let mut any_match: u8 = 0;
-    for g in state.grants() {
+    let grants = state.grants();
+    for g in grants.iter() {
         let len_eq = u8::from(provided.len() == g.token_bytes.len());
         // ct_eq panics on length mismatch; gate behind the length check
         // but still iterate every grant so the loop bound is constant.
@@ -307,6 +329,56 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let body = to_bytes(resp.into_body(), 1024).await.unwrap();
         assert_eq!(&body[..], b"ok");
+    }
+
+    async fn probe(router: &Router, token: &str) -> StatusCode {
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/protected")
+                    .header(AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+    }
+
+    /// Sprint 018 (WI #61) — grants are hot-swappable: the router keeps
+    /// its middleware (holding a CLONE of `AuthState`), and a
+    /// `replace_grants` on the original handle must be visible to it —
+    /// added tokens authenticate, removed tokens stop authenticating.
+    #[tokio::test]
+    async fn replace_grants_swaps_token_table_for_live_router() {
+        let state = AuthState::new("old-token");
+        let router = Router::new()
+            .route("/protected", get(|| async { "ok" }))
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                require_bearer,
+            ));
+
+        assert_eq!(probe(&router, "old-token").await, StatusCode::OK);
+        assert_eq!(probe(&router, "new-token").await, StatusCode::UNAUTHORIZED);
+
+        state.replace_grants(vec![TokenGrant::new(
+            "new-token",
+            vec![Scope::Read],
+            Some("rotated".into()),
+        )]);
+
+        assert_eq!(
+            probe(&router, "old-token").await,
+            StatusCode::UNAUTHORIZED,
+            "removed token must stop authenticating after reload"
+        );
+        assert_eq!(
+            probe(&router, "new-token").await,
+            StatusCode::OK,
+            "added token must authenticate after reload"
+        );
     }
 
     #[tokio::test]

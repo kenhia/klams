@@ -524,9 +524,11 @@ is overriding the value. Check with
 Each `[[auth.tokens]]` entry in `klams.toml` now accepts an optional
 `agent_name` field. The agent name is resolved to an `author_id` at
 service startup (the row is created in the `authors` table if it
-doesn't already exist) and cached for the life of the process.
+doesn't already exist) and again on each [auth reload](#hot-reloading-authtokens).
 Every REST write under that bearer is then attributed to the
-resolved author.
+resolved author, and MCP write tools (`memory_add`,
+`memory_append_event`, `dissent_propose`) fall back to it when the
+caller omits `author_id` (sprint 018, WI #62).
 
 ```toml
 [[auth.tokens]]
@@ -559,6 +561,36 @@ violation):
   author so existing deployments keep working unchanged.
 - The legacy single `[auth].bearer_token` field is always
   materialized as a `system`-bound grant.
+
+### Hot-reloading `[[auth.tokens]]`
+
+Sprint 018 (WI #61): adding, removing, or rotating bearer tokens no
+longer needs a service restart. Send SIGHUP and the service re-reads
+`klams.toml`, re-resolves token→author bindings, and atomically swaps
+the in-memory token table shared by the REST and `/mcp` surfaces:
+
+```bash
+sudo systemctl reload klams-service      # unit ships ExecReload=kill -HUP
+# or, without systemd:
+kill -HUP "$(pidof klams-service)"
+```
+
+Semantics:
+
+- New `[[auth.tokens]]` entries authenticate immediately after the
+  reload; removed entries stop authenticating. In-flight requests are
+  not dropped — a request already past its auth check completes
+  normally.
+- Only the `[auth]` block is applied. Changes to any other section
+  (postgres, qdrant, embeddings, backup, …) still require a restart.
+- A reload that fails (unparseable TOML, empty `[auth]`, invalid
+  `agent_name`) is logged as an error and the **previous token table
+  stays active** — a broken edit can't lock every caller out. Check
+  `journalctl -u klams-service -g SIGHUP` for the outcome; run
+  `klams-service --validate-config` before reloading to catch errors
+  up front.
+- The file permission model is unchanged: the reload reads the same
+  `root:klams 0640` file.
 
 ### One-shot re-attribution repair
 

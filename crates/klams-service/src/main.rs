@@ -207,42 +207,19 @@ async fn main() -> Result<()> {
     // layer to both the REST router and the nested `/mcp` router.
     // Previously /mcp was unauthenticated because the layer only sat on
     // the REST sub-router inside `build_router`.
-    let mut all_grants: Vec<klams_api::auth::TokenGrant> = Vec::new();
-    if !cfg.auth.bearer_token.is_empty() {
-        all_grants.push(klams_api::auth::TokenGrant::new(
-            cfg.auth.bearer_token.clone(),
-            vec![
-                klams_types::Scope::Read,
-                klams_types::Scope::Write,
-                klams_types::Scope::Admin,
-            ],
-            Some("legacy".into()),
-        ));
-    }
-    for g in &cfg.auth.tokens {
-        let (author_id, agent_name) = resolve_token_author(&store, g).await?;
-        tracing::info!(
-            token_label = %g.label.as_deref().unwrap_or(""),
-            agent_name = %agent_name,
-            %author_id,
-            "bound bearer to author"
-        );
-        all_grants.push(klams_api::auth::TokenGrant::new_with_author(
-            g.token.clone(),
-            g.scopes.clone(),
-            g.label.clone(),
-            author_id,
-            agent_name,
-        ));
-    }
-    let auth_state = klams_api::auth::AuthState::with_grants(all_grants.clone());
+    let all_grants = build_auth_grants(&store, &cfg.auth).await?;
+    let auth_state = klams_api::auth::AuthState::with_grants(all_grants);
+
+    // Sprint 018 (WI #61) — SIGHUP re-reads the config and atomically
+    // swaps the token table shared by the REST and /mcp layers, so
+    // `[[auth.tokens]]` rotations don't need a service restart. A
+    // failed reload keeps the previous table in effect.
+    spawn_auth_reload_on_sighup(config_path.clone(), Arc::clone(&store), auth_state.clone());
 
     let api_router = build_router_with_auth(state, auth_state.clone());
-    let mcp_grants = std::sync::Arc::new(all_grants);
     let mcp_state = klams_mcp::tools::McpState::new(
         Arc::clone(&store),
         std::sync::Arc::new(maintenance_state.clone()),
-        mcp_grants,
         cfg.api.clone(),
     );
     let mcp_router = klams_mcp::router(mcp_state, cfg.server.mcp_allowed_hosts.clone()).layer(
@@ -334,6 +311,103 @@ async fn shutdown_signal() {
         () = ctrl_c => {}
         () = terminate => {}
     }
+}
+
+/// Materialize the full grant list from an `[auth]` config block:
+/// the legacy `bearer_token` (all scopes) plus each `[[auth.tokens]]`
+/// entry with its author binding resolved. Used at startup and by the
+/// SIGHUP reload path (sprint 018, WI #61).
+async fn build_auth_grants(
+    store: &Arc<CompositeStore>,
+    auth: &config::AuthConfig,
+) -> Result<Vec<klams_api::auth::TokenGrant>> {
+    let mut all_grants: Vec<klams_api::auth::TokenGrant> = Vec::new();
+    if !auth.bearer_token.is_empty() {
+        all_grants.push(klams_api::auth::TokenGrant::new(
+            auth.bearer_token.clone(),
+            vec![
+                klams_types::Scope::Read,
+                klams_types::Scope::Write,
+                klams_types::Scope::Admin,
+            ],
+            Some("legacy".into()),
+        ));
+    }
+    for g in &auth.tokens {
+        let (author_id, agent_name) = resolve_token_author(store, g).await?;
+        tracing::info!(
+            token_label = %g.label.as_deref().unwrap_or(""),
+            agent_name = %agent_name,
+            %author_id,
+            "bound bearer to author"
+        );
+        all_grants.push(klams_api::auth::TokenGrant::new_with_author(
+            g.token.clone(),
+            g.scopes.clone(),
+            g.label.clone(),
+            author_id,
+            agent_name,
+        ));
+    }
+    Ok(all_grants)
+}
+
+/// Sprint 018 (WI #61) — install the SIGHUP-triggered auth reload.
+/// Re-reads the same config file, validates its `[auth]` block,
+/// re-resolves token→author bindings, and swaps the shared grant
+/// table. Any error leaves the previous table untouched, so a broken
+/// edit can't lock every caller out.
+fn spawn_auth_reload_on_sighup(
+    config_path: String,
+    store: Arc<CompositeStore>,
+    auth_state: klams_api::auth::AuthState,
+) {
+    tokio::spawn(async move {
+        let mut hup = match signal::unix::signal(signal::unix::SignalKind::hangup()) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!(error = %e, "cannot install SIGHUP handler; auth hot-reload disabled");
+                return;
+            }
+        };
+        while hup.recv().await.is_some() {
+            match reload_auth_grants(&config_path, &store).await {
+                Ok(grants) => {
+                    let count = grants.len();
+                    auth_state.replace_grants(grants);
+                    info!(grants = count, "SIGHUP: auth token table reloaded");
+                }
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        "SIGHUP: auth reload failed; previous token table remains active"
+                    );
+                }
+            }
+        }
+    });
+}
+
+async fn reload_auth_grants(
+    config_path: &str,
+    store: &Arc<CompositeStore>,
+) -> Result<Vec<klams_api::auth::TokenGrant>> {
+    let cfg = config::Config::from_path(config_path)
+        .with_context(|| format!("re-loading config from {config_path}"))?;
+    // Same [auth] checks as `--validate-config`: at least one token
+    // form, and every scoped grant individually valid.
+    if cfg.auth.bearer_token.is_empty() && cfg.auth.tokens.is_empty() {
+        anyhow::bail!("[auth]: at least one of `bearer_token` or `[[auth.tokens]]` must be set");
+    }
+    for (i, g) in cfg.auth.tokens.iter().enumerate() {
+        if let Err(e) = g.validate() {
+            anyhow::bail!(
+                "[auth.tokens[{i}]] ({label}): {e}",
+                label = g.label.as_deref().unwrap_or("<no label>")
+            );
+        }
+    }
+    build_auth_grants(store, &cfg.auth).await
 }
 
 /// Sprint 009 — resolve a bearer token's bound author. If the grant

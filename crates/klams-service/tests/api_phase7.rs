@@ -8,7 +8,7 @@ mod common;
 
 use common::TestServer;
 use klams_mcp::tools::{
-    memory_add::{run as memory_add, FactTypeArg, MemoryAddArgs, MemoryAddContent},
+    memory_add::{run as memory_add, FactTypeArg, MemoryAddArgs},
     memory_append_event::{run as append_event, MemoryAppendEventArgs},
     register_author::{run as register, RegisterAuthorInput},
     McpState,
@@ -22,7 +22,6 @@ fn mcp_state_from(server: &TestServer) -> McpState {
     McpState::new(
         Arc::clone(&server.store),
         Arc::new(MaintenanceState::default()),
-        Arc::new(vec![]),
         klams_types::ApiConfig::default(),
     )
 }
@@ -69,13 +68,11 @@ async fn authors_list_returns_registered_author_with_counts() {
     // Write one fact + one event so counts are non-zero.
     memory_add(
         &state,
-        MemoryAddArgs {
-            author_id: author,
-            content: MemoryAddContent::Fact {
-                fact_type: FactTypeArg::EnvFact,
-                payload: serde_json::json!({"key": format!("phase7-list-{uniq}"), "value": "x"}),
-            },
-        },
+        MemoryAddArgs::fact(
+            author,
+            FactTypeArg::EnvFact,
+            serde_json::json!({"key": format!("phase7-list-{uniq}"), "value": "x"}),
+        ),
     )
     .await
     .expect("fact");
@@ -137,13 +134,11 @@ async fn authors_memories_lists_facts_and_events() {
 
     let fact = memory_add(
         &state,
-        MemoryAddArgs {
-            author_id: author,
-            content: MemoryAddContent::Fact {
-                fact_type: FactTypeArg::EnvFact,
-                payload: serde_json::json!({"key": format!("phase7-mem-{uniq}"), "value": "y"}),
-            },
-        },
+        MemoryAddArgs::fact(
+            author,
+            FactTypeArg::EnvFact,
+            serde_json::json!({"key": format!("phase7-mem-{uniq}"), "value": "y"}),
+        ),
     )
     .await
     .expect("fact");

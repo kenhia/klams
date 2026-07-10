@@ -580,12 +580,12 @@ unchanged. Detailed contracts live under
 
 | Tool | Scope | Purpose |
 |------|-------|---------|
-| `register_author` | `read` | Issue / refresh the caller's author id; everything else is attributed to it. |
+| `register_author` | `read` | Issue / refresh the caller's author id. Optional since sprint 018: write tools default to the bearer token's bound author; call this only to write as a separate per-session identity. `repo` accepts an absolute path or a bare repo name. |
 | `memory_search` | `read` | Hybrid retrieval over facts + knowledge + events. |
 | `event_search` | `read` | Filter `events` by category / task / time window / payload substring. Pure SQL — never hits the embedder (FR-004). |
 | `memory_related` | `read` | Neighborhood expansion around a known memory id. |
-| `memory_context` | `read` | Token-budgeted context bundle (proxies the existing `/memory/context`). |
-| `memory_add` | `write` | Add a fact or knowledge item. Same dedupe + dissent rules as REST. |
+| `dissent_propose` | `write` | File a dissent against a live canonical fact (sprint 015); lands as a pending `AgentProposal` for human review in the viewport. |
+| `memory_add` | `write` | Add a fact or knowledge item. Same dedupe + dissent rules as REST. Flat input schema since sprint 018: `kind` (`"fact"` \| `"knowledge"`) discriminates, with `fact_type`+`payload` required for facts and `text` (+ optional `tags`/`source_path`/`repo`) for knowledge — no top-level `oneOf`, so Anthropic-bound agents can carry the tool. |
 | `memory_append_event` | `write` | Append an event. Always canonical, never soft-deleted. |
 | `memory_delete` | `write` | Soft-delete the caller's own fact / knowledge item by id. |
 | `memory_admin_restore` | `admin` | Reverse a prior soft delete. |
@@ -594,7 +594,17 @@ unchanged. Detailed contracts live under
 
 The advertised tool list is filtered per-request by the bearer
 token's grant; an `admin`-less token never sees the `memory_admin_*`
-tools (FR-020).
+tools (FR-020). (Token-budgeted context bundles remain REST-only at
+`/memory/context` — the `memory_context` tool sketched in 007 was
+never mounted.)
+
+Since sprint 018 the write tools' `author_id` argument is optional:
+when omitted, the write is attributed to the author bound to the
+caller's bearer token (`agent_name` in `[[auth.tokens]]`, or the
+seeded `system` author for unbound/legacy tokens). Passing an
+explicit `author_id` still works and always wins. Session teardown
+also answers 204 (not 202) so mcp python-sdk clients no longer log
+`Session termination failed: 202` on close.
 
 ### Scope configuration
 
@@ -644,7 +654,7 @@ Facts and knowledge items support **soft delete** via `memory_delete`:
 - `memory_delete` is idempotent — repeated calls on the same id are
   no-ops once the row is tombstoned (FR-014).
 - A soft-deleted row vanishes from every read path (`memory_search`,
-  `memory_related`, `memory_context`, `GET /v1/authors/{id}/memories?state=live`)
+  `memory_related`, `/memory/context`, `GET /v1/authors/{id}/memories?state=live`)
   but is preserved in Postgres / Qdrant with `deleted_at` and
   `deleted_by_author_id` populated.
 - Recovery is `memory_admin_restore`; the original delete

@@ -22,8 +22,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+/// Internal, validated form of the `memory_add` arguments. Not part of
+/// the wire schema — [`MemoryAddArgs::content`] produces it after
+/// enforcing the per-kind field requirements.
+#[derive(Debug, Clone)]
 pub enum MemoryAddContent {
     Fact {
         fact_type: FactTypeArg,
@@ -31,13 +33,18 @@ pub enum MemoryAddContent {
     },
     Knowledge {
         text: String,
-        #[serde(default)]
         tags: Vec<String>,
-        #[serde(default)]
         source_path: Option<String>,
-        #[serde(default)]
         repo: Option<String>,
     },
+}
+
+/// Memory kind discriminator for the flat `memory_add` schema.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryAddKind {
+    Fact,
+    Knowledge,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
@@ -59,12 +66,119 @@ impl From<FactTypeArg> for FactType {
     }
 }
 
+/// Wire arguments for `memory_add` (sprint 018, WI #307).
+///
+/// Deliberately a FLAT object schema: the previous serde-tagged enum
+/// (`#[serde(flatten)] MemoryAddContent`) generated a top-level
+/// `oneOf`, which the Anthropic API rejects for tool `input_schema`s
+/// (400), forcing Anthropic-bound agents to drop this tool. The JSON
+/// wire shape is unchanged — `kind` plus the same per-kind fields —
+/// only the advertised schema and where the per-kind requirements are
+/// enforced (now [`MemoryAddArgs::content`]) differ.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MemoryAddArgs {
-    #[schemars(with = "String")]
+    /// Optional: defaults to the author bound to the caller's bearer
+    /// token (WI #62). Pass explicitly to write as a different
+    /// registered author.
+    #[serde(default)]
+    #[schemars(with = "Option<String>")]
     pub author_id: Uuid,
-    #[serde(flatten)]
-    pub content: MemoryAddContent,
+    /// Discriminator: decides which of the remaining fields apply.
+    pub kind: MemoryAddKind,
+    /// Required when `kind` is `fact`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fact_type: Option<FactTypeArg>,
+    /// Required when `kind` is `fact`: arbitrary JSON payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<serde_json::Value>,
+    /// Required when `kind` is `knowledge`: the text to embed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// Optional, `knowledge` only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// Optional, `knowledge` only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<String>,
+    /// Optional, `knowledge` only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+}
+
+impl MemoryAddArgs {
+    /// Construct fact-kind args.
+    #[must_use]
+    pub fn fact(author_id: Uuid, fact_type: FactTypeArg, payload: serde_json::Value) -> Self {
+        Self {
+            author_id,
+            kind: MemoryAddKind::Fact,
+            fact_type: Some(fact_type),
+            payload: Some(payload),
+            text: None,
+            tags: Vec::new(),
+            source_path: None,
+            repo: None,
+        }
+    }
+
+    /// Construct knowledge-kind args with no tags/source/repo; set
+    /// those fields directly (or via struct update) when needed.
+    #[must_use]
+    pub fn knowledge(author_id: Uuid, text: impl Into<String>) -> Self {
+        Self {
+            author_id,
+            kind: MemoryAddKind::Knowledge,
+            fact_type: None,
+            payload: None,
+            text: Some(text.into()),
+            tags: Vec::new(),
+            source_path: None,
+            repo: None,
+        }
+    }
+
+    /// Enforce the per-kind field requirements the schema can no
+    /// longer express and produce the validated content.
+    ///
+    /// # Errors
+    /// Returns a `SCHEMA_VALIDATION_FAILED` envelope naming the
+    /// missing field(s) for the given `kind`. Fields belonging to the
+    /// other kind are ignored, matching the pre-018 tagged-enum
+    /// behaviour.
+    pub fn content(self) -> Result<MemoryAddContent, ErrorEnvelope> {
+        match self.kind {
+            MemoryAddKind::Fact => match (self.fact_type, self.payload) {
+                (Some(fact_type), Some(payload)) => {
+                    Ok(MemoryAddContent::Fact { fact_type, payload })
+                }
+                (fact_type, payload) => {
+                    let mut missing = Vec::new();
+                    if fact_type.is_none() {
+                        missing.push("fact_type");
+                    }
+                    if payload.is_none() {
+                        missing.push("payload");
+                    }
+                    Err(envelope(
+                        errors::SCHEMA_VALIDATION_FAILED,
+                        format!("kind \"fact\" requires {}", missing.join(" and ")),
+                    ))
+                }
+            },
+            MemoryAddKind::Knowledge => match self.text {
+                Some(text) => Ok(MemoryAddContent::Knowledge {
+                    text,
+                    tags: self.tags,
+                    source_path: self.source_path,
+                    repo: self.repo,
+                }),
+                None => Err(envelope(
+                    errors::SCHEMA_VALIDATION_FAILED,
+                    "kind \"knowledge\" requires text",
+                )),
+            },
+        }
+    }
 }
 
 /// Execute `memory_add`. Returns the persisted memory in public
@@ -82,16 +196,21 @@ pub async fn run(state: &McpState, args: MemoryAddArgs) -> Result<PublicMemory, 
     if args.author_id.is_nil() {
         return Err(envelope(errors::MISSING_AUTHOR_ID, "author_id is required"));
     }
+    // Per-kind requirements checked up front so a malformed request
+    // fails on schema before author resolution, as it did when the
+    // tagged-enum deserializer did this job (pre-018).
+    let author_id = args.author_id;
+    let content = args.content()?;
     let author = state
         .store
         .postgres
-        .get_author_by_id(args.author_id)
+        .get_author_by_id(author_id)
         .await
         .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("get_author_by_id: {e}")))?
         .ok_or_else(|| {
             envelope(
                 errors::UNKNOWN_AUTHOR_ID,
-                format!("author_id {} not found", args.author_id),
+                format!("author_id {author_id} not found"),
             )
         })?;
 
@@ -108,7 +227,7 @@ pub async fn run(state: &McpState, args: MemoryAddArgs) -> Result<PublicMemory, 
         repo: author.repo.clone(),
     };
 
-    match args.content {
+    match content {
         MemoryAddContent::Fact { fact_type, payload } => {
             let req = UpsertFact {
                 fact_type: fact_type.into(),

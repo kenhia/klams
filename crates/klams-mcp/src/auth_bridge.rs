@@ -1,6 +1,6 @@
 //! Auth bridge for the MCP server (sprint 007 T018).
 //!
-//! Reuses the same `Arc<Vec<TokenGrant>>` that backs the REST surface
+//! Bridges the bearer-auth middleware that backs the REST surface
 //! in `klams-api::auth`. The MCP server is mounted under the same axum
 //! router stack, so by the time a request reaches a tool handler the
 //! [`klams_api::auth::AuthenticatedScopes`] extension is already set by

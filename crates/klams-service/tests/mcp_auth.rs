@@ -152,6 +152,9 @@ async fn tools_list_admin_sees_everything() {
         "memory_append_event",
         "event_search",
         "memory_delete",
+        // Sprint 015 added dissent_propose but missed this ignored
+        // suite (not in the CI gate); expectation caught up in 018.
+        "dissent_propose",
         "memory_admin_restore",
         "memory_admin_hard_delete",
         "memory_admin_list_deleted",
@@ -194,6 +197,7 @@ async fn tools_list_write_sees_read_and_write_no_admin() {
     assert_eq!(
         sorted,
         vec![
+            "dissent_propose".to_string(),
             "event_search".to_string(),
             "memory_add".to_string(),
             "memory_append_event".to_string(),

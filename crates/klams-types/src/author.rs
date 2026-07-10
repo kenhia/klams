@@ -59,8 +59,8 @@ pub enum RegisterAuthorError {
     EmptyAgentName,
     #[error("agent_name exceeds 128 characters")]
     AgentNameTooLong,
-    #[error("repo must be an absolute path (start with '/')")]
-    RepoNotAbsolute,
+    #[error("repo must be a non-empty absolute path or repo name")]
+    RepoEmpty,
     #[error("extra must serialize to at most 16 KiB")]
     ExtraTooLarge,
 }
@@ -80,9 +80,12 @@ impl RegisterAuthorArgs {
         if self.agent_name.len() > 128 {
             return Err(RegisterAuthorError::AgentNameTooLong);
         }
+        // Sprint 018 (WI #62): a bare repo name ("krag") is as valid
+        // as an absolute path — agents often don't know their absolute
+        // working directory. Only reject blank values.
         if let Some(repo) = &self.repo {
-            if !repo.starts_with('/') {
-                return Err(RegisterAuthorError::RepoNotAbsolute);
+            if repo.trim().is_empty() {
+                return Err(RegisterAuthorError::RepoEmpty);
             }
         }
         if !self.extra.is_null() {
@@ -128,13 +131,26 @@ mod tests {
     }
 
     #[test]
-    fn rejects_relative_repo() {
+    fn accepts_absolute_repo_path() {
         let mut a = args();
-        a.repo = Some("relative/path".into());
-        assert!(matches!(
-            a.validate(),
-            Err(RegisterAuthorError::RepoNotAbsolute)
-        ));
+        a.repo = Some("/home/ken/src/ai/krag".into());
+        a.validate().unwrap();
+    }
+
+    #[test]
+    fn accepts_bare_repo_name() {
+        // Sprint 018 (WI #62): agents don't always know their absolute
+        // working directory; a short name is enough.
+        let mut a = args();
+        a.repo = Some("krag".into());
+        a.validate().unwrap();
+    }
+
+    #[test]
+    fn rejects_blank_repo() {
+        let mut a = args();
+        a.repo = Some("   ".into());
+        assert!(matches!(a.validate(), Err(RegisterAuthorError::RepoEmpty)));
     }
 
     #[test]

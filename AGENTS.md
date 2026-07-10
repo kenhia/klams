@@ -21,6 +21,12 @@ that fits in one PR* — some are an afternoon, some are substantial.
 2. **Write intent before code**: open `sprints/###-<short-stub>/sprint.md`
    stating the goal, scope, and acceptance criteria. A few paragraphs
    is fine; heavyweight spec/plan/tasks ceremony is not required.
+   At the same time, set the **PATCH segment of the workspace version
+   to the sprint number** (`[workspace.package] version` in the root
+   `Cargo.toml`; sprint 018 → `0.1.18`). The version surfaces on
+   `/healthz` and MCP `server_info` — Ken's dashboard reads it, so
+   it's the at-a-glance check that the latest sprint is deployed.
+   MAJOR/MINOR stay hand-managed. (Convention started at 018.)
 3. **Chronicle as you go**: decisions, surprises, contract changes,
    and outcomes get recorded in markdown inside the sprint directory
    (in `sprint.md` or sibling files — contracts, findings, migration

@@ -37,6 +37,13 @@ pub struct TestServer {
     pub read_token: String,
     /// Write+Read scope token (sprint 007 T066).
     pub write_token: String,
+    /// Token bound to a named author (sprint 018 / WI #62) — writes
+    /// through it may omit `author_id`.
+    pub author_token: String,
+    /// The `agent_name` the author-bound token attributes writes to.
+    pub author_agent_name: String,
+    /// The author id `author_token` is bound to.
+    pub bound_author_id: Uuid,
     pub store: Arc<TestStore>,
     /// gRPC Qdrant URL — retained so `cleanup()` can drop the
     /// per-test collection on teardown (sprint 009 T039 / FR-021).
@@ -128,6 +135,36 @@ impl TestServer {
         let embedder = Arc::new(TeiEmbedder::new(tei_url, 384).expect("tei client"));
         let store = Arc::new(CompositeStore::new(postgres, qdrant, embedder));
 
+        // Sprint 018 (WI #62) — mirror main.rs's resolve_token_author:
+        // bind a test token to a named author so bearer-fallback
+        // attribution is exercisable.
+        let author_token = "test-token-author-bound".to_string();
+        let author_agent_name = "bearer-bound-test-agent".to_string();
+        let existing = store
+            .postgres
+            .get_author_by_agent_name(&author_agent_name)
+            .await
+            .expect("lookup bound author");
+        let bound_author_id = if let Some(a) = existing {
+            a.id
+        } else {
+            let args = klams_types::RegisterAuthorArgs {
+                agent_name: author_agent_name.clone(),
+                model: None,
+                session_title: Some("test harness".into()),
+                repo: None,
+                client_app: Some("klams-service-tests".into()),
+                client_version: None,
+                extra: serde_json::json!({}),
+            };
+            store
+                .postgres
+                .insert_author(args, None)
+                .await
+                .expect("insert bound author")
+                .id
+        };
+
         let (queue, rx) = MemoryQueue::new(256);
         let _workers = spawn_workers(2, rx, Arc::clone(&store));
 
@@ -174,13 +211,18 @@ impl TestServer {
                     vec![klams_types::Scope::Read, klams_types::Scope::Write],
                     Some("write".into()),
                 ),
+                klams_api::auth::TokenGrant::new_with_author(
+                    author_token.clone(),
+                    vec![klams_types::Scope::Read, klams_types::Scope::Write],
+                    Some("author-bound".into()),
+                    bound_author_id,
+                    author_agent_name.clone(),
+                ),
             ];
-            let auth_state = klams_api::auth::AuthState::with_grants(grants.clone());
-            let mcp_grants = std::sync::Arc::new(grants);
+            let auth_state = klams_api::auth::AuthState::with_grants(grants);
             let mcp_state = klams_mcp::tools::McpState::new(
                 Arc::clone(&store),
                 std::sync::Arc::new(klams_types::MaintenanceState::default()),
-                mcp_grants,
                 klams_types::ApiConfig::default(),
             );
             let mcp_router = klams_mcp::router(mcp_state, Vec::new()).layer(
@@ -202,6 +244,9 @@ impl TestServer {
             bearer_token: bearer,
             read_token,
             write_token,
+            author_token,
+            author_agent_name,
+            bound_author_id,
             store,
             qdrant_url,
             qdrant_collection,
