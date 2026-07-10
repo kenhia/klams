@@ -37,6 +37,48 @@ fn no_tool_schema_has_top_level_combinators() {
     }
 }
 
+/// Sprint 019 (WI #309) — no boolean subschemas under `properties`,
+/// anywhere in any advertised schema.
+///
+/// schemars renders a bare `serde_json::Value` field as the JSON-Schema
+/// boolean any-value schema (`"field": true`). That is legal JSON
+/// Schema, but Claude Code (2.1.205) rejects boolean *property*
+/// subschemas and discards the ENTIRE tool list on the first invalid
+/// tool — `memory_append_event.payload` alone took all 8 klams tools
+/// away from every Claude session. `additionalProperties: true` is
+/// fine (ubiquitous; verified accepted).
+#[test]
+fn no_boolean_property_subschemas_anywhere() {
+    fn walk(tool: &str, path: &str, schema: &serde_json::Value) {
+        let Some(obj) = schema.as_object() else {
+            return;
+        };
+        for (key, value) in obj {
+            let child_path = format!("{path}/{key}");
+            if key == "properties" {
+                let props = value
+                    .as_object()
+                    .unwrap_or_else(|| panic!("{tool}: {child_path} is not an object"));
+                for (prop, prop_schema) in props {
+                    assert!(
+                        !prop_schema.is_boolean(),
+                        "{tool}: property {child_path}/{prop} is a boolean schema \
+                         ({prop_schema}) — Claude Code rejects these and drops the \
+                         whole tool list; give the field a real schema \
+                         (e.g. #[schemars(with = \"serde_json::Map<String, serde_json::Value>\")])",
+                    );
+                    walk(tool, &format!("{child_path}/{prop}"), prop_schema);
+                }
+            } else {
+                walk(tool, &child_path, value);
+            }
+        }
+    }
+    for tool in all_tool_descriptors() {
+        walk(&tool.name, "", &tool.schema_as_json_value());
+    }
+}
+
 /// WI #62 — the write tools advertise `author_id` as optional (it
 /// falls back to the bearer token's bound author), while still listing
 /// it as a property.

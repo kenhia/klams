@@ -25,6 +25,10 @@ pub struct MemoryAppendEventArgs {
     #[schemars(with = "Option<String>")]
     pub author_id: Uuid,
     pub category: String,
+    /// Rendered as an object schema, NOT a bare `serde_json::Value` —
+    /// schemars turns the latter into the boolean schema `true`, which
+    /// Claude Code rejects, discarding the whole tool list (WI #309).
+    #[schemars(with = "serde_json::Map<String, serde_json::Value>")]
     pub payload: serde_json::Value,
     #[serde(default)]
     #[schemars(with = "Option<String>")]
