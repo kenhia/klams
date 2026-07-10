@@ -4,9 +4,9 @@
 "Sprint queue" is the next sprint. Sprints may also arrive from korg
 sprint proposals (see `sprints/018-mcp-client-compat/`) rather than
 this queue.  
-**Date:** 2026-07-09 (014–017 shipped; 018 in flight on
-`018-mcp-client-compat` — korg-driven: MCP client compat + auth
-hot-reload, WIs 307/305/62/61)  
+**Date:** 2026-07-09 (014–018 shipped; 019 in flight on
+`019-claude-schema-compat` — korg-driven hotfix: boolean-subschema
+fix so Claude Code loads the klams tools, WI 309)  
 **Related:** [wi259-recommendation.md](wi259-recommendation.md) ·
 [wi259-three-project-review.md](wi259-three-project-review.md) ·
 [plan.md](plan.md) (original phased plan, now historical) ·
