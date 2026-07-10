@@ -28,7 +28,7 @@ pub async fn context<S: Store>(
     State(state): State<ApiState<S>>,
     Json(req): Json<ContextRequest>,
 ) -> Result<Json<ContextBundle>, ApiError> {
-    let _guard = m::LatencyGuard::new(m::CONTEXT_REQUEST_LATENCY);
+    let _guard = m::LatencyGuard::retrieval("context", "rest");
 
     let query = req.query.trim().to_string();
     if query.is_empty() {

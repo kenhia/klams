@@ -21,6 +21,40 @@ pub use klams_types::{MaintenanceSnapshot, MaintenanceState, RunningSnapshot};
 
 use self::lifecycle::{BackupRun, LockfileError};
 
+/// Sprint 020 — newest successful-backup timestamp recoverable from
+/// disk, as unix seconds: the max mtime across `postgres-*.dump`
+/// artifacts in `dir` (a successful run always writes one). Used to
+/// seed the `klams_backup_last_success_timestamp_seconds` gauge at
+/// startup so the "Last backup age" panel doesn't read No Data until
+/// the next nightly run.
+///
+/// # Errors
+/// Propagates the `read_dir` failure (missing/unreadable dir).
+pub fn newest_backup_unix_seconds(dir: &Path) -> std::io::Result<Option<u64>> {
+    let mut newest: Option<std::time::SystemTime> = None;
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let is_pg_dump = name.starts_with("postgres-")
+            && Path::new(name)
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("dump"));
+        if !is_pg_dump {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        let Ok(mtime) = meta.modified() else { continue };
+        if newest.is_none_or(|n| mtime > n) {
+            newest = Some(mtime);
+        }
+    }
+    Ok(newest.map(|t| {
+        t.duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs())
+    }))
+}
+
 /// All the inputs the orchestrator needs to perform one backup run.
 #[derive(Debug, Clone)]
 pub struct OrchestratorDeps {
@@ -283,5 +317,31 @@ mod tests {
         let s2 = s.clone();
         s.mark_active(snap());
         assert!(s2.active());
+    }
+
+    #[test]
+    fn newest_backup_unix_seconds_picks_latest_postgres_dump() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Empty dir → no seed.
+        assert_eq!(super::newest_backup_unix_seconds(dir.path()).unwrap(), None);
+        // Non-matching files are ignored.
+        std::fs::write(dir.path().join("lockfile"), b"x").unwrap();
+        std::fs::write(dir.path().join("qdrant-2026-07-01.snapshot"), b"x").unwrap();
+        assert_eq!(super::newest_backup_unix_seconds(dir.path()).unwrap(), None);
+        // Two dumps → max mtime wins (set explicit mtimes far apart).
+        let old = dir.path().join("postgres-2026-07-01.dump");
+        let new = dir.path().join("postgres-2026-07-02.dump");
+        std::fs::write(&old, b"x").unwrap();
+        std::fs::write(&new, b"x").unwrap();
+        let t_old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+        let t_new = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(2_000_000);
+        for (f, t) in [(&old, t_old), (&new, t_new)] {
+            let dest = std::fs::File::options().write(true).open(f).unwrap();
+            dest.set_modified(t).unwrap();
+        }
+        assert_eq!(
+            super::newest_backup_unix_seconds(dir.path()).unwrap(),
+            Some(2_000_000)
+        );
     }
 }

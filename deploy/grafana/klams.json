@@ -71,18 +71,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.50, sum by (le, endpoint) (rate(axum_http_requests_duration_seconds_bucket{endpoint=~\"/memory/(search|context)\"}[5m])))",
-          "legendFormat": "p50 {{endpoint}}"
-        },
-        {
-          "refId": "B",
-          "expr": "histogram_quantile(0.95, sum by (le, endpoint) (rate(axum_http_requests_duration_seconds_bucket{endpoint=~\"/memory/(search|context)\"}[5m])))",
-          "legendFormat": "p95 {{endpoint}}"
-        },
-        {
-          "refId": "C",
-          "expr": "histogram_quantile(0.99, sum by (le, endpoint) (rate(axum_http_requests_duration_seconds_bucket{endpoint=~\"/memory/(search|context)\"}[5m])))",
-          "legendFormat": "p99 {{endpoint}}"
+          "expr": "klams_retrieval_duration_seconds{quantile=~\"0.5|0.95|0.99\"}",
+          "legendFormat": "p{{quantile}} {{op}}/{{transport}}"
         }
       ],
       "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }
@@ -100,7 +90,7 @@
           "legendFormat": "{{status}}"
         }
       ],
-      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] }
+      "fieldConfig": { "defaults": { "unit": "reqps", "noValue": "0" }, "overrides": [] }
     },
     {
       "id": 6,
@@ -196,7 +186,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (le, kind) (rate(klams_backup_duration_seconds_bucket[1h])))",
+          "expr": "klams_backup_duration_seconds{quantile=\"0.95\"}",
           "legendFormat": "{{kind}}"
         }
       ],
@@ -230,7 +220,7 @@
           "legendFormat": "{{event}} ok={{ok}}"
         }
       ],
-      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+      "fieldConfig": { "defaults": { "noValue": "0", "unit": "short" }, "overrides": [] }
     },
     {
       "id": 12,
@@ -264,7 +254,7 @@
         }
       ],
       "fieldConfig": {
-        "defaults": { "unit": "reqpm" },
+        "defaults": { "unit": "reqpm", "noValue": "0" },
         "overrides": [
           {
             "matcher": { "id": "byRegexp", "options": ".*hard.*" },

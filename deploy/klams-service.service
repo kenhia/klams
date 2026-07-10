@@ -36,6 +36,12 @@ LimitNOFILE=65536
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
+# Sprint 020: ProtectSystem=strict makes the whole FS read-only for the
+# service; the backup dir must be granted back explicitly or every
+# nightly run dies on the lockfile with EROFS (this silently broke
+# backups from 2026-05-31, when the hardened unit shipped, until 020).
+# Keep in sync with [backup].backup_dir in /etc/klams/klams.toml.
+ReadWritePaths=/gratch/klams-backup
 ProtectHome=true
 ProtectKernelTunables=true
 ProtectKernelModules=true

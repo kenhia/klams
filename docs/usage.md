@@ -66,7 +66,7 @@ named klams metrics below.
 | `klams_writes_accepted_total` | counter | `type=fact\|event\|knowledge` | Writes accepted onto the queue. |
 | `klams_writes_failed_total` | counter | `type`, `reason=queue_full\|store_error\|too_large` | Writes rejected or failed downstream. |
 | `klams_write_latency_seconds` | histogram | `type` | Handler-side latency from validation to enqueue completion. |
-| `klams_search_latency_seconds` | histogram | – | Latency of `POST /memory/search`. |
+| `klams_retrieval_duration_seconds` | summary (quantile label) | `op=search\|context`, `transport=rest\|mcp` | Retrieval latency at every entry point — REST and MCP (sprint 020, WI 63; replaces `klams_search_latency_seconds` / `klams_context_request_seconds`). |
 | `klams_embedding_latency_seconds` | histogram | – | Latency of a single TEI call. |
 
 ## Exit codes

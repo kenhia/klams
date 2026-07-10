@@ -75,6 +75,9 @@ pub async fn run(
     state: &McpState,
     args: MemorySearchArgs,
 ) -> Result<Vec<ScoredMemory>, ErrorEnvelope> {
+    // Sprint 020 (WI #63): MCP is where real search traffic flows;
+    // feed the same retrieval-latency histogram the REST handlers use.
+    let _guard = klams_core::metrics::LatencyGuard::retrieval("search", "mcp");
     let query = args.query.trim().to_string();
     if query.is_empty() {
         return Err(envelope(errors::EMPTY_QUERY, "query must be non-empty"));
