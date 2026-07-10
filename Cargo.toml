@@ -16,7 +16,11 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+# PATCH segment == sprint number (see AGENTS.md "Sprint workflow"):
+# bumped at the start of every sprint so the version surfaced on
+# /healthz and MCP server_info identifies the deployed sprint at a
+# glance.
+version = "0.1.18"
 edition = "2021"
 rust-version = "1.83"
 license = "MIT"

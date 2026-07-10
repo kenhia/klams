@@ -11,7 +11,7 @@ mod common;
 use common::TestServer;
 use klams_mcp::tools::{
     dissent_propose::{run as dissent_propose, DissentProposeArgs},
-    memory_add::{run as memory_add, FactTypeArg, MemoryAddArgs, MemoryAddContent},
+    memory_add::{run as memory_add, FactTypeArg, MemoryAddArgs},
     memory_delete::{run as memory_delete, MemoryDeleteArgs},
     register_author::{run as register, RegisterAuthorInput},
     McpState,
@@ -24,7 +24,6 @@ fn mcp_state_from(server: &TestServer) -> McpState {
     McpState::new(
         Arc::clone(&server.store),
         Arc::new(MaintenanceState::default()),
-        Arc::new(vec![]),
         klams_types::ApiConfig::default(),
     )
 }
@@ -50,13 +49,11 @@ async fn make_author(state: &McpState, name: &str) -> Uuid {
 async fn seed_fact(state: &McpState, author: Uuid, key: &str, value: &str) -> Uuid {
     memory_add(
         state,
-        MemoryAddArgs {
-            author_id: author,
-            content: MemoryAddContent::Fact {
-                fact_type: FactTypeArg::EnvFact,
-                payload: serde_json::json!({ "key": key, "value": value }),
-            },
-        },
+        MemoryAddArgs::fact(
+            author,
+            FactTypeArg::EnvFact,
+            serde_json::json!({ "key": key, "value": value }),
+        ),
     )
     .await
     .expect("memory_add fact")

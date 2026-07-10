@@ -8,7 +8,7 @@ mod common;
 
 use common::TestServer;
 use klams_mcp::tools::{
-    memory_add::{run as memory_add, FactTypeArg, MemoryAddArgs, MemoryAddContent},
+    memory_add::{run as memory_add, FactTypeArg, MemoryAddArgs},
     memory_related::{run as memory_related, MemoryRelatedArgs},
     memory_search::{run as memory_search, MemoryKindFilter, MemorySearchArgs},
     register_author::{run as register, RegisterAuthorInput},
@@ -21,7 +21,6 @@ fn mcp_state_from(server: &TestServer) -> McpState {
     McpState::new(
         Arc::clone(&server.store),
         Arc::new(MaintenanceState::default()),
-        Arc::new(vec![]),
         klams_types::ApiConfig::default(),
     )
 }
@@ -50,16 +49,14 @@ async fn memory_search_smoke() {
     // Seed a fact + a knowledge item so both backends contribute.
     memory_add(
         &state,
-        MemoryAddArgs {
-            author_id: author.author_id,
-            content: MemoryAddContent::Fact {
-                fact_type: FactTypeArg::EnvFact,
-                payload: serde_json::json!({
-                    "key": "phase4-search-target",
-                    "value": "needle phase4 search"
-                }),
-            },
-        },
+        MemoryAddArgs::fact(
+            author.author_id,
+            FactTypeArg::EnvFact,
+            serde_json::json!({
+                "key": "phase4-search-target",
+                "value": "needle phase4 search"
+            }),
+        ),
     )
     .await
     .expect("seed fact");
@@ -67,13 +64,10 @@ async fn memory_search_smoke() {
     memory_add(
         &state,
         MemoryAddArgs {
-            author_id: author.author_id,
-            content: MemoryAddContent::Knowledge {
-                text: "phase4 search needle knowledge body".into(),
-                tags: vec!["phase4".into()],
-                source_path: None,
-                repo: None,
-            },
+            tags: vec!["phase4".into()],
+            source_path: None,
+            repo: None,
+            ..MemoryAddArgs::knowledge(author.author_id, "phase4 search needle knowledge body")
         },
     )
     .await
@@ -84,13 +78,13 @@ async fn memory_search_smoke() {
     memory_add(
         &state,
         MemoryAddArgs {
-            author_id: author.author_id,
-            content: MemoryAddContent::Knowledge {
-                text: "a second needle knowledge entry for ranking".into(),
-                tags: vec!["phase4".into()],
-                source_path: None,
-                repo: None,
-            },
+            tags: vec!["phase4".into()],
+            source_path: None,
+            repo: None,
+            ..MemoryAddArgs::knowledge(
+                author.author_id,
+                "a second needle knowledge entry for ranking",
+            )
         },
     )
     .await
@@ -225,13 +219,13 @@ async fn memory_related_smoke() {
         let mem = memory_add(
             &state,
             MemoryAddArgs {
-                author_id: author.author_id,
-                content: MemoryAddContent::Knowledge {
-                    text: format!("phase4 related seed point number {i} about kittens"),
-                    tags: vec!["related-seed".into()],
-                    source_path: None,
-                    repo: None,
-                },
+                tags: vec!["related-seed".into()],
+                source_path: None,
+                repo: None,
+                ..MemoryAddArgs::knowledge(
+                    author.author_id,
+                    format!("phase4 related seed point number {i} about kittens"),
+                )
             },
         )
         .await

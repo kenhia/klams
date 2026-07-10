@@ -140,7 +140,8 @@ rollback path, ansible-k handoff) lives at
 
 Architecture overview and component map:
 [docs/architecture.md](docs/architecture.md). Day-to-day operator
-recipes: [docs/usage.md](docs/usage.md).
+recipes: [docs/usage.md](docs/usage.md). Pointing an AI agent at the
+MCP surface: hand it [docs/klams-mcp-for-agents.md](docs/klams-mcp-for-agents.md).
 
 ## License
 

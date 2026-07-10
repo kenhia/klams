@@ -18,7 +18,11 @@ const CATEGORY_MAX_LEN: usize = 64;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MemoryAppendEventArgs {
-    #[schemars(with = "String")]
+    /// Optional: defaults to the author bound to the caller's bearer
+    /// token (WI #62). Pass explicitly to write as a different
+    /// registered author.
+    #[serde(default)]
+    #[schemars(with = "Option<String>")]
     pub author_id: Uuid,
     pub category: String,
     pub payload: serde_json::Value,

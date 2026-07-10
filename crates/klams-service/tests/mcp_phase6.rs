@@ -8,7 +8,7 @@ mod common;
 
 use common::TestServer;
 use klams_mcp::tools::{
-    memory_add::{run as memory_add, FactTypeArg, MemoryAddArgs, MemoryAddContent},
+    memory_add::{run as memory_add, FactTypeArg, MemoryAddArgs},
     memory_admin_hard_delete::{run as admin_hard_delete, MemoryAdminHardDeleteArgs},
     memory_admin_list_deleted::{run as admin_list_deleted, MemoryAdminListDeletedArgs},
     memory_admin_restore::{run as admin_restore, MemoryAdminRestoreArgs},
@@ -26,7 +26,6 @@ fn mcp_state_from(server: &TestServer) -> McpState {
     McpState::new(
         Arc::clone(&server.store),
         Arc::new(MaintenanceState::default()),
-        Arc::new(vec![]),
         klams_types::ApiConfig::default(),
     )
 }
@@ -58,16 +57,14 @@ async fn memory_delete_soft_smoke() {
 
     let fact = memory_add(
         &state,
-        MemoryAddArgs {
-            author_id: author,
-            content: MemoryAddContent::Fact {
-                fact_type: FactTypeArg::EnvFact,
-                payload: serde_json::json!({
-                    "key": "phase6-soft-delete",
-                    "value": "needle-soft-delete"
-                }),
-            },
-        },
+        MemoryAddArgs::fact(
+            author,
+            FactTypeArg::EnvFact,
+            serde_json::json!({
+                "key": "phase6-soft-delete",
+                "value": "needle-soft-delete"
+            }),
+        ),
     )
     .await
     .expect("memory_add fact");
@@ -159,16 +156,14 @@ async fn memory_admin_restore_smoke() {
 
     let fact = memory_add(
         &state,
-        MemoryAddArgs {
-            author_id: author,
-            content: MemoryAddContent::Fact {
-                fact_type: FactTypeArg::EnvFact,
-                payload: serde_json::json!({
-                    "key": "phase6-restore",
-                    "value": "needle-restore"
-                }),
-            },
-        },
+        MemoryAddArgs::fact(
+            author,
+            FactTypeArg::EnvFact,
+            serde_json::json!({
+                "key": "phase6-restore",
+                "value": "needle-restore"
+            }),
+        ),
     )
     .await
     .expect("memory_add");
@@ -229,16 +224,14 @@ async fn memory_admin_hard_delete_smoke() {
 
     let fact = memory_add(
         &state,
-        MemoryAddArgs {
-            author_id: author,
-            content: MemoryAddContent::Fact {
-                fact_type: FactTypeArg::EnvFact,
-                payload: serde_json::json!({
-                    "key": "phase6-hard",
-                    "value": "needle-hard"
-                }),
-            },
-        },
+        MemoryAddArgs::fact(
+            author,
+            FactTypeArg::EnvFact,
+            serde_json::json!({
+                "key": "phase6-hard",
+                "value": "needle-hard"
+            }),
+        ),
     )
     .await
     .expect("memory_add");
@@ -285,16 +278,14 @@ async fn memory_admin_list_deleted_smoke() {
     for i in 0..3 {
         let f = memory_add(
             &state,
-            MemoryAddArgs {
-                author_id: author,
-                content: MemoryAddContent::Fact {
-                    fact_type: FactTypeArg::EnvFact,
-                    payload: serde_json::json!({
-                        "key": format!("phase6-list-{i}"),
-                        "value": format!("needle-list-{i}")
-                    }),
-                },
-            },
+            MemoryAddArgs::fact(
+                author,
+                FactTypeArg::EnvFact,
+                serde_json::json!({
+                    "key": format!("phase6-list-{i}"),
+                    "value": format!("needle-list-{i}")
+                }),
+            ),
         )
         .await
         .expect("memory_add");

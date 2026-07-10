@@ -1,8 +1,12 @@
 # klams — roadmap
 
 **Status:** Active — this is the pointer document: the top entry under
-"Sprint queue" is the next sprint.  
-**Date:** 2026-07-07 (014 + 015 shipped; 016 moved out — in flight on `016-retrieval-diagnostics`)  
+"Sprint queue" is the next sprint. Sprints may also arrive from korg
+sprint proposals (see `sprints/018-mcp-client-compat/`) rather than
+this queue.  
+**Date:** 2026-07-09 (014–017 shipped; 018 in flight on
+`018-mcp-client-compat` — korg-driven: MCP client compat + auth
+hot-reload, WIs 307/305/62/61)  
 **Related:** [wi259-recommendation.md](wi259-recommendation.md) ·
 [wi259-three-project-review.md](wi259-three-project-review.md) ·
 [plan.md](plan.md) (original phased plan, now historical) ·

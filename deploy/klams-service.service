@@ -17,6 +17,9 @@ Type=simple
 User=klams
 Group=klams
 ExecStart=/usr/local/bin/klams-service
+# Sprint 018 (WI #61): SIGHUP hot-reloads [[auth.tokens]] from the
+# config without dropping in-flight requests — `systemctl reload`.
+ExecReload=/bin/kill -HUP $MAINPID
 Environment=KLAMS_CONFIG=/etc/klams/klams.toml
 Restart=on-failure
 RestartSec=15

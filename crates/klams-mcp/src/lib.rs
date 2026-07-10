@@ -22,7 +22,14 @@ pub mod projection;
 pub mod tools;
 pub mod transport;
 
-use axum::Router;
+use axum::{
+    body::Body,
+    extract::Request,
+    http::{header, Method, StatusCode},
+    middleware::Next,
+    response::Response,
+    Router,
+};
 
 use crate::tools::McpState;
 
@@ -35,5 +42,27 @@ use crate::tools::McpState;
 #[must_use = "the returned axum::Router must be mounted"]
 pub fn router(state: McpState, allowed_hosts: Vec<String>) -> Router {
     let svc = transport::streamable_http_service(state, allowed_hosts);
-    Router::new().fallback_service(svc)
+    Router::new()
+        .fallback_service(svc)
+        .layer(axum::middleware::from_fn(delete_status_compat))
+}
+
+/// Rewrite session-termination DELETE responses from 202 Accepted to
+/// 204 No Content (sprint 018, WI #305).
+///
+/// rmcp 1.7's `StreamableHttpService::handle_delete` hardcodes 202,
+/// but the mcp python-sdk treats only 200/204 as successful
+/// termination and logs `Session termination failed: 202` on every
+/// session close. Only a DELETE that rmcp accepted (202) is rewritten;
+/// error statuses (400 missing-session-id, 5xx) pass through.
+pub async fn delete_status_compat(req: Request, next: Next) -> Response {
+    let is_delete = req.method() == Method::DELETE;
+    let resp = next.run(req).await;
+    if !is_delete || resp.status() != StatusCode::ACCEPTED {
+        return resp;
+    }
+    let (mut parts, _body) = resp.into_parts();
+    parts.status = StatusCode::NO_CONTENT;
+    parts.headers.remove(header::CONTENT_LENGTH);
+    Response::from_parts(parts, Body::empty())
 }

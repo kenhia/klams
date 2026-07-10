@@ -16,7 +16,7 @@ pub mod memory_related;
 pub mod memory_search;
 pub mod register_author;
 
-use klams_api::auth::{AuthenticatedScopes, TokenGrant};
+use klams_api::auth::{AuthenticatedAuthor, AuthenticatedScopes};
 use klams_store::CompositeStore;
 use klams_types::{MaintenanceState, Scope};
 use rmcp::{
@@ -60,20 +60,40 @@ fn scope_satisfied(scopes: &[Scope], needed: Scope) -> bool {
     scopes.iter().any(|s| s.satisfies(needed))
 }
 
+/// Pull the author bound to the caller's bearer token (sprint 018,
+/// WI #62). Same extension-forwarding path as [`caller_scopes`]:
+/// `require_bearer` stamps [`AuthenticatedAuthor`] on the request and
+/// rmcp copies the request parts into the tool context.
+fn caller_author<R>(ctx: &RequestContext<R>) -> Option<AuthenticatedAuthor>
+where
+    R: rmcp::service::ServiceRole,
+{
+    ctx.extensions
+        .get::<axum::http::request::Parts>()
+        .and_then(|p| p.extensions.get::<AuthenticatedAuthor>())
+        .cloned()
+}
+
+/// Write tools whose `author_id` argument may be omitted and filled
+/// from the bearer token's bound author (WI #62).
+const BEARER_AUTHOR_TOOLS: [&str; 3] = ["memory_add", "memory_append_event", "dissent_propose"];
+
 /// Shared state injected into every tool handler.
+///
+/// Sprint 018: the `grants` copy plumbed in 007 was removed — no tool
+/// ever read it, and with WI #61's hot-reloadable table a snapshot
+/// here would go stale. Caller identity reaches tools via request
+/// extensions ([`caller_scopes`] / [`caller_author`]).
 #[derive(Clone)]
 pub struct McpState {
     pub store: Arc<CompositeStore>,
     pub maintenance: Arc<MaintenanceState>,
-    pub grants: Arc<Vec<TokenGrant>>,
     pub api: klams_types::ApiConfig,
 }
 
 impl std::fmt::Debug for McpState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("McpState")
-            .field("grants", &self.grants.len())
-            .finish_non_exhaustive()
+        f.debug_struct("McpState").finish_non_exhaustive()
     }
 }
 
@@ -83,13 +103,11 @@ impl McpState {
     pub fn new(
         store: Arc<CompositeStore>,
         maintenance: Arc<MaintenanceState>,
-        grants: Arc<Vec<TokenGrant>>,
         api: klams_types::ApiConfig,
     ) -> Self {
         Self {
             store,
             maintenance,
-            grants,
             api,
         }
     }
@@ -117,8 +135,10 @@ impl ServerHandler for ToolRegistry {
         info.server_info.name = "klams-mcp".into();
         info.server_info.version = env!("CARGO_PKG_VERSION").into();
         info.instructions = Some(
-            "klams memory server. Call `register_author` once per session, \
-             then use `memory_*` tools."
+            "klams memory server. Writes are attributed to the author bound \
+             to your bearer token, so you can call `memory_*` tools \
+             directly; call `register_author` only to write as a separate \
+             per-session identity."
                 .into(),
         );
         info
@@ -129,52 +149,7 @@ impl ServerHandler for ToolRegistry {
         _request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        let all_tools = vec![
-            tool_descriptor::<register_author::RegisterAuthorInput>(
-                "register_author",
-                "Register the calling agent and obtain an author_id (UUID v7).",
-            ),
-            tool_descriptor::<memory_add::MemoryAddArgs>(
-                "memory_add",
-                "Persist a fact or knowledge memory attributed to an author_id.",
-            ),
-            tool_descriptor::<memory_search::MemorySearchArgs>(
-                "memory_search",
-                "Search memory across facts, knowledge, and events; returns merged results ranked by relevance.",
-            ),
-            tool_descriptor::<memory_related::MemoryRelatedArgs>(
-                "memory_related",
-                "Find knowledge items semantically related to an existing memory id.",
-            ),
-            tool_descriptor::<memory_append_event::MemoryAppendEventArgs>(
-                "memory_append_event",
-                "Append an immutable event (deployment, run, signal) attributed to an author_id.",
-            ),
-            tool_descriptor::<event_search::EventSearchArgs>(
-                "event_search",
-                "Search events by author/category/window/payload with cursor pagination.",
-            ),
-            tool_descriptor::<memory_delete::MemoryDeleteArgs>(
-                "memory_delete",
-                "Soft-delete a fact or knowledge memory by id (FR-014). Idempotent. Events are append-only.",
-            ),
-            tool_descriptor::<dissent_propose::DissentProposeArgs>(
-                "dissent_propose",
-                "File a dissent against a live canonical fact (proposed correction + reason). Lands as a pending AgentProposal; a human resolves it in the viewport.",
-            ),
-            tool_descriptor::<memory_admin_restore::MemoryAdminRestoreArgs>(
-                "memory_admin_restore",
-                "Admin: restore a soft-deleted memory by id (clears deleted_at).",
-            ),
-            tool_descriptor::<memory_admin_hard_delete::MemoryAdminHardDeleteArgs>(
-                "memory_admin_hard_delete",
-                "Admin: permanently delete a memory by id. Events are not deletable.",
-            ),
-            tool_descriptor::<memory_admin_list_deleted::MemoryAdminListDeletedArgs>(
-                "memory_admin_list_deleted",
-                "Admin: paginate soft-deleted facts and knowledge for rogue-agent recovery (FR-013).",
-            ),
-        ];
+        let all_tools = all_tool_descriptors();
         // FR-020: only advertise tools the caller's scope set satisfies.
         let scopes = caller_scopes(&context);
         let tools: Vec<Tool> = all_tools
@@ -222,9 +197,29 @@ impl ServerHandler for ToolRegistry {
                 ));
             }
         }
-        let args_value = request
-            .arguments
-            .map_or(serde_json::Value::Null, serde_json::Value::Object);
+        let mut arguments = request.arguments;
+        // WI #62: an authenticated caller may omit author_id on the
+        // write tools; attribute the write to the author its bearer
+        // token is bound to. An explicit author_id always wins.
+        if BEARER_AUTHOR_TOOLS.contains(&name) {
+            let missing = arguments
+                .as_ref()
+                .is_none_or(|a| !a.contains_key("author_id"));
+            if missing {
+                if let Some(author) = caller_author(&context) {
+                    tracing::debug!(
+                        tool = name,
+                        agent_name = %author.agent_name,
+                        "author_id omitted; using bearer-bound author"
+                    );
+                    arguments.get_or_insert_with(serde_json::Map::new).insert(
+                        "author_id".to_string(),
+                        serde_json::Value::String(author.author_id.to_string()),
+                    );
+                }
+            }
+        }
+        let args_value = arguments.map_or(serde_json::Value::Null, serde_json::Value::Object);
         match name {
             "register_author" => {
                 let args = match serde_json::from_value(args_value) {
@@ -397,6 +392,60 @@ impl ServerHandler for ToolRegistry {
             )),
         }
     }
+}
+
+/// The full, unfiltered tool descriptor list — the single source of
+/// truth for what the server can advertise. `list_tools` filters this
+/// by caller scope (FR-020); the schema-shape contract test
+/// (`tests/tool_schemas.rs`, WI #307) walks it unfiltered.
+#[must_use]
+pub fn all_tool_descriptors() -> Vec<Tool> {
+    vec![
+        tool_descriptor::<register_author::RegisterAuthorInput>(
+            "register_author",
+            "Register the calling agent and obtain an author_id (UUID v7). Optional for bearer-authenticated callers: write tools default to the token's bound author. `repo` accepts an absolute path or a bare repo name.",
+        ),
+        tool_descriptor::<memory_add::MemoryAddArgs>(
+            "memory_add",
+            "Persist a fact or knowledge memory. Set kind=\"fact\" with fact_type + payload, or kind=\"knowledge\" with text (+ optional tags/source_path/repo). author_id defaults to the bearer token's bound author.",
+        ),
+        tool_descriptor::<memory_search::MemorySearchArgs>(
+            "memory_search",
+            "Search memory across facts, knowledge, and events; returns merged results ranked by relevance.",
+        ),
+        tool_descriptor::<memory_related::MemoryRelatedArgs>(
+            "memory_related",
+            "Find knowledge items semantically related to an existing memory id.",
+        ),
+        tool_descriptor::<memory_append_event::MemoryAppendEventArgs>(
+            "memory_append_event",
+            "Append an immutable event (deployment, run, signal). author_id defaults to the bearer token's bound author.",
+        ),
+        tool_descriptor::<event_search::EventSearchArgs>(
+            "event_search",
+            "Search events by author/category/window/payload with cursor pagination.",
+        ),
+        tool_descriptor::<memory_delete::MemoryDeleteArgs>(
+            "memory_delete",
+            "Soft-delete a fact or knowledge memory by id (FR-014). Idempotent. Events are append-only.",
+        ),
+        tool_descriptor::<dissent_propose::DissentProposeArgs>(
+            "dissent_propose",
+            "File a dissent against a live canonical fact (proposed correction + reason). Lands as a pending AgentProposal; a human resolves it in the viewport.",
+        ),
+        tool_descriptor::<memory_admin_restore::MemoryAdminRestoreArgs>(
+            "memory_admin_restore",
+            "Admin: restore a soft-deleted memory by id (clears deleted_at).",
+        ),
+        tool_descriptor::<memory_admin_hard_delete::MemoryAdminHardDeleteArgs>(
+            "memory_admin_hard_delete",
+            "Admin: permanently delete a memory by id. Events are not deletable.",
+        ),
+        tool_descriptor::<memory_admin_list_deleted::MemoryAdminListDeletedArgs>(
+            "memory_admin_list_deleted",
+            "Admin: paginate soft-deleted facts and knowledge for rogue-agent recovery (FR-013).",
+        ),
+    ]
 }
 
 fn tool_descriptor<T>(name: &'static str, description: &'static str) -> Tool

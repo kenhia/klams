@@ -85,7 +85,7 @@ fn map_validation_error(e: &RegisterAuthorError) -> ErrorEnvelope {
         RegisterAuthorError::EmptyAgentName | RegisterAuthorError::AgentNameTooLong => {
             envelope(ec::INVALID_AGENT_NAME, e.to_string())
         }
-        RegisterAuthorError::RepoNotAbsolute => envelope(ec::INVALID_REPO_PATH, e.to_string()),
+        RegisterAuthorError::RepoEmpty => envelope(ec::INVALID_REPO_PATH, e.to_string()),
         RegisterAuthorError::ExtraTooLarge => envelope(ec::EXTRA_TOO_LARGE, e.to_string()),
     }
 }
