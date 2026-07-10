@@ -296,7 +296,12 @@ boundaries do not change; two new binaries live under `crates/`.
   `klams-scanner.timer` fires the scanner hourly via a `Type=oneshot`
   unit; `klams-monitor.service` is `Type=simple` with
   `Restart=on-failure`. All three units use the same hardening profile
-  (`NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`). The
+  (`NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`). Note
+  `ProtectSystem=strict` makes the filesystem read-only for the
+  service: any writable path outside `StateDirectory` needs an
+  explicit `ReadWritePaths=` (the backup dir gained one in sprint 020
+  after the hardened unit silently broke nightly backups for 40
+  days). The
   `install-systemd.sh` helper is idempotent, supports `--dry-run`, and
   rotates the previous binary to `<bin>.prev` so `just rollback`
   works (SC-004).
@@ -444,7 +449,7 @@ See [`viewport.md` §6](../sprints/planning/viewport.md#6-phase-4--context-previ
 
 | Metric | Type | Use |
 |---|---|---|
-| `klams_context_request_latency_seconds` | histogram | `/memory/context` end-to-end |
+| `klams_retrieval_duration_seconds{op, transport}` | summary | search + context latency at every entry point (REST + MCP; sprint 020 replaces the context-only histogram) |
 | `klams_context_section_items_total{section}` | counter | items returned per section |
 | `klams_summarization_runs_total{mechanism}` | counter | `extractive` vs `llm` cycles |
 | `klams_summarization_lag_seconds` | gauge | wall-clock lag of the most recent cycle |

@@ -29,7 +29,7 @@ pub async fn search<S: Store>(
     State(state): State<ApiState<S>>,
     Json(req): Json<SearchRequest>,
 ) -> Result<Json<SearchResults>, ApiError> {
-    let _guard = m::LatencyGuard::new(m::SEARCH_LATENCY);
+    let _guard = m::LatencyGuard::retrieval("search", "rest");
     let query = req.query.trim().to_string();
     if query.is_empty() {
         return Err(ApiError::Validation {

@@ -16,7 +16,14 @@ pub const WRITES_ACCEPTED: &str = "klams_writes_accepted_total";
 pub const WRITES_FAILED: &str = "klams_writes_failed_total";
 pub const WRITES_TOTAL: &str = "klams_writes_total";
 pub const WRITE_LATENCY: &str = "klams_write_latency_seconds";
-pub const SEARCH_LATENCY: &str = "klams_search_latency_seconds";
+/// Sprint 020 (WI #63): one retrieval-latency histogram fed by every
+/// entry point — REST `/memory/search` + `/memory/context`
+/// (`transport="rest"`) and MCP `memory_search` (`transport="mcp"`),
+/// labelled by `op` (`search`|`context`). Replaces the never-populated
+/// pre-020 pair `klams_search_latency_seconds` /
+/// `klams_context_request_seconds`, whose REST-only recording sites
+/// saw no traffic once retrieval moved to MCP.
+pub const RETRIEVAL_DURATION: &str = "klams_retrieval_duration_seconds";
 pub const EMBEDDING_LATENCY: &str = "klams_embedding_latency_seconds";
 pub const VALIDATION_REJECTIONS: &str = "klams_validation_rejections_total";
 pub const DISSENTS_TOTAL: &str = "klams_dissents_total";
@@ -26,7 +33,6 @@ pub const DECAY_RUNS: &str = "klams_decay_runs_total";
 pub const DECAY_FACTS_UPDATED: &str = "klams_decay_facts_updated_total";
 
 // Sprint 005 (FR-014): `/memory/context` surface metrics.
-pub const CONTEXT_REQUEST_LATENCY: &str = "klams_context_request_seconds";
 pub const CONTEXT_SECTION_ITEMS: &str = "klams_context_section_items_total";
 pub const HYBRID_SOURCE_CONTRIBUTION: &str = "klams_hybrid_source_contribution_total";
 pub const SUMMARIZATION_RUNS: &str = "klams_summarization_runs_total";
@@ -46,7 +52,10 @@ pub fn describe() {
         "Sprint 003 (FR-017): every write tagged by type, source, and routing path"
     );
     describe_histogram!(WRITE_LATENCY, "End-to-end write latency in seconds");
-    describe_histogram!(SEARCH_LATENCY, "End-to-end search latency in seconds");
+    describe_histogram!(
+        RETRIEVAL_DURATION,
+        "End-to-end retrieval latency in seconds by op (search|context) and transport (rest|mcp) — sprint 020 / WI #63"
+    );
     describe_histogram!(EMBEDDING_LATENCY, "Embedding call latency in seconds");
     describe_counter!(
         VALIDATION_REJECTIONS,
@@ -68,10 +77,6 @@ pub fn describe() {
     describe_counter!(
         DECAY_FACTS_UPDATED,
         "Facts updated by the decay task (sprint 002 US3)"
-    );
-    describe_histogram!(
-        CONTEXT_REQUEST_LATENCY,
-        "End-to-end /memory/context latency in seconds (sprint 005 FR-014)"
     );
     describe_counter!(
         CONTEXT_SECTION_ITEMS,
@@ -235,7 +240,7 @@ pub fn incr_decay_config_reloads() {
 /// RAII guard that records elapsed seconds into a histogram on drop.
 pub struct LatencyGuard {
     name: &'static str,
-    label: Option<(&'static str, &'static str)>,
+    labels: Vec<(&'static str, &'static str)>,
     start: Instant,
 }
 
@@ -243,7 +248,7 @@ impl LatencyGuard {
     pub fn new(name: &'static str) -> Self {
         Self {
             name,
-            label: None,
+            labels: Vec::new(),
             start: Instant::now(),
         }
     }
@@ -251,7 +256,19 @@ impl LatencyGuard {
     pub fn with_type(name: &'static str, kind: &'static str) -> Self {
         Self {
             name,
-            label: Some(("type", kind)),
+            labels: vec![("type", kind)],
+            start: Instant::now(),
+        }
+    }
+
+    /// Sprint 020 (WI #63): guard for [`RETRIEVAL_DURATION`]. Drop it
+    /// when the retrieval entry point returns; `op` is
+    /// `search`|`context`, `transport` is `rest`|`mcp`.
+    #[must_use]
+    pub fn retrieval(op: &'static str, transport: &'static str) -> Self {
+        Self {
+            name: RETRIEVAL_DURATION,
+            labels: vec![("op", op), ("transport", transport)],
             start: Instant::now(),
         }
     }
@@ -261,7 +278,7 @@ impl std::fmt::Debug for LatencyGuard {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LatencyGuard")
             .field("name", &self.name)
-            .field("label", &self.label)
+            .field("labels", &self.labels)
             .field("start", &self.start)
             .finish()
     }
@@ -270,9 +287,11 @@ impl std::fmt::Debug for LatencyGuard {
 impl Drop for LatencyGuard {
     fn drop(&mut self) {
         let elapsed = self.start.elapsed().as_secs_f64();
-        match self.label {
-            Some((k, v)) => histogram!(self.name, k => v).record(elapsed),
-            None => histogram!(self.name).record(elapsed),
-        }
+        let labels: Vec<metrics::Label> = self
+            .labels
+            .iter()
+            .map(|(k, v)| metrics::Label::new(*k, *v))
+            .collect();
+        histogram!(self.name, labels).record(elapsed);
     }
 }

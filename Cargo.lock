@@ -1727,7 +1727,7 @@ dependencies = [
 
 [[package]]
 name = "klams-api"
-version = "0.1.19"
+version = "0.1.20"
 dependencies = [
  "async-trait",
  "axum",
@@ -1756,7 +1756,7 @@ dependencies = [
 
 [[package]]
 name = "klams-bench"
-version = "0.1.19"
+version = "0.1.20"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1774,7 +1774,7 @@ dependencies = [
 
 [[package]]
 name = "klams-client"
-version = "0.1.19"
+version = "0.1.20"
 dependencies = [
  "klams-core",
  "klams-types",
@@ -1790,12 +1790,13 @@ dependencies = [
 
 [[package]]
 name = "klams-core"
-version = "0.1.19"
+version = "0.1.20"
 dependencies = [
  "async-trait",
  "klams-store",
  "klams-types",
  "metrics",
+ "metrics-exporter-prometheus",
  "reqwest",
  "serde",
  "serde_json",
@@ -1812,7 +1813,7 @@ dependencies = [
 
 [[package]]
 name = "klams-mcp"
-version = "0.1.19"
+version = "0.1.20"
 dependencies = [
  "axum",
  "chrono",
@@ -1838,7 +1839,7 @@ dependencies = [
 
 [[package]]
 name = "klams-monitor"
-version = "0.1.19"
+version = "0.1.20"
 dependencies = [
  "anyhow",
  "clap",
@@ -1858,7 +1859,7 @@ dependencies = [
 
 [[package]]
 name = "klams-reattribute-system"
-version = "0.1.19"
+version = "0.1.20"
 dependencies = [
  "anyhow",
  "clap",
@@ -1874,7 +1875,7 @@ dependencies = [
 
 [[package]]
 name = "klams-scanner"
-version = "0.1.19"
+version = "0.1.20"
 dependencies = [
  "anyhow",
  "clap",
@@ -1899,7 +1900,7 @@ dependencies = [
 
 [[package]]
 name = "klams-service"
-version = "0.1.19"
+version = "0.1.20"
 dependencies = [
  "anyhow",
  "axum",
@@ -1940,7 +1941,7 @@ dependencies = [
 
 [[package]]
 name = "klams-soak"
-version = "0.1.19"
+version = "0.1.20"
 dependencies = [
  "anyhow",
  "clap",
@@ -1950,7 +1951,7 @@ dependencies = [
 
 [[package]]
 name = "klams-store"
-version = "0.1.19"
+version = "0.1.20"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1975,7 +1976,7 @@ dependencies = [
 
 [[package]]
 name = "klams-types"
-version = "0.1.19"
+version = "0.1.20"
 dependencies = [
  "chrono",
  "humantime-serde",

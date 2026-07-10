@@ -62,8 +62,10 @@ async fn main() -> Result<()> {
     for warning in cfg.backup.warnings() {
         tracing::warn!("{warning}");
     }
-    service_backup::metrics::describe();
-    service_backup::metrics::set_maintenance_active(false);
+    // NOTE: metric describes/sets happen AFTER `with_metrics` installs
+    // the global recorder (below) — a write made before the recorder
+    // exists is silently dropped (sprint 020: the maintenance-mode
+    // gauge was set here pre-recorder and its panel showed No Data).
     let maintenance_state = MaintenanceState::new();
 
     if run_now {
@@ -226,7 +228,33 @@ async fn main() -> Result<()> {
         axum::middleware::from_fn_with_state(auth_state, klams_api::require_bearer),
     );
     let router = with_metrics(api_router.nest("/mcp", mcp_router));
+    // The global recorder now exists — everything metric-shaped from
+    // here on sticks. Sprint 020: the maintenance gauge and backup
+    // describes used to run ~160 lines earlier and were dropped,
+    // leaving their Grafana panels on "No Data" forever.
     klams_core::metrics::describe();
+    service_backup::metrics::describe();
+    service_backup::metrics::set_maintenance_active(false);
+    // Seed the last-success gauge from the newest artifact on disk so
+    // "Last backup age" is honest immediately after a restart instead
+    // of No Data until the next nightly run.
+    if cfg.backup.enabled {
+        if let Some(dir) = cfg.backup.backup_dir.as_ref() {
+            match service_backup::newest_backup_unix_seconds(dir) {
+                Ok(Some(ts)) => {
+                    service_backup::metrics::record_last_success(ts);
+                    info!(
+                        unix_seconds = ts,
+                        "seeded last-backup-success gauge from disk"
+                    );
+                }
+                Ok(None) => {
+                    tracing::warn!(dir = %dir.display(), "no existing backup artifacts to seed last-success gauge");
+                }
+                Err(e) => tracing::warn!(error = %e, "could not seed last-success gauge"),
+            }
+        }
+    }
 
     // Sprint 007 T024 — one-shot Qdrant author backfill at startup.
     {
