@@ -294,6 +294,23 @@
       ],
       "fieldConfig": { "defaults": { "unit": "reqpm" }, "overrides": [] },
       "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } }
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Search miss rate (zero-hit / low-score)",
+      "description": "memory_search calls that returned nothing (zero_hit) or only a weak knowledge match (low_score), per minute by reason. The tuning-data feedback loop (sprint 021 #317) — a rising zero_hit line means agents are asking for things the corpus does not answer.",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 46 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (reason) (rate(klams_search_misses_total[5m])) * 60",
+          "legendFormat": "{{reason}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqpm" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } }
     }
   ]
 }

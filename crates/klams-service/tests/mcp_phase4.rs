@@ -98,6 +98,7 @@ async fn memory_search_smoke() {
             tags: None,
             top_k: Some(20),
         },
+        None,
     )
     .await
     .expect("memory_search");
@@ -147,6 +148,7 @@ async fn memory_search_smoke() {
             tags: None,
             top_k: Some(20),
         },
+        None,
     )
     .await
     .expect("memory_search knowledge-only");
@@ -185,12 +187,68 @@ async fn memory_search_smoke() {
             tags: Some(vec!["phase4".into()]),
             top_k: Some(20),
         },
+        None,
     )
     .await
     .expect("memory_search tagged");
     assert!(tagged
         .iter()
         .all(|h| h.memory.tags.iter().any(|t| t == "phase4")));
+}
+
+/// Sprint 021 (#317): a search that returns nothing must land in the
+/// miss log — a `search_miss` row keyed by the query text and caller.
+/// Uses an isolated server (empty Qdrant collection + truncated
+/// facts/events) so a query is guaranteed zero-hit; on the shared
+/// collection ANN would still return low-scoring neighbours.
+#[ignore = "requires docker compose stack"]
+#[tokio::test]
+async fn zero_hit_search_records_a_miss() {
+    let server = TestServer::spawn_isolated().await;
+    let state = mcp_state_from(&server);
+
+    let nonce = uuid::Uuid::new_v4().simple().to_string();
+    let query = format!("zzz-no-such-term-{nonce}");
+    let caller = format!("miss-log-caller-{nonce}");
+
+    let hits = memory_search(
+        &state,
+        MemorySearchArgs {
+            query: query.clone(),
+            kinds: None,
+            tags: None,
+            top_k: Some(10),
+        },
+        Some(caller.as_str()),
+    )
+    .await
+    .expect("memory_search");
+    assert!(hits.is_empty(), "query should be a guaranteed zero-hit");
+
+    // The insert is fire-and-forget (spawned), so poll for the row.
+    let pool = server.store.postgres.pool();
+    let mut found: Option<(String, String, i32)> = None;
+    for _ in 0..30 {
+        found = sqlx::query_as::<_, (String, String, i32)>(
+            "SELECT reason, caller, hit_count FROM search_miss WHERE query = $1",
+        )
+        .bind(&query)
+        .fetch_optional(pool)
+        .await
+        .expect("query search_miss");
+        if found.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    let (reason, got_caller, hit_count) =
+        found.expect("zero-hit search should have written a search_miss row");
+    assert_eq!(reason, "zero_hit");
+    assert_eq!(got_caller, caller);
+    assert_eq!(hit_count, 0);
+
+    server.cleanup().await;
 }
 
 #[ignore = "requires docker compose stack"]

@@ -90,6 +90,16 @@ async fn fresh_file_is_indexed_edit_replaces_delete_removes() {
         poll_hits(&server, &nonce_b, 1).await >= 1,
         "nonce_b not found"
     );
+    // Sprint 021 (#315): the edit must REMOVE the old content, not just
+    // add the new. Before the delete-before-reindex fix the old chunk
+    // stayed live and searchable — the corpus re-polluted itself on
+    // every edit. Assert the old nonce is gone (the scenario-2 doc
+    // comment always claimed this; it was never checked).
+    assert_eq!(
+        poll_hits(&server, &nonce_a, 0).await,
+        0,
+        "nonce_a still searchable after edit — stale chunk leaked"
+    );
 
     // 3. Delete the file → scanner prunes it.
     fs::remove_file(&file_path).unwrap();

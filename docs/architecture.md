@@ -280,12 +280,18 @@ boundaries do not change; two new binaries live under `crates/`.
   without reading the TOML (SC-001, SC-005).
 * **Scanner (FR-007..FR-012)** — `klams-scanner` walks `~/src` and
   `~/obsidian` (configurable), honours `.gitignore` + `.klamsignore`,
-  always skips `target/`, `node_modules/`, `.git/`, chunks every file
-  to ≈800 chars with 200-char overlap, and POSTs to
+  always skips `target/`, `node_modules/`, `.git/`, and (sprint 021)
+  applies a file-type allowlist so only content worth retrieving —
+  source, docs/prose, config prose — is indexed; lockfiles, JSON
+  fixtures, SVGs, and images are dropped. Allowlisted files are chunked
+  to ≈800 chars with 200-char overlap and POSTed to
   `/memory/knowledge/index`. A local SQLite cursor at
   `~/.local/state/klams/scanner.sqlite` short-circuits unchanged files
   on `mtime`, then on content hash. Vanished files trigger
-  `/memory/knowledge/delete?source_file=<abs>` (SC-002).
+  `/memory/knowledge/delete?source_file=<abs>` (SC-002); since sprint
+  021 a *changed* file triggers the same delete **before** its new
+  chunks are published, so edits replace rather than accumulate stale
+  points.
 * **Monitor (FR-013..FR-016)** — `klams-monitor` polls `systemctl
   is-active <service>` for a TOML-configured list of units, diffs
   state against the last poll, and POSTs only **edge transitions**

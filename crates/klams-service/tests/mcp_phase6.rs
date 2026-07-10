@@ -101,6 +101,7 @@ async fn memory_delete_soft_smoke() {
             tags: None,
             top_k: Some(20),
         },
+        None,
     )
     .await
     .expect("memory_search");
@@ -198,6 +199,7 @@ async fn memory_admin_restore_smoke() {
             tags: None,
             top_k: Some(20),
         },
+        None,
     )
     .await
     .expect("memory_search");

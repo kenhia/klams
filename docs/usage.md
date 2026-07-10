@@ -849,3 +849,71 @@ The repair is idempotent (a second `--apply` is a no-op) and is
 intended as a one-time cutover step. Setup details and the
 `agent_name` token config live in
 [setup.md § Sprint 009](setup.md#sprint-009--stability--attribution).
+
+## Sprint 021 — corpus hygiene + miss log
+
+### Scanner: delete-before-reindex + file-type allowlist
+
+Two ingestion-quality fixes landed in the scanner:
+
+- **Edited files no longer leak stale chunks.** When a tracked file's
+  content changes, `scan_root` now deletes its previous knowledge points
+  (`POST /memory/knowledge/delete?source_file=<abs>`) *before*
+  publishing the new chunks. Before this, an edit added new points but
+  left the old versions live and searchable — the corpus re-polluted
+  itself on every edit. If the delete fails the file's cursor is left
+  unadvanced so the next scan retries rather than stacking new chunks on
+  stale ones.
+- **Only content is indexed.** The walker now applies a file-type
+  allowlist (source, docs/prose, config prose; extensionless ops files
+  like `Dockerfile`/`Makefile`/`justfile`) and explicitly drops
+  lockfiles, JSON fixtures, SVGs, images, and archives — see
+  `ALLOW_EXT` / `ALLOW_NAMES` / `DENY_NAMES` in
+  `crates/klams-scanner/src/walk.rs`. A missing extension is recoverable
+  (add it; the miss log surfaces demand); a false positive costs tokens
+  on every retrieval.
+
+### One-time stale-chunk purge (operator step)
+
+The delete-before-reindex fix stops *future* leaks; chunks orphaned by
+edits made before it deployed remain until each file next changes. To
+purge them in one pass after deploying the new scanner, clear the
+scanner cursor and rescan — every file is then treated as changed, so
+each runs delete-before-reindex and re-publishes its current chunks:
+
+```sh
+sudo systemctl stop klams-scanner.timer klams-scanner.service
+sudo rm -f /var/lib/klams/scanner.sqlite   # the cursor DB (see monitor.toml/scanner config for the path)
+just scanner-once                           # full rescan: delete-then-reindex per file
+sudo systemctl start klams-scanner.timer
+```
+
+This re-embeds the whole corpus, so it is the same cost as a full
+re-index — if sprint 022's re-index is imminent, fold the purge into
+that rather than paying it twice.
+
+### Miss log
+
+`memory_search` now records misses — calls that returned nothing
+(`reason=zero_hit`) or only a weak knowledge match
+(`reason=low_score`, top Qdrant cosine < 0.5) — two ways:
+
+- **Metric:** `klams_search_misses_total{reason}` drives the Grafana
+  **"Search miss rate (zero-hit / low-score)"** panel.
+- **Durable row:** a `search_miss` table (migration `0010`) captures the
+  query text, caller (bearer `agent_name`), reason, top score, hit
+  count, and kinds queried — the "what did an agent want and not get"
+  record that drives chunking fixes (022) and the lexical-search
+  decision (024). The insert is fire-and-forget: a failure is logged at
+  debug and never affects the live search. The table is append-only;
+  prune old rows by `created_at` as an operator concern.
+
+```sql
+-- Recent misses, newest first:
+SELECT created_at, caller, reason, top_score, hit_count, query
+FROM search_miss ORDER BY created_at DESC LIMIT 50;
+
+-- What are agents asking for and getting nothing?
+SELECT query, count(*) FROM search_miss
+WHERE reason = 'zero_hit' GROUP BY query ORDER BY count(*) DESC;
+```

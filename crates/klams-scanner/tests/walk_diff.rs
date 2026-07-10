@@ -81,6 +81,53 @@ fn walk_prunes_python_venv_and_cache_dirs() {
 }
 
 #[test]
+fn walk_indexes_only_allowlisted_extensions() {
+    // Sprint 021 (#316): the walker must yield only content worth
+    // retrieving. Lockfiles, JSON fixtures, SVGs, binaries and other
+    // non-prose/non-source files are a meaningful slice of noise in the
+    // ~94k corpus and must never reach the chunker.
+    let d = TempDir::new().unwrap();
+    let r = d.path();
+    // Kept: source + docs + config prose.
+    touch(&r.join("main.rs"), "fn main() {}");
+    touch(&r.join("notes.md"), "# notes");
+    touch(&r.join("script.py"), "print(1)");
+    touch(&r.join("config.toml"), "[x]\ny = 1");
+    // Dropped: lockfiles, fixtures, vector art, binaries.
+    touch(&r.join("Cargo.lock"), "# lock");
+    touch(&r.join("pnpm-lock.yaml"), "lockfileVersion: 9");
+    touch(&r.join("fixture.json"), "{\"a\":1}");
+    touch(&r.join("logo.svg"), "<svg></svg>");
+    touch(&r.join("photo.png"), "PNGDATA");
+    touch(&r.join("archive.zip"), "PK");
+
+    let files = walk(r);
+    let names: Vec<String> = files
+        .iter()
+        .map(|f| f.absolute_path.display().to_string())
+        .collect();
+    for kept in ["main.rs", "notes.md", "script.py", "config.toml"] {
+        assert!(
+            names.iter().any(|n| n.ends_with(kept)),
+            "{kept} should be indexed: {names:?}"
+        );
+    }
+    for dropped in [
+        "Cargo.lock",
+        "pnpm-lock.yaml",
+        "fixture.json",
+        "logo.svg",
+        "photo.png",
+        "archive.zip",
+    ] {
+        assert!(
+            !names.iter().any(|n| n.ends_with(dropped)),
+            "{dropped} should not be indexed: {names:?}"
+        );
+    }
+}
+
+#[test]
 fn walk_respects_gitignore() {
     let d = TempDir::new().unwrap();
     let r = d.path();
