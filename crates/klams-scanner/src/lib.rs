@@ -44,7 +44,8 @@ pub async fn scan_root(
         let abs = f.absolute_path.display().to_string();
         seen.insert(abs.clone());
 
-        if let Some(prev) = cursor.get(&abs)? {
+        let prev = cursor.get(&abs)?;
+        if let Some(prev) = &prev {
             if prev.mtime_ns == f.mtime_ns {
                 metrics::incr_skipped("mtime_unchanged");
                 continue;
@@ -62,11 +63,34 @@ pub async fn scan_root(
         let chunks = chunk(&body);
         let file_hash = sha256_hex(&body);
 
-        if let Some(prev) = cursor.get(&abs)? {
+        if let Some(prev) = &prev {
             if prev.content_hash == file_hash {
                 cursor.upsert(&abs, &file_hash, f.mtime_ns, now_seconds_i64())?;
                 metrics::incr_skipped("hash_unchanged");
                 continue;
+            }
+        }
+
+        // Delete-before-reindex (sprint 021, #315): a previously indexed
+        // file whose content changed must have its OLD points removed
+        // before the new chunks land — otherwise the stale versions stay
+        // live and searchable and the corpus re-pollutes itself on every
+        // edit. `scan_root` only pruned *vanished* files before this, so
+        // edit-churn leaked chunks continuously. Skip on delete failure
+        // (leave the cursor unadvanced to retry) rather than publish new
+        // chunks on top of stale ones.
+        if prev.is_some() {
+            match publish_delete(base_url, bearer, &abs).await {
+                Ok(n) => {
+                    if n > 0 {
+                        tracing::info!(path = %abs, deleted = n, "cleared stale chunks before reindex");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(path = %abs, %e, "delete-before-reindex failed; leaving cursor unadvanced for retry");
+                    metrics::incr_skipped("delete_failed");
+                    continue;
+                }
             }
         }
 

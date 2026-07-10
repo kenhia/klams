@@ -39,6 +39,12 @@ pub const SUMMARIZATION_RUNS: &str = "klams_summarization_runs_total";
 pub const SUMMARIZATION_LAG: &str = "klams_summarization_lag_seconds";
 pub const DECAY_CONFIG_RELOADS: &str = "klams_decay_config_reloads_total";
 
+// Sprint 021 (#317): the miss log — `memory_search` calls that returned
+// nothing (`reason="zero_hit"`) or only a weak top match
+// (`reason="low_score"`). Powers the Grafana zero-hit-rate panel and
+// the tuning-data feedback loop.
+pub const SEARCH_MISSES: &str = "klams_search_misses_total";
+
 /// Register descriptions with the global recorder. Safe to call
 /// repeatedly; the metrics crate dedupes.
 pub fn describe() {
@@ -97,6 +103,10 @@ pub fn describe() {
     describe_counter!(
         DECAY_CONFIG_RELOADS,
         "Decay config reload events at startup (sprint 005 FR-014)"
+    );
+    describe_counter!(
+        SEARCH_MISSES,
+        "memory_search calls that returned nothing (reason=zero_hit) or only a weak top match (reason=low_score) — the miss log (sprint 021 #317)"
     );
 }
 
@@ -192,6 +202,12 @@ pub fn incr_last_used_bumps_dropped() {
 
 pub fn incr_decay_run() {
     counter!(DECAY_RUNS).increment(1);
+}
+
+/// Record a search miss (sprint 021 #317). `reason` is `"zero_hit"` or
+/// `"low_score"`.
+pub fn incr_search_miss(reason: &'static str) {
+    counter!(SEARCH_MISSES, "reason" => reason).increment(1);
 }
 
 pub fn incr_decay_facts_updated(n: u64) {

@@ -106,6 +106,20 @@ pub struct TextHit {
     pub payload: serde_json::Value,
 }
 
+/// A `memory_search` that returned nothing useful — the tuning-data
+/// record inserted by the MCP search path (sprint 021, #317). `reason`
+/// is `"zero_hit"` (no results) or `"low_score"` (only a weak top
+/// match); `top_score` is `None` for a zero-hit.
+#[derive(Debug, Clone)]
+pub struct SearchMiss {
+    pub query: String,
+    pub caller: String,
+    pub reason: String,
+    pub top_score: Option<f32>,
+    pub hit_count: i32,
+    pub kinds: String,
+}
+
 /// Single trait the worker pool uses for all persistence.
 #[async_trait]
 pub trait Store: Send + Sync + 'static {

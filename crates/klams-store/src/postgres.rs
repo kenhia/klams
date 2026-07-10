@@ -1156,6 +1156,26 @@ impl PostgresStore {
         Ok(res.rows_affected())
     }
 
+    /// Append a miss-log row (sprint 021, #317). Called fire-and-forget
+    /// off the MCP search path, so callers ignore the result — a failed
+    /// insert must never affect a live search.
+    pub async fn insert_search_miss(&self, miss: &crate::SearchMiss) -> StoreResult<()> {
+        sqlx::query(
+            "INSERT INTO search_miss (query, caller, reason, top_score, hit_count, kinds) \
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(&miss.query)
+        .bind(&miss.caller)
+        .bind(&miss.reason)
+        .bind(miss.top_score)
+        .bind(miss.hit_count)
+        .bind(&miss.kinds)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StoreError::Backend(format!("insert_search_miss: {e}")))?;
+        Ok(())
+    }
+
     /// List authors with per-author live-fact and live-event counts.
     /// Soft-deleted facts are excluded from `fact_count`; events have no
     /// soft-delete state.

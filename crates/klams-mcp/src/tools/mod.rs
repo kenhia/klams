@@ -197,6 +197,10 @@ impl ServerHandler for ToolRegistry {
                 ));
             }
         }
+        // Caller identity from the bearer token, resolved once: reused
+        // for the WI #62 author-fill below and the sprint 021 miss-log
+        // attribution on `memory_search`.
+        let caller = caller_author(&context);
         let mut arguments = request.arguments;
         // WI #62: an authenticated caller may omit author_id on the
         // write tools; attribute the write to the author its bearer
@@ -206,7 +210,7 @@ impl ServerHandler for ToolRegistry {
                 .as_ref()
                 .is_none_or(|a| !a.contains_key("author_id"));
             if missing {
-                if let Some(author) = caller_author(&context) {
+                if let Some(author) = &caller {
                     tracing::debug!(
                         tool = name,
                         agent_name = %author.agent_name,
@@ -261,7 +265,8 @@ impl ServerHandler for ToolRegistry {
                         )))
                     }
                 };
-                match memory_search::run(&self.state, args).await {
+                let caller_agent = caller.as_ref().map(|a| a.agent_name.as_str());
+                match memory_search::run(&self.state, args, caller_agent).await {
                     Ok(out) => Ok(json_result(&out)),
                     Err(env) => Ok(envelope_result(&env)),
                 }

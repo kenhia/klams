@@ -30,6 +30,127 @@ const ALWAYS_SKIP: &[&str] = &[
     "build",
 ];
 
+/// Extensions worth indexing — source code, docs/prose, and config
+/// prose. Everything else (lockfiles, JSON fixtures, SVGs, images,
+/// archives, binaries) is noise in a recall corpus and is dropped
+/// before it reaches the chunker (sprint 021, #316). Aggressive on
+/// purpose: a false negative is recoverable (add the extension, the
+/// miss log will surface demand), a false positive costs tokens on
+/// every retrieval. Compared case-insensitively.
+const ALLOW_EXT: &[&str] = &[
+    // Rust / systems
+    "rs",
+    "toml",
+    "c",
+    "h",
+    "cc",
+    "cpp",
+    "cxx",
+    "hpp",
+    "go",
+    "zig",
+    // Python
+    "py",
+    "pyi", // JS / TS / web frameworks
+    "js",
+    "jsx",
+    "mjs",
+    "cjs",
+    "ts",
+    "tsx",
+    "svelte",
+    "vue",
+    // Web
+    "html",
+    "htm",
+    "css",
+    "scss",
+    "sass", // Shell / scripting
+    "sh",
+    "bash",
+    "zsh",
+    "fish",
+    "ps1",
+    "rb",
+    "lua",
+    "pl",
+    // Docs / prose
+    "md",
+    "mdx",
+    "markdown",
+    "txt",
+    "rst",
+    "adoc",
+    "asciidoc",
+    "org",
+    "tex",
+    // Config prose (yaml/yml kept: compose, ansible, k8s, CI are real
+    // homelab knowledge — lockfiles are filtered by name below)
+    "yaml",
+    "yml",
+    "ini",
+    "cfg",
+    "conf",
+    "env",
+    "properties",
+    "sql",
+    "proto",
+];
+
+/// Extensionless filenames worth indexing — build/ops files that carry
+/// real structure but have no extension for `ALLOW_EXT` to match.
+/// Compared case-insensitively against the whole file name.
+const ALLOW_NAMES: &[&str] = &[
+    "dockerfile",
+    "containerfile",
+    "makefile",
+    "gnumakefile",
+    "justfile",
+    "readme",
+    "vagrantfile",
+    "procfile",
+];
+
+/// Lockfile names that carry an otherwise-allowed extension (e.g.
+/// `pnpm-lock.yaml`, `package-lock.json`) or none. Machine-generated,
+/// enormous, zero recall value — always dropped even if the extension
+/// passes. Compared case-insensitively.
+const DENY_NAMES: &[&str] = &[
+    "cargo.lock",
+    "pnpm-lock.yaml",
+    "package-lock.json",
+    "yarn.lock",
+    "poetry.lock",
+    "pipfile.lock",
+    "uv.lock",
+    "composer.lock",
+    "gemfile.lock",
+    "flake.lock",
+    "bun.lockb",
+    "deno.lock",
+];
+
+/// Decide whether a file path is worth indexing: a lockfile is always
+/// rejected; otherwise the extension must be on the allowlist, or the
+/// (extensionless) file name must be a known-good ops file.
+#[must_use]
+pub fn is_indexable(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    if DENY_NAMES.contains(&name.as_str()) {
+        return false;
+    }
+    if let Some(ext) = path.extension() {
+        let ext = ext.to_string_lossy().to_ascii_lowercase();
+        if ALLOW_EXT.contains(&ext.as_str()) {
+            return true;
+        }
+    }
+    ALLOW_NAMES.contains(&name.as_str())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WalkedFile {
     pub absolute_path: PathBuf,
@@ -72,6 +193,12 @@ pub fn walk(root: &Path) -> Vec<WalkedFile> {
             continue;
         };
         if !ft.is_file() {
+            continue;
+        }
+        // File-type allowlist (sprint 021, #316): drop lockfiles, JSON
+        // fixtures, SVGs, images and other non-content before it ever
+        // reaches the chunker/embedder.
+        if !is_indexable(path) {
             continue;
         }
         let Ok(meta) = entry.metadata() else { continue };

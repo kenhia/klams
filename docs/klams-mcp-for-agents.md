@@ -117,18 +117,38 @@ Key behaviors (current as of sprint 018):
 
 Copy this (verbatim or trimmed) into the instructions file the agent
 reads — `CLAUDE.md` / `AGENTS.md` / `.github/copilot-instructions.md`
-— global if the MCP setup is global, per-repo otherwise:
+— global if the MCP setup is global, per-repo otherwise.
 
-> **klams is the shared cross-agent memory store** (MCP server
-> `klams`). Other agents and past sessions record durable homelab
-> knowledge there. Before starting non-trivial work, `memory_search`
-> for relevant facts (machines, services, past decisions, gotchas).
-> When you learn something durable and non-obvious that isn't
-> repo-local (it would help another agent or a future session), write
-> it back with `memory_add` — knowledge for prose findings, facts for
-> structured key/value state. Writes are attributed to your token
-> automatically. Don't store secrets or anything derivable from the
-> repo you're in.
+**Write it as routing rules, not an offer.** These are phrased as
+*enforced* steps ("do X FIRST, before Y"), on purpose. The lesson from
+the TokenMaster integration is stark: an agent template that merely
+*offered* a memory/structure tool saw it used 0 of 15 times; the same
+tool phrased as a routing rule ("recall-shaped question → this tool
+first") was used 8 of 8. Don't soften "FIRST" into "consider" — the
+whole value of a shared memory is lost if agents don't reach for it
+before grep/web.
+
+> **Routing rule — klams is the shared cross-agent memory store** (MCP
+> server `klams`). It holds durable homelab knowledge other agents and
+> past sessions recorded: machines, services, past decisions, gotchas,
+> conventions.
+>
+> - **Recall-shaped question → `memory_search` FIRST.** Before you grep
+>   the repo, search the web, or ask "how/where/why/what is X" about the
+>   homelab (a machine, service, past decision, error code, config key,
+>   convention), call `memory_search` — *before* those other tools, not
+>   after they come up empty. It is the cheapest source and often the
+>   only one that has the answer.
+> - **Learned something durable and non-repo-local → write it back.**
+>   When you learn something that would help another agent or a future
+>   session and isn't derivable from the repo you're in, `memory_add`
+>   it — `knowledge` for prose findings, `fact` for structured
+>   key/value state. Writes are attributed to your token automatically.
+> - **Don't** store secrets, or anything already in the repo you're in.
+
+Propagate this blurb to the instruction files on every machine an agent
+runs from (currently `cleo`, `kai`, `kubs0`) so the routing rule is in
+force everywhere, not just where it was first added.
 
 ## Smoke check
 

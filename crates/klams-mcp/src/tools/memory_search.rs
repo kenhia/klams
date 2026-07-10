@@ -31,6 +31,12 @@ const DEFAULT_TOP_K: u32 = 10;
 const MAX_TOP_K: u32 = 50;
 const MAX_QUERY_LEN: usize = 1024;
 
+/// Below this top-of-list Qdrant cosine score a knowledge result is a
+/// weak semantic match — the exact-identifier gap the §2.1 lexical
+/// decision (sprint 024) is measuring. Coarse pre-023 (scores aren't
+/// cross-kind comparable yet), so only applied to a knowledge top hit.
+const LOW_SCORE_THRESHOLD: f32 = 0.5;
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum MemoryKindFilter {
@@ -74,6 +80,7 @@ pub struct MemorySearchArgs {
 pub async fn run(
     state: &McpState,
     args: MemorySearchArgs,
+    caller: Option<&str>,
 ) -> Result<Vec<ScoredMemory>, ErrorEnvelope> {
     // Sprint 020 (WI #63): MCP is where real search traffic flows;
     // feed the same retrieval-latency histogram the REST handlers use.
@@ -239,6 +246,33 @@ pub async fn run(
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     scored.truncate(top_k as usize);
 
+    // Miss log (sprint 021, #317): a search that returned nothing, or
+    // only a weak knowledge match, is the "what did an agent want and
+    // not get" signal that drives chunking fixes and the lexical-search
+    // decision. Record it two ways — a counter for the Grafana zero-hit
+    // panel, and a durable row keyed by query + caller. The insert is
+    // fire-and-forget (spawned) so it never adds latency to or fails a
+    // live search.
+    if let Some(reason) =
+        classify_miss(scored.len(), scored.first().map(|(s, _, m)| (*s, m.kind())))
+    {
+        klams_core::metrics::incr_search_miss(reason);
+        let miss = klams_store::SearchMiss {
+            query: query.clone(),
+            caller: caller.unwrap_or("unknown").to_string(),
+            reason: reason.to_string(),
+            top_score: scored.first().map(|(s, _, _)| *s),
+            hit_count: i32::try_from(scored.len()).unwrap_or(i32::MAX),
+            kinds: kinds_label(&kinds),
+        };
+        let store = state.store.clone();
+        tokio::spawn(async move {
+            if let Err(e) = store.postgres.insert_search_miss(&miss).await {
+                tracing::debug!(%e, "insert_search_miss failed (miss log best-effort)");
+            }
+        });
+    }
+
     mcp_metrics::record_search("anonymous", None);
 
     Ok(scored
@@ -297,5 +331,77 @@ fn unknown_author_ref() -> PublicAuthorRef {
         agent_name: "unknown".into(),
         model: None,
         repo: None,
+    }
+}
+
+/// Classify a completed search for the miss log (sprint 021 #317).
+/// `top` is the score + kind of the highest-ranked surviving hit.
+/// Returns `Some(reason)` when the result is a miss, else `None`.
+///
+/// - **`zero_hit`**: nothing came back — unambiguous, any kind.
+/// - **`low_score`**: the top hit is knowledge with a cosine score below
+///   [`LOW_SCORE_THRESHOLD`] — a weak semantic match, the signal for
+///   the exact-identifier gap. Only knowledge is judged: fact/event
+///   `ts_rank` isn't on a comparable scale until sprint 023.
+fn classify_miss(hit_count: usize, top: Option<(f32, MemoryKind)>) -> Option<&'static str> {
+    if hit_count == 0 {
+        return Some("zero_hit");
+    }
+    if let Some((score, MemoryKind::Knowledge)) = top {
+        if score < LOW_SCORE_THRESHOLD {
+            return Some("low_score");
+        }
+    }
+    None
+}
+
+/// Comma-joined kind labels for the miss-log `kinds` column.
+fn kinds_label(kinds: &[MemoryKind]) -> String {
+    kinds
+        .iter()
+        .map(|k| match k {
+            MemoryKind::Fact => "fact",
+            MemoryKind::Knowledge => "knowledge",
+            MemoryKind::Event => "event",
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zero_hits_is_a_miss() {
+        assert_eq!(classify_miss(0, None), Some("zero_hit"));
+    }
+
+    #[test]
+    fn weak_knowledge_top_hit_is_low_score() {
+        assert_eq!(
+            classify_miss(3, Some((0.42, MemoryKind::Knowledge))),
+            Some("low_score")
+        );
+    }
+
+    #[test]
+    fn strong_knowledge_top_hit_is_not_a_miss() {
+        assert_eq!(classify_miss(3, Some((0.81, MemoryKind::Knowledge))), None);
+    }
+
+    #[test]
+    fn weak_fact_top_hit_is_not_judged() {
+        // fact/event ts_rank is not on the cosine scale — don't flag it
+        // as low_score (would flood the log). Only knowledge is judged.
+        assert_eq!(classify_miss(3, Some((0.01, MemoryKind::Fact))), None);
+    }
+
+    #[test]
+    fn kinds_label_joins_all_three() {
+        assert_eq!(
+            kinds_label(&[MemoryKind::Fact, MemoryKind::Knowledge, MemoryKind::Event]),
+            "fact,knowledge,event"
+        );
     }
 }
