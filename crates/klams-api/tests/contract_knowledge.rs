@@ -74,7 +74,11 @@ impl Store for MockStore {
     async fn search_text(&self, _q: &str, _k: u32) -> StoreResult<(Vec<TextHit>, Vec<TextHit>)> {
         Ok((vec![], vec![]))
     }
-    async fn find_knowledge_by_content_hash(&self, h: &str) -> StoreResult<Option<Uuid>> {
+    async fn find_knowledge_by_content_hash(
+        &self,
+        h: &str,
+        _source_file: Option<&str>,
+    ) -> StoreResult<Option<Uuid>> {
         Ok(self.by_hash.lock().unwrap().get(h).copied())
     }
     async fn get_knowledge(&self, id: Uuid) -> StoreResult<Option<KnowledgeItem>> {

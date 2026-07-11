@@ -88,7 +88,11 @@ impl Store for MockStore {
         };
         Ok((vec![f], vec![e]))
     }
-    async fn find_knowledge_by_content_hash(&self, _h: &str) -> StoreResult<Option<Uuid>> {
+    async fn find_knowledge_by_content_hash(
+        &self,
+        _h: &str,
+        _source_file: Option<&str>,
+    ) -> StoreResult<Option<Uuid>> {
         Ok(None)
     }
     async fn get_knowledge(&self, _id: Uuid) -> StoreResult<Option<KnowledgeItem>> {

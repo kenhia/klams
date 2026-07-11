@@ -1,6 +1,7 @@
 //! klams-scanner library surface.
 
 pub mod chunk;
+pub mod code;
 pub mod cursor;
 pub mod metrics;
 pub mod publish;
@@ -27,7 +28,7 @@ pub async fn scan_root(
     cursor_path: &Path,
     root: &Path,
 ) -> Result<()> {
-    use chunk::{chunk, sha256_hex};
+    use chunk::{chunk, sha256_hex, Lang};
     use cursor::Cursor;
     use publish::{publish_chunk, publish_delete};
     use walk::walk;
@@ -60,7 +61,7 @@ pub async fn scan_root(
                 continue;
             }
         };
-        let chunks = chunk(&body);
+        let chunks = chunk(&body, Lang::from_path(&abs));
         let file_hash = sha256_hex(&body);
 
         if let Some(prev) = &prev {
@@ -96,7 +97,7 @@ pub async fn scan_root(
 
         let mut publish_failed = false;
         for c in &chunks {
-            if let Err(e) = publish_chunk(client, &repo, &abs, &c.text).await {
+            if let Err(e) = publish_chunk(client, &repo, &abs, c).await {
                 tracing::warn!(path = %abs, idx = c.index, %e, "publish_chunk failed");
                 publish_failed = true;
             }

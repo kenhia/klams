@@ -104,6 +104,12 @@ jobs:
           TEST_DATABASE_URL: postgres://klams:klams_test@127.0.0.1:55432/klams
           TEST_QDRANT_URL: http://127.0.0.1:56334
           TEST_TEI_URL: http://127.0.0.1:57070
+          # The TEI test service also serves an OpenAI-compatible /v1
+          # route; point the openai-compat embedder integration test at
+          # it so that path (sprint 014) gets real coverage instead of
+          # panicking on an unset var (sprint 022 — main-CI fix).
+          TEST_OPENAI_EMBED_URL: http://127.0.0.1:57070/v1
+          TEST_OPENAI_EMBED_MODEL: BAAI/bge-small-en-v1.5
         run: cargo test --workspace -- --ignored --test-threads=1 --skip search_p95_under_500ms_at_mvp_corpus
 
       - name: Tear down test stack (main branch only)

@@ -17,6 +17,10 @@ fn req(text: &str, tags: Vec<&str>) -> IndexKnowledgeRequest {
         repo: None,
         file: None,
         machine: None,
+        chunk_index: None,
+        language: None,
+        heading_path: None,
+        symbols: vec![],
     }
 }
 

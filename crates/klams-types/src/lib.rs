@@ -22,6 +22,7 @@ pub mod responses;
 pub mod retrieval;
 pub mod search;
 pub mod summary;
+pub mod text;
 pub mod validation;
 
 /// UUID of the seeded `system` author. Backfilled into every pre-MCP fact
@@ -77,4 +78,5 @@ pub use responses::{
 pub use retrieval::{FusionStrategy, HybridQueryPlan, RetrievalSource, WeightedNorm};
 pub use search::{SearchHit, SearchType};
 pub use summary::{DigestCluster, EventSummary, KnowledgeDigest, SummaryMechanism};
+pub use text::normalize_chunk_text;
 pub use validation::{ErrorDetail, ValidationError, ValidationResult};

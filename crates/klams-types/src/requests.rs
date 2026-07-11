@@ -42,6 +42,17 @@ pub struct IndexKnowledgeRequest {
     pub file: Option<String>,
     #[serde(default)]
     pub machine: Option<String>,
+    // Sprint 022 (#322) — chunk metadata carried to the store payload so
+    // neighbour expansion, "prepend section heading" retrieval, and the
+    // graph layer have structure to work with. All optional/back-compat.
+    #[serde(default)]
+    pub chunk_index: Option<u32>,
+    #[serde(default)]
+    pub language: Option<String>,
+    #[serde(default)]
+    pub heading_path: Option<String>,
+    #[serde(default)]
+    pub symbols: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -167,6 +167,10 @@ pub fn generate_knowledge(seed: u64, n: usize) -> Vec<IndexKnowledgeRequest> {
                 repo: Some("klams".to_string()),
                 file: Some(format!("notes/{host}-{service}.md")),
                 machine: Some(host.to_string()),
+                chunk_index: None,
+                language: None,
+                heading_path: None,
+                symbols: vec![],
             }
         })
         .collect()

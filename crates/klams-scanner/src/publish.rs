@@ -24,15 +24,20 @@ pub async fn publish_chunk(
     client: &Client,
     repo: &str,
     source_file: &str,
-    chunk_text: &str,
+    chunk: &crate::chunk::Chunk,
 ) -> Result<()> {
     let req = IndexKnowledgeRequest {
-        text: chunk_text.to_owned(),
+        text: chunk.text.clone(),
         source: Source::Task,
         tags: vec![],
         repo: Some(repo.to_owned()),
         file: Some(source_file.to_owned()),
         machine: None,
+        // Sprint 022 (#322) — carry chunk structure to the store payload.
+        chunk_index: Some(chunk.index),
+        language: chunk.language.clone(),
+        heading_path: chunk.heading_path.clone(),
+        symbols: chunk.symbols.clone(),
     };
 
     let mut delay = RETRY_INITIAL_DELAY;

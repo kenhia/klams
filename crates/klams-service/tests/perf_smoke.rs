@@ -80,6 +80,10 @@ async fn search_p95_under_500ms_at_mvp_corpus() {
                 repo: None,
                 file: None,
                 machine: None,
+                chunk_index: None,
+                language: None,
+                heading_path: None,
+                symbols: vec![],
             })
             .await
             .expect("knowledge index");
