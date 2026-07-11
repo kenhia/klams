@@ -102,8 +102,14 @@ impl Store for CompositeStore {
         Ok((facts, events))
     }
 
-    async fn find_knowledge_by_content_hash(&self, hash: &str) -> StoreResult<Option<Uuid>> {
-        self.qdrant.find_knowledge_by_content_hash(hash).await
+    async fn find_knowledge_by_content_hash(
+        &self,
+        hash: &str,
+        source_file: Option<&str>,
+    ) -> StoreResult<Option<Uuid>> {
+        self.qdrant
+            .find_knowledge_by_content_hash(hash, source_file)
+            .await
     }
 
     async fn get_knowledge(&self, id: Uuid) -> StoreResult<Option<KnowledgeItem>> {

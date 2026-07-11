@@ -148,7 +148,15 @@ pub trait Store: Send + Sync + 'static {
         query: &str,
         top_k: u32,
     ) -> StoreResult<(Vec<TextHit>, Vec<TextHit>)>;
-    async fn find_knowledge_by_content_hash(&self, hash: &str) -> StoreResult<Option<Uuid>>;
+    /// Find an existing knowledge point with `hash`. When `source_file`
+    /// is `Some`, the match is scoped to that file so identical chunks
+    /// in different files stay distinct points — otherwise one file's
+    /// delete would drop a chunk still live in another (sprint 022 #324).
+    async fn find_knowledge_by_content_hash(
+        &self,
+        hash: &str,
+        source_file: Option<&str>,
+    ) -> StoreResult<Option<Uuid>>;
     async fn get_knowledge(&self, id: Uuid) -> StoreResult<Option<KnowledgeItem>>;
     /// Sprint 003 T010b: delete every knowledge point whose payload
     /// `source_file` matches `source_file`. Returns the number of

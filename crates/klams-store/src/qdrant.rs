@@ -334,8 +334,19 @@ impl QdrantStore {
         Ok(out)
     }
 
-    pub async fn find_knowledge_by_content_hash(&self, hash: &str) -> StoreResult<Option<Uuid>> {
-        let filter = Filter::must([Condition::matches("content_hash", hash.to_string())]);
+    pub async fn find_knowledge_by_content_hash(
+        &self,
+        hash: &str,
+        source_file: Option<&str>,
+    ) -> StoreResult<Option<Uuid>> {
+        // Scope dedupe to the same source file (sprint 022 #324): an
+        // identical chunk in two files must be two points, so deleting
+        // one file can't drop a chunk still live in the other.
+        let mut conds = vec![Condition::matches("content_hash", hash.to_string())];
+        if let Some(f) = source_file {
+            conds.push(Condition::matches("file", f.to_string()));
+        }
+        let filter = Filter::must(conds);
         let resp = self
             .client
             .scroll(

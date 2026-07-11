@@ -58,7 +58,7 @@ pub async fn index<S: Store>(
 
     if let Some(existing) = state
         .store
-        .find_knowledge_by_content_hash(&content_hash)
+        .find_knowledge_by_content_hash(&content_hash, req.file.as_deref())
         .await
         .map_err(|e| ApiError::Internal {
             request_id: format!("store-error: {e}"),
