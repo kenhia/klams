@@ -22,6 +22,19 @@ pub trait Embedder: Send + Sync + std::fmt::Debug {
     /// Embed a single input; the returned vector length must equal
     /// [`Embedder::expected_dim`].
     async fn embed(&self, text: &str) -> StoreResult<Vec<f32>>;
+    /// Embed many inputs in one request where the backend supports it —
+    /// TEI `/embed` and the openai-compat `/embeddings` route both accept
+    /// an array (sprint 022 #325, the batch path needed for a bulk
+    /// re-embed). Returns one vector per input, in input order. The
+    /// default falls back to sequential [`Embedder::embed`] so simple
+    /// or mock backends need not implement it.
+    async fn embed_batch(&self, texts: &[String]) -> StoreResult<Vec<Vec<f32>>> {
+        let mut out = Vec::with_capacity(texts.len());
+        for t in texts {
+            out.push(self.embed(t).await?);
+        }
+        Ok(out)
+    }
     /// Cheap liveness probe for the health handler (≤1s).
     async fn health(&self) -> StoreResult<()>;
     fn expected_dim(&self) -> usize;
@@ -34,15 +47,24 @@ fn build_http_client() -> StoreResult<reqwest::Client> {
         .map_err(|e| StoreError::Embedding(format!("client build: {e}")))
 }
 
-fn check_dim(v: Vec<f32>, expected: usize) -> StoreResult<Vec<f32>> {
-    if v.len() == expected {
-        Ok(v)
-    } else {
-        Err(StoreError::Embedding(format!(
-            "expected dim {expected}, got {}",
-            v.len()
-        )))
+/// Validate a batch response: exactly `count` vectors, each of the
+/// expected dimension (sprint 022 #325).
+fn check_dims(vectors: Vec<Vec<f32>>, count: usize, expected: usize) -> StoreResult<Vec<Vec<f32>>> {
+    if vectors.len() != count {
+        return Err(StoreError::Embedding(format!(
+            "expected {count} vectors, got {}",
+            vectors.len()
+        )));
     }
+    for v in &vectors {
+        if v.len() != expected {
+            return Err(StoreError::Embedding(format!(
+                "expected dim {expected}, got {}",
+                v.len()
+            )));
+        }
+    }
+    Ok(vectors)
 }
 
 // ---------------------------------------------------------------------
@@ -65,11 +87,12 @@ impl TeiEmbedder {
     }
 }
 
-#[async_trait]
-impl Embedder for TeiEmbedder {
-    async fn embed(&self, text: &str) -> StoreResult<Vec<f32>> {
+impl TeiEmbedder {
+    /// One `POST /embed` with N inputs → N vectors, in order. Backs both
+    /// [`Embedder::embed`] and [`Embedder::embed_batch`].
+    async fn request(&self, inputs: &[&str]) -> StoreResult<Vec<Vec<f32>>> {
         let url = format!("{}/embed", self.base_url.trim_end_matches('/'));
-        let body = serde_json::json!({ "inputs": [text] });
+        let body = serde_json::json!({ "inputs": inputs });
 
         let mut last_err = String::new();
         let mut backoff = Duration::from_millis(200);
@@ -83,10 +106,7 @@ impl Embedder for TeiEmbedder {
                             .map_err(|e| StoreError::Embedding(format!("read body: {e}")))?;
                         let vectors: Vec<Vec<f32>> = serde_json::from_slice(&bytes)
                             .map_err(|e| StoreError::Embedding(format!("parse: {e}")))?;
-                        let v = vectors.into_iter().next().ok_or_else(|| {
-                            StoreError::Embedding("empty vectors response".into())
-                        })?;
-                        return check_dim(v, self.expected_dim);
+                        return check_dims(vectors, inputs.len(), self.expected_dim);
                     }
                     last_err = format!("HTTP {}", resp.status());
                 }
@@ -100,6 +120,25 @@ impl Embedder for TeiEmbedder {
         Err(StoreError::Embedding(format!(
             "TEI request failed after {MAX_RETRIES} attempts: {last_err}"
         )))
+    }
+}
+
+#[async_trait]
+impl Embedder for TeiEmbedder {
+    async fn embed(&self, text: &str) -> StoreResult<Vec<f32>> {
+        self.request(&[text])
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| StoreError::Embedding("empty vectors response".into()))
+    }
+
+    async fn embed_batch(&self, texts: &[String]) -> StoreResult<Vec<Vec<f32>>> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+        self.request(&refs).await
     }
 
     /// Hits the TEI `/health` endpoint with a 1s timeout so the health
@@ -178,11 +217,13 @@ impl OpenAiCompatEmbedder {
     }
 }
 
-#[async_trait]
-impl Embedder for OpenAiCompatEmbedder {
-    async fn embed(&self, text: &str) -> StoreResult<Vec<f32>> {
+impl OpenAiCompatEmbedder {
+    /// One `POST {base}/embeddings` with N inputs → N vectors, in the
+    /// `data` array order. Backs both [`Embedder::embed`] and
+    /// [`Embedder::embed_batch`].
+    async fn request(&self, inputs: &[&str]) -> StoreResult<Vec<Vec<f32>>> {
         let url = format!("{}/embeddings", self.base_url);
-        let body = serde_json::json!({ "model": self.model, "input": [text] });
+        let body = serde_json::json!({ "model": self.model, "input": inputs });
 
         let mut last_err = String::new();
         let mut backoff = Duration::from_millis(200);
@@ -196,13 +237,9 @@ impl Embedder for OpenAiCompatEmbedder {
                             .map_err(|e| StoreError::Embedding(format!("read body: {e}")))?;
                         let parsed: EmbeddingsResponse = serde_json::from_slice(&bytes)
                             .map_err(|e| StoreError::Embedding(format!("parse: {e}")))?;
-                        let v = parsed
-                            .data
-                            .into_iter()
-                            .next()
-                            .map(|d| d.embedding)
-                            .ok_or_else(|| StoreError::Embedding("empty data response".into()))?;
-                        return check_dim(v, self.expected_dim);
+                        let vectors: Vec<Vec<f32>> =
+                            parsed.data.into_iter().map(|d| d.embedding).collect();
+                        return check_dims(vectors, inputs.len(), self.expected_dim);
                     }
                     last_err = format!("HTTP {}", resp.status());
                 }
@@ -216,6 +253,25 @@ impl Embedder for OpenAiCompatEmbedder {
         Err(StoreError::Embedding(format!(
             "embeddings request failed after {MAX_RETRIES} attempts: {last_err}"
         )))
+    }
+}
+
+#[async_trait]
+impl Embedder for OpenAiCompatEmbedder {
+    async fn embed(&self, text: &str) -> StoreResult<Vec<f32>> {
+        self.request(&[text])
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| StoreError::Embedding("empty data response".into()))
+    }
+
+    async fn embed_batch(&self, texts: &[String]) -> StoreResult<Vec<Vec<f32>>> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+        self.request(&refs).await
     }
 
     /// Probes `GET {base}/models` with a 1s timeout. Any 2xx counts as
@@ -265,6 +321,13 @@ mod tests {
         let embedder = TeiEmbedder::new(url, 384).unwrap();
         let v = embedder.embed("hello world").await.unwrap();
         assert_eq!(v.len(), 384);
+        // Batch path (#325): N inputs → N vectors of the right dim.
+        let batch = embedder
+            .embed_batch(&["hello world".to_string(), "second input".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(batch.len(), 2);
+        assert!(batch.iter().all(|v| v.len() == 384));
     }
 
     /// Integration test against a live OpenAI-compatible endpoint
@@ -306,6 +369,43 @@ mod tests {
             .unwrap();
         let v = e.embed("hi").await.unwrap();
         assert_eq!(v, vec![0.1, 0.2, 0.3]);
+    }
+
+    #[tokio::test]
+    async fn openai_embed_batch_sends_all_inputs_and_parses_in_order() {
+        // Sprint 022 (#325): one request carries every input; the `data`
+        // array maps back to inputs in order.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/embeddings"))
+            .and(body_partial_json(
+                serde_json::json!({ "model": "m", "input": ["a", "b"] }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "object": "list",
+                "data": [
+                    { "object": "embedding", "embedding": [1.0, 0.0] },
+                    { "object": "embedding", "embedding": [0.0, 1.0] }
+                ]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let e = OpenAiCompatEmbedder::new(format!("{}/v1", server.uri()), "m", 2, None).unwrap();
+        let out = e
+            .embed_batch(&["a".to_string(), "b".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(out, vec![vec![1.0, 0.0], vec![0.0, 1.0]]);
+    }
+
+    #[tokio::test]
+    async fn embed_batch_empty_is_empty() {
+        let server = MockServer::start().await;
+        // No mount: an empty batch must short-circuit without an HTTP call.
+        let e = OpenAiCompatEmbedder::new(format!("{}/v1", server.uri()), "m", 2, None).unwrap();
+        assert!(e.embed_batch(&[]).await.unwrap().is_empty());
     }
 
     #[tokio::test]
