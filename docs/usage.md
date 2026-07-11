@@ -873,24 +873,34 @@ Two ingestion-quality fixes landed in the scanner:
   (add it; the miss log surfaces demand); a false positive costs tokens
   on every retrieval.
 
-### One-time stale-chunk purge (operator step)
+### One-time stale-chunk purge / re-index (operator step)
 
 The delete-before-reindex fix stops *future* leaks; chunks orphaned by
 edits made before it deployed remain until each file next changes. To
-purge them in one pass after deploying the new scanner, clear the
-scanner cursor and rescan — every file is then treated as changed, so
-each runs delete-before-reindex and re-publishes its current chunks:
+purge them in one pass, **invalidate** the cursor rows — do NOT delete
+the cursor DB. A file re-chunks correctly only when the scanner sees a
+*prior* cursor entry whose hash differs: that path fires
+delete-before-reindex (old chunks removed, then re-published). If you
+delete the cursor instead, every file looks brand-new, so nothing is
+deleted and scanner-v2 chunks stack on top of the old ones — duplicates.
 
 ```sh
 sudo systemctl stop klams-scanner.timer klams-scanner.service
-sudo rm -f /var/lib/klams/scanner.sqlite   # the cursor DB (see monitor.toml/scanner config for the path)
-just scanner-once                           # full rescan: delete-then-reindex per file
+# Force every tracked file to re-chunk via delete-before-reindex, and
+# keep the rows so files that have since vanished are still pruned.
+# mtime_ns=0 defeats the mtime short-circuit; the sentinel hash defeats
+# the content-hash short-circuit.
+sudo sqlite3 /var/lib/klams/scanner.sqlite \
+    "UPDATE file_cursor SET mtime_ns = 0, content_hash = 'reindex';"
+just scanner-once                           # delete-then-reindex per file
 sudo systemctl start klams-scanner.timer
 ```
 
-This re-embeds the whole corpus, so it is the same cost as a full
-re-index — if sprint 022's re-index is imminent, fold the purge into
-that rather than paying it twice.
+This re-embeds every file the scanner still walks and **prunes chunks
+for files no longer on this host** (e.g. repos that moved to another
+machine — their rows stay in the cursor, aren't walked, and get
+deleted). It re-embeds the whole present corpus, so fold the sprint 021
+purge into sprint 022's re-index rather than paying it twice.
 
 ### Miss log
 
@@ -945,17 +955,25 @@ files stay distinct points.
 ### Full re-index (operator step)
 
 Scanner v2 changes how every chunk is produced, so realizing it on the
-live corpus needs a one pass re-index — which also absorbs the sprint
-021 one-time stale-chunk purge. Clear the scanner cursor and rescan;
-every file is treated as changed, so each runs delete-before-reindex
-(021) and re-publishes scanner-v2 chunks:
+live corpus needs a one-pass re-index — which also absorbs the sprint
+021 one-time stale-chunk purge. **Invalidate** the cursor rows (keep the
+DB) so every file re-chunks *through* delete-before-reindex (021) —
+which replaces its old chunks — while files no longer present are pruned.
+Do **not** `rm` the cursor: that treats files as new and stacks
+scanner-v2 chunks on top of the old ones (duplicates).
 
 ```sh
 sudo systemctl stop klams-scanner.timer klams-scanner.service
-sudo rm -f /var/lib/klams/scanner.sqlite   # cursor DB (see scanner config for the path)
-just scanner-once                           # full rescan with scanner v2
+sudo sqlite3 /var/lib/klams/scanner.sqlite \
+    "UPDATE file_cursor SET mtime_ns = 0, content_hash = 'reindex';"
+just scanner-once                           # delete-then-reindex, scanner v2
 sudo systemctl start klams-scanner.timer
 ```
+
+Scope note: this only touches files this host still walks. Repos that
+have moved to another machine are pruned here (their stale kubs0 chunks
+are removed); re-indexing *those* repos means running the scanner on
+whichever host now holds them, pointed at this klams service.
 
 The embedder gained a batch path (`Embedder::embed_batch`, one request
 for N inputs on TEI `/embed` and the openai-compat `/embeddings` route)
