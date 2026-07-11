@@ -86,6 +86,10 @@ pub async fn index<S: Store>(
         file: req.file,
         machine: req.machine,
         author_id: author.author_id,
+        chunk_index: req.chunk_index,
+        language: req.language,
+        heading_path: req.heading_path,
+        symbols: req.symbols,
     });
     state.queue.try_enqueue(job).map_err(|_| {
         m::incr_writes_failed("knowledge", "queue_full");

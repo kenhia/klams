@@ -166,6 +166,29 @@ impl QdrantStore {
         };
         let mut payload = item_to_payload(&item);
         payload.insert("author_id".into(), Value::from(req.author_id.to_string()));
+        // Sprint 022 (#322) — chunk structure metadata in the payload so
+        // neighbour expansion, section-heading retrieval, and the graph
+        // layer have structure to query. Written when present; absent
+        // fields simply aren't stored (back-compatible with old points).
+        if let Some(ci) = req.chunk_index {
+            payload.insert("chunk_index".into(), Value::from(i64::from(ci)));
+        }
+        if let Some(lang) = &req.language {
+            payload.insert("language".into(), Value::from(lang.clone()));
+        }
+        if let Some(hp) = &req.heading_path {
+            payload.insert("heading_path".into(), Value::from(hp.clone()));
+        }
+        if !req.symbols.is_empty() {
+            payload.insert(
+                "symbols".into(),
+                Value {
+                    kind: Some(ValueKind::ListValue(ListValue {
+                        values: req.symbols.iter().map(|s| Value::from(s.clone())).collect(),
+                    })),
+                },
+            );
+        }
         let point = PointStruct::new(
             PointId {
                 point_id_options: Some(PointIdOptions::Uuid(item.id.to_string())),

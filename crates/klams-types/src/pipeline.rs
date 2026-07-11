@@ -59,4 +59,13 @@ pub struct IndexKnowledge {
     /// Sprint 009 (FR-018) — see [`UpsertFact::author_id`].
     #[serde(default = "crate::system_author_id")]
     pub author_id: Uuid,
+    /// Sprint 022 (#322) — chunk structure metadata for the payload.
+    #[serde(default)]
+    pub chunk_index: Option<u32>,
+    #[serde(default)]
+    pub language: Option<String>,
+    #[serde(default)]
+    pub heading_path: Option<String>,
+    #[serde(default)]
+    pub symbols: Vec<String>,
 }

@@ -218,6 +218,10 @@ fn gen_knowledge(rng: &mut Lcg, n: usize, id_salt: u128) -> Vec<IndexKnowledge> 
             file: Some(format!("{prefix}note_{i:05}.md")),
             machine: None,
             author_id: klams_types::SYSTEM_AUTHOR_ID,
+            chunk_index: None,
+            language: None,
+            heading_path: None,
+            symbols: Vec::new(),
         });
     }
     out

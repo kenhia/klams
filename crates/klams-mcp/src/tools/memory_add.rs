@@ -273,6 +273,12 @@ pub async fn run(state: &McpState, args: MemoryAddArgs) -> Result<PublicMemory, 
                 file: source_path,
                 machine: None,
                 author_id: author.id,
+                // Agent-submitted knowledge isn't chunked by the scanner,
+                // so it carries no chunk-structure metadata (sprint 022 #322).
+                chunk_index: None,
+                language: None,
+                heading_path: None,
+                symbols: Vec::new(),
             };
             let embedding = state.store.embedder.embed(&req.text).await.map_err(|e| {
                 crate::errors::envelope_with_retry(
