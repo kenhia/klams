@@ -254,7 +254,14 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires TEST_TEI_URL pointing at a running TEI server"]
     async fn tei_embed_returns_configured_dim_vector() {
-        let url = std::env::var("TEST_TEI_URL").expect("TEST_TEI_URL not set");
+        // Self-skip when the endpoint isn't configured. `cargo test
+        // --ignored` (main CI) runs every ignored test regardless of
+        // which env vars are present, so a bare `.expect()` here would
+        // panic the whole run when the var is absent (sprint 022 CI fix).
+        let Ok(url) = std::env::var("TEST_TEI_URL") else {
+            eprintln!("skipping tei_embed_returns_configured_dim_vector: TEST_TEI_URL not set");
+            return;
+        };
         let embedder = TeiEmbedder::new(url, 384).unwrap();
         let v = embedder.embed("hello world").await.unwrap();
         assert_eq!(v.len(), 384);
@@ -265,7 +272,13 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires TEST_OPENAI_EMBED_URL pointing at an OpenAI-compat /v1 base"]
     async fn openai_embed_returns_configured_dim_vector() {
-        let url = std::env::var("TEST_OPENAI_EMBED_URL").expect("TEST_OPENAI_EMBED_URL not set");
+        // Self-skip when unset — see the note on the TEI test above.
+        let Ok(url) = std::env::var("TEST_OPENAI_EMBED_URL") else {
+            eprintln!(
+                "skipping openai_embed_returns_configured_dim_vector: TEST_OPENAI_EMBED_URL not set"
+            );
+            return;
+        };
         let model = std::env::var("TEST_OPENAI_EMBED_MODEL")
             .unwrap_or_else(|_| "BAAI/bge-small-en-v1.5".into());
         let embedder = OpenAiCompatEmbedder::new(url, model, 384, None).unwrap();

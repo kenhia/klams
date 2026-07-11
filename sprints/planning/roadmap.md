@@ -33,31 +33,25 @@ Standing decisions:
 
 ### 021 — Corpus hygiene + miss log → [sprints/021-corpus-hygiene/](../021-corpus-hygiene/sprint.md)
 
-Started 2026-07-10 from korg proposal `korg:337` (covers klams WIs
-#315–#318). The code review's P0s (crossroads §5 #1/#4):
-**delete-before-reindex** for edited files (the endpoint already exists
-— the scanner just never calls it), a file-extension allowlist in the
-scanner (stop indexing lockfiles/fixtures), a one-time stale-chunk
-purge, and the golden staleness test the e2e suite claims but doesn't
-assert. Ride-alongs: zero-hit/low-score **miss log** with caller
-attribution + Grafana panel (start collecting tuning data now), and the
-routing-rules rewrite of the agent-instructions blurb (enforce
-`memory_search`-first, don't offer — TMX's 0/15→8/8 lesson; docs-only,
-propagate to all three machines). Scope, acceptance, and design
-decisions live in the sprint doc.
+Shipped 2026-07-10 (PR #23, `903fffd`; deployed 0.1.21 on kubs0).
+delete-before-reindex, scanner file-type allowlist, miss log
+(`search_miss` + `klams_search_misses_total` + Grafana panel),
+routing-rules agent blurb propagated to kubs0/kai/cleo. korg WIs
+#315–#318 resolved, proposal `korg:337` done. Detail in the sprint doc.
 
-## Sprint queue
+### 022 — Scanner v2: chunks worth retrieving → [sprints/022-scanner-v2/](../022-scanner-v2/sprint.md)
 
-### 022 — Scanner v2: chunks worth retrieving
-
-Crossroads §2.2 #1 + §5 #3/#6. Code-aware chunking (tree-sitter; krag
-proved the concept in-house), markdown-only heading detection with
+Started 2026-07-11 from korg proposal `korg:338` (covers klams WIs
+#320–#326, + a main-CI fix from #327). Code-aware chunking (tree-sitter;
+krag proved the concept in-house), markdown-only heading detection with
 heading-*path* context and a minimum chunk size (no more bare
 `"## MCP tools"` hits), newline-preserving normalization end-to-end,
 chunk metadata on the wire (index, language, heading breadcrumbs),
 TEI batch-embedding path, then the full re-index. Acceptance: the
 crossroads junk-hit examples return substantive chunks; golden
-real-file chunker tests.
+real-file chunker tests. Scope + sequencing in the sprint doc.
+
+## Sprint queue
 
 ### 023 — One ranking: fusion unification + eval enablement
 
