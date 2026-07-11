@@ -1987,6 +1987,7 @@ dependencies = [
  "time",
  "toml",
  "ulid",
+ "unicode-normalization",
  "uuid",
 ]
 

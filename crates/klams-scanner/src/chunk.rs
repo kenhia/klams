@@ -20,30 +20,14 @@ pub struct Chunk {
     pub content_hash: String,
 }
 
-/// Collapse runs of internal whitespace and trim each line.
-/// Idempotent: `normalize(normalize(x)) == normalize(x)`.
+/// Normalize file text before chunking, preserving line structure and
+/// indentation (sprint 022 #321). Delegates to the shared
+/// [`klams_types::normalize_chunk_text`] so the scanner and the API
+/// ingest path agree — the API re-normalizes each received chunk, and
+/// identical normalization keeps the dedupe content-hash stable.
 #[must_use]
 pub fn normalize(input: &str) -> String {
-    input
-        .lines()
-        .map(|l| {
-            let mut out = String::with_capacity(l.len());
-            let mut last_space = false;
-            for c in l.chars() {
-                if c.is_whitespace() {
-                    if !last_space {
-                        out.push(' ');
-                    }
-                    last_space = true;
-                } else {
-                    out.push(c);
-                    last_space = false;
-                }
-            }
-            out.trim().to_owned()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    klams_types::normalize_chunk_text(input)
 }
 
 #[must_use]
@@ -157,17 +141,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn normalize_collapses_whitespace_and_is_idempotent() {
+    fn normalize_preserves_structure_and_is_idempotent() {
+        // Sprint 022 (#321): indentation + internal whitespace survive;
+        // only trailing whitespace and blank-line runs are cleaned.
         let raw = "  hello   world\n\nfoo\t bar  \n";
         let once = normalize(raw);
-        assert_eq!(once, "hello world\n\nfoo bar");
+        assert_eq!(once, "  hello   world\n\nfoo\t bar");
         assert_eq!(normalize(&once), once);
     }
 
     #[test]
-    fn sha256_stable_across_whitespace_normalization() {
-        let a = chunk("hello   world\n\n");
-        let b = chunk("  hello world  ");
+    fn sha256_stable_across_leading_trailing_blank_lines() {
+        // Leading/trailing blank lines normalize away, so they must not
+        // churn the content hash — but internal whitespace now matters.
+        let a = chunk("hello world\n\n\n");
+        let b = chunk("\n\nhello world");
         assert_eq!(a.len(), 1);
         assert_eq!(b.len(), 1);
         assert_eq!(a[0].content_hash, b[0].content_hash);

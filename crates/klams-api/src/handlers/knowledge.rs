@@ -24,7 +24,6 @@ use klams_types::{
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
 /// Maximum normalized-text length accepted by the API, per `OpenAPI`
@@ -157,29 +156,17 @@ pub async fn get<S: Store>(
         })
 }
 
-/// NFC-normalize, trim, and collapse internal whitespace runs to a
-/// single space. Returns Err if the result is empty.
+/// Normalize chunk text for storage + content-hashing, preserving line
+/// structure and indentation (sprint 022 #321 — delegates to the shared
+/// [`klams_types::normalize_chunk_text`] so the scanner and the API
+/// agree and the dedupe hash is stable). Returns Err if empty.
 pub fn normalize_text(input: &str) -> Result<String, ApiError> {
-    let nfc: String = input.nfc().collect();
-    let trimmed = nfc.trim();
-    if trimmed.is_empty() {
+    let out = klams_types::normalize_chunk_text(input);
+    if out.is_empty() {
         return Err(ApiError::Validation {
             field: "text".into(),
             message: "text must be non-empty after normalization".into(),
         });
-    }
-    let mut out = String::with_capacity(trimmed.len());
-    let mut prev_ws = false;
-    for c in trimmed.chars() {
-        if c.is_whitespace() {
-            if !prev_ws {
-                out.push(' ');
-                prev_ws = true;
-            }
-        } else {
-            out.push(c);
-            prev_ws = false;
-        }
     }
     Ok(out)
 }
@@ -219,8 +206,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn normalize_collapses_whitespace() {
-        assert_eq!(normalize_text("  hello\nworld  ").unwrap(), "hello world");
+    fn normalize_preserves_newlines_and_indentation() {
+        // Sprint 022 (#321): line structure + indentation survive; only
+        // trailing whitespace and blank-line runs are cleaned up.
+        assert_eq!(
+            normalize_text("fn main() {\n    let x = 1;  \n}\n").unwrap(),
+            "fn main() {\n    let x = 1;\n}"
+        );
     }
 
     #[test]
