@@ -283,9 +283,13 @@ boundaries do not change; two new binaries live under `crates/`.
   always skips `target/`, `node_modules/`, `.git/`, and (sprint 021)
   applies a file-type allowlist so only content worth retrieving —
   source, docs/prose, config prose — is indexed; lockfiles, JSON
-  fixtures, SVGs, and images are dropped. Allowlisted files are chunked
-  to ≈800 chars with 200-char overlap and POSTed to
-  `/memory/knowledge/index`. A local SQLite cursor at
+  fixtures, SVGs, and images are dropped. Chunking is **language-aware**
+  (sprint 022): markdown splits on headings with heading-*path* context
+  (no bare-heading chunks); Rust/Python parse with tree-sitter and split
+  at item boundaries carrying symbol names; everything else splits on
+  blank lines (a `#` comment is never a heading). Chunks carry
+  index/language/heading-path/symbol metadata to the payload, and are
+  POSTed to `/memory/knowledge/index`. A local SQLite cursor at
   `~/.local/state/klams/scanner.sqlite` short-circuits unchanged files
   on `mtime`, then on content hash. Vanished files trigger
   `/memory/knowledge/delete?source_file=<abs>` (SC-002); since sprint

@@ -121,6 +121,37 @@ CI fix → #321 (normalization foundation) → #320 (heading/min-size, the
 observable P0) → #323 (tree-sitter) → #322 (metadata on wire) → #324
 (dedupe) → #326 (golden tests) → #325 (batch + re-index, last / deploy).
 
+## Outcome (2026-07-11 — implemented, gate green)
+
+All seven WIs + the CI fix landed on `022-scanner-v2` in seven commits;
+`just gate` green, docker-gated integration tests verified live.
+
+- **CI fix (#327 comment)** — main CI (red since ≥018) fixed: the
+  main-only `--ignored` step panicked on an unset `TEST_OPENAI_EMBED_URL`.
+  Set it (+ model) in CI so the openai-compat path gets real coverage,
+  and hardened both env-gated tests to self-skip. Verified both ways.
+- **#321** — shared `klams_types::normalize_chunk_text` (newline/indent
+  preserving, idempotent); scanner + API agree.
+- **#320** — language-aware chunker: markdown heading-path breadcrumbs +
+  no bare-heading chunks; code/config split on blank lines (no
+  code-comment fragmentation); min-size same-path merge.
+- **#322** — chunk index/language/heading_path/symbols travel to the
+  Qdrant payload (additive).
+- **#323** — tree-sitter code chunking for Rust/Python with symbol
+  extraction; falls back to the plain splitter.
+- **#324** — content-hash dedupe scoped per source file; docker-gated
+  `chunk_dedupe_scoping` test proves identical-chunk-in-two-files stays
+  two points.
+- **#326** — golden real-file chunker tests pinning the crossroads
+  junk-hit scenarios.
+- **#325** — `Embedder::embed_batch` (real TEI + openai-compat batch,
+  tested hermetically + live). The scanner ingest stays per-chunk; the
+  batch path is the primitive for a future bulk re-embed.
+
+**Deploy-time (kubs0):** install 0.1.22 binaries; run the full re-index
+(clear cursor + rescan — absorbs 021's one-time purge), documented in
+[usage.md](../../docs/usage.md).
+
 ## Out of scope (deferred, tracked)
 
 - Ranking unification (#328–#332) → sprint 023.

@@ -917,3 +917,48 @@ FROM search_miss ORDER BY created_at DESC LIMIT 50;
 SELECT query, count(*) FROM search_miss
 WHERE reason = 'zero_hit' GROUP BY query ORDER BY count(*) DESC;
 ```
+
+## Sprint 022 — scanner v2 (chunks worth retrieving)
+
+### Language-aware chunking
+
+The scanner now chunks by file type (`Lang::from_path`):
+
+- **Markdown** splits on ATX headings, but each chunk carries its
+  heading *path* (`H1 > H2`) as a breadcrumb prepended to the text, and
+  a heading with no body never becomes its own chunk — the
+  `"## MCP tools"`-style bare-heading hits are gone.
+- **Rust / Python** are parsed with tree-sitter and split at top-level
+  item boundaries (function/struct/impl/class…); each chunk records the
+  symbol names it defines. A parse failure falls back to the plain
+  splitter.
+- **Shell / TOML / text** split on blank lines only, so a `#` comment is
+  never mistaken for a heading.
+
+Chunk metadata (`chunk_index`, `language`, `heading_path`, `symbols`)
+travels from the scanner through `POST /memory/knowledge/index` into the
+Qdrant point payload for future neighbour-expansion and the graph layer.
+Text normalization preserves newlines and indentation end-to-end, and
+content-hash dedupe is scoped per source file so identical chunks in two
+files stay distinct points.
+
+### Full re-index (operator step)
+
+Scanner v2 changes how every chunk is produced, so realizing it on the
+live corpus needs a one pass re-index — which also absorbs the sprint
+021 one-time stale-chunk purge. Clear the scanner cursor and rescan;
+every file is treated as changed, so each runs delete-before-reindex
+(021) and re-publishes scanner-v2 chunks:
+
+```sh
+sudo systemctl stop klams-scanner.timer klams-scanner.service
+sudo rm -f /var/lib/klams/scanner.sqlite   # cursor DB (see scanner config for the path)
+just scanner-once                           # full rescan with scanner v2
+sudo systemctl start klams-scanner.timer
+```
+
+The embedder gained a batch path (`Embedder::embed_batch`, one request
+for N inputs on TEI `/embed` and the openai-compat `/embeddings` route)
+for a future high-throughput bulk re-embed; the scanner's per-chunk
+ingest is unchanged, so the re-index above runs through the normal
+write queue.
