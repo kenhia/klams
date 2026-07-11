@@ -118,18 +118,34 @@ pub fn chunk(body: &str, lang: Lang) -> Vec<Chunk> {
         return Vec::new();
     }
 
-    // (heading_path, body_text) pieces, packed to ~TARGET_CHARS.
-    let pieces: Vec<(Option<String>, String)> = match lang {
-        Lang::Markdown => pack_blocks(markdown_blocks(&norm)),
-        // Code/config/text: blank-line paragraphs, no heading breaks.
-        // Sprint 022 #323 upgrades Rust/Python to tree-sitter here.
-        _ => pack_blocks(plain_blocks(&norm)),
+    // Each piece: (heading_path, symbols, body_text).
+    let pieces: Vec<(Option<String>, Vec<String>, String)> = match lang {
+        Lang::Markdown => pack_blocks(markdown_blocks(&norm))
+            .into_iter()
+            .map(|(p, b)| (p, Vec::new(), b))
+            .collect(),
+        // Code-aware chunking (sprint 022 #323); falls back to the plain
+        // blank-line splitter if tree-sitter can't parse or has no items.
+        Lang::Rust | Lang::Python => crate::code::code_blocks(&norm, lang).map_or_else(
+            || {
+                pack_blocks(plain_blocks(&norm))
+                    .into_iter()
+                    .map(|(_, b)| (None, Vec::new(), b))
+                    .collect()
+            },
+            |cbs| cbs.into_iter().map(|(syms, b)| (None, syms, b)).collect(),
+        ),
+        // Shell/TOML/text: blank-line paragraphs, no heading breaks.
+        _ => pack_blocks(plain_blocks(&norm))
+            .into_iter()
+            .map(|(_, b)| (None, Vec::new(), b))
+            .collect(),
     };
 
     let language = lang.label().map(str::to_owned);
     let mut out = Vec::new();
     let mut idx: u32 = 0;
-    for (path, body) in pieces {
+    for (path, symbols, body) in pieces {
         // Prepend the heading breadcrumb so the chunk is self-describing
         // in retrieval (and the section context is embedded), never a
         // bare heading. Path is also kept as metadata (#322).
@@ -148,7 +164,7 @@ pub fn chunk(body: &str, lang: Lang) -> Vec<Chunk> {
             content_hash,
             heading_path: path,
             language: language.clone(),
-            symbols: Vec::new(),
+            symbols,
         });
         idx += 1;
     }

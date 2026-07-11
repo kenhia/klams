@@ -1,6 +1,7 @@
 //! klams-scanner library surface.
 
 pub mod chunk;
+pub mod code;
 pub mod cursor;
 pub mod metrics;
 pub mod publish;
