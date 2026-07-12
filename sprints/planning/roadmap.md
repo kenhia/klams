@@ -41,19 +41,27 @@ routing-rules agent blurb propagated to kubs0/kai/cleo. korg WIs
 
 ### 022 — Scanner v2: chunks worth retrieving → [sprints/022-scanner-v2/](../022-scanner-v2/sprint.md)
 
-Started 2026-07-11 from korg proposal `korg:338` (covers klams WIs
-#320–#326, + a main-CI fix from #327). Code-aware chunking (tree-sitter;
-krag proved the concept in-house), markdown-only heading detection with
-heading-*path* context and a minimum chunk size (no more bare
-`"## MCP tools"` hits), newline-preserving normalization end-to-end,
-chunk metadata on the wire (index, language, heading breadcrumbs),
-TEI batch-embedding path, then the full re-index. Acceptance: the
-crossroads junk-hit examples return substantive chunks; golden
-real-file chunker tests. Scope + sequencing in the sprint doc.
+Shipped 2026-07-11 (PR #24, `ee8aa7b`; deployed 0.1.22 on kubs0, full
+corpus re-indexed 48k→73k with heading-path chunks + tree-sitter symbol
+extraction). Language-aware chunker, chunk metadata to payload, per-file
+dedupe, embed_batch, golden tests. Also repaired main CI (red since
+≥018). korg WIs #320–#327 resolved, proposal `korg:338` done.
+
+### 023 — Multi-host scanning + host identity → [sprints/023-multi-host-scanning/](../023-multi-host-scanning/sprint.md)
+
+Started 2026-07-11 from korg proposal `korg:413` (covers klams WIs
+#407–#411). Inserted ahead of ranking (now 024): with repos split across
+kubs0/kai, kai-repo knowledge is entirely absent from klams. Add host
+identity to chunks (populate `machine`, key delete + dedupe on
+`(machine, file)` — also a correctness gate, surface host in the
+knowledge projection so agents get `(host, file)`), deploy a per-host
+scanner on kai, rescan both. Central NFS mount-scan for hosts that can't
+run the scanner (Windows/cleo) is a future option (klams #406, with the
+`NOT_MOUNTED` prune guard). Scope in the sprint doc.
 
 ## Sprint queue
 
-### 023 — One ranking: fusion unification + eval enablement
+### 024 — One ranking: fusion unification + eval enablement
 
 Crossroads §5 #2/#5/#9. Make MCP `memory_search` (the real-traffic
 surface) use rank-based fusion instead of raw cross-scale score sort;
@@ -65,7 +73,7 @@ off-main. This is the 016-deferred work, now due — and the structural
 prerequisite for any third search source. Klams-side surface for
 klams-mind's identifier-heavy eval suite rides along.
 
-### 024 — Decide & do: lexical knowledge search (gated on 021–023 data)
+### 025 — Decide & do: lexical knowledge search (gated on data)
 
 If the miss log + evals confirm the exact-identifier gap: add a lexical
 source for knowledge behind the now-unified fusion — candidates, cheap
@@ -77,7 +85,7 @@ study). If the data says the gap isn't real: decommission the idle
 OpenSearch container and close the question. Either way this sprint
 ends the "Qdrant or OpenSearch" ambiguity with evidence.
 
-### 025 — Graph memory spike (timeboxed)
+### 026 — Graph memory spike (timeboxed)
 
 The TokenMaster F1 on-ramp (crossroads §2.2 #2): symbol/edge schema,
 scanner-emitted edges (embed/shell graphify or port its heuristics —
@@ -85,7 +93,7 @@ scanner v2's symbol extraction is the first half), `callers`/
 `callees`/`impact` MCP verbs with token-bounded caps. Outcome is a
 go/no-go on the graph as a first-class klams layer, not a commitment.
 
-### 026 — Capability index feeder
+### 027 — Capability index feeder
 
 Crossroads §2.2: ingest structured sources — korg (WIs, reports,
 proposals), kvllm eval results, deployed-service inventory — as
