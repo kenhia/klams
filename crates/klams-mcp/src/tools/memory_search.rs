@@ -13,16 +13,21 @@
 //! same filter works for facts (which carry no tags column) and
 //! knowledge (which does). Result count is clamped to `top_k`.
 //!
-//! Sprint 016 caveat: `score` is raw and *not* normalized across kinds
-//! (knowledge = Qdrant cosine, fact/event = Postgres `ts_rank`), so the
-//! merged ordering is biased toward knowledge. Exposed, not corrected.
+//! Sprint 024 (#328): the merge is **rank fusion** (RRF via
+//! `klams_core::hybrid::fuse`), so knowledge no longer structurally
+//! outranks facts/events. `ScoredMemory.score` is the fused, cross-kind
+//! comparable value; `raw_score` carries the pre-fusion per-source
+//! relevance (cosine / `ts_rank`) for match-quality evals (#332).
 
 use crate::{
     errors::{self, envelope, ErrorEnvelope},
     metrics as mcp_metrics, projection,
     tools::McpState,
 };
-use klams_types::{MemoryKind, PublicAuthorRef, PublicMemory, ScoredMemory};
+use klams_store::{RankedRow, Store};
+use klams_types::{
+    FusionStrategy, MemoryKind, PublicAuthorRef, PublicMemory, RetrievalSource, ScoredMemory,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -67,11 +72,10 @@ pub struct MemorySearchArgs {
 }
 
 /// Execute `memory_search`. Returns the merged ranked hits on success
-/// or an MCP error envelope otherwise. Sprint 016: each result is a
-/// [`ScoredMemory`] carrying the relevance `score` and per-source
-/// `source_rank` alongside the memory, so retrieval evals can see why
-/// a hit ranked where it did. Scores are raw and not cross-kind
-/// comparable — see [`ScoredMemory`]'s scale caveat.
+/// or an MCP error envelope otherwise. Each result is a [`ScoredMemory`]
+/// with the fused `score` (RRF, #328), the per-source `source_rank`, and
+/// the pre-fusion `raw_score` (#332), so retrieval evals can see both
+/// how a hit ranked and how well it matched.
 ///
 /// # Errors
 /// Returns an [`ErrorEnvelope`] for `EMPTY_QUERY`, `INVALID_TOP_K`,
@@ -118,7 +122,11 @@ pub async fn run(
 
     // ---------- knowledge via Qdrant ANN ----------
     if want_knowledge {
-        let embedding = state.store.embedder.embed(&query).await.map_err(|e| {
+        // Sprint 024 (#329): route the retrieval sources through the
+        // `Store` trait rather than reaching into `.embedder` / `.qdrant`
+        // / `.postgres`, so a third source (025 lexical) is added at the
+        // trait + fusion seam, not wired into this tool concretely.
+        let embedding = state.store.embed_query(&query).await.map_err(|e| {
             crate::errors::envelope_with_retry(
                 errors::EMBEDDING_UNAVAILABLE,
                 format!("TEI embedding failed: {e}"),
@@ -127,7 +135,6 @@ pub async fn run(
         })?;
         let hits = state
             .store
-            .qdrant
             .search_knowledge(embedding, top_k)
             .await
             .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("search_knowledge: {e}")))?;
@@ -164,7 +171,6 @@ pub async fn run(
     if want_fact || want_event {
         let (fact_hits, event_hits) = state
             .store
-            .postgres
             .search_text(&query, top_k)
             .await
             .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("search_text: {e}")))?;
@@ -239,30 +245,40 @@ pub async fn run(
         scored.retain(|(_, _, mem)| want_tags.iter().all(|t| mem.tags.iter().any(|m| m == t)));
     }
 
-    // Cross-source merge by descending score. NOTE (sprint 016): scores
-    // are not on a shared scale across kinds (knowledge = Qdrant cosine,
-    // fact/event = Postgres ts_rank), so this ordering is biased toward
-    // knowledge. Surfaced via ScoredMemory.score, not corrected here.
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    // Snapshot the RAW per-source scores by id before rank-fusion
+    // rescoring overwrites them: the miss-log low-score signal is about a
+    // weak Qdrant cosine (not the fused RRF value), and the eval surface
+    // (#332) exposes raw match quality as ScoredMemory.raw_score.
+    let hit_count = scored.len();
+    let raw_top = scored
+        .iter()
+        .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(s, _, m)| (*s, m.kind()));
+    let raw_by_id: HashMap<uuid::Uuid, f32> = scored.iter().map(|(s, _, m)| (m.id, *s)).collect();
+
+    // Cross-source rank fusion (sprint 024 #328). Each source is ranked
+    // best-first within itself but on an incomparable score scale
+    // (Qdrant cosine vs Postgres ts_rank), so a raw score sort
+    // structurally favoured knowledge. Fuse by RRF via
+    // `klams_core::hybrid::fuse` — the same ranking `/memory/context`
+    // uses — which keys on id + within-source rank, so equal
+    // within-source ranks land at comparable positions regardless of
+    // kind. Reorder the projections and set `score` to the fused value.
+    fuse_in_place(&mut scored, fusion_strategy(state));
     scored.truncate(top_k as usize);
 
     // Miss log (sprint 021, #317): a search that returned nothing, or
     // only a weak knowledge match, is the "what did an agent want and
     // not get" signal that drives chunking fixes and the lexical-search
-    // decision. Record it two ways — a counter for the Grafana zero-hit
-    // panel, and a durable row keyed by query + caller. The insert is
-    // fire-and-forget (spawned) so it never adds latency to or fails a
-    // live search.
-    if let Some(reason) =
-        classify_miss(scored.len(), scored.first().map(|(s, _, m)| (*s, m.kind())))
-    {
+    // decision. Fire-and-forget so it never adds latency to a live search.
+    if let Some(reason) = classify_miss(hit_count, raw_top) {
         klams_core::metrics::incr_search_miss(reason);
         let miss = klams_store::SearchMiss {
             query: query.clone(),
             caller: caller.unwrap_or("unknown").to_string(),
             reason: reason.to_string(),
-            top_score: scored.first().map(|(s, _, _)| *s),
-            hit_count: i32::try_from(scored.len()).unwrap_or(i32::MAX),
+            top_score: raw_top.map(|(s, _)| s),
+            hit_count: i32::try_from(hit_count).unwrap_or(i32::MAX),
             kinds: kinds_label(&kinds),
         };
         let store = state.store.clone();
@@ -280,6 +296,7 @@ pub async fn run(
         .map(|(score, source_rank, memory)| ScoredMemory {
             score,
             source_rank,
+            raw_score: raw_by_id.get(&memory.id).copied(),
             memory,
         })
         .collect())
@@ -355,6 +372,49 @@ fn classify_miss(hit_count: usize, top: Option<(f32, MemoryKind)>) -> Option<&'s
     None
 }
 
+/// Fusion strategy for cross-source ranking — the `[retrieval] fusion`
+/// config, plumbed onto [`McpState`] by `klams-service` (sprint 024
+/// #328/#330). Defaults to RRF(k=60) for test harnesses that don't set
+/// it.
+fn fusion_strategy(state: &McpState) -> FusionStrategy {
+    state.fusion
+}
+
+/// Rank-fuse `scored` in place (sprint 024 #328): partition into
+/// per-kind best-first lists, RRF-fuse via `klams_core::hybrid::fuse`,
+/// then reorder the entries by the fused ranking and set each `score` to
+/// its fused value. RRF keys on id + within-source rank, so equal
+/// within-source ranks land at comparable positions regardless of kind
+/// — knowledge no longer structurally outranks facts/events.
+fn fuse_in_place(scored: &mut [(f32, u32, PublicMemory)], strategy: FusionStrategy) {
+    let mut by_kind: [Vec<RankedRow>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    for (_, _, mem) in scored.iter() {
+        let (idx, source) = match mem.kind() {
+            MemoryKind::Knowledge => (0usize, RetrievalSource::Vector),
+            MemoryKind::Fact => (1, RetrievalSource::Fts),
+            MemoryKind::Event => (2, RetrievalSource::Fts),
+        };
+        by_kind[idx].push(RankedRow {
+            source,
+            id: mem.id,
+            score: 0.0,
+            payload: serde_json::Value::Null,
+        });
+    }
+    let fused = klams_core::hybrid::fuse(by_kind.into_iter().collect(), strategy);
+    let order: HashMap<uuid::Uuid, (usize, f32)> = fused
+        .iter()
+        .enumerate()
+        .map(|(pos, r)| (r.id, (pos, r.score)))
+        .collect();
+    for entry in scored.iter_mut() {
+        if let Some(&(_, s)) = order.get(&entry.2.id) {
+            entry.0 = s;
+        }
+    }
+    scored.sort_by_key(|(_, _, m)| order.get(&m.id).map_or(usize::MAX, |&(p, _)| p));
+}
+
 /// Comma-joined kind labels for the miss-log `kinds` column.
 fn kinds_label(kinds: &[MemoryKind]) -> String {
     kinds
@@ -403,5 +463,100 @@ mod tests {
             kinds_label(&[MemoryKind::Fact, MemoryKind::Knowledge, MemoryKind::Event]),
             "fact,knowledge,event"
         );
+    }
+
+    // ---- Sprint 024 (#331): hermetic merge-invariant tests over
+    // realistic cross-scale magnitudes (Qdrant cosine ~0.8 vs Postgres
+    // ts_rank ~0.05). RRF ignores magnitude and fuses by within-source
+    // rank, so knowledge no longer structurally outranks facts. No DB.
+
+    use klams_types::{PublicAuthorRef, PublicMemoryContent};
+
+    fn mem(kind: MemoryKind, tag: &str) -> PublicMemory {
+        let content = match kind {
+            MemoryKind::Knowledge => PublicMemoryContent::Knowledge {
+                text: tag.into(),
+                source_path: None,
+                repo: None,
+                host: None,
+            },
+            MemoryKind::Fact => PublicMemoryContent::Fact {
+                fact_type: "EnvFact".into(),
+                payload: serde_json::json!({ "k": tag }),
+            },
+            MemoryKind::Event => PublicMemoryContent::Event {
+                category: "Service".into(),
+                payload: serde_json::json!({ "k": tag }),
+                task_id: None,
+            },
+        };
+        PublicMemory {
+            id: uuid::Uuid::now_v7(),
+            content,
+            tags: vec![],
+            author: PublicAuthorRef {
+                agent_name: "t".into(),
+                model: None,
+                repo: None,
+            },
+            created_at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+            updated_at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+            deleted_at: None,
+            deleted_by_author_id: None,
+        }
+    }
+
+    #[test]
+    fn rrf_lets_a_top_ranked_fact_beat_a_lower_ranked_knowledge_hit() {
+        // Per-source order (as `run` builds it): knowledge best-first,
+        // then facts best-first. Raw cosine >> ts_rank, so the OLD raw
+        // sort put both knowledge hits above both facts. RRF must
+        // interleave by rank: fact@rank0 outranks knowledge@rank1.
+        let k0 = mem(MemoryKind::Knowledge, "k0");
+        let k1 = mem(MemoryKind::Knowledge, "k1");
+        let f0 = mem(MemoryKind::Fact, "f0");
+        let (k0id, k1id, f0id) = (k0.id, k1.id, f0.id);
+        let mut scored = vec![
+            (0.91_f32, 0, k0), // knowledge rank 0, high cosine
+            (0.86_f32, 1, k1), // knowledge rank 1
+            (0.05_f32, 0, f0), // fact rank 0, tiny ts_rank
+        ];
+        fuse_in_place(&mut scored, FusionStrategy::default_rrf());
+        let pos = |id: uuid::Uuid| scored.iter().position(|(_, _, m)| m.id == id).unwrap();
+        // The two within-source rank-0 hits (k0, f0) tie for the top and
+        // occupy positions {0,1}; knowledge@rank1 (k1) is last.
+        assert!(
+            pos(k0id) <= 1 && pos(f0id) <= 1,
+            "both rank-0 hits must lead"
+        );
+        assert_eq!(
+            pos(k1id),
+            2,
+            "knowledge@rank1 must sink below the rank-0 hits"
+        );
+        assert!(
+            pos(f0id) < pos(k1id),
+            "fact@rank0 must outrank knowledge@rank1 under RRF (the fix)"
+        );
+    }
+
+    #[test]
+    fn rrf_output_is_sorted_by_fused_score_descending() {
+        let mut scored = vec![
+            (0.9_f32, 0, mem(MemoryKind::Knowledge, "k0")),
+            (0.8_f32, 1, mem(MemoryKind::Knowledge, "k1")),
+            (0.07_f32, 0, mem(MemoryKind::Fact, "f0")),
+            (0.03_f32, 1, mem(MemoryKind::Event, "e0")),
+        ];
+        fuse_in_place(&mut scored, FusionStrategy::default_rrf());
+        assert!(
+            scored.windows(2).all(|w| w[0].0 >= w[1].0),
+            "fused scores must be descending: {:?}",
+            scored.iter().map(|(s, _, _)| *s).collect::<Vec<_>>()
+        );
+        // Every score is now the RRF value (<= 1/(k+1)), never a raw cosine.
+        assert!(scored
+            .iter()
+            .all(|(s, _, _)| *s <= 1.0 / 61.0 + f32::EPSILON));
     }
 }

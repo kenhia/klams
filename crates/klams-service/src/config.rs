@@ -296,6 +296,29 @@ impl Default for RetrievalConfig {
     }
 }
 
+impl RetrievalConfig {
+    /// Map the `[retrieval]` block to a [`klams_types::FusionStrategy`]
+    /// (sprint 024 #330 — the config was parsed but never applied). Used
+    /// for both the `/memory/context` builder and the MCP `memory_search`
+    /// path. Unknown `fusion` strings, or `weighted` without `weights`,
+    /// fall back to RRF so a typo can never silently disable ranking.
+    #[must_use]
+    pub fn fusion_strategy(&self) -> klams_types::FusionStrategy {
+        use klams_types::{FusionStrategy, WeightedNorm};
+        match (self.fusion.as_str(), &self.weights) {
+            ("weighted", Some(w)) => FusionStrategy::Weighted {
+                vector: w.vector,
+                fts: w.fts,
+                normalization: match w.normalization.as_str() {
+                    "minmax" => WeightedNorm::MinMax,
+                    _ => WeightedNorm::ZScore,
+                },
+            },
+            _ => FusionStrategy::Rrf { k: self.rrf_k },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokensConfig {
     #[serde(default = "default_tokens_mode")]
@@ -421,6 +444,47 @@ impl Config {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn fusion_strategy_maps_config_and_falls_back_to_rrf() {
+        use klams_types::{FusionStrategy, WeightedNorm};
+        // Default → RRF at the configured k.
+        let base = RetrievalConfig {
+            rrf_k: 42,
+            ..Default::default()
+        };
+        assert_eq!(base.fusion_strategy(), FusionStrategy::Rrf { k: 42 });
+        // weighted + weights → Weighted with parsed norm.
+        let weighted = RetrievalConfig {
+            fusion: "weighted".into(),
+            weights: Some(RetrievalWeights {
+                vector: 0.7,
+                fts: 0.3,
+                normalization: "minmax".into(),
+            }),
+            ..base.clone()
+        };
+        assert_eq!(
+            weighted.fusion_strategy(),
+            FusionStrategy::Weighted {
+                vector: 0.7,
+                fts: 0.3,
+                normalization: WeightedNorm::MinMax
+            }
+        );
+        // weighted-without-weights, or an unknown string → RRF fallback
+        // (a typo can never silently disable ranking).
+        let no_weights = RetrievalConfig {
+            fusion: "weighted".into(),
+            ..base.clone()
+        };
+        assert_eq!(no_weights.fusion_strategy(), FusionStrategy::Rrf { k: 42 });
+        let bogus = RetrievalConfig {
+            fusion: "bogus".into(),
+            ..base
+        };
+        assert_eq!(bogus.fusion_strategy(), FusionStrategy::Rrf { k: 42 });
+    }
 
     fn example_path() -> PathBuf {
         let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

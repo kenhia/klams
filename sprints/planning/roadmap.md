@@ -49,21 +49,19 @@ dedupe, embed_batch, golden tests. Also repaired main CI (red since
 
 ### 023 — Multi-host scanning + host identity → [sprints/023-multi-host-scanning/](../023-multi-host-scanning/sprint.md)
 
-Started 2026-07-11 from korg proposal `korg:413` (covers klams WIs
-#407–#411). Inserted ahead of ranking (now 024): with repos split across
-kubs0/kai, kai-repo knowledge is entirely absent from klams. Add host
-identity to chunks (populate `machine`, key delete + dedupe on
-`(machine, file)` — also a correctness gate, surface host in the
-knowledge projection so agents get `(host, file)`), deploy a per-host
-scanner on kai, rescan both. Central NFS mount-scan for hosts that can't
-run the scanner (Windows/cleo) is a future option (klams #406, with the
-`NOT_MOUNTED` prune guard). Scope in the sprint doc.
+Shipped 2026-07-13 (PR #25, `5762a8f`; deployed 0.1.23 on kubs0 + a
+per-host scanner provisioned on kai). Host stamped on every chunk;
+delete + dedupe host-aware `(machine, file)`; host in the knowledge
+projection. kai's `/home/ken/src` now in the corpus (`host=kai`); kubs0
+backfilled to `host=kubs0` in place via Qdrant `set_payload` (no
+re-index). korg WIs #407–#411 resolved, proposal `korg:413` done. Remote
+scanners reach klams via the tailscale-serve HTTPS MagicDNS URL. NFS
+central mount-scan captured as klams #406.
 
-## Sprint queue
+### 024 — One ranking: fusion unification + eval enablement → [sprints/024-ranking-unification/](../024-ranking-unification/sprint.md)
 
-### 024 — One ranking: fusion unification + eval enablement
-
-Crossroads §5 #2/#5/#9. Make MCP `memory_search` (the real-traffic
+Started 2026-07-13 from korg proposal `korg:339` (covers klams WIs
+#328–#332). Make MCP `memory_search` (the real-traffic
 surface) use rank-based fusion instead of raw cross-scale score sort;
 converge the three merge implementations on `hybrid::fuse`; route
 klams-mcp through the Store/adapter seam instead of concrete
@@ -72,6 +70,8 @@ fusion` config; hermetic merge-invariant tests so ranking can't regress
 off-main. This is the 016-deferred work, now due — and the structural
 prerequisite for any third search source. Klams-side surface for
 klams-mind's identifier-heavy eval suite rides along.
+
+## Sprint queue
 
 ### 025 — Decide & do: lexical knowledge search (gated on data)
 
