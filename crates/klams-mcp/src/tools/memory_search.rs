@@ -22,7 +22,10 @@ use crate::{
     metrics as mcp_metrics, projection,
     tools::McpState,
 };
-use klams_types::{MemoryKind, PublicAuthorRef, PublicMemory, ScoredMemory};
+use klams_store::RankedRow;
+use klams_types::{
+    FusionStrategy, MemoryKind, PublicAuthorRef, PublicMemory, RetrievalSource, ScoredMemory,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -239,30 +242,38 @@ pub async fn run(
         scored.retain(|(_, _, mem)| want_tags.iter().all(|t| mem.tags.iter().any(|m| m == t)));
     }
 
-    // Cross-source merge by descending score. NOTE (sprint 016): scores
-    // are not on a shared scale across kinds (knowledge = Qdrant cosine,
-    // fact/event = Postgres ts_rank), so this ordering is biased toward
-    // knowledge. Surfaced via ScoredMemory.score, not corrected here.
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    // Miss-log signals, captured from the RAW per-source scores before
+    // the rank-fusion rescoring below overwrites them (the low-score
+    // signal is about a weak Qdrant cosine, not the fused RRF value).
+    let hit_count = scored.len();
+    let raw_top = scored
+        .iter()
+        .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(s, _, m)| (*s, m.kind()));
+
+    // Cross-source rank fusion (sprint 024 #328). Each source is ranked
+    // best-first within itself but on an incomparable score scale
+    // (Qdrant cosine vs Postgres ts_rank), so a raw score sort
+    // structurally favoured knowledge. Fuse by RRF via
+    // `klams_core::hybrid::fuse` — the same ranking `/memory/context`
+    // uses — which keys on id + within-source rank, so equal
+    // within-source ranks land at comparable positions regardless of
+    // kind. Reorder the projections and set `score` to the fused value.
+    fuse_in_place(&mut scored, fusion_strategy(state));
     scored.truncate(top_k as usize);
 
     // Miss log (sprint 021, #317): a search that returned nothing, or
     // only a weak knowledge match, is the "what did an agent want and
     // not get" signal that drives chunking fixes and the lexical-search
-    // decision. Record it two ways — a counter for the Grafana zero-hit
-    // panel, and a durable row keyed by query + caller. The insert is
-    // fire-and-forget (spawned) so it never adds latency to or fails a
-    // live search.
-    if let Some(reason) =
-        classify_miss(scored.len(), scored.first().map(|(s, _, m)| (*s, m.kind())))
-    {
+    // decision. Fire-and-forget so it never adds latency to a live search.
+    if let Some(reason) = classify_miss(hit_count, raw_top) {
         klams_core::metrics::incr_search_miss(reason);
         let miss = klams_store::SearchMiss {
             query: query.clone(),
             caller: caller.unwrap_or("unknown").to_string(),
             reason: reason.to_string(),
-            top_score: scored.first().map(|(s, _, _)| *s),
-            hit_count: i32::try_from(scored.len()).unwrap_or(i32::MAX),
+            top_score: raw_top.map(|(s, _)| s),
+            hit_count: i32::try_from(hit_count).unwrap_or(i32::MAX),
             kinds: kinds_label(&kinds),
         };
         let store = state.store.clone();
@@ -353,6 +364,48 @@ fn classify_miss(hit_count: usize, top: Option<(f32, MemoryKind)>) -> Option<&'s
         }
     }
     None
+}
+
+/// Fusion strategy for cross-source ranking. Sprint 024 #328 uses RRF
+/// (k=60, `hybrid::fuse` default). Sprint 024 #330 wires the
+/// `[retrieval] fusion` config through here.
+fn fusion_strategy(_state: &McpState) -> FusionStrategy {
+    FusionStrategy::default_rrf()
+}
+
+/// Rank-fuse `scored` in place (sprint 024 #328): partition into
+/// per-kind best-first lists, RRF-fuse via `klams_core::hybrid::fuse`,
+/// then reorder the entries by the fused ranking and set each `score` to
+/// its fused value. RRF keys on id + within-source rank, so equal
+/// within-source ranks land at comparable positions regardless of kind
+/// — knowledge no longer structurally outranks facts/events.
+fn fuse_in_place(scored: &mut [(f32, u32, PublicMemory)], strategy: FusionStrategy) {
+    let mut by_kind: [Vec<RankedRow>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    for (_, _, mem) in scored.iter() {
+        let (idx, source) = match mem.kind() {
+            MemoryKind::Knowledge => (0usize, RetrievalSource::Vector),
+            MemoryKind::Fact => (1, RetrievalSource::Fts),
+            MemoryKind::Event => (2, RetrievalSource::Fts),
+        };
+        by_kind[idx].push(RankedRow {
+            source,
+            id: mem.id,
+            score: 0.0,
+            payload: serde_json::Value::Null,
+        });
+    }
+    let fused = klams_core::hybrid::fuse(by_kind.into_iter().collect(), strategy);
+    let order: HashMap<uuid::Uuid, (usize, f32)> = fused
+        .iter()
+        .enumerate()
+        .map(|(pos, r)| (r.id, (pos, r.score)))
+        .collect();
+    for entry in scored.iter_mut() {
+        if let Some(&(_, s)) = order.get(&entry.2.id) {
+            entry.0 = s;
+        }
+    }
+    scored.sort_by_key(|(_, _, m)| order.get(&m.id).map_or(usize::MAX, |&(p, _)| p));
 }
 
 /// Comma-joined kind labels for the miss-log `kinds` column.
