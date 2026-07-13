@@ -89,6 +89,9 @@ pub struct McpState {
     pub store: Arc<CompositeStore>,
     pub maintenance: Arc<MaintenanceState>,
     pub api: klams_types::ApiConfig,
+    /// Cross-source rank-fusion strategy for `memory_search` (sprint 024
+    /// #328/#330 — from the `[retrieval] fusion` config).
+    pub fusion: klams_types::FusionStrategy,
 }
 
 impl std::fmt::Debug for McpState {
@@ -109,6 +112,9 @@ impl McpState {
             store,
             maintenance,
             api,
+            // Default RRF(k=60); `klams-service` overrides this from the
+            // `[retrieval] fusion` config (sprint 024 #330).
+            fusion: klams_types::FusionStrategy::default_rrf(),
         }
     }
 }

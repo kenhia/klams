@@ -168,6 +168,9 @@ async fn main() -> Result<()> {
     );
     let context_builder = Arc::new(
         klams_core::context::ContextBuilder::new(token_counter, cfg.retrieval.per_source_top_k)
+            // Sprint 024 (#330): apply the [retrieval] fusion config
+            // (previously parsed but never wired).
+            .with_fusion(cfg.retrieval.fusion_strategy())
             .with_summary_store(Arc::clone(&store) as Arc<dyn klams_store::SummaryStore>),
     );
 
@@ -219,11 +222,13 @@ async fn main() -> Result<()> {
     spawn_auth_reload_on_sighup(config_path.clone(), Arc::clone(&store), auth_state.clone());
 
     let api_router = build_router_with_auth(state, auth_state.clone());
-    let mcp_state = klams_mcp::tools::McpState::new(
+    let mut mcp_state = klams_mcp::tools::McpState::new(
         Arc::clone(&store),
         std::sync::Arc::new(maintenance_state.clone()),
         cfg.api.clone(),
     );
+    // Sprint 024 (#330): MCP search fuses with the configured strategy.
+    mcp_state.fusion = cfg.retrieval.fusion_strategy();
     let mcp_router = klams_mcp::router(mcp_state, cfg.server.mcp_allowed_hosts.clone()).layer(
         axum::middleware::from_fn_with_state(auth_state, klams_api::require_bearer),
     );

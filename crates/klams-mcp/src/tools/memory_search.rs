@@ -366,11 +366,12 @@ fn classify_miss(hit_count: usize, top: Option<(f32, MemoryKind)>) -> Option<&'s
     None
 }
 
-/// Fusion strategy for cross-source ranking. Sprint 024 #328 uses RRF
-/// (k=60, `hybrid::fuse` default). Sprint 024 #330 wires the
-/// `[retrieval] fusion` config through here.
-fn fusion_strategy(_state: &McpState) -> FusionStrategy {
-    FusionStrategy::default_rrf()
+/// Fusion strategy for cross-source ranking — the `[retrieval] fusion`
+/// config, plumbed onto [`McpState`] by `klams-service` (sprint 024
+/// #328/#330). Defaults to RRF(k=60) for test harnesses that don't set
+/// it.
+fn fusion_strategy(state: &McpState) -> FusionStrategy {
+    state.fusion
 }
 
 /// Rank-fuse `scored` in place (sprint 024 #328): partition into
