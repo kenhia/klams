@@ -84,6 +84,37 @@ with klams-mind's harness (korg #269).
    magnitudes; `just gate` green; main CI green.
 5. klams-mind's identifier-heavy eval can run against the live service.
 
+## Outcome (2026-07-13 — implemented, gate green)
+
+All five WIs landed; `just gate` green, docker-gated MCP tests pass.
+
+- **#328** — `memory_search` merges via `klams_core::hybrid::fuse` (RRF):
+  hits partitioned into per-kind best-first lists, fused by id +
+  within-source rank, reordered, `score` set to the fused value.
+  Knowledge no longer structurally outranks facts/events.
+- **#330** — `RetrievalConfig::fusion_strategy()` maps the `[retrieval]`
+  block to a `FusionStrategy`, wired into both the `/memory/context`
+  builder (`.with_fusion`) and MCP search (`McpState.fusion`); unknown
+  strings fall back to RRF. Mapper unit test.
+- **#331** — hermetic merge-invariant tests over realistic cross-scale
+  magnitudes (fact@rank0 beats knowledge@rank1); no DB.
+- **#332** — `ScoredMemory.raw_score` carries the pre-fusion per-source
+  relevance (cosine / `ts_rank`) alongside the fused `score`, so
+  klams-mind's identifier-heavy eval judges match quality.
+- **#329** — `memory_search`'s retrieval sources (embed, knowledge ANN,
+  fact/event FTS) route through the `Store` trait rather than concrete
+  `.embedder` / `.qdrant` / `.postgres`, so a third source (025 lexical)
+  is added at the trait + fusion seam. Author-enrichment helpers stay
+  concrete (they're not retrieval sources).
+
+All three merge paths now fuse via `hybrid::fuse` RRF: MCP
+`memory_search` (#328), `/memory/context` (already RRF), and REST
+`/memory/search` (its round-robin `interleave` replaced with `fuse` over
+the per-source `RankedRow` lists it already builds through the
+`StoreHybridAdapter`; kind recovered from the payload `section`).
+
+**Deploy-time:** install 0.1.24 on kubs0. No new migration; no re-index.
+
 ## Out of scope (deferred, tracked)
 
 - Lexical knowledge source / the "Qdrant or OpenSearch" decision →

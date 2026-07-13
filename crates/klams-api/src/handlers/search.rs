@@ -93,18 +93,21 @@ pub async fn search<S: Store>(
         }
     }
 
-    let facts_ranked = ranked_to_hits(
-        facts_rows,
-        SearchType::Fact,
-        /*from_payload_text=*/ false,
+    // Sprint 024 (#328): converge on the same RRF rank fusion the MCP
+    // `memory_search` and `/memory/context` paths use, instead of the
+    // old per-source round-robin. Each list is already ranked best-first;
+    // `hybrid::fuse` keys on id + within-source rank, so no source
+    // structurally outranks another. Kind is recovered from the payload
+    // `section` when projecting each fused row to a `SearchHit`.
+    let fused = klams_core::hybrid::fuse(
+        vec![vector_rows, facts_rows, events_rows],
+        klams_types::FusionStrategy::default_rrf(),
     );
-    let events_ranked = ranked_to_hits(events_rows, SearchType::Event, false);
-    let knowledge_ranked = ranked_to_hits(vector_rows, SearchType::Knowledge, true);
-
-    let merged = interleave(
-        &[facts_ranked, events_ranked, knowledge_ranked],
-        top_k as usize,
-    );
+    let merged: Vec<SearchHit> = fused
+        .into_iter()
+        .take(top_k as usize)
+        .map(ranked_row_to_hit)
+        .collect();
 
     Ok(Json(SearchResults {
         total: merged.len(),
@@ -121,59 +124,40 @@ fn wants(types: Option<&Vec<SearchType>>, t: SearchType) -> bool {
     }
 }
 
-fn ranked_to_hits(
-    rows: Vec<RankedRow>,
-    kind: SearchType,
-    text_from_payload: bool,
-) -> Vec<SearchHit> {
-    rows.into_iter()
-        .map(|r| {
-            let preview = if text_from_payload {
-                r.payload
-                    .get("text")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.chars().take(PREVIEW_MAX).collect::<String>())
-                    .unwrap_or_default()
-            } else {
-                preview_from_payload(&r.payload)
-            };
-            SearchHit {
-                kind,
-                id: r.id,
-                score: r.score.clamp(0.0, 1.0),
-                preview,
-                payload: r.payload,
-            }
-        })
-        .collect()
+/// Project a fused [`RankedRow`] to a [`SearchHit`], recovering the
+/// result kind from the payload `section` the hybrid adapter stamped
+/// (`knowledge` / `facts` / `events`). Knowledge previews from the
+/// payload `text`; facts/events preview the serialized payload.
+fn ranked_row_to_hit(r: RankedRow) -> SearchHit {
+    let section = r
+        .payload
+        .get("section")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let (kind, from_text) = match section {
+        "knowledge" => (SearchType::Knowledge, true),
+        "events" => (SearchType::Event, false),
+        _ => (SearchType::Fact, false),
+    };
+    let preview = if from_text {
+        r.payload
+            .get("text")
+            .and_then(|v| v.as_str())
+            .map(|s| s.chars().take(PREVIEW_MAX).collect::<String>())
+            .unwrap_or_default()
+    } else {
+        preview_from_payload(&r.payload)
+    };
+    SearchHit {
+        kind,
+        id: r.id,
+        score: r.score.clamp(0.0, 1.0),
+        preview,
+        payload: r.payload,
+    }
 }
 
 fn preview_from_payload(payload: &serde_json::Value) -> String {
     let s = payload.to_string();
     s.chars().take(PREVIEW_MAX).collect()
-}
-
-/// Round-robin merge: pull one hit from each non-empty list in order
-/// until `cap` items are gathered. Within each list, original rank
-/// order (highest score first) is preserved.
-fn interleave(buckets: &[Vec<SearchHit>], cap: usize) -> Vec<SearchHit> {
-    let mut idx = vec![0usize; buckets.len()];
-    let mut out: Vec<SearchHit> = Vec::with_capacity(cap);
-    while out.len() < cap {
-        let mut pushed = false;
-        for (b, bucket) in buckets.iter().enumerate() {
-            if idx[b] < bucket.len() {
-                out.push(bucket[idx[b]].clone());
-                idx[b] += 1;
-                pushed = true;
-                if out.len() >= cap {
-                    break;
-                }
-            }
-        }
-        if !pushed {
-            break;
-        }
-    }
-    out
 }

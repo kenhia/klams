@@ -24,7 +24,7 @@ use crate::{
     metrics as mcp_metrics, projection,
     tools::McpState,
 };
-use klams_store::RankedRow;
+use klams_store::{RankedRow, Store};
 use klams_types::{
     FusionStrategy, MemoryKind, PublicAuthorRef, PublicMemory, RetrievalSource, ScoredMemory,
 };
@@ -72,11 +72,10 @@ pub struct MemorySearchArgs {
 }
 
 /// Execute `memory_search`. Returns the merged ranked hits on success
-/// or an MCP error envelope otherwise. Sprint 016: each result is a
-/// [`ScoredMemory`] carrying the relevance `score` and per-source
-/// `source_rank` alongside the memory, so retrieval evals can see why
-/// a hit ranked where it did. Scores are raw and not cross-kind
-/// comparable — see [`ScoredMemory`]'s scale caveat.
+/// or an MCP error envelope otherwise. Each result is a [`ScoredMemory`]
+/// with the fused `score` (RRF, #328), the per-source `source_rank`, and
+/// the pre-fusion `raw_score` (#332), so retrieval evals can see both
+/// how a hit ranked and how well it matched.
 ///
 /// # Errors
 /// Returns an [`ErrorEnvelope`] for `EMPTY_QUERY`, `INVALID_TOP_K`,
@@ -123,7 +122,11 @@ pub async fn run(
 
     // ---------- knowledge via Qdrant ANN ----------
     if want_knowledge {
-        let embedding = state.store.embedder.embed(&query).await.map_err(|e| {
+        // Sprint 024 (#329): route the retrieval sources through the
+        // `Store` trait rather than reaching into `.embedder` / `.qdrant`
+        // / `.postgres`, so a third source (025 lexical) is added at the
+        // trait + fusion seam, not wired into this tool concretely.
+        let embedding = state.store.embed_query(&query).await.map_err(|e| {
             crate::errors::envelope_with_retry(
                 errors::EMBEDDING_UNAVAILABLE,
                 format!("TEI embedding failed: {e}"),
@@ -132,7 +135,6 @@ pub async fn run(
         })?;
         let hits = state
             .store
-            .qdrant
             .search_knowledge(embedding, top_k)
             .await
             .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("search_knowledge: {e}")))?;
@@ -169,7 +171,6 @@ pub async fn run(
     if want_fact || want_event {
         let (fact_hits, event_hits) = state
             .store
-            .postgres
             .search_text(&query, top_k)
             .await
             .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("search_text: {e}")))?;
