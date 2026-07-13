@@ -18,13 +18,34 @@ pub fn banner() -> &'static str {
     "klams-scanner ready"
 }
 
+/// The host this scanner runs on, for chunk attribution (sprint 023
+/// #407). Reads the kernel's live hostname from procfs — identical to
+/// `gethostname(2)`, with no crate and no systemd-unit dependency
+/// (systemd doesn't export `$HOSTNAME`; that's the monitor's #56
+/// lesson). Falls back to `$HOSTNAME`, then `"unknown"`. A config
+/// `host` key overrides this — the single host-source seam the future
+/// central mount-scan mode (#406) extends.
+#[must_use]
+pub fn default_host() -> String {
+    if let Ok(h) = std::fs::read_to_string("/proc/sys/kernel/hostname") {
+        let h = h.trim();
+        if !h.is_empty() {
+            return h.to_owned();
+        }
+    }
+    std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".into())
+}
+
 /// Walk a single root, diff against cursor, publish changes, prune
 /// vanished files. Exposed at the library level so the integration
-/// suite can drive it directly without spawning the binary.
+/// suite can drive it directly without spawning the binary. `host` is
+/// stamped on every chunk and scopes deletes (sprint 023 #407/#408).
+#[allow(clippy::too_many_arguments)]
 pub async fn scan_root(
     client: &Client,
     base_url: &str,
     bearer: &str,
+    host: &str,
     cursor_path: &Path,
     root: &Path,
 ) -> Result<()> {
@@ -81,7 +102,7 @@ pub async fn scan_root(
         // (leave the cursor unadvanced to retry) rather than publish new
         // chunks on top of stale ones.
         if prev.is_some() {
-            match publish_delete(base_url, bearer, &abs).await {
+            match publish_delete(base_url, bearer, host, &abs).await {
                 Ok(n) => {
                     if n > 0 {
                         tracing::info!(path = %abs, deleted = n, "cleared stale chunks before reindex");
@@ -97,7 +118,7 @@ pub async fn scan_root(
 
         let mut publish_failed = false;
         for c in &chunks {
-            if let Err(e) = publish_chunk(client, &repo, &abs, c).await {
+            if let Err(e) = publish_chunk(client, host, &repo, &abs, c).await {
                 tracing::warn!(path = %abs, idx = c.index, %e, "publish_chunk failed");
                 publish_failed = true;
             }
@@ -128,7 +149,7 @@ pub async fn scan_root(
             // Belongs to a different root; not this scan's responsibility.
             continue;
         }
-        match publish_delete(base_url, bearer, &prev.absolute_path).await {
+        match publish_delete(base_url, bearer, host, &prev.absolute_path).await {
             Ok(n) => {
                 tracing::info!(path = %prev.absolute_path, deleted = n, "pruned");
                 cursor.delete(&prev.absolute_path)?;
@@ -144,4 +165,20 @@ fn now_seconds_i64() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| i64::try_from(d.as_secs()).unwrap_or(0))
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::default_host;
+
+    #[test]
+    fn default_host_is_nonempty_and_trimmed() {
+        // On Linux (dev + CI) procfs yields the real hostname; the only
+        // contract we assert is a non-empty, whitespace-free value so a
+        // chunk is never attributed to "" — never the systemd "unknown"
+        // trap (#56) since procfs doesn't depend on $HOSTNAME.
+        let h = default_host();
+        assert!(!h.is_empty());
+        assert_eq!(h, h.trim());
+    }
 }

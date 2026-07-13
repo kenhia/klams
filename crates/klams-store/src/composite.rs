@@ -106,9 +106,10 @@ impl Store for CompositeStore {
         &self,
         hash: &str,
         source_file: Option<&str>,
+        machine: Option<&str>,
     ) -> StoreResult<Option<Uuid>> {
         self.qdrant
-            .find_knowledge_by_content_hash(hash, source_file)
+            .find_knowledge_by_content_hash(hash, source_file, machine)
             .await
     }
 
@@ -116,8 +117,14 @@ impl Store for CompositeStore {
         self.qdrant.get_knowledge(id).await
     }
 
-    async fn delete_knowledge_by_source_file(&self, source_file: &str) -> StoreResult<u64> {
-        self.qdrant.delete_by_source_file(source_file).await
+    async fn delete_knowledge_by_source_file(
+        &self,
+        source_file: &str,
+        machine: Option<&str>,
+    ) -> StoreResult<u64> {
+        self.qdrant
+            .delete_by_source_file(source_file, machine)
+            .await
     }
 
     async fn embed_query(&self, query: &str) -> StoreResult<Vec<f32>> {
@@ -486,6 +493,7 @@ async fn list_author_memories_impl(
                         text: item.text.clone(),
                         source_path: item.file.clone(),
                         repo: item.repo.clone(),
+                        host: item.machine.clone(),
                     },
                     tags: item.tags.clone(),
                     author: author_ref.clone(),
@@ -807,6 +815,7 @@ async fn list_memories_impl(
                     text: item.text.clone(),
                     source_path: item.file.clone(),
                     repo: item.repo.clone(),
+                    host: item.machine.clone(),
                 },
                 tags: item.tags.clone(),
                 author: author_ref,

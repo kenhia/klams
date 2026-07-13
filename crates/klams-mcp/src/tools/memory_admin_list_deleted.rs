@@ -277,6 +277,7 @@ async fn list_knowledge(
                     text: item.text.clone(),
                     source_path: item.file.clone(),
                     repo: item.repo.clone(),
+                    host: item.machine.clone(),
                 },
                 tags: item.tags.clone(),
                 author,

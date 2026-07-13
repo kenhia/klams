@@ -338,13 +338,18 @@ impl QdrantStore {
         &self,
         hash: &str,
         source_file: Option<&str>,
+        machine: Option<&str>,
     ) -> StoreResult<Option<Uuid>> {
-        // Scope dedupe to the same source file (sprint 022 #324): an
-        // identical chunk in two files must be two points, so deleting
-        // one file can't drop a chunk still live in the other.
+        // Scope dedupe to the same source file (sprint 022 #324) and
+        // host (sprint 023 #408): an identical chunk in two files — or
+        // the same path on two hosts — must be distinct points, so
+        // deleting one can't drop a chunk still live in the other.
         let mut conds = vec![Condition::matches("content_hash", hash.to_string())];
         if let Some(f) = source_file {
             conds.push(Condition::matches("file", f.to_string()));
+        }
+        if let Some(m) = machine {
+            conds.push(Condition::matches("machine", m.to_string()));
         }
         let filter = Filter::must(conds);
         let resp = self
@@ -402,8 +407,19 @@ impl QdrantStore {
     /// `source_file` matches `source_file`. Returns the count of
     /// deleted points via a `scroll`-then-`delete` round trip
     /// (Qdrant's `delete` RPC does not report a count).
-    pub async fn delete_by_source_file(&self, source_file: &str) -> StoreResult<u64> {
-        let filter = Filter::must([Condition::matches("file", source_file.to_string())]);
+    pub async fn delete_by_source_file(
+        &self,
+        source_file: &str,
+        machine: Option<&str>,
+    ) -> StoreResult<u64> {
+        // Sprint 023 (#408): scope the delete to the host when given, so
+        // one host's re-index can't delete another host's chunk for the
+        // same path.
+        let mut conds = vec![Condition::matches("file", source_file.to_string())];
+        if let Some(m) = machine {
+            conds.push(Condition::matches("machine", m.to_string()));
+        }
+        let filter = Filter::must(conds);
 
         // Count first (paged scroll, ids only).
         let mut deleted: u64 = 0;

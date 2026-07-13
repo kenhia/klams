@@ -78,13 +78,18 @@ impl Store for MockStore {
         &self,
         h: &str,
         _source_file: Option<&str>,
+        _machine: Option<&str>,
     ) -> StoreResult<Option<Uuid>> {
         Ok(self.by_hash.lock().unwrap().get(h).copied())
     }
     async fn get_knowledge(&self, id: Uuid) -> StoreResult<Option<KnowledgeItem>> {
         Ok(self.by_id.lock().unwrap().get(&id).cloned())
     }
-    async fn delete_knowledge_by_source_file(&self, sf: &str) -> StoreResult<u64> {
+    async fn delete_knowledge_by_source_file(
+        &self,
+        sf: &str,
+        _machine: Option<&str>,
+    ) -> StoreResult<u64> {
         let mut by_id = self.by_id.lock().unwrap();
         let ids: Vec<Uuid> = by_id
             .iter()

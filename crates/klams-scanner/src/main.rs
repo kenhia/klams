@@ -53,6 +53,11 @@ struct Config {
     interval_secs: u64,
     #[serde(default = "default_state_dir")]
     state_dir: String,
+    /// Sprint 023 (#407): override the host stamped on chunks. Defaults
+    /// to the kernel hostname. Set explicitly for the future central
+    /// mount-scan mode (#406) where one process scans several hosts.
+    #[serde(default)]
+    host: Option<String>,
 }
 
 fn default_roots() -> Vec<String> {
@@ -89,6 +94,7 @@ async fn main() -> Result<()> {
         tracing::info!(%addr, "metrics endpoint listening");
     }
 
+    let host = cfg.host.clone().unwrap_or_else(klams_scanner::default_host);
     let client = Client::new(&cfg.url, cfg.token.clone()).context("build klams client")?;
     let roots: Vec<PathBuf> = if args.root.is_empty() {
         cfg.roots
@@ -103,12 +109,15 @@ async fn main() -> Result<()> {
         roots = roots.len(),
         interval_secs = interval.as_secs(),
         once = args.once,
+        host = %host,
         "klams-scanner starting"
     );
 
     loop {
         for root in &roots {
-            if let Err(e) = scan_root(&client, &cfg.url, &cfg.token, &cursor_path, root).await {
+            if let Err(e) =
+                scan_root(&client, &cfg.url, &cfg.token, &host, &cursor_path, root).await
+            {
                 tracing::warn!(root = %root.display(), error = %e, "scan failed");
             }
         }
@@ -135,6 +144,7 @@ fn load_config(args: &Args) -> Result<Config> {
         roots: default_roots(),
         interval_secs: default_interval(),
         state_dir: default_state_dir(),
+        host: None,
     })
 }
 

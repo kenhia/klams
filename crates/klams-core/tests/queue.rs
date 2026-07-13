@@ -66,6 +66,7 @@ impl Store for RecordingStore {
         &self,
         _hash: &str,
         _source_file: Option<&str>,
+        _machine: Option<&str>,
     ) -> StoreResult<Option<Uuid>> {
         Ok(None)
     }
