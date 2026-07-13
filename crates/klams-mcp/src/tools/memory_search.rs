@@ -13,9 +13,11 @@
 //! same filter works for facts (which carry no tags column) and
 //! knowledge (which does). Result count is clamped to `top_k`.
 //!
-//! Sprint 016 caveat: `score` is raw and *not* normalized across kinds
-//! (knowledge = Qdrant cosine, fact/event = Postgres `ts_rank`), so the
-//! merged ordering is biased toward knowledge. Exposed, not corrected.
+//! Sprint 024 (#328): the merge is **rank fusion** (RRF via
+//! `klams_core::hybrid::fuse`), so knowledge no longer structurally
+//! outranks facts/events. `ScoredMemory.score` is the fused, cross-kind
+//! comparable value; `raw_score` carries the pre-fusion per-source
+//! relevance (cosine / `ts_rank`) for match-quality evals (#332).
 
 use crate::{
     errors::{self, envelope, ErrorEnvelope},
@@ -242,14 +244,16 @@ pub async fn run(
         scored.retain(|(_, _, mem)| want_tags.iter().all(|t| mem.tags.iter().any(|m| m == t)));
     }
 
-    // Miss-log signals, captured from the RAW per-source scores before
-    // the rank-fusion rescoring below overwrites them (the low-score
-    // signal is about a weak Qdrant cosine, not the fused RRF value).
+    // Snapshot the RAW per-source scores by id before rank-fusion
+    // rescoring overwrites them: the miss-log low-score signal is about a
+    // weak Qdrant cosine (not the fused RRF value), and the eval surface
+    // (#332) exposes raw match quality as ScoredMemory.raw_score.
     let hit_count = scored.len();
     let raw_top = scored
         .iter()
         .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
         .map(|(s, _, m)| (*s, m.kind()));
+    let raw_by_id: HashMap<uuid::Uuid, f32> = scored.iter().map(|(s, _, m)| (m.id, *s)).collect();
 
     // Cross-source rank fusion (sprint 024 #328). Each source is ranked
     // best-first within itself but on an incomparable score scale
@@ -291,6 +295,7 @@ pub async fn run(
         .map(|(score, source_rank, memory)| ScoredMemory {
             score,
             source_rank,
+            raw_score: raw_by_id.get(&memory.id).copied(),
             memory,
         })
         .collect())

@@ -107,12 +107,21 @@ impl PublicMemory {
 /// backend maps 1:1 to that kind, so there is no separate `source_kind`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ScoredMemory {
-    /// Raw per-source relevance score (see the scale caveat above).
+    /// Cross-source **fused** relevance score (RRF, sprint 024 #328).
+    /// Comparable across kinds and monotonic with the result order —
+    /// this is the ranking key. For raw per-source match quality (Qdrant
+    /// cosine / Postgres `ts_rank`), see [`Self::raw_score`].
     pub score: f32,
     /// 0-based rank the hit held **within its own source's** result
     /// list, before cross-source fusion. The global rank is this
     /// hit's index in the returned array.
     pub source_rank: u32,
+    /// Raw per-source relevance the hit had before fusion (Qdrant cosine
+    /// for knowledge, Postgres `ts_rank` for fact/event) — the match
+    /// quality signal klams-mind's identifier-heavy eval judges (sprint
+    /// 024 #332). `None` only if unavailable.
+    #[serde(default)]
+    pub raw_score: Option<f32>,
     pub memory: PublicMemory,
 }
 
@@ -180,6 +189,7 @@ mod tests {
         let hit = ScoredMemory {
             score: 0.5,
             source_rank: 2,
+            raw_score: Some(0.87),
             memory: sample_memory(),
         };
         let v = serde_json::to_value(&hit).unwrap();
