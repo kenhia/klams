@@ -457,4 +457,99 @@ mod tests {
             "fact,knowledge,event"
         );
     }
+
+    // ---- Sprint 024 (#331): hermetic merge-invariant tests over
+    // realistic cross-scale magnitudes (Qdrant cosine ~0.8 vs Postgres
+    // ts_rank ~0.05). RRF ignores magnitude and fuses by within-source
+    // rank, so knowledge no longer structurally outranks facts. No DB.
+
+    use klams_types::{PublicAuthorRef, PublicMemoryContent};
+
+    fn mem(kind: MemoryKind, tag: &str) -> PublicMemory {
+        let content = match kind {
+            MemoryKind::Knowledge => PublicMemoryContent::Knowledge {
+                text: tag.into(),
+                source_path: None,
+                repo: None,
+                host: None,
+            },
+            MemoryKind::Fact => PublicMemoryContent::Fact {
+                fact_type: "EnvFact".into(),
+                payload: serde_json::json!({ "k": tag }),
+            },
+            MemoryKind::Event => PublicMemoryContent::Event {
+                category: "Service".into(),
+                payload: serde_json::json!({ "k": tag }),
+                task_id: None,
+            },
+        };
+        PublicMemory {
+            id: uuid::Uuid::now_v7(),
+            content,
+            tags: vec![],
+            author: PublicAuthorRef {
+                agent_name: "t".into(),
+                model: None,
+                repo: None,
+            },
+            created_at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+            updated_at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+            deleted_at: None,
+            deleted_by_author_id: None,
+        }
+    }
+
+    #[test]
+    fn rrf_lets_a_top_ranked_fact_beat_a_lower_ranked_knowledge_hit() {
+        // Per-source order (as `run` builds it): knowledge best-first,
+        // then facts best-first. Raw cosine >> ts_rank, so the OLD raw
+        // sort put both knowledge hits above both facts. RRF must
+        // interleave by rank: fact@rank0 outranks knowledge@rank1.
+        let k0 = mem(MemoryKind::Knowledge, "k0");
+        let k1 = mem(MemoryKind::Knowledge, "k1");
+        let f0 = mem(MemoryKind::Fact, "f0");
+        let (k0id, k1id, f0id) = (k0.id, k1.id, f0.id);
+        let mut scored = vec![
+            (0.91_f32, 0, k0), // knowledge rank 0, high cosine
+            (0.86_f32, 1, k1), // knowledge rank 1
+            (0.05_f32, 0, f0), // fact rank 0, tiny ts_rank
+        ];
+        fuse_in_place(&mut scored, FusionStrategy::default_rrf());
+        let pos = |id: uuid::Uuid| scored.iter().position(|(_, _, m)| m.id == id).unwrap();
+        // The two within-source rank-0 hits (k0, f0) tie for the top and
+        // occupy positions {0,1}; knowledge@rank1 (k1) is last.
+        assert!(
+            pos(k0id) <= 1 && pos(f0id) <= 1,
+            "both rank-0 hits must lead"
+        );
+        assert_eq!(
+            pos(k1id),
+            2,
+            "knowledge@rank1 must sink below the rank-0 hits"
+        );
+        assert!(
+            pos(f0id) < pos(k1id),
+            "fact@rank0 must outrank knowledge@rank1 under RRF (the fix)"
+        );
+    }
+
+    #[test]
+    fn rrf_output_is_sorted_by_fused_score_descending() {
+        let mut scored = vec![
+            (0.9_f32, 0, mem(MemoryKind::Knowledge, "k0")),
+            (0.8_f32, 1, mem(MemoryKind::Knowledge, "k1")),
+            (0.07_f32, 0, mem(MemoryKind::Fact, "f0")),
+            (0.03_f32, 1, mem(MemoryKind::Event, "e0")),
+        ];
+        fuse_in_place(&mut scored, FusionStrategy::default_rrf());
+        assert!(
+            scored.windows(2).all(|w| w[0].0 >= w[1].0),
+            "fused scores must be descending: {:?}",
+            scored.iter().map(|(s, _, _)| *s).collect::<Vec<_>>()
+        );
+        // Every score is now the RRF value (<= 1/(k+1)), never a raw cosine.
+        assert!(scored
+            .iter()
+            .all(|(s, _, _)| *s <= 1.0 / 61.0 + f32::EPSILON));
+    }
 }
