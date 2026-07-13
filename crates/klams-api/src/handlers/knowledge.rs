@@ -58,7 +58,7 @@ pub async fn index<S: Store>(
 
     if let Some(existing) = state
         .store
-        .find_knowledge_by_content_hash(&content_hash, req.file.as_deref())
+        .find_knowledge_by_content_hash(&content_hash, req.file.as_deref(), req.machine.as_deref())
         .await
         .map_err(|e| ApiError::Internal {
             request_id: format!("store-error: {e}"),
@@ -112,6 +112,11 @@ pub async fn index<S: Store>(
 #[derive(Debug, Deserialize)]
 pub struct DeleteParams {
     pub source_file: String,
+    /// Sprint 023 (#408): scope the delete to a host so one host's
+    /// re-index can't drop another host's chunk for the same path.
+    /// Optional for back-compat with callers that omit it.
+    #[serde(default)]
+    pub machine: Option<String>,
 }
 
 /// `POST /memory/knowledge/delete?source_file=<abs_path>` — remove
@@ -129,7 +134,7 @@ pub async fn delete<S: Store>(
     }
     let deleted = state
         .store
-        .delete_knowledge_by_source_file(&params.source_file)
+        .delete_knowledge_by_source_file(&params.source_file, params.machine.as_deref())
         .await
         .map_err(|e| ApiError::Internal {
             request_id: format!("store-error: {e}"),

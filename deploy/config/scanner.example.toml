@@ -11,7 +11,10 @@
 # Unix permissions still apply; grant least-broad read access if the
 # home dir is 0700).
 
-# klams service base URL (loopback; the service binds 127.0.0.1:7777).
+# klams service base URL. On the same host as the service, use loopback
+# (127.0.0.1:7777). On a REMOTE host scanning into the central service
+# (sprint 023 multi-host — e.g. kai), point at the service host:
+#   url = "http://kubs0:7777"
 url = "http://127.0.0.1:7777"
 
 # Scoped scanner bearer. MUST resolve to a registered author so the
@@ -32,3 +35,11 @@ interval_secs = 3600
 # (scanner-config.md C4). The binary reads this value directly (it does
 # not consume $STATE_DIRECTORY), so set it explicitly.
 state_dir = "/var/lib/klams"
+
+# Host stamped on every chunk (sprint 023 #407), making retrieval a
+# fully-qualified (host, file). Defaults to the kernel hostname
+# (/proc/sys/kernel/hostname) — leave unset on a normal per-host
+# scanner. Set it explicitly only for the future central mount-scan mode
+# (klams #406), where one process scans several hosts' mounts and the
+# host is derived per subtree.
+# host = "kai"

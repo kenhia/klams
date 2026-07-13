@@ -148,21 +148,28 @@ pub trait Store: Send + Sync + 'static {
         query: &str,
         top_k: u32,
     ) -> StoreResult<(Vec<TextHit>, Vec<TextHit>)>;
-    /// Find an existing knowledge point with `hash`. When `source_file`
-    /// is `Some`, the match is scoped to that file so identical chunks
-    /// in different files stay distinct points — otherwise one file's
-    /// delete would drop a chunk still live in another (sprint 022 #324).
+    /// Find an existing knowledge point with `hash`. Scoped by
+    /// `source_file` (sprint 022 #324) and `machine` (sprint 023 #408)
+    /// when `Some`, so identical chunks in different files — or the same
+    /// path on different hosts — stay distinct points.
     async fn find_knowledge_by_content_hash(
         &self,
         hash: &str,
         source_file: Option<&str>,
+        machine: Option<&str>,
     ) -> StoreResult<Option<Uuid>>;
     async fn get_knowledge(&self, id: Uuid) -> StoreResult<Option<KnowledgeItem>>;
     /// Sprint 003 T010b: delete every knowledge point whose payload
-    /// `source_file` matches `source_file`. Returns the number of
-    /// points removed. Used by the scanner's vanished-file cleanup
-    /// (FR-008). Default returns `Other` so mocks need not implement.
-    async fn delete_knowledge_by_source_file(&self, _source_file: &str) -> StoreResult<u64> {
+    /// `source_file` matches. Sprint 023 (#408): also scoped to
+    /// `machine` when `Some`, so one host's delete-before-reindex can't
+    /// drop another host's chunk for the same path. Returns the number
+    /// of points removed. Default returns `Other` so mocks need not
+    /// implement.
+    async fn delete_knowledge_by_source_file(
+        &self,
+        _source_file: &str,
+        _machine: Option<&str>,
+    ) -> StoreResult<u64> {
         Err(StoreError::Other(
             "delete_knowledge_by_source_file not implemented".into(),
         ))

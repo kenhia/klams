@@ -615,3 +615,41 @@ cargo run --release -p reattribute-system -- --apply
 The repair is **idempotent** — a second `--apply` is a no-op once
 every row has been classified. Run once as part of the cutover; no
 recurring schedule is needed.
+
+## Sprint 023 — multi-host scanning
+
+The scanner is a client that POSTs to the central klams service, so
+scanning a second host is just running it there pointed at kubs0. Every
+chunk now carries its **host** (`machine`), keyed into the delete +
+dedupe path, so two hosts that share a path (`/home/ken/src/...` on both)
+never corrupt each other, and `memory_search` knowledge results include
+the host for a fully-qualified `(host, source_path)`.
+
+### Deploying a scanner on a second host (e.g. kai)
+
+1. **Token:** add a dedicated `[[auth.tokens]]` to `/etc/klams/klams.toml`
+   on kubs0 (write scope, `agent_name = "kai-scanner"`), then
+   `sudo systemctl reload klams-service` (hot-reload, no restart — sprint
+   018). Keep it distinct from kubs0's own scanner token so writes stay
+   attributable per host.
+2. **Binary:** install the same-version `klams-scanner` on kai (it's the
+   same Linux release binary; version must match the service it writes
+   to).
+3. **Config:** `/etc/klams/scanner.toml` with `url = "http://kubs0:7777"`,
+   the `kai-scanner` token, and kai's absolute roots (at least
+   `/home/ken/src`). Leave `host` unset — the scanner reports kai's
+   kernel hostname automatically.
+4. **Unit:** install `klams-scanner.service` + `.timer`, but **drop the
+   `After=klams-service.service`** dependency (there is no local service
+   on kai — it depends only on `network-online.target`). Then
+   `systemctl enable --now klams-scanner.timer`.
+
+Verify: after a scan, a kai-only file is retrievable via `memory_search`
+with `host = "kai"`, and kubs0 files show `host = "kubs0"`.
+
+**Failure mode (why per-host, not central mount):** if kai is down, its
+scanner simply doesn't run — kai's chunks go *stale*, never deleted. A
+central mount-and-scan topology (for hosts that can't run the scanner,
+e.g. Windows/cleo) is a separate future option (klams #406) with a
+`NOT_MOUNTED` sentinel guard against a mount outage triggering a mass
+prune.

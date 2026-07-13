@@ -90,6 +90,7 @@ impl Store for MockStore {
         &self,
         _h: &str,
         _source_file: Option<&str>,
+        _machine: Option<&str>,
     ) -> StoreResult<Option<Uuid>> {
         Ok(None)
     }

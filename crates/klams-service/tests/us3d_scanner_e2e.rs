@@ -58,6 +58,7 @@ async fn fresh_file_is_indexed_edit_replaces_delete_removes() {
         &server.client,
         &format!("http://{}", server.addr),
         &server.bearer_token,
+        "testhost",
         &cursor_path,
         tmp_root.path(),
     )
@@ -81,6 +82,7 @@ async fn fresh_file_is_indexed_edit_replaces_delete_removes() {
         &server.client,
         &format!("http://{}", server.addr),
         &server.bearer_token,
+        "testhost",
         &cursor_path,
         tmp_root.path(),
     )
@@ -107,6 +109,7 @@ async fn fresh_file_is_indexed_edit_replaces_delete_removes() {
         &server.client,
         &format!("http://{}", server.addr),
         &server.bearer_token,
+        "testhost",
         &cursor_path,
         tmp_root.path(),
     )

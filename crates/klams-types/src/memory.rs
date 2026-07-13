@@ -36,6 +36,11 @@ pub enum PublicMemoryContent {
         source_path: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         repo: Option<String>,
+        /// Sprint 023 (#409): the host the source file lives on, so a
+        /// retrieval result is a fully-qualified `(host, source_path)` an
+        /// agent can act on without an extra lookup.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        host: Option<String>,
     },
     Event {
         category: String,
@@ -128,6 +133,7 @@ mod tests {
                 text: "hello".into(),
                 source_path: None,
                 repo: None,
+                host: None,
             },
             tags: vec![],
             author: PublicAuthorRef {
@@ -140,6 +146,30 @@ mod tests {
             deleted_at: None,
             deleted_by_author_id: None,
         }
+    }
+
+    /// Sprint 023 (#409): knowledge results carry the host when known,
+    /// so an agent gets a fully-qualified `(host, source_path)`. Omitted
+    /// from the wire when absent (back-compat / agent-authored writes).
+    #[test]
+    fn knowledge_host_serializes_when_present_and_omits_when_absent() {
+        let with_host = PublicMemoryContent::Knowledge {
+            text: "t".into(),
+            source_path: Some("/home/ken/src/x.rs".into()),
+            repo: Some("src".into()),
+            host: Some("kai".into()),
+        };
+        let j = serde_json::to_value(&with_host).unwrap();
+        assert_eq!(j["host"], "kai");
+
+        let without = PublicMemoryContent::Knowledge {
+            text: "t".into(),
+            source_path: None,
+            repo: None,
+            host: None,
+        };
+        let j2 = serde_json::to_value(&without).unwrap();
+        assert!(j2.get("host").is_none(), "host must be omitted when None");
     }
 
     /// Sprint 016 — the `ScoredMemory` envelope carries `score` +

@@ -40,6 +40,7 @@ pub fn project_knowledge(item: &KnowledgeItem, author: PublicAuthorRef) -> Publi
             text: item.text.clone(),
             source_path: item.file.clone(),
             repo: item.repo.clone(),
+            host: item.machine.clone(),
         },
         tags: item.tags.clone(),
         author,

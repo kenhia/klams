@@ -890,8 +890,8 @@ sudo systemctl stop klams-scanner.timer klams-scanner.service
 # keep the rows so files that have since vanished are still pruned.
 # mtime_ns=0 defeats the mtime short-circuit; the sentinel hash defeats
 # the content-hash short-circuit.
-sudo sqlite3 /var/lib/klams/scanner.sqlite \
-    "UPDATE file_cursor SET mtime_ns = 0, content_hash = 'reindex';"
+# kubs0 has no sqlite3 CLI — drive the cursor edit through python3.
+sudo -u klams python3 -c "import sqlite3; d=sqlite3.connect('/var/lib/klams/scanner.sqlite'); d.execute(\"UPDATE file_cursor SET mtime_ns=0, content_hash='reindex'\"); d.commit()"
 just scanner-once                           # delete-then-reindex per file
 sudo systemctl start klams-scanner.timer
 ```
@@ -964,8 +964,8 @@ scanner-v2 chunks on top of the old ones (duplicates).
 
 ```sh
 sudo systemctl stop klams-scanner.timer klams-scanner.service
-sudo sqlite3 /var/lib/klams/scanner.sqlite \
-    "UPDATE file_cursor SET mtime_ns = 0, content_hash = 'reindex';"
+# kubs0 has no sqlite3 CLI — drive the cursor edit through python3.
+sudo -u klams python3 -c "import sqlite3; d=sqlite3.connect('/var/lib/klams/scanner.sqlite'); d.execute(\"UPDATE file_cursor SET mtime_ns=0, content_hash='reindex'\"); d.commit()"
 just scanner-once                           # delete-then-reindex, scanner v2
 sudo systemctl start klams-scanner.timer
 ```

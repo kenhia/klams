@@ -22,6 +22,7 @@ const RETRY_MAX_DELAY: Duration = Duration::from_secs(60);
 
 pub async fn publish_chunk(
     client: &Client,
+    host: &str,
     repo: &str,
     source_file: &str,
     chunk: &crate::chunk::Chunk,
@@ -32,7 +33,9 @@ pub async fn publish_chunk(
         tags: vec![],
         repo: Some(repo.to_owned()),
         file: Some(source_file.to_owned()),
-        machine: None,
+        // Sprint 023 (#407): stamp the host so retrieval is
+        // fully-qualified as (host, file) and deletes are host-scoped.
+        machine: Some(host.to_owned()),
         // Sprint 022 (#322) — carry chunk structure to the store payload.
         chunk_index: Some(chunk.index),
         language: chunk.language.clone(),
@@ -69,18 +72,25 @@ pub async fn publish_chunk(
     unreachable!("publish_chunk retry loop exhausted without returning")
 }
 
-/// `POST /memory/knowledge/delete?source_file=<abs>` — used at the
-/// end of a walk for every path that has vanished since the last run.
-/// Uses raw `reqwest` because `klams-client` doesn't yet expose a
-/// dedicated helper; piggybacks on the client's base URL + bearer.
-pub async fn publish_delete(base_url: &str, bearer: &str, source_file: &str) -> Result<u64> {
+/// `POST /memory/knowledge/delete?source_file=<abs>&machine=<host>` —
+/// used for vanished files and delete-before-reindex. The `machine`
+/// scope (sprint 023 #408) keeps one host's delete from dropping another
+/// host's chunk for the same path. Uses raw `reqwest` because
+/// `klams-client` doesn't yet expose a dedicated helper; piggybacks on
+/// the client's base URL + bearer.
+pub async fn publish_delete(
+    base_url: &str,
+    bearer: &str,
+    host: &str,
+    source_file: &str,
+) -> Result<u64> {
     let http = reqwest::Client::new();
     let resp = http
         .post(format!(
             "{}/memory/knowledge/delete",
             base_url.trim_end_matches('/')
         ))
-        .query(&[("source_file", source_file)])
+        .query(&[("source_file", source_file), ("machine", host)])
         .header(AUTHORIZATION, format!("Bearer {bearer}"))
         .header(CONTENT_TYPE, "application/json")
         .send()
