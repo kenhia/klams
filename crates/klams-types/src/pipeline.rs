@@ -68,4 +68,12 @@ pub struct IndexKnowledge {
     pub heading_path: Option<String>,
     #[serde(default)]
     pub symbols: Vec<String>,
+    /// Sprint 029 (#638) — declared volatility (`"stable"`/`"volatile"`),
+    /// set by `memory_add`/`memory_update`; scanner writes never set it.
+    #[serde(default)]
+    pub volatility: Option<String>,
+    /// Sprint 029 (#638) — id of the memory this write replaces, set
+    /// only by `memory_supersede`.
+    #[serde(default)]
+    pub supersedes: Option<Uuid>,
 }

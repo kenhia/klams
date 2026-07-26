@@ -588,6 +588,8 @@ unchanged. Detailed contracts live under
 | `memory_add` | `write` | Add a fact or knowledge item. Same dedupe + dissent rules as REST. Flat input schema since sprint 018: `kind` (`"fact"` \| `"knowledge"`) discriminates, with `fact_type`+`payload` required for facts and `text` (+ optional `tags`/`source_path`/`repo`) for knowledge — no top-level `oneOf`, so Anthropic-bound agents can carry the tool. |
 | `memory_append_event` | `write` | Append an event. Always canonical, never soft-deleted. |
 | `memory_delete` | `write` | Soft-delete the caller's own fact / knowledge item by id. |
+| `memory_supersede` | `write` | Sprint 029: replace a stale/wrong **agent-authored knowledge** memory in one call — writes the replacement (carrying `supersedes`), hides the original behind the soft-delete filter with a `superseded_by` pointer. Tags/volatility inherit unless given. Own memories need `write`; another author's needs `manage`. Prefer this over delete-then-add: it keeps the trail. |
+| `memory_update` | `write` | Sprint 029: in-place edit (`text` / `tags` / `volatility`) of an agent-authored knowledge memory; id stable, text changes re-embed. For typos and amendments — supersede when the old statement was *wrong*. Same ownership rules as delete. |
 | `memory_admin_restore` | `admin` | Reverse a prior soft delete. |
 | `memory_admin_hard_delete` | `admin` | Permanently remove a soft-deleted row. |
 | `memory_admin_list_deleted` | `admin` | Page through soft-deleted rows for triage. |
@@ -609,6 +611,19 @@ optional too, but an explicit value may only *confirm* your bound
 author; naming a different one is refused. Deletes always act as your
 own identity. Deleting a memory you wrote needs `write`; deleting
 another author's needs `manage`. Full model: [auth.md](auth.md).
+
+**Lifecycle notes (sprint 029).** `memory_supersede`/`memory_update`
+refuse scanner-ingested targets with `NOT_AGENT_AUTHORED` (derived
+data — fix the file and let the re-scan update the store) and refuse
+already-superseded targets with `NOT_FOUND` naming the replacement.
+`memory_add` (knowledge) may return `similar_existing`
+(`[{id, text_head, author, raw_score}]`, cosine ≥ 0.85 against
+agent-authored memories): when it names what you were about to write,
+call `memory_supersede` on it instead of adding a twin. Knowledge
+writes also accept `volatility: "stable" | "volatile"` — declare
+`volatile` for facts expected to age (IPs, versions, "not yet on X");
+volatile memories rank down as they age (week grace, 30-day
+half-life, 0.25 floor), everything else never decays.
 
 Session teardown
 also answers 204 (not 202) so mcp python-sdk clients no longer log

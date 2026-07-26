@@ -1249,6 +1249,101 @@ building it on the assumption that it is.
   with the corpus reset. Rationale and revisit criteria in
   `docs/setup.md`.
 
+## 2o. Sprint 029 deltas — ranking & lifecycle (#644 / #638 / #628)
+
+### 2o.1 Weighted, deterministic RRF (#644)
+
+Fusion is still RRF (`klams_core::hybrid::fuse`), with two changes:
+
+* **Per-hit weights.** `RankedRow.weight` scales a hit's contribution
+  — `w/(k+rank+1)` instead of `1/(k+rank+1)`; `1.0` is neutral. The
+  weight composes the **provenance tier**
+  (`klams_core::provenance::ProvenanceTier`) with **declared-volatility
+  age demotion**. Three tiers, derived at query time from fields the
+  store already records (`source` + author `agent_name` — deliberately
+  NOT `Source::trust_rank`, which orders scanner above agents):
+  hand-authored (`memory_add` writes; w = 2.0) > machine-extracted
+  (klams-mind session extracts; w = 1.5) > bulk scanner (w = 1.0).
+  Weights scale contribution, never reorder within a source list; a
+  bulk hit that genuinely dominates can still win.
+* **Deterministic ties.** `finalize` breaks equal fused scores by
+  source discriminant then id. Pre-029, equal scores (fact@0 vs
+  knowledge@0 are bit-identical) kept `HashMap` iteration order —
+  identical calls could return different pages.
+
+Volatility (`F-1.4`): an optional write-time declaration
+(`stable`/`volatile`) on `memory_add`/`memory_update`/`memory_supersede`.
+Volatile memories keep full weight for a week, then halve every 30
+days, floored at 0.25 (demoted, never disappeared). Stable and
+undeclared memories never decay — scanner `created_at` is scan time,
+and silently burying stable truths is the worst failure mode. No
+blanket knowledge decay.
+
+### 2o.2 The curated stratum — a 4th fusion source (#644 / #628)
+
+Agent-authored knowledge is ~100 points in a ~180k corpus, so a
+badly-phrased query can miss the curated target in ANY global top-k
+(#628's Query A failure mode). MCP `memory_search` therefore runs a
+second, filtered ANN search (`search_knowledge_curated`:
+`source = AgentProposal` AND no `machine`, live points only —
+index-backed, the stratum is tiny) with the same query vector, and
+feeds the stratum's own rank list into fusion as a 4th RRF source. A
+curated memory deep in the global list gets its stratum rank counted;
+one absent from the global list joins the page. Two guards, both
+measured against the live corpus (2026-07-26):
+
+* **The `machine` gate.** "Curated" is `AgentProposal` *and no
+  machine* (review F-2.4's full definition): the corpus holds
+  file-derived AgentProposal points — scanned Claude session
+  transcripts with `machine` set — that flooded the stratum until the
+  gate landed. A true `memory_add` write never carries a machine.
+* **The query-relative boost threshold**
+  (`provenance::boost_threshold`): stratum membership *and* the tier
+  weight require a raw cosine within `CURATED_COMPETITIVE_FRAC = 0.82`
+  of the query's best raw score (global and curated pooled), floored
+  at `CURATED_STRATUM_RAW_FLOOR = 0.45` (the Qwen3 junk line). A
+  boosted curated hit at any stratum rank outscores every unboosted
+  rank-0 hit, so eligibility — not fusion arithmetic — is where
+  relevance has to hold the line. Without it, topically-adjacent agent
+  memories (raw 0.60) displaced a genuine bulk answer (raw 0.75).
+
+The REST `/memory/search` and `/memory/context` paths share the
+per-hit weighting via `StoreHybridAdapter` (author-blind two-tier
+approximation, same relative gate) but not the stratum — the
+eval-measured, agent-facing path is MCP `memory_search`.
+
+### 2o.3 Knowledge lifecycle verbs (#638)
+
+Agent-written knowledge — the only class that had *no* lifecycle story
+— gets the smallest sufficient verb set (facts amend, events append,
+scanner chunks re-scan; all unchanged):
+
+* **`memory_supersede(id, text, tags?, volatility?)`** — the primary
+  correction verb: writes the replacement (carrying `supersedes`),
+  then stamps the old point with the soft-delete pair plus
+  `superseded_by`. Every existing retrieval filter hides it; the admin
+  surface (`memory_admin_list_deleted`) shows the pointer and
+  `memory_admin_restore` undoes the hiding. Ordered new-first; a
+  mid-flight failure rolls the replacement back (best-effort) and the
+  error says exactly what state the store is in.
+* **`memory_update(id, text?, tags?, volatility?)`** — in-place edit,
+  id stable; text changes re-embed and re-hash. Authorship never
+  changes.
+* **Similar-on-write** — `memory_add` (knowledge) reuses its embedding
+  for a curated-stratum probe and returns `similar_existing`
+  (id, text head, author, raw cosine ≥ 0.85) so the writer supersedes
+  instead of duplicating, at the only moment that check is cheap.
+  Non-blocking and best-effort.
+
+Authorization rides sprint 025's model: both verbs sit at `Write`
+scope, with the shared ownership gate (`authorize_curation` — own it,
+or hold `manage`) that `memory_delete` uses; supersession *is* a
+delete plus a write, so it is deliberately one authorization decision.
+Both verbs refuse non-agent-authored targets with
+`NOT_AGENT_AUTHORED`. Background contradiction detection/consolidation
+stays klams-mind's job (WI-259 division of labor) — klams ships the
+primitives.
+
 ## 3. Deployment topology on `kubs0`
 
 ```text

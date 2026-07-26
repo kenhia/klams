@@ -177,6 +177,9 @@ impl QdrantStore {
             heading_path: req.heading_path.clone(),
             language: req.language.clone(),
             chunk_index: req.chunk_index,
+            volatility: req.volatility.clone(),
+            supersedes: req.supersedes,
+            superseded_by: None,
             confidence: 1.0,
             decay_weight: 1.0,
             use_count: 0,
@@ -265,6 +268,53 @@ impl QdrantStore {
         for sp in resp.result {
             let payload = sp.payload;
             if let Some(item) = payload_to_item(&payload) {
+                out.push((item, sp.score));
+            }
+        }
+        Ok(out)
+    }
+
+    /// ANN search restricted to the curated stratum: agent-authored
+    /// knowledge (`source = "AgentProposal"`), live points only
+    /// (sprint 029, #644).
+    ///
+    /// The stratum is tiny (~100 points in a ~180k corpus), so this
+    /// always surfaces the best curated matches for a query regardless
+    /// of their global ANN rank — the fix for #628's Query A class,
+    /// where a badly-phrased query misses the curated target in any
+    /// global top-k. Reuses the caller's query vector; costs
+    /// microseconds. Also serves `memory_add`'s similar-on-write check
+    /// (#638), which is the same question at write time.
+    pub async fn search_knowledge_curated(
+        &self,
+        query_vector: Vec<f32>,
+        top_k: u32,
+    ) -> StoreResult<Vec<(KnowledgeItem, f32)>> {
+        // `is_empty("machine")` is load-bearing: the corpus holds
+        // file-derived AgentProposal points (scanned session
+        // transcripts, machine set) that are NOT curated writes —
+        // without this they flood the stratum (measured 2026-07-26).
+        let filter = Filter {
+            must: vec![
+                Condition::is_empty("deleted_at"),
+                Condition::is_empty("machine"),
+                Condition::matches("source", Source::AgentProposal.as_str().to_string()),
+            ],
+            must_not: vec![Condition::matches("kind", "digest".to_string())],
+            ..Default::default()
+        };
+        let resp = self
+            .client
+            .search_points(
+                SearchPointsBuilder::new(self.collection.clone(), query_vector, u64::from(top_k))
+                    .with_payload(true)
+                    .filter(filter),
+            )
+            .await
+            .map_err(|e| StoreError::Backend(format!("qdrant curated search: {e}")))?;
+        let mut out = Vec::with_capacity(resp.result.len());
+        for sp in resp.result {
+            if let Some(item) = payload_to_item(&sp.payload) {
                 out.push((item, sp.score));
             }
         }
@@ -801,6 +851,17 @@ fn item_to_payload(item: &KnowledgeItem) -> HashMap<String, Value> {
         Value::from(f64::from(item.decay_weight)),
     );
     p.insert("use_count".into(), Value::from(item.use_count));
+    // Sprint 029 (#638): lifecycle fields, written only when present so
+    // scanner points and pre-029 memories carry nothing extra.
+    if let Some(v) = &item.volatility {
+        p.insert("volatility".into(), Value::from(v.clone()));
+    }
+    if let Some(v) = &item.supersedes {
+        p.insert("supersedes".into(), Value::from(v.to_string()));
+    }
+    if let Some(v) = &item.superseded_by {
+        p.insert("superseded_by".into(), Value::from(v.to_string()));
+    }
     p.insert(
         "created_at".into(),
         Value::from(item.created_at.format(&Rfc3339).unwrap_or_default()),
@@ -882,6 +943,17 @@ fn payload_to_item(payload: &HashMap<String, Value>) -> Option<KnowledgeItem> {
             .get("chunk_index")
             .and_then(qdrant_client::qdrant::Value::as_integer)
             .and_then(|i| u32::try_from(i).ok()),
+        // Sprint 029 (#638): lifecycle fields. Absent on scanner points
+        // and pre-029 memories.
+        volatility: payload.get("volatility").and_then(|v| v.as_str().cloned()),
+        supersedes: payload
+            .get("supersedes")
+            .and_then(|v| v.as_str())
+            .and_then(|s| Uuid::parse_str(s).ok()),
+        superseded_by: payload
+            .get("superseded_by")
+            .and_then(|v| v.as_str())
+            .and_then(|s| Uuid::parse_str(s).ok()),
         confidence: payload
             .get("confidence")
             .and_then(qdrant_client::qdrant::Value::as_double)
@@ -1039,6 +1111,84 @@ impl QdrantStore {
             )
             .await
             .map_err(|e| StoreError::Backend(format!("qdrant soft_delete_payload: {e}")))?;
+        Ok(())
+    }
+
+    /// Mark a knowledge point superseded (sprint 029, #638): stamps the
+    /// soft-delete pair — `deleted_at` + `deleted_by_author_id` — so
+    /// every existing retrieval filter hides it, plus `superseded_by`
+    /// pointing at the replacement. Supersession *is* the soft-delete
+    /// mechanics with a pointer; `memory_admin_restore` undoes the
+    /// hiding, and the pointer distinguishes "superseded" from
+    /// "deleted" on the admin surface.
+    pub async fn mark_superseded(
+        &self,
+        old_id: uuid::Uuid,
+        new_id: uuid::Uuid,
+        by_author_id: uuid::Uuid,
+        when: OffsetDateTime,
+    ) -> StoreResult<()> {
+        let mut payload = std::collections::HashMap::new();
+        payload.insert(
+            "deleted_at".to_string(),
+            Value::from(when.format(&Rfc3339).unwrap_or_default()),
+        );
+        payload.insert(
+            "deleted_by_author_id".to_string(),
+            Value::from(by_author_id.to_string()),
+        );
+        payload.insert("superseded_by".to_string(), Value::from(new_id.to_string()));
+        let points = PointsIdsList {
+            ids: vec![PointId {
+                point_id_options: Some(PointIdOptions::Uuid(old_id.to_string())),
+            }],
+        };
+        self.client
+            .set_payload(
+                SetPayloadPointsBuilder::new(self.collection.clone(), payload)
+                    .points_selector(points)
+                    .wait(true),
+            )
+            .await
+            .map_err(|e| StoreError::Backend(format!("qdrant mark_superseded: {e}")))?;
+        Ok(())
+    }
+
+    /// Rewrite an existing knowledge point in place (sprint 029,
+    /// `memory_update`): full payload rebuild from `item` plus the
+    /// (unchanged) `author_id`, with the supplied embedding. The point
+    /// id stays `item.id`, so this is an upsert-as-update. Only for
+    /// agent-authored memories — their payloads round-trip losslessly
+    /// through `KnowledgeItem` (no `symbols`, no copy bookkeeping);
+    /// scanner chunks do not, and their update path is the re-scan.
+    pub async fn upsert_knowledge_item(
+        &self,
+        item: &KnowledgeItem,
+        author_id: uuid::Uuid,
+        embedding: Vec<f32>,
+    ) -> StoreResult<()> {
+        if embedding.len() as u64 != self.vector_dim {
+            return Err(StoreError::Other(format!(
+                "embedding dim {} != collection dim {}",
+                embedding.len(),
+                self.vector_dim
+            )));
+        }
+        let mut payload = item_to_payload(item);
+        payload.insert("author_id".into(), Value::from(author_id.to_string()));
+        let point = PointStruct::new(
+            PointId {
+                point_id_options: Some(PointIdOptions::Uuid(item.id.to_string())),
+            },
+            embedding,
+            payload,
+        );
+        self.client
+            .upsert_points(
+                UpsertPointsBuilder::new(self.collection.clone(), vec![point]).wait(true),
+            )
+            .await
+            .map_err(|e| StoreError::Backend(format!("qdrant upsert_knowledge_item: {e}")))?;
         Ok(())
     }
 

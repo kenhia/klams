@@ -24,13 +24,15 @@ use crate::{
     metrics as mcp_metrics, projection,
     tools::McpState,
 };
+use klams_core::provenance::{volatility_demotion, ProvenanceTier};
 use klams_store::{RankedRow, Store};
 use klams_types::{
-    FusionStrategy, MemoryKind, PublicAuthorRef, PublicMemory, RetrievalSource, ScoredMemory,
+    FusionStrategy, KnowledgeItem, MemoryKind, PublicAuthorRef, PublicMemory, RetrievalSource,
+    ScoredMemory,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 const DEFAULT_TOP_K: u32 = 10;
 const MAX_TOP_K: u32 = 50;
@@ -147,6 +149,12 @@ pub async fn run(
     // captured before the cross-source merge below.
     let mut scored: Vec<(f32, u32, PublicMemory)> = Vec::new();
 
+    // Sprint 029 (#644): per-hit fusion weights (provenance tier ×
+    // declared-volatility age demotion) and the curated stratum's own
+    // rank order, fed to `fuse_in_place` as a 4th RRF source.
+    let mut weights: HashMap<uuid::Uuid, f32> = HashMap::new();
+    let mut curated_order: Vec<uuid::Uuid> = Vec::new();
+
     // ---------- knowledge via Qdrant ANN ----------
     if want_knowledge {
         // Sprint 024 (#329): route the retrieval sources through the
@@ -170,11 +178,48 @@ pub async fn run(
         let fetch_k = top_k.saturating_mul(KNOWLEDGE_OVERFETCH);
         let hits = state
             .store
-            .search_knowledge(embedding, fetch_k)
+            .search_knowledge(embedding.clone(), fetch_k)
             .await
             .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("search_knowledge: {e}")))?;
-        if !hits.is_empty() {
-            let ids: Vec<uuid::Uuid> = hits.iter().map(|(it, _)| it.id).collect();
+        // Sprint 029 (#644): the curated stratum. Agent-authored
+        // knowledge is ~100 points in a ~180k corpus, so a badly-phrased
+        // query can miss the curated target in ANY global top-k (#628's
+        // Query A failure mode). A filtered ANN search over just that
+        // stratum always surfaces its best matches; it reuses the query
+        // vector and enters fusion as a 4th rank list.
+        //
+        // The boost threshold is query-relative (`boost_threshold`):
+        // stratum membership and the tier weight both require a raw
+        // score competitive with the query's best hit. Measured without
+        // it, topically-adjacent agent memories (raw 0.60) flooded out
+        // a genuine bulk answer (raw 0.75) — a boosted curated hit at
+        // any stratum rank outscores every unboosted rank-0 hit, so
+        // eligibility, not fusion arithmetic, is where relevance has to
+        // hold the line.
+        let all_curated: Vec<(KnowledgeItem, f32)> = state
+            .store
+            .qdrant
+            .search_knowledge_curated(embedding, top_k)
+            .await
+            .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("curated search: {e}")))?;
+        let top_raw = hits
+            .iter()
+            .chain(all_curated.iter())
+            .map(|(_, s)| *s)
+            .fold(0.0_f32, f32::max);
+        let threshold = klams_core::provenance::boost_threshold(top_raw);
+        let curated_hits: Vec<(KnowledgeItem, f32)> = all_curated
+            .into_iter()
+            .filter(|(_, score)| *score >= threshold)
+            .collect();
+        if !hits.is_empty() || !curated_hits.is_empty() {
+            let mut ids: Vec<uuid::Uuid> = hits
+                .iter()
+                .chain(curated_hits.iter())
+                .map(|(it, _)| it.id)
+                .collect();
+            ids.sort();
+            ids.dedup();
             let author_map = state
                 .store
                 .qdrant
@@ -185,19 +230,52 @@ pub async fn run(
             wanted_authors.sort();
             wanted_authors.dedup();
             let authors = fetch_authors(state, &wanted_authors).await;
+            let author_ref_for = |id: uuid::Uuid| {
+                author_map
+                    .get(&id)
+                    .and_then(|aid| authors.get(aid))
+                    .cloned()
+                    .unwrap_or_else(unknown_author_ref)
+            };
+            let in_global: HashSet<uuid::Uuid> = hits.iter().map(|(it, _)| it.id).collect();
+            let global_count = hits.len();
             // Qdrant returns hits already ordered by descending
             // similarity, so enumerate() yields the source rank.
             for (rank, (item, score)) in hits.into_iter().enumerate() {
-                let author_ref = author_map
-                    .get(&item.id)
-                    .and_then(|aid| authors.get(aid))
-                    .cloned()
-                    .unwrap_or_else(unknown_author_ref);
+                let author_ref = author_ref_for(item.id);
+                weights.insert(
+                    item.id,
+                    knowledge_weight(&item, &author_ref.agent_name, score >= threshold),
+                );
                 scored.push((
                     score,
                     rank_u32(rank),
                     projection::project_knowledge(&item, author_ref),
                 ));
+            }
+            // Stratum hits join the knowledge list. Ones already in the
+            // global page keep their entry (the 4th fusion list is what
+            // boosts them); stratum-only hits are appended after the
+            // global hits, so the knowledge list stays contiguous and
+            // best-first per source.
+            let mut next_rank = global_count;
+            for (item, score) in curated_hits {
+                curated_order.push(item.id);
+                if in_global.contains(&item.id) {
+                    continue;
+                }
+                let author_ref = author_ref_for(item.id);
+                // Stratum membership already implies `score >= threshold`.
+                weights.insert(
+                    item.id,
+                    knowledge_weight(&item, &author_ref.agent_name, true),
+                );
+                scored.push((
+                    score,
+                    rank_u32(next_rank),
+                    projection::project_knowledge(&item, author_ref),
+                ));
+                next_rank += 1;
             }
         }
     }
@@ -279,6 +357,13 @@ pub async fn run(
     let before_collapse = scored.len();
     collapse_duplicates_in_place(&mut scored);
     let duplicates_collapsed = before_collapse - scored.len();
+    // The tag filter and the collapse can both remove entries the
+    // curated stratum named; a fused rank for an id with no surviving
+    // projection would push real results down the page for a ghost.
+    {
+        let live: HashSet<uuid::Uuid> = scored.iter().map(|(_, _, m)| m.id).collect();
+        curated_order.retain(|id| live.contains(id));
+    }
     // Collapse removes entries, so the survivors' `source_rank`s are now
     // holed — a caller asking for 20 could see ranks 0 and 25, which
     // exposes the over-fetch multiplier (an implementation detail) as a
@@ -306,7 +391,12 @@ pub async fn run(
     // uses — which keys on id + within-source rank, so equal
     // within-source ranks land at comparable positions regardless of
     // kind. Reorder the projections and set `score` to the fused value.
-    fuse_in_place(&mut scored, fusion_strategy(state));
+    fuse_in_place(
+        &mut scored,
+        fusion_strategy(state),
+        &weights,
+        &curated_order,
+    );
     scored.truncate(top_k as usize);
 
     // Miss log (sprint 021, #317): a search that returned nothing, or
@@ -497,13 +587,42 @@ fn fusion_strategy(state: &McpState) -> FusionStrategy {
     state.fusion
 }
 
+/// Fusion weight for a knowledge hit (sprint 029, #644): provenance
+/// tier × declared-volatility age demotion. Facts and events stay at
+/// 1.0 — facts already carry their own trust/decay machinery.
+///
+/// `boost_eligible` is the query-relative competitiveness gate
+/// (`provenance::boost_threshold`): the tier weight applies only to
+/// hits that are semantically competitive for THIS query; the
+/// volatility demotion applies regardless (it demotes, never boosts).
+fn knowledge_weight(item: &KnowledgeItem, author_agent: &str, boost_eligible: bool) -> f32 {
+    let tier = ProvenanceTier::classify(item.source, Some(author_agent), item.machine.is_some());
+    let tier_w = if boost_eligible { tier.weight() } else { 1.0 };
+    #[allow(clippy::cast_precision_loss)]
+    let age_days =
+        ((time::OffsetDateTime::now_utc() - item.created_at).whole_seconds() as f32) / 86_400.0;
+    tier_w * volatility_demotion(item.volatility.as_deref(), age_days)
+}
+
 /// Rank-fuse `scored` in place (sprint 024 #328): partition into
 /// per-kind best-first lists, RRF-fuse via `klams_core::hybrid::fuse`,
 /// then reorder the entries by the fused ranking and set each `score` to
 /// its fused value. RRF keys on id + within-source rank, so equal
 /// within-source ranks land at comparable positions regardless of kind
 /// — knowledge no longer structurally outranks facts/events.
-fn fuse_in_place(scored: &mut [(f32, u32, PublicMemory)], strategy: FusionStrategy) {
+///
+/// Sprint 029 (#644): two additions. `weights` scales each hit's RRF
+/// contribution (provenance × volatility; absent ids stay neutral), and
+/// `curated_order` — the curated stratum's own best-first rank list —
+/// enters as a 4th fusion source, so a curated memory's *stratum* rank
+/// counts even when its global ANN rank is deep.
+fn fuse_in_place(
+    scored: &mut [(f32, u32, PublicMemory)],
+    strategy: FusionStrategy,
+    weights: &HashMap<uuid::Uuid, f32>,
+    curated_order: &[uuid::Uuid],
+) {
+    let weight_of = |id: uuid::Uuid| weights.get(&id).copied().unwrap_or(1.0);
     let mut by_kind: [Vec<RankedRow>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     for (_, _, mem) in scored.iter() {
         let (idx, source) = match mem.kind() {
@@ -512,13 +631,29 @@ fn fuse_in_place(scored: &mut [(f32, u32, PublicMemory)], strategy: FusionStrate
             MemoryKind::Event => (2, RetrievalSource::Fts),
         };
         by_kind[idx].push(RankedRow {
+            weight: weight_of(mem.id),
             source,
             id: mem.id,
             score: 0.0,
             payload: serde_json::Value::Null,
         });
     }
-    let fused = klams_core::hybrid::fuse(by_kind.into_iter().collect(), strategy);
+    let mut sources: Vec<Vec<RankedRow>> = by_kind.into_iter().collect();
+    if !curated_order.is_empty() {
+        sources.push(
+            curated_order
+                .iter()
+                .map(|id| RankedRow {
+                    weight: weight_of(*id),
+                    source: RetrievalSource::Vector,
+                    id: *id,
+                    score: 0.0,
+                    payload: serde_json::Value::Null,
+                })
+                .collect(),
+        );
+    }
+    let fused = klams_core::hybrid::fuse(sources, strategy);
     let order: HashMap<uuid::Uuid, (usize, f32)> = fused
         .iter()
         .enumerate()
@@ -676,6 +811,9 @@ mod tests {
                 language: None,
                 chunk_index: None,
                 copies: Vec::new(),
+                volatility: None,
+                supersedes: None,
+                superseded_by: None,
             },
             MemoryKind::Fact => PublicMemoryContent::Fact {
                 fact_type: "EnvFact".into(),
@@ -719,7 +857,12 @@ mod tests {
             (0.86_f32, 1, k1), // knowledge rank 1
             (0.05_f32, 0, f0), // fact rank 0, tiny ts_rank
         ];
-        fuse_in_place(&mut scored, FusionStrategy::default_rrf());
+        fuse_in_place(
+            &mut scored,
+            FusionStrategy::default_rrf(),
+            &HashMap::new(),
+            &[],
+        );
         let pos = |id: uuid::Uuid| scored.iter().position(|(_, _, m)| m.id == id).unwrap();
         // The two within-source rank-0 hits (k0, f0) tie for the top and
         // occupy positions {0,1}; knowledge@rank1 (k1) is last.
@@ -736,6 +879,71 @@ mod tests {
             pos(f0id) < pos(k1id),
             "fact@rank0 must outrank knowledge@rank1 under RRF (the fix)"
         );
+    }
+
+    // ---- Sprint 029 (#644): provenance weights + the curated stratum
+    // as a 4th fusion source.
+
+    #[test]
+    fn a_curated_hit_at_rank_two_outranks_bulk_with_provenance_weight() {
+        // The #628 known-open shape, verbatim: the hand-authored gotcha
+        // is retrieved but sits at rank 2 behind two bulk chunks. Its
+        // hand-authored weight (2.0) must invert that.
+        let b0 = mem(MemoryKind::Knowledge, "b0");
+        let b1 = mem(MemoryKind::Knowledge, "b1");
+        let gotcha = mem(MemoryKind::Knowledge, "gotcha");
+        let gid = gotcha.id;
+        let mut weights = HashMap::new();
+        weights.insert(gid, 2.0_f32);
+        let mut scored = vec![(0.71_f32, 0, b0), (0.69_f32, 1, b1), (0.66_f32, 2, gotcha)];
+        fuse_in_place(&mut scored, FusionStrategy::default_rrf(), &weights, &[]);
+        assert_eq!(
+            scored[0].2.id, gid,
+            "hand-authored weight must lift the gotcha over bulk (2/63 > 1/61)"
+        );
+    }
+
+    #[test]
+    fn the_curated_stratum_lifts_a_hit_the_global_page_ranked_deep() {
+        // A curated memory at the BOTTOM of the global list (rank 3)
+        // with only a mild weight: the stratum's own rank-0 entry gives
+        // it a second RRF contribution, which must carry it to the top.
+        let b0 = mem(MemoryKind::Knowledge, "b0");
+        let b1 = mem(MemoryKind::Knowledge, "b1");
+        let b2 = mem(MemoryKind::Knowledge, "b2");
+        let cur = mem(MemoryKind::Knowledge, "cur");
+        let cid = cur.id;
+        let mut weights = HashMap::new();
+        weights.insert(cid, 1.5_f32);
+        let mut scored = vec![
+            (0.70_f32, 0, b0),
+            (0.68_f32, 1, b1),
+            (0.67_f32, 2, b2),
+            (0.60_f32, 3, cur),
+        ];
+        fuse_in_place(&mut scored, FusionStrategy::default_rrf(), &weights, &[cid]);
+        assert_eq!(
+            scored[0].2.id, cid,
+            "stratum rank-0 + weight 1.5 must beat bulk rank-0 (1.5/64 + 1.5/61 > 1/61)"
+        );
+    }
+
+    #[test]
+    fn neutral_weights_and_no_stratum_change_nothing() {
+        // Guard: with no curated hits in play the 029 seam must be a
+        // no-op relative to 024's fusion.
+        let k0 = mem(MemoryKind::Knowledge, "k0");
+        let k1 = mem(MemoryKind::Knowledge, "k1");
+        let (i0, i1) = (k0.id, k1.id);
+        let mut scored = vec![(0.9_f32, 0, k0), (0.8_f32, 1, k1)];
+        fuse_in_place(
+            &mut scored,
+            FusionStrategy::default_rrf(),
+            &HashMap::new(),
+            &[],
+        );
+        assert_eq!(scored[0].2.id, i0);
+        assert_eq!(scored[1].2.id, i1);
     }
 
     // ---- Sprint 026 (#641): query-time duplicate collapse. The live
@@ -756,6 +964,9 @@ mod tests {
             language: None,
             chunk_index: None,
             copies: Vec::new(),
+            volatility: None,
+            supersedes: None,
+            superseded_by: None,
         };
         m
     }
@@ -828,6 +1039,9 @@ mod tests {
                 language: None,
                 chunk_index: None,
                 copies: copies_of(&scored[0].2).to_vec(),
+                volatility: None,
+                supersedes: None,
+                superseded_by: None,
             }
         );
     }
@@ -937,7 +1151,12 @@ mod tests {
             (0.07_f32, 0, mem(MemoryKind::Fact, "f0")),
             (0.03_f32, 1, mem(MemoryKind::Event, "e0")),
         ];
-        fuse_in_place(&mut scored, FusionStrategy::default_rrf());
+        fuse_in_place(
+            &mut scored,
+            FusionStrategy::default_rrf(),
+            &HashMap::new(),
+            &[],
+        );
         assert!(
             scored.windows(2).all(|w| w[0].0 >= w[1].0),
             "fused scores must be descending: {:?}",

@@ -66,6 +66,20 @@ pub enum PublicMemoryContent {
         /// merged metadata — lossless, and a caller can reach any copy.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         copies: Vec<KnowledgeCopy>,
+        /// Sprint 029 (#638): declared volatility (`"stable"` /
+        /// `"volatile"`). Volatile memories are age-demoted in ranking;
+        /// undeclared memories never decay.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        volatility: Option<String>,
+        /// Sprint 029 (#638): the memory this record replaced via
+        /// `memory_supersede` — the inspectable trail back.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        supersedes: Option<Uuid>,
+        /// Sprint 029 (#638): the memory that replaced this one. Only
+        /// ever present on superseded (hidden) records, i.e. on the
+        /// admin surfaces — never in live search results.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        superseded_by: Option<Uuid>,
     },
     Event {
         category: String,
@@ -99,6 +113,9 @@ impl PublicMemoryContent {
             language: item.language.clone(),
             chunk_index: item.chunk_index,
             copies: Vec::new(),
+            volatility: item.volatility.clone(),
+            supersedes: item.supersedes,
+            superseded_by: item.superseded_by,
         }
     }
 
@@ -239,6 +256,9 @@ mod tests {
                 language: None,
                 chunk_index: None,
                 copies: Vec::new(),
+                volatility: None,
+                supersedes: None,
+                superseded_by: None,
             },
             tags: vec![],
             author: PublicAuthorRef {
@@ -269,6 +289,9 @@ mod tests {
             language: None,
             chunk_index: None,
             copies: Vec::new(),
+            volatility: None,
+            supersedes: None,
+            superseded_by: None,
         };
         let j = serde_json::to_value(&with_host).unwrap();
         assert_eq!(j["host"], "kai");
@@ -283,6 +306,9 @@ mod tests {
             language: None,
             chunk_index: None,
             copies: Vec::new(),
+            volatility: None,
+            supersedes: None,
+            superseded_by: None,
         };
         let j2 = serde_json::to_value(&without).unwrap();
         assert!(j2.get("host").is_none(), "host must be omitted when None");
@@ -306,6 +332,9 @@ mod tests {
             heading_path: Some("klams > MCP tools".into()),
             language: Some("markdown".into()),
             chunk_index: Some(3),
+            volatility: None,
+            supersedes: None,
+            superseded_by: None,
             confidence: 1.0,
             decay_weight: 1.0,
             use_count: 0,
@@ -337,6 +366,9 @@ mod tests {
             language: None,
             chunk_index: None,
             copies: Vec::new(),
+            volatility: None,
+            supersedes: None,
+            superseded_by: None,
         };
         content.set_copies(vec![KnowledgeCopy {
             id: Uuid::nil(),

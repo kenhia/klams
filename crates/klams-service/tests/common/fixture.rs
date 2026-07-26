@@ -222,6 +222,8 @@ fn gen_knowledge(rng: &mut Lcg, n: usize, id_salt: u128) -> Vec<IndexKnowledge> 
             language: None,
             heading_path: None,
             symbols: Vec::new(),
+            volatility: None,
+            supersedes: None,
         });
     }
     out

@@ -125,6 +125,23 @@ pub struct KnowledgeItem {
     /// sprint-026 history as [`Self::heading_path`].
     #[serde(default)]
     pub chunk_index: Option<u32>,
+    /// Declared volatility (sprint 029, #638 / review F-1.4):
+    /// `"stable"` or `"volatile"`, set by the writer at write time.
+    /// Volatile memories get an age-based rank demotion; stable and
+    /// undeclared memories never decay. Free-form `Option<String>`
+    /// rather than an enum so unknown future values degrade to
+    /// "undeclared" instead of dropping the point on read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volatility: Option<String>,
+    /// Id of the memory this record replaced (`memory_supersede`,
+    /// sprint 029 #638). Present on the replacement; the trail back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supersedes: Option<Uuid>,
+    /// Id of the memory that replaced this record. Only ever present
+    /// on superseded (hence hidden) points — visible via the admin
+    /// surfaces, never in live search results.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<Uuid>,
     pub confidence: f32,
     pub decay_weight: f32,
     pub use_count: i64,

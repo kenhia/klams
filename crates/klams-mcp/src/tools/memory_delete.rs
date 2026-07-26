@@ -44,9 +44,13 @@ pub struct DeleteCaller {
     pub scopes: Vec<Scope>,
 }
 
-/// Decide whether `caller` may soft-delete a memory owned by
-/// `owner`. Pure so the policy is testable without a live backend —
-/// the surrounding `run` is integration-tested against docker.
+/// Decide whether `caller` may curate a memory owned by `owner` —
+/// the shared ownership gate for `memory_delete`, `memory_supersede`,
+/// and `memory_update` (sprint 029, #638: supersession *is* a delete
+/// plus a write, and update is a rewrite, so all three ride one
+/// authorization decision, per F-1.1). Pure so the policy is testable
+/// without a live backend — the surrounding `run`s are
+/// integration-tested against docker.
 ///
 /// `owner == None` means the record carries no `author_id` (legacy
 /// knowledge points predating attribution). Those are treated as
@@ -56,7 +60,11 @@ pub struct DeleteCaller {
 /// # Errors
 /// `INSUFFICIENT_SCOPE` when the caller neither owns the memory nor
 /// holds [`Scope::Manage`].
-fn authorize_delete(caller: &DeleteCaller, owner: Option<Uuid>) -> Result<(), ErrorEnvelope> {
+pub(crate) fn authorize_curation(
+    caller: &DeleteCaller,
+    owner: Option<Uuid>,
+    verb: &str,
+) -> Result<(), ErrorEnvelope> {
     if owner == Some(caller.author_id) {
         return Ok(());
     }
@@ -65,8 +73,10 @@ fn authorize_delete(caller: &DeleteCaller, owner: Option<Uuid>) -> Result<(), Er
     }
     Err(envelope(
         errors::INSUFFICIENT_SCOPE,
-        "this memory belongs to another author; deleting it requires the \
-         `manage` scope. Your token can delete memories it wrote itself.",
+        format!(
+            "this memory belongs to another author; {verb} requires the \
+             `manage` scope. Your token can act on memories it wrote itself."
+        ),
     ))
 }
 
@@ -185,7 +195,7 @@ async fn delete_fact(
     else {
         return Ok(None);
     };
-    authorize_delete(caller, Some(owner))?;
+    authorize_curation(caller, Some(owner), "deleting it")?;
     // soft_delete_fact returns false if already soft-deleted; we treat
     // that as a success per FR-014 idempotency.
     let _ = state
@@ -227,7 +237,7 @@ async fn delete_knowledge(
         })?
         .get(&id)
         .copied();
-    authorize_delete(caller, owner)?;
+    authorize_curation(caller, owner, "deleting it")?;
     state
         .store
         .qdrant
@@ -266,7 +276,8 @@ mod tests {
     #[test]
     fn owner_may_delete_own_memory_with_write_only() {
         let c = caller(&[Scope::Read, Scope::Write]);
-        authorize_delete(&c, Some(c.author_id)).expect("self-management needs no manage scope");
+        authorize_curation(&c, Some(c.author_id), "deleting it")
+            .expect("self-management needs no manage scope");
     }
 
     /// The sprint's headline invariant: this is the exact call that
@@ -274,14 +285,15 @@ mod tests {
     #[test]
     fn write_only_caller_cannot_delete_another_authors_memory() {
         let c = caller(&[Scope::Read, Scope::Write]);
-        let err = authorize_delete(&c, Some(OTHER)).expect_err("must be refused");
+        let err = authorize_curation(&c, Some(OTHER), "deleting it").expect_err("must be refused");
         assert_eq!(err.meta.error_code, errors::INSUFFICIENT_SCOPE);
     }
 
     #[test]
     fn manage_scope_permits_cross_author_delete() {
         let c = caller(&[Scope::Read, Scope::Write, Scope::Manage]);
-        authorize_delete(&c, Some(OTHER)).expect("manage is the cross-author tier");
+        authorize_curation(&c, Some(OTHER), "deleting it")
+            .expect("manage is the cross-author tier");
     }
 
     /// `admin` is a peer scope, not a superset — an admin-only token
@@ -289,15 +301,16 @@ mod tests {
     #[test]
     fn admin_alone_does_not_confer_cross_author_delete() {
         let c = caller(&[Scope::Read, Scope::Write, Scope::Admin]);
-        assert!(authorize_delete(&c, Some(OTHER)).is_err());
+        assert!(authorize_curation(&c, Some(OTHER), "deleting it").is_err());
     }
 
     /// Legacy knowledge points with no `author_id` in their payload are
     /// nobody's to self-manage; curating them needs `manage`.
     #[test]
     fn unowned_record_requires_manage() {
-        assert!(authorize_delete(&caller(&[Scope::Write]), None).is_err());
-        authorize_delete(&caller(&[Scope::Write, Scope::Manage]), None).expect("manage curates");
+        assert!(authorize_curation(&caller(&[Scope::Write]), None, "deleting it").is_err());
+        authorize_curation(&caller(&[Scope::Write, Scope::Manage]), None, "deleting it")
+            .expect("manage curates");
     }
 
     #[test]

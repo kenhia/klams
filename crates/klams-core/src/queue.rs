@@ -38,7 +38,10 @@ pub struct EnqueueOutcome {
 pub enum WriteReply {
     Fact(Result<FactWriteOutcome, StoreError>),
     Event(Result<Event, StoreError>),
-    Knowledge(Result<KnowledgeItem, StoreError>),
+    // Boxed: KnowledgeItem grew past clippy's variant-size bar when
+    // the sprint-029 lifecycle fields landed; no consumer matches on
+    // Knowledge today, so the indirection costs nothing.
+    Knowledge(Box<Result<KnowledgeItem, StoreError>>),
 }
 
 /// A `MemoryWrite` plus an optional reply channel.

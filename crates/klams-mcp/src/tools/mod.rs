@@ -15,6 +15,8 @@ pub mod memory_append_event;
 pub mod memory_delete;
 pub mod memory_related;
 pub mod memory_search;
+pub mod memory_supersede;
+pub mod memory_update;
 pub mod register_author;
 
 use klams_api::auth::{AuthenticatedAuthor, AuthenticatedScopes};
@@ -38,10 +40,14 @@ pub fn required_scope(tool: &str) -> Option<Scope> {
         // Sprint 025 (#633): `register_author` moved Read -> Write. It
         // mints identities, which was a read-scope operation until now —
         // a read-only token could manufacture authors at will.
+        // Sprint 029 (#638): the lifecycle verbs sit at Write like
+        // delete — ownership (or `manage`) is enforced inside the tool.
         "register_author"
         | "memory_add"
         | "memory_append_event"
         | "memory_delete"
+        | "memory_supersede"
+        | "memory_update"
         | "dissent_propose" => Scope::Write,
         // Sprint 025 (#636): the author lifecycle verbs rewrite
         // attribution across the whole store — a stronger capability
@@ -174,7 +180,12 @@ impl ServerHandler for ToolRegistry {
             "klams memory server. Writes are attributed to the author bound \
              to your bearer token, so you can call `memory_*` tools \
              directly; call `register_author` only to write as a separate \
-             per-session identity."
+             per-session identity. When a memory you can see is stale or \
+             wrong, prefer `memory_supersede` (one call: replacement + \
+             hidden original + trail) over delete-then-add; use \
+             `memory_update` for typo-level fixes to your own records. If \
+             `memory_add` returns `similar_existing`, consider superseding \
+             that memory instead of writing a near-duplicate."
                 .into(),
         );
         info
@@ -388,6 +399,47 @@ impl ServerHandler for ToolRegistry {
                     Err(env) => Ok(envelope_result(&env)),
                 }
             }
+            "memory_supersede" => {
+                let args = match serde_json::from_value(args_value) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        return Ok(envelope_result(&crate::errors::envelope(
+                            crate::errors::SCHEMA_VALIDATION_FAILED,
+                            format!("invalid memory_supersede arguments: {e}"),
+                        )))
+                    }
+                };
+                // Sprint 029 (#638): same caller shape as delete — the
+                // verb acts as the bearer-bound author, `manage` is the
+                // cross-author tier.
+                let lifecycle_caller = caller.as_ref().map(|a| memory_delete::DeleteCaller {
+                    author_id: a.author_id,
+                    scopes: caller_scopes(&context).map_or_else(Vec::new, |s| s.as_ref().clone()),
+                });
+                match memory_supersede::run(&self.state, args, lifecycle_caller.as_ref()).await {
+                    Ok(out) => Ok(json_result(&out)),
+                    Err(env) => Ok(envelope_result(&env)),
+                }
+            }
+            "memory_update" => {
+                let args = match serde_json::from_value(args_value) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        return Ok(envelope_result(&crate::errors::envelope(
+                            crate::errors::SCHEMA_VALIDATION_FAILED,
+                            format!("invalid memory_update arguments: {e}"),
+                        )))
+                    }
+                };
+                let lifecycle_caller = caller.as_ref().map(|a| memory_delete::DeleteCaller {
+                    author_id: a.author_id,
+                    scopes: caller_scopes(&context).map_or_else(Vec::new, |s| s.as_ref().clone()),
+                });
+                match memory_update::run(&self.state, args, lifecycle_caller.as_ref()).await {
+                    Ok(out) => Ok(json_result(&out)),
+                    Err(env) => Ok(envelope_result(&env)),
+                }
+            }
             "memory_delete" => {
                 let args = match serde_json::from_value(args_value) {
                     Ok(a) => a,
@@ -506,6 +558,14 @@ pub fn all_tool_descriptors() -> Vec<Tool> {
         tool_descriptor::<memory_delete::MemoryDeleteArgs>(
             "memory_delete",
             "Soft-delete a fact or knowledge memory by id (FR-014). Idempotent. Events are append-only. Omit author_id — the delete acts as the author bound to your bearer token. You may delete memories you wrote; deleting another author's memory requires the `manage` scope.",
+        ),
+        tool_descriptor::<memory_supersede::MemorySupersedeArgs>(
+            "memory_supersede",
+            "Replace a stale or wrong agent-authored knowledge memory in one call: writes your replacement text as a new memory and hides the old one behind a superseded_by pointer (restorable via admin). Prefer this over memory_delete + memory_add — it keeps the correction trail. Tags/volatility inherit from the old memory unless given. You may supersede memories you wrote; another author's requires the `manage` scope.",
+        ),
+        tool_descriptor::<memory_update::MemoryUpdateArgs>(
+            "memory_update",
+            "Edit an agent-authored knowledge memory in place (text, tags, and/or volatility); the id stays stable and text changes re-embed. For typos and small amendments — use memory_supersede when the old statement was wrong and the trail matters. You may update memories you wrote; another author's requires the `manage` scope.",
         ),
         tool_descriptor::<dissent_propose::DissentProposeArgs>(
             "dissent_propose",

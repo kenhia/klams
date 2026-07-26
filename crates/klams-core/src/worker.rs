@@ -96,7 +96,7 @@ async fn process<S: Store>(job: WriteJob, store: &S) {
         MemoryWrite::IndexKnowledge(req) => {
             let result = store.index_knowledge(req).await;
             if let Some(tx) = reply {
-                let _ = tx.send(WriteReply::Knowledge(result));
+                let _ = tx.send(WriteReply::Knowledge(Box::new(result)));
             } else if let Err(e) = result {
                 record_drop("knowledge", &e, "knowledge index failed");
             }

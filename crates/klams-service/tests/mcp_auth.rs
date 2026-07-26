@@ -152,6 +152,9 @@ async fn tools_list_admin_sees_everything() {
         "memory_append_event",
         "event_search",
         "memory_delete",
+        // Sprint 029 (#638) — knowledge lifecycle verbs.
+        "memory_supersede",
+        "memory_update",
         // Sprint 015 added dissent_propose but missed this ignored
         // suite (not in the CI gate); expectation caught up in 018.
         "dissent_propose",
@@ -210,6 +213,9 @@ async fn tools_list_write_sees_read_and_write_no_admin() {
             "memory_delete".to_string(),
             "memory_related".to_string(),
             "memory_search".to_string(),
+            // Sprint 029 (#638) — lifecycle verbs sit at Write.
+            "memory_supersede".to_string(),
+            "memory_update".to_string(),
             "register_author".to_string(),
         ],
         "write surface drift: {tools:?}"

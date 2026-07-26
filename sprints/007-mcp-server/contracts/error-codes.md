@@ -34,7 +34,8 @@ switch on this field, never on the text message.
 | `EMBEDDING_UNAVAILABLE`       | The embedding backend is down or failing transiently (connect error, timeout, 5xx). Always carries `retry_after_seconds` | Yes |
 | `PAYLOAD_TOO_LARGE`           | Sprint 027 (#629/#632). `memory_add.text` exceeds the embedding model's token ceiling. The message names the limit, the submitted size, and the character count to split below — enough to succeed on the *first* retry. **Permanent for that text**: never carries `retry_after_seconds` | No, not unchanged — split and resend |
 | `EMBEDDING_REJECTED`          | Sprint 027 (#629). The embedding backend refused the request itself (a permanent 4xx that is not a size problem). Distinct from `EMBEDDING_UNAVAILABLE`: the service is healthy, the input is not | No |
-| `NOT_FOUND`                   | Memory id does not exist                                                   | No        |
+| `NOT_FOUND`                   | Memory id does not exist. Since sprint 029, also: `memory_supersede`/`memory_update` on a superseded or deleted record (the message points at the replacement) | No        |
+| `NOT_AGENT_AUTHORED`          | Sprint 029 (#638). `memory_supersede`/`memory_update` on scanner-ingested knowledge. Derived data updates via re-scan — fix the file instead; facts amend, events append | No |
 | `NOT_SOFT_DELETED`            | `memory_admin_restore` on a row that is not currently soft-deleted         | No        |
 | `EVENTS_NOT_DELETABLE`        | Delete tool called on an event id                                          | No        |
 | `INSUFFICIENT_SCOPE`          | Caller's token lacks the required scope                                    | No        |

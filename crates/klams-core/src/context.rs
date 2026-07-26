@@ -613,12 +613,14 @@ mod tests {
             source: RetrievalSource::Fts,
             id: Uuid::new_v4(),
             score: 1.0,
+            weight: 1.0,
             payload: serde_json::json!({"repo": "klams", "file": "src/lib.rs"}),
         };
         let r2 = RankedRow {
             source: RetrievalSource::Fts,
             id: Uuid::new_v4(),
             score: 1.0,
+            weight: 1.0,
             payload: serde_json::json!({"repo": "klams"}),
         };
         assert_eq!(payload_key(&r1).as_deref(), Some("klams::src/lib.rs"));
@@ -655,6 +657,7 @@ mod tests {
                         source: RetrievalSource::Fts,
                         id: Uuid::new_v4(),
                         score: 1.0 - f32::from(u16::try_from(i).unwrap_or(0)) * 0.01,
+                        weight: 1.0,
                         payload: p.clone(),
                     })
                     .collect())
