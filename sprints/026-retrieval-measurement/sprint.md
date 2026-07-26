@@ -268,15 +268,55 @@ RRF-score and no-provenance-boost parts, and is itself marked to be
 superseded when #644 lands) and soft-deleted. The 413-ceiling memory
 `019f9ae4-79c0` is untouched — still accurate until #655/#632.
 
+### The eval suite, run live
+
+Ken pointed out the klams-mind token is in that repo's (gitignored)
+`.env`, so the suite **did** run against 0.1.26. Baseline captured at
+`klams-mind evals/baselines/homelab-retrieval.md`, replacing one that was
+five klams sprints stale (2026-07-08 — it recorded `score` values of 0.84,
+i.e. raw cosine, which is proof it predates sprint 024's RRF).
+
+**Result: OK — 15/21 queries, 0 regressions, 6 known-open.**
+
+- **`no_duplicates` 3/3** — #641's invariant, asserted against the live
+  corpus, not just unit tests.
+- The first run reported **2 regressions**; both were investigated and
+  neither was one. Both were `source_cited` assertions pinning *which
+  file wins* rather than whether the question is answered:
+  - `klams.service` — still exists but is a legacy path (live units are
+    `deploy/klams-service.service`), and 024's RRF legitimately reordered
+    everything. Today's top-5 all answer "kubs0" correctly.
+  - `klams.example.toml` for "where does kvllm serve models" — a *klams*
+    config that merely mentions kvllm's URL. It was the best answer
+    available in July because **kai was not scanned until sprint 023**, so
+    the kvllm repo was not in the corpus at all. Today the top-5 is
+    kvllm's own justfile / models.toml / helper.py. Retrieval improved;
+    the assertion pinned the inferior document.
+
+  Both now assert the answer (`kubs0`, `8000`). Fixed in klams-mind
+  `1f60203` with the reasoning recorded inline in the suite.
+
+- Two `known_open` queries passed and were promoted. The more
+  interesting one is a genuine **#333 finding**: `find_knowledge_by_content_hash`
+  retrieves but `LOW_SCORE_THRESHOLD` does not — both exact identifiers
+  in scanned klams source. The difference is that the former appears in
+  many chunks surrounded by prose. So the lexical gap is not "identifiers
+  never work", it is "identifiers work only when already well represented
+  in prose" — precisely the wrong property for looking up a rare symbol.
+  Both are kept: one as the regression bar, one as the open evidence.
+
+- The junk ceiling caught the real thing: a 7-character ` ```bash ` body
+  in `kpidash/.github/agents/copilot-instructions.md`, breadcrumb
+  stripped. F-2.3 confirmed against production.
+
 ### Not verified
 
-- `just health` / `just verify` could not run: they default to
-  `KLAMS_TOKEN=dev-token` and the real token lives in
+- `just health` / `just verify` still could not run: they default to
+  `KLAMS_TOKEN=dev-token` and the *service* token lives in
   `/etc/klams/klams.toml`, which is not readable from Ken's account.
-  `/healthz` passed; the write path was instead exercised directly via
+  `/healthz` passed; the write path was exercised directly via
   authenticated MCP (`memory_add` + `memory_delete` above, both
   succeeded), which covers what SC-001 would have.
-- `just eval` likewise needs a token, so no baseline **report** artifact
-  exists. The before/after above was captured through MCP instead.
-  Provisioning a scoped klams-mind token would make `just eval` usable
-  unattended — worth doing before sprint 029 leans on it.
+- The generated baseline report carries no timestamp or target version of
+  its own — worth adding, since a stale baseline is exactly what caused
+  the two false regressions above.
