@@ -268,6 +268,18 @@ async fn main() -> Result<()> {
     // Sprint 027 (#420): the same ceiling the REST path and the embedder
     // enforce, so `memory_add` refuses over-budget text up front.
     mcp_state.embed_limit = embed_limit;
+    // Sprint 030 (#685): optional second-stage reranker. A bad URL is a
+    // config error worth failing startup for — silently searching
+    // un-reranked while the config says otherwise would be worse.
+    if let Some(url) = cfg.retrieval.reranker_url.as_deref() {
+        mcp_state.reranker = Some(std::sync::Arc::new(klams_store::TeiReranker::new(url)?));
+        mcp_state.rerank_window = cfg.retrieval.rerank_window as usize;
+        info!(
+            reranker_url = url,
+            window = cfg.retrieval.rerank_window,
+            "second-stage reranker enabled"
+        );
+    }
     let mcp_router = klams_mcp::router(mcp_state, cfg.server.mcp_allowed_hosts.clone()).layer(
         axum::middleware::from_fn_with_state(auth_state, klams_api::require_bearer),
     );

@@ -45,6 +45,11 @@ pub const DECAY_CONFIG_RELOADS: &str = "klams_decay_config_reloads_total";
 // the tuning-data feedback loop.
 pub const SEARCH_MISSES: &str = "klams_search_misses_total";
 
+// Sprint 030 (#685): rerank calls that failed and were skipped — the
+// searches served un-reranked while the config says the stage is on.
+// Nonzero here means the reranker container is sick, not the search.
+pub const RERANK_SKIPPED: &str = "klams_rerank_skipped_total";
+
 /// Register descriptions with the global recorder. Safe to call
 /// repeatedly; the metrics crate dedupes.
 pub fn describe() {
@@ -107,6 +112,10 @@ pub fn describe() {
     describe_counter!(
         SEARCH_MISSES,
         "memory_search calls that returned nothing (reason=zero_hit) or only a weak top match (reason=low_score) — the miss log (sprint 021 #317)"
+    );
+    describe_counter!(
+        RERANK_SKIPPED,
+        "memory_search rerank stages skipped because the reranker call failed; the search was served un-reranked (sprint 030 #685)"
     );
 }
 
@@ -208,6 +217,12 @@ pub fn incr_decay_run() {
 /// `"low_score"`.
 pub fn incr_search_miss(reason: &'static str) {
     counter!(SEARCH_MISSES, "reason" => reason).increment(1);
+}
+
+/// Record a skipped rerank stage (sprint 030 #685) — the reranker call
+/// failed and the search was served un-reranked.
+pub fn incr_rerank_skipped() {
+    counter!(RERANK_SKIPPED).increment(1);
 }
 
 pub fn incr_decay_facts_updated(n: u64) {

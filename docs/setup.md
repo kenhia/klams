@@ -68,13 +68,27 @@ user-writable directory:
 export KLAMS_ROOT=$HOME/.local/share/klams
 ./scripts/provision-storage-root.sh
 docker compose --env-file $KLAMS_ROOT/config/compose.env \
-  -f deploy/docker-compose.yml up -d postgres qdrant tei
+  -f deploy/docker-compose.yml up -d postgres qdrant tei reranker
 KLAMS_CONFIG=$KLAMS_ROOT/config/klams.toml \
   cargo run --release -p klams-service
 ```
 
 The compose file references `${KLAMS_DATA_ROOT}` for bind mounts, so
 the data volumes follow the override automatically.
+
+## The reranker service (sprint 030)
+
+`reranker` is a second TEI container (same image tag as `tei`, model
+`${RERANKER_MODEL_ID}` — `BAAI/bge-reranker-v2-m3`) serving the
+optional `memory_search` cross-encoder stage on `127.0.0.1:7071`. On
+kubs0 include the GPU override (`deploy/docker-compose.gpu.yml`) so
+both TEI containers share the 4080 SUPER via CDI (~2.9 GB VRAM
+total). The stage activates only when `/etc/klams/klams.toml` sets
+`[retrieval] reranker_url`; removing that key (or stopping the
+container — the stage is best-effort) is the rollback. The model id
+is NOT the Qwen3-Reranker the planning WI named: TEI cannot serve
+that architecture yet (upstream PRs open, 2026-07-26) — swap
+`RERANKER_MODEL_ID` when a TEI release merges support.
 
 ## Developer tooling
 

@@ -1344,6 +1344,45 @@ Both verbs refuse non-agent-authored targets with
 stays klams-mind's job (WI-259 division of labor) — klams ships the
 primitives.
 
+## 2p. Sprint 030 deltas — second-stage reranker (#685)
+
+`memory_search` gained an optional cross-encoder stage between
+candidate assembly and rank fusion:
+
+* **Model & serving.** A second TEI container (`reranker` compose
+  service, port 7071, same GPU via CDI) serves
+  `BAAI/bge-reranker-v2-m3` over `POST /rerank`. The WI's candidate,
+  Qwen3-Reranker-0.6B, cannot be served: TEI has no merged Qwen3
+  classifier support (upstream PRs #886/#730/#835 open as of
+  2026-07-26; verified live — the seq-cls conversion is refused with
+  `` `classifier` model type is not supported for Qwen3 ``). Swap the
+  model id in `compose.env` when a TEI release merges it.
+* **Placement.** The stage scores the *knowledge candidates* (global
+  ANN + curated stratum, post dedupe/tag-filter, up to
+  `[retrieval] rerank_window` = 50) and reorders the knowledge
+  within-source rank list plus `curated_order` — the inputs to 029's
+  weighted RRF. Provenance weights therefore apply to the RERANKED
+  order: the cross-encoder fixes semantic order within a tier; the
+  weights still arbitrate across tiers. Facts/events are not
+  submitted (JSON payloads, not prose). `raw_score` stays the cosine.
+* **Contract.** Best-effort: one attempt, 5 s timeout, no retries; on
+  any failure the un-reranked order is served, a warning logged, and
+  `klams_rerank_skipped_total` incremented. Config-gated:
+  `[retrieval] reranker_url` absent = stage off (the rollback switch).
+  Stage latency rides the existing retrieval histogram as
+  `op="rerank"` — measured live: ~34 ms median, ~43 ms p99 per search.
+* **Why.** The 029 leftovers were two curated-vs-curated rank-1
+  inversions — same tier, same author, invisible to per-hit
+  provenance weights. The cross-encoder closes exactly that class:
+  eval went 19/21 → **21/21 (100%), 0 regressions** with the stage on
+  (bake-off on the live corpus, 2026-07-26). The reranker container
+  runs `--auto-truncate` ON — the opposite of the embedder,
+  deliberately: a truncated *scoring* signal degrades gracefully,
+  nothing is stored.
+* **Deferred.** Trained LTR / fine-tuned reranker stays gated behind
+  ~1–2k labeled pairs (search_sample + LLM-judge bootstrap) — see
+  korg #685.
+
 ## 3. Deployment topology on `kubs0`
 
 ```text
