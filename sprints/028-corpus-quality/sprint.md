@@ -60,9 +60,52 @@ embedded by a modern long-context model.
 - `klams_writes_failed_total` / "Dropped queued writes" watched during
   re-scan; oversize-writes panel ~0 after the ceiling raise.
 
-## Chronicle
+## Model selection (#655) — decided 2026-07-26
 
-(Recorded as the sprint progresses.)
+Hardware truth: the GPU is an **RTX 4080 SUPER** (16 GB), not a "4090";
+Ada, compute cap 8.9 → TEI image `89-1.9`. It was idle (1 MiB used).
+`nvidia-container-toolkit` 1.19.1 was installed + CDI spec generated
+(recorded as k-homelab WI #683); on Docker 29 the legacy `--gpus` flag
+does not work — CDI device syntax only.
+
+Method: dumped the live corpus (221,327 points, payloads only), embedded
+one test collection per candidate on the GPU (TEI `89-1.9`), booted a
+throwaway 0.1.28 klams-service per collection, ran the 026 eval suite
+against each. A fourth arm ran the incumbent bge-small against the live
+collection — the honest same-corpus baseline, which matters because the
+corpus has drifted since the 0.1.26 baseline was captured (sprint 027's
+own docs/code now bury the 413-ceiling memory — #628's prediction,
+verbatim; even the incumbent fails that query today).
+
+Results (identical corpus, identical suite):
+
+| arm | passed | newly-fixed known-open | real pass-losses |
+|---|---|---|---|
+| bge-small-en-v1.5 (incumbent) | 14/21 | 0 | — (1 drift) |
+| BAAI/bge-m3 | 14/21 | 2 | 2 |
+| snowflake-arctic-embed-l-v2.0 (`query: ` prefix) | 16/21 | 3 | 1 hard miss |
+| **Qwen/Qwen3-Embedding-0.6B (instruct prefix)** | **16/21** | **4** | 2 rank-inversions |
+
+**Winner: Qwen3-Embedding-0.6B.** It fixes 4 of the 6 known-open cases —
+including *deferred MCP tools misdiagnosis*, the #628 headline — and its
+two losses are rank-1/2 inversions (the target memory retrieved but
+outranked by bulk), exactly the class 029's provenance weighting
+addresses; arctic's loss is a hard top-5 miss. 16k input length is the
+most ceiling headroom (512 → 16,384 tokens), dims 1024.
+
+Deploy facts: TEI ≥1.8 flipped `--auto-truncate` default to **true**;
+compose now passes an explicit `false`. Query asymmetry ships as
+`[embeddings] query_prefix` (new key, this sprint). Full-corpus GPU
+re-embed measured at ~5–7 minutes (vs a multi-hour CPU slog).
+
+## Chronicle
 
 - Started 2026-07-26. Split the 027→028 handoff notes out of
   `.scratch/sprint-run-notes.md` into `.scratch/sprint-027-notes-for-028.md`.
+- #639/#640 landed with golden + unit tests; #642 landed with 3
+  docker-gated contract tests rewritten from the old (host,file)-identity
+  semantics (all green against the real stack).
+- #657 executed live: root removed from kubs0 scanner.toml, 361 cursor
+  rows cleared; the 3,494 points fall with the reset wipe.
+- Backup path verified live (`/gratch/klams-backup`, NFS mounted,
+  snapshots current) — #647's drift is docs-only.
