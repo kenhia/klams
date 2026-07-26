@@ -33,6 +33,13 @@ pub const OVERLAP_CHARS: usize = 200;
 /// trailing scraps, never mislabels cross-section content.
 pub const MIN_CHARS: usize = 64;
 
+/// A markdown piece whose body (breadcrumb excluded) is under this
+/// floor never ships alone (sprint 028 #639). Tiny same-path scraps
+/// merge via [`MIN_CHARS`] above; what reaches this floor is a tiny
+/// *section* — "MIT.", a lone link — whose breadcrumb outweighs its
+/// body and matches heading-echo queries while answering nothing.
+pub const MIN_BODY_CHARS: usize = 40;
+
 /// Source language, chosen by file extension. Drives the chunking
 /// strategy and is surfaced as chunk metadata (sprint 022 #322).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,6 +158,11 @@ pub fn chunk(body: &str, lang: Lang, limit: klams_types::EmbedLimit) -> Vec<Chun
     let mut out = Vec::new();
     let mut idx: u32 = 0;
     for (path, symbols, body) in pieces {
+        // Sprint 028 (#639): markdown-only body floor, applied before the
+        // breadcrumb is prepended so it measures actual content.
+        if lang == Lang::Markdown && body.trim().chars().count() < MIN_BODY_CHARS {
+            continue;
+        }
         // Prepend the heading breadcrumb so the chunk is self-describing
         // in retrieval (and the section context is embedded), never a
         // bare heading. Path is also kept as metadata (#322).
@@ -241,10 +253,63 @@ fn split_on_char_window(s: &str, window: usize) -> Vec<String> {
     out
 }
 
+/// Leading indent width in columns (tab = 4). `CommonMark` gives
+/// headings and fences at most 3 columns of indent; 4+ is an indented
+/// code block.
+fn indent_width(line: &str) -> usize {
+    let mut w = 0;
+    for c in line.chars() {
+        match c {
+            ' ' => w += 1,
+            '\t' => w += 4,
+            _ => break,
+        }
+    }
+    w
+}
+
+/// Parse a fenced-code opener (sprint 028 #639): ≤3 columns of indent,
+/// then 3+ backticks or tildes, then an info string — which for a
+/// backtick fence may not itself contain a backtick (`CommonMark`; it
+/// keeps inline code runs from opening a fence).
+fn fence_open(line: &str) -> Option<(char, usize)> {
+    if indent_width(line) >= 4 {
+        return None;
+    }
+    let t = line.trim_start();
+    let ch = t.chars().next()?;
+    if ch != '`' && ch != '~' {
+        return None;
+    }
+    let n = t.chars().take_while(|&c| c == ch).count();
+    if n < 3 {
+        return None;
+    }
+    if ch == '`' && t[n..].contains('`') {
+        return None;
+    }
+    Some((ch, n))
+}
+
+/// A closing fence: same character, at least the opening length, and
+/// nothing but whitespace after it.
+fn fence_close(line: &str, open: (char, usize)) -> bool {
+    if indent_width(line) >= 4 {
+        return false;
+    }
+    let t = line.trim_start();
+    let n = t.chars().take_while(|&c| c == open.0).count();
+    n >= open.1 && t.chars().skip(n).all(char::is_whitespace)
+}
+
 /// Parse an ATX markdown heading: 1–6 leading `#` followed by a space,
 /// then the title. Returns `(level, title)`. Rejects `#hashtag`,
-/// shebangs, and `#` code comments (no space, or >6 hashes).
+/// shebangs, `#` code comments (no space, or >6 hashes), and indented
+/// code blocks (4+ columns, sprint 028 #639).
 fn md_heading(line: &str) -> Option<(usize, &str)> {
+    if indent_width(line) >= 4 {
+        return None;
+    }
     let t = line.trim_start();
     let hashes = t.chars().take_while(|&c| c == '#').count();
     if hashes == 0 || hashes > 6 {
@@ -261,13 +326,37 @@ fn md_heading(line: &str) -> Option<(usize, &str)> {
 /// heading only updates the heading stack; the body that follows it
 /// carries the stack as its path. A heading with no body contributes
 /// context to the next body but never a block of its own.
+///
+/// Fenced code (backtick or tilde fences) is opaque (sprint 028 #639):
+/// inside a fence every line — including `# comment` lines that would
+/// otherwise parse as ATX headings — is body text. An unclosed fence
+/// runs to EOF.
 fn markdown_blocks(norm: &str) -> Vec<(Option<String>, String)> {
     let mut blocks: Vec<(Option<String>, String)> = Vec::new();
     let mut stack: Vec<(usize, String)> = Vec::new();
     let mut body = String::new();
     let mut body_path: Option<String> = None;
+    let mut fence: Option<(char, usize)> = None;
 
     for line in norm.lines() {
+        if let Some(open) = fence {
+            if fence_close(line, open) {
+                fence = None;
+            }
+            if !body.is_empty() {
+                body.push('\n');
+            }
+            body.push_str(line);
+            continue;
+        }
+        if let Some(open) = fence_open(line) {
+            fence = Some(open);
+            if !body.is_empty() {
+                body.push('\n');
+            }
+            body.push_str(line);
+            continue;
+        }
         if let Some((level, title)) = md_heading(line) {
             if body.trim().is_empty() {
                 body.clear();
@@ -557,6 +646,192 @@ mod tests {
         let head: String = chunks[0].text.chars().rev().take(40).collect();
         let tail_fwd: String = head.chars().rev().collect();
         assert!(chunks[1].text.contains(&tail_fwd[..tail_fwd.len().min(30)]));
+    }
+
+    // -----------------------------------------------------------------
+    // Sprint 028 (#639) — fenced code blocks are opaque to the heading
+    // parser. Before this, a `# comment` inside ```bash became an ATX
+    // heading: it closed the section right after the opening fence
+    // (emitting a content-free `"<breadcrumb>\n\n```bash"` chunk that
+    // embeds at 0.956 raw cosine against heading-echo queries) and
+    // corrupted the breadcrumb stack for the rest of the file.
+
+    #[test]
+    fn fenced_hash_comments_are_not_headings() {
+        let body = "\
+# kpidash
+
+## Build
+
+Build the dashboard bundle with the pinned toolchain and the vendored deps so CI and local agree.
+
+```bash
+# install deps first
+npm ci
+# then build the production bundle
+npm run build
+```
+
+## Deploy
+
+Deploy copies the bundle to kubs0 and reloads the service so the new dashboard goes live.";
+        let chunks = chunk(body, Lang::Markdown, klams_types::EmbedLimit::default());
+
+        // No content-free fence fragment ships.
+        for c in &chunks {
+            let stripped = c
+                .heading_path
+                .as_deref()
+                .map_or(c.text.as_str(), |p| {
+                    c.text.strip_prefix(p).unwrap_or(&c.text)
+                })
+                .trim();
+            assert!(
+                !stripped.is_empty() && stripped != "```bash" && stripped != "```",
+                "content-free fence fragment leaked: {:?}",
+                c.text
+            );
+        }
+
+        // The fence body stays inside the Build section, comments intact.
+        let build = chunks
+            .iter()
+            .find(|c| c.text.contains("npm run build"))
+            .expect("build section chunk");
+        assert_eq!(build.heading_path.as_deref(), Some("kpidash > Build"));
+        assert!(build.text.contains("# install deps first"));
+
+        // The breadcrumb stack is not corrupted by the fenced comments:
+        // Deploy is a child of the H1, not of "# install deps first".
+        let deploy = chunks
+            .iter()
+            .find(|c| c.text.contains("reloads the service"))
+            .expect("deploy section chunk");
+        assert_eq!(deploy.heading_path.as_deref(), Some("kpidash > Deploy"));
+    }
+
+    #[test]
+    fn tilde_fence_hides_backtick_fence_and_hash_lines() {
+        let body = "\
+# Doc
+
+Intro paragraph long enough to stand as a body on its own here.
+
+~~~markdown
+# example heading inside a literal block
+```bash
+echo hi
+```
+~~~
+
+## After
+
+Closing section body long enough to stand on its own as well here.";
+        let chunks = chunk(body, Lang::Markdown, klams_types::EmbedLimit::default());
+        let after = chunks
+            .iter()
+            .find(|c| c.text.contains("Closing section body"))
+            .expect("after chunk");
+        assert_eq!(after.heading_path.as_deref(), Some("Doc > After"));
+        let fenced = chunks
+            .iter()
+            .find(|c| c.text.contains("echo hi"))
+            .expect("fenced body kept");
+        assert_eq!(fenced.heading_path.as_deref(), Some("Doc"));
+        assert!(fenced
+            .text
+            .contains("# example heading inside a literal block"));
+    }
+
+    #[test]
+    fn fence_close_requires_at_least_opening_length() {
+        let body = "\
+# Doc
+
+````text
+```
+# still inside the outer fence
+```
+````
+
+## Next
+
+Body of the next section long enough to stand on its own here.";
+        let chunks = chunk(body, Lang::Markdown, klams_types::EmbedLimit::default());
+        let next = chunks
+            .iter()
+            .find(|c| c.text.contains("Body of the next section"))
+            .expect("next chunk");
+        assert_eq!(next.heading_path.as_deref(), Some("Doc > Next"));
+        assert!(chunks
+            .iter()
+            .any(|c| c.text.contains("# still inside the outer fence")));
+    }
+
+    #[test]
+    fn indented_code_hash_is_not_a_heading() {
+        // CommonMark: 4+ spaces of indentation is an indented code block,
+        // never a heading.
+        let body = "\
+# Doc
+
+Some prose introducing the indented example below, long enough to keep.
+
+    # this is indented code, not a heading
+    make install
+
+## Real
+
+Real section body long enough to stand on its own right here.";
+        let chunks = chunk(body, Lang::Markdown, klams_types::EmbedLimit::default());
+        let real = chunks
+            .iter()
+            .find(|c| c.text.contains("Real section body"))
+            .expect("real chunk");
+        assert_eq!(real.heading_path.as_deref(), Some("Doc > Real"));
+        assert!(!chunks.iter().any(|c| c
+            .heading_path
+            .as_deref()
+            .is_some_and(|p| p.contains("indented code"))));
+    }
+
+    #[test]
+    fn unclosed_fence_runs_to_end_of_file_without_breaking() {
+        let body = "\
+# Doc
+
+```bash
+# unclosed fence — rest of file is code
+echo one
+echo two";
+        let chunks = chunk(body, Lang::Markdown, klams_types::EmbedLimit::default());
+        assert!(chunks.iter().any(|c| c.text.contains("echo two")));
+        assert!(chunks
+            .iter()
+            .all(|c| c.heading_path.as_deref() == Some("Doc")));
+    }
+
+    #[test]
+    fn tiny_markdown_section_body_never_ships_alone() {
+        // Sprint 028 (#639) follow-through: a markdown piece whose body
+        // (breadcrumb stripped) is under MIN_BODY_CHARS is dropped rather
+        // than shipped as a near-content-free chunk.
+        let body = "\
+# Project
+
+A real introduction paragraph that easily clears the body floor here.
+
+## License
+
+MIT.";
+        let chunks = chunk(body, Lang::Markdown, klams_types::EmbedLimit::default());
+        assert!(chunks.iter().any(|c| c.text.contains("real introduction")));
+        assert!(
+            !chunks
+                .iter()
+                .any(|c| c.heading_path.as_deref() == Some("Project > License")),
+            "tiny License section must not ship alone: {chunks:#?}"
+        );
     }
 
     #[test]

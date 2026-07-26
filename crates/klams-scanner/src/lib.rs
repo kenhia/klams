@@ -36,6 +36,67 @@ pub fn default_host() -> String {
     std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".into())
 }
 
+/// Derive the repo name for a file under a scan root (sprint 028 #640).
+///
+/// The deepest ancestor directory (from the file's parent down to and
+/// including the root) containing a `.git` entry wins — `.git` may be a
+/// directory or, for worktrees/submodules, a file. With no `.git`
+/// anywhere, the first path segment under the root stands in; a file
+/// directly under the root (or outside it) falls back to the root's
+/// basename — the pre-028 behavior, now the last resort instead of the
+/// only answer.
+#[must_use]
+pub fn derive_repo(root: &Path, file: &Path) -> String {
+    let root_name = || {
+        root.file_name().map_or_else(
+            || root.display().to_string(),
+            |s| s.to_string_lossy().into_owned(),
+        )
+    };
+    let Ok(rel) = file.strip_prefix(root) else {
+        return root_name();
+    };
+    let mut dir = file.parent();
+    while let Some(d) = dir {
+        if d.join(".git").exists() {
+            if d == root {
+                return root_name();
+            }
+            if let Some(name) = d.file_name() {
+                return name.to_string_lossy().into_owned();
+            }
+        }
+        if d == root {
+            break;
+        }
+        dir = d.parent();
+    }
+    match rel.components().next() {
+        Some(first) if rel.components().count() > 1 => {
+            first.as_os_str().to_string_lossy().into_owned()
+        }
+        _ => root_name(),
+    }
+}
+
+/// Per-parent-directory memo over [`derive_repo`], which stats ancestor
+/// directories — files share parents, so one lookup covers a directory.
+#[derive(Default)]
+struct RepoCache(std::collections::HashMap<std::path::PathBuf, String>);
+
+impl RepoCache {
+    fn get(&mut self, root: &Path, file: &Path) -> String {
+        match file.parent() {
+            Some(dir) => self
+                .0
+                .entry(dir.to_path_buf())
+                .or_insert_with(|| derive_repo(root, file))
+                .clone(),
+            None => derive_repo(root, file),
+        }
+    }
+}
+
 /// Walk a single root, diff against cursor, publish changes, prune
 /// vanished files. Exposed at the library level so the integration
 /// suite can drive it directly without spawning the binary. `host` is
@@ -63,14 +124,14 @@ pub async fn scan_root(
     let cursor = Cursor::open(cursor_path)?;
     let files = walk(root);
     let mut seen: HashSet<String> = HashSet::new();
-    let repo = root.file_name().map_or_else(
-        || root.display().to_string(),
-        |s| s.to_string_lossy().into_owned(),
-    );
+    // Sprint 028 (#640): repo is derived per file, not from the root's
+    // basename (which stamped repo="src" on 218k of 222k live points).
+    let mut repos = RepoCache::default();
 
     for f in files {
         let abs = f.absolute_path.display().to_string();
         seen.insert(abs.clone());
+        let repo = repos.get(root, &f.absolute_path);
 
         let prev = cursor.get(&abs)?;
         if let Some(prev) = &prev {
@@ -192,7 +253,87 @@ fn now_seconds_i64() -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::default_host;
+    use super::{default_host, derive_repo};
+    use std::path::Path;
+
+    // -----------------------------------------------------------------
+    // Sprint 028 (#640) — the recorded repo must be the actual repo, not
+    // the scan root's basename (which made 218k of 222k live points say
+    // repo="src").
+
+    #[test]
+    fn repo_is_nearest_git_ancestor() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("kpidash/.git")).unwrap();
+        std::fs::create_dir_all(root.join("kpidash/src")).unwrap();
+        let file = root.join("kpidash/src/main.rs");
+        assert_eq!(derive_repo(root, &file), "kpidash");
+    }
+
+    #[test]
+    fn nested_repo_beats_first_segment() {
+        // /root/tools/kpidash/.git — the repo is kpidash, not tools.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("tools/kpidash/.git")).unwrap();
+        std::fs::create_dir_all(root.join("tools/kpidash/docs")).unwrap();
+        let file = root.join("tools/kpidash/docs/README.md");
+        assert_eq!(derive_repo(root, &file), "kpidash");
+    }
+
+    #[test]
+    fn gitfile_worktree_counts_as_repo_marker() {
+        // Worktrees and submodules have a `.git` *file*, not a directory.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("wt/sub")).unwrap();
+        std::fs::write(root.join("wt/.git"), "gitdir: elsewhere").unwrap();
+        let file = root.join("wt/sub/lib.rs");
+        assert_eq!(derive_repo(root, &file), "wt");
+    }
+
+    #[test]
+    fn no_git_falls_back_to_first_segment() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("notes/topic")).unwrap();
+        let file = root.join("notes/topic/idea.md");
+        assert_eq!(derive_repo(root, &file), "notes");
+    }
+
+    #[test]
+    fn file_directly_under_root_uses_root_basename() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("src");
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("README.md");
+        assert_eq!(
+            derive_repo(&root, &file),
+            root.file_name().unwrap().to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn root_that_is_itself_a_repo_uses_its_basename() {
+        // Scanning a repo directly: /root/.git exists — every file
+        // belongs to the root repo, not to its top-level directories.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("klams");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(root.join("crates/klams-core")).unwrap();
+        let file = root.join("crates/klams-core/src/lib.rs");
+        assert_eq!(derive_repo(&root, &file), "klams");
+    }
+
+    #[test]
+    fn file_outside_root_falls_back_to_root_basename() {
+        // Defensive: never panic on a path that doesn't strip.
+        assert_eq!(
+            derive_repo(Path::new("/a/src"), Path::new("/elsewhere/x.md")),
+            "src"
+        );
+    }
 
     #[test]
     fn default_host_is_nonempty_and_trimmed() {
