@@ -158,8 +158,8 @@ re-embed measured at ~5–7 minutes (vs a multi-hour CPU slog).
 
 ## Deployed 2026-07-26
 
-- Version `0.1.28` live on kubs0 (`/healthz` confirms; deployed twice —
-  once pre-rebuild, once after the TEI-422/threshold fixes).
+- Version `0.1.28` live on kubs0 (`/healthz` confirms; final binaries
+  rebuilt from the squash-merged main, ccad508).
 - Rollback targets: binaries via `just rollback` (`.prev` in place);
   the corpus via config flip back to `knowledge_items` (v1, 384-dim,
   retained intact) + `TEI_IMAGE_TAG=cpu-1.7` / bge-small in compose.env.
