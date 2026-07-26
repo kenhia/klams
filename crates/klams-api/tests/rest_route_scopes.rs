@@ -45,12 +45,7 @@ impl Store for PanicStore {
     async fn get_knowledge(&self, _id: Uuid) -> StoreResult<Option<KnowledgeItem>> {
         unimplemented!("handler must not be reached")
     }
-    async fn find_knowledge_by_content_hash(
-        &self,
-        _hash: &str,
-        _file: Option<&str>,
-        _machine: Option<&str>,
-    ) -> StoreResult<Option<Uuid>> {
+    async fn find_knowledge_by_content_hash(&self, _hash: &str) -> StoreResult<Option<Uuid>> {
         unimplemented!("handler must not be reached")
     }
     async fn list_facts(&self, _q: FactQuery) -> StoreResult<(Vec<Fact>, Option<String>)> {

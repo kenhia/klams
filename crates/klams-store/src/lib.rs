@@ -316,23 +316,38 @@ pub trait Store: Send + Sync + 'static {
         query: &str,
         top_k: u32,
     ) -> StoreResult<(Vec<TextHit>, Vec<TextHit>)>;
-    /// Find an existing knowledge point with `hash`. Scoped by
-    /// `source_file` (sprint 022 #324) and `machine` (sprint 023 #408)
-    /// when `Some`, so identical chunks in different files — or the same
-    /// path on different hosts — stay distinct points.
-    async fn find_knowledge_by_content_hash(
+    /// Find an existing **live** knowledge point with `hash`.
+    ///
+    /// Content-only since sprint 028 (#642): identical content is ONE
+    /// point wherever it appears; per-file/per-host identity lives in
+    /// the point's copy bookkeeping (see [`Self::attach_knowledge_copy`]).
+    /// Soft-deleted points never match — a scanner chunk deduping onto a
+    /// deleted memory would make live content unsearchable.
+    async fn find_knowledge_by_content_hash(&self, hash: &str) -> StoreResult<Option<Uuid>>;
+    /// Record that (`machine`, `file`) also holds the content of point
+    /// `id` (sprint 028 #642). Returns `true` when the copy was newly
+    /// attached, `false` when it was already recorded (or the point is
+    /// gone). Default is a no-op `Ok(false)` — copy bookkeeping is a
+    /// Qdrant concern and mocks don't track it.
+    async fn attach_knowledge_copy(
         &self,
-        hash: &str,
-        source_file: Option<&str>,
-        machine: Option<&str>,
-    ) -> StoreResult<Option<Uuid>>;
+        _id: Uuid,
+        _machine: Option<&str>,
+        _file: Option<&str>,
+        _repo: Option<&str>,
+    ) -> StoreResult<bool> {
+        Ok(false)
+    }
     async fn get_knowledge(&self, id: Uuid) -> StoreResult<Option<KnowledgeItem>>;
     /// Sprint 003 T010b: delete every knowledge point whose payload
-    /// `source_file` matches. Sprint 023 (#408): also scoped to
-    /// `machine` when `Some`, so one host's delete-before-reindex can't
-    /// drop another host's chunk for the same path. Returns the number
-    /// of points removed. Default returns `Other` so mocks need not
-    /// implement.
+    /// `source_file` matches, scoped to `machine`.
+    ///
+    /// Sprint 028 (#642): with one point per content, this is copy
+    /// bookkeeping, not point deletion — the (`machine`, `file`) copy is
+    /// removed from each matching point and the point itself is deleted
+    /// only when its last copy goes. Returns the number of copies
+    /// removed (= points affected). Default returns `Other` so mocks
+    /// need not implement.
     async fn delete_knowledge_by_source_file(
         &self,
         _source_file: &str,

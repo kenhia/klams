@@ -51,7 +51,18 @@ async fn classify(resp: reqwest::Response, limit: EmbedLimit, inputs: &[&str]) -
         format!("HTTP {status}: {body}")
     };
 
-    if status == reqwest::StatusCode::PAYLOAD_TOO_LARGE {
+    // TEI ≤1.7 answers an over-limit input with 413; TEI 1.9 answers 422
+    // `Input validation error: `inputs` must have less than N tokens`
+    // (sprint 028, found by the calibration test). Both mean the same
+    // permanent, caller-fixable thing — without the 422 arm the input
+    // would be misreported as EMBEDDING_REJECTED, which the 027 error
+    // contract reserves for "the backend refused the request itself",
+    // and the split-and-retry guidance would be lost.
+    let too_large = status == reqwest::StatusCode::PAYLOAD_TOO_LARGE
+        || (status == reqwest::StatusCode::UNPROCESSABLE_ENTITY
+            && body.contains("must have less than")
+            && body.contains("tokens"));
+    if too_large {
         // Report against the largest input — the one that provoked it.
         let worst = inputs.iter().max_by_key(|t| t.len()).copied().unwrap_or("");
         let oversize = limit.check(worst).err().unwrap_or_else(|| {
@@ -545,16 +556,45 @@ mod tests {
             eprintln!("skipping tei_embed_returns_configured_dim_vector: TEST_TEI_URL not set");
             return;
         };
-        let embedder = TeiEmbedder::new(url, 384).unwrap();
+        // Sprint 028: probe the served model's dim instead of pinning
+        // 384 — the test is about the client, not about which model the
+        // operator has loaded today.
+        let dim = probe_tei_dim(&url).await;
+        let embedder = TeiEmbedder::new(url, dim).unwrap();
         let v = embedder.embed("hello world").await.unwrap();
-        assert_eq!(v.len(), 384);
+        assert_eq!(v.len(), dim);
         // Batch path (#325): N inputs → N vectors of the right dim.
         let batch = embedder
             .embed_batch(&["hello world".to_string(), "second input".to_string()])
             .await
             .unwrap();
         assert_eq!(batch.len(), 2);
-        assert!(batch.iter().all(|v| v.len() == 384));
+        assert!(batch.iter().all(|v| v.len() == dim));
+    }
+
+    /// Live-TEI helpers for the ignored integration tests: the served
+    /// model's embedding dim and its `max_input_length` from `/info`.
+    async fn probe_tei_dim(url: &str) -> usize {
+        let resp: Vec<Vec<f32>> = reqwest::Client::new()
+            .post(format!("{}/embed", url.trim_end_matches('/')))
+            .json(&serde_json::json!({"inputs": ["probe"]}))
+            .send()
+            .await
+            .expect("TEI /embed probe")
+            .json()
+            .await
+            .expect("TEI /embed probe body");
+        resp[0].len()
+    }
+
+    async fn probe_tei_max_input_length(url: &str) -> usize {
+        let info: serde_json::Value = reqwest::get(format!("{}/info", url.trim_end_matches('/')))
+            .await
+            .expect("TEI /info")
+            .json()
+            .await
+            .expect("TEI /info body");
+        usize::try_from(info["max_input_length"].as_u64().expect("max_input_length")).unwrap()
     }
 
     /// Sprint 027 (#420) — the calibration test.
@@ -576,58 +616,70 @@ mod tests {
             eprintln!("skipping token_counts_predict_what_tei_accepts: TEST_TEI_URL not set");
             return;
         };
-        let e = TeiEmbedder::new(url, 384).unwrap();
-        let limit = EmbedLimit::default();
+        // Sprint 028: model-agnostic for real. The 027 version pinned
+        // bge-small's dim (384) and ceiling (512), so the fixtures all
+        // straddled 512 tokens — under a 32k-ceiling model every one of
+        // them trivially fits and the test asserts nothing. Probe the
+        // served model's dim and ceiling, then SCALE each shape so one
+        // variant sits under the ceiling and one over it, and assert the
+        // gate's verdict matches TEI's real accept/reject on both.
+        let dim = probe_tei_dim(&url).await;
+        let ceiling = probe_tei_max_input_length(&url).await;
+        let limit = EmbedLimit::new(ceiling);
+        // `.with_limit` matters: without it the embedder's own preflight
+        // keeps the 512-token default and rejects before dispatch, and
+        // the test measures the wrong gate.
+        let e = TeiEmbedder::new(url, dim).unwrap().with_limit(limit);
 
-        let shapes: Vec<(&str, String)> = vec![
-            (
-                "punctuation",
-                "!@#$%^&*(){}[]<>?/|~`+=_-;:'\",. ".repeat(40),
-            ),
-            (
-                "minified json",
-                r#"{"key":"value","n":123,"ok":true},"#.repeat(40),
-            ),
-            (
-                "urls",
-                "https://kubs0.encke-wahoo.ts.net:7777/mcp?x=1&y=2 ".repeat(30),
-            ),
-            (
-                "markdown table",
-                "| col_a | col_b | 12.5 | yes |\n".repeat(50),
-            ),
-            (
-                "rust code",
-                "let x = compute(alpha, beta); // note\n".repeat(50),
-            ),
+        let units: Vec<(&str, &str)> = vec![
+            ("punctuation", "!@#$%^&*(){}[]<>?/|~`+=_-;:'\",. "),
+            ("minified json", r#"{"key":"value","n":123,"ok":true},"#),
+            ("urls", "https://kubs0.encke-wahoo.ts.net:7777/mcp?x=1&y=2 "),
+            ("markdown table", "| col_a | col_b | 12.5 | yes |\n"),
+            ("rust code", "let x = compute(alpha, beta); // note\n"),
             (
                 "english prose",
-                "the homelab runs klams on kubs0 behind tailscale. ".repeat(40),
+                "the homelab runs klams on kubs0 behind tailscale. ",
             ),
-            ("cjk", "日本語のテキストです".repeat(60)),
-            (
-                "base64",
-                "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY3ODkw".repeat(20),
-            ),
+            ("cjk", "日本語のテキストです"),
+            ("base64", "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY3ODkw"),
         ];
 
-        for (name, text) in shapes {
-            let counted = e.count_tokens(&[text.as_str()]).await.unwrap()[0];
-            let gate_says_fits = counted <= limit.max_input_tokens();
-            // What the model actually does with it.
-            let tei_accepts = match e.embed(&text).await {
-                Ok(_) => true,
-                Err(StoreError::PayloadTooLarge { .. }) => false,
-                Err(other) => panic!("{name}: unexpected error {other:?}"),
-            };
-            assert_eq!(
-                gate_says_fits,
-                tei_accepts,
-                "{name}: gate said fits={gate_says_fits} (counted {counted} tokens against a \
-                 {}-token limit) but TEI accepts={tei_accepts} for {} chars",
-                limit.max_input_tokens(),
-                text.chars().count(),
-            );
+        for (name, unit) in units {
+            // Amortized tokens-per-16-units (special tokens spread out).
+            let sample = unit.repeat(16);
+            let per16 = e.count_tokens(&[sample.as_str()]).await.unwrap()[0].max(1);
+
+            // One variant aimed under the ceiling, one aimed over; the
+            // aim only picks the fixtures — the ASSERTION below uses the
+            // real counted number, so an off-target aim loses coverage,
+            // never correctness. Integer math: reps ≈ ratio·ceiling·16/per16.
+            let reps_under = (ceiling * 9 / 10 * 16 / per16).max(1);
+            let mut reps_over = ceiling * 11 / 10 * 16 / per16 + 1;
+            let mut over = unit.repeat(reps_over);
+            // Guarantee the over-variant is genuinely over.
+            while e.count_tokens(&[over.as_str()]).await.unwrap()[0] <= ceiling {
+                reps_over *= 2;
+                over = unit.repeat(reps_over);
+            }
+
+            for text in [unit.repeat(reps_under), over] {
+                let counted = e.count_tokens(&[text.as_str()]).await.unwrap()[0];
+                let gate_says_fits = counted <= limit.max_input_tokens();
+                let tei_accepts = match e.embed(&text).await {
+                    Ok(_) => true,
+                    Err(StoreError::PayloadTooLarge { .. }) => false,
+                    Err(other) => panic!("{name}: unexpected error {other:?}"),
+                };
+                assert_eq!(
+                    gate_says_fits,
+                    tei_accepts,
+                    "{name}: gate said fits={gate_says_fits} (counted {counted} tokens against \
+                     a {}-token limit) but TEI accepts={tei_accepts} for {} chars",
+                    limit.max_input_tokens(),
+                    text.chars().count(),
+                );
+            }
         }
     }
 
@@ -806,6 +858,55 @@ mod tests {
         assert!(
             err.to_string().contains("must have less than 512 tokens"),
             "TEI's response body was discarded: {err}"
+        );
+    }
+
+    /// Sprint 028: TEI 1.9 reports an over-limit input as **422** with an
+    /// `Input validation error` body, where ≤1.7 used 413. It must still
+    /// classify as `PayloadTooLarge` — misfiling it as
+    /// `EmbeddingRejected` loses the split-and-retry guidance the 027
+    /// error contract promises.
+    #[tokio::test]
+    async fn tei_19_422_token_validation_is_payload_too_large() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/embed"))
+            .respond_with(ResponseTemplate::new(422).set_body_string(
+                r#"{"error":"Input validation error: `inputs` must have less than 32768 tokens. Given: 35849","error_type":"Validation"}"#,
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let e = TeiEmbedder::new(server.uri(), 384).unwrap();
+        let err = e.embed("short input").await.unwrap_err();
+        assert!(
+            matches!(err, StoreError::PayloadTooLarge { .. }),
+            "TEI 1.9's 422 must classify as PayloadTooLarge, got {err:?}"
+        );
+        assert!(!err.is_transient());
+    }
+
+    /// A 422 that is NOT the token-limit shape stays `EmbeddingRejected`
+    /// — only the over-limit validation error gets the 413 treatment.
+    #[tokio::test]
+    async fn tei_other_422_stays_embedding_rejected() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/embed"))
+            .respond_with(
+                ResponseTemplate::new(422)
+                    .set_body_string(r#"{"error":"Input validation error: `inputs` cannot be empty","error_type":"Validation"}"#),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let e = TeiEmbedder::new(server.uri(), 384).unwrap();
+        let err = e.embed("x").await.unwrap_err();
+        assert!(
+            matches!(err, StoreError::EmbeddingRejected(_)),
+            "non-token 422 must stay EmbeddingRejected, got {err:?}"
         );
     }
 

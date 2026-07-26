@@ -1202,6 +1202,53 @@ which should make oversize rejections rare; this table is what decides
 whether #632's server-side chunking is ever worth building, rather than
 building it on the assumption that it is.
 
+## 2n. Sprint 028 deltas — corpus quality (#639 / #640 / #642 / #655 / #657)
+
+* **Fence-aware markdown chunker (#639).** `markdown_blocks` tracks
+  fenced-code state (backtick and tilde fences, info strings, CommonMark
+  length/indent rules), so a `# comment` inside a fence is body text,
+  never an ATX heading. Pre-028, such comments closed the open section —
+  emitting content-free `"<breadcrumb>\n\n```bash"` chunks that scored
+  up to 0.956 raw cosine on heading-echo queries — and corrupted the
+  breadcrumb stack for the rest of the file. A markdown-only body floor
+  (`MIN_BODY_CHARS = 40`, breadcrumb excluded) additionally drops tiny
+  sections ("MIT.") whose breadcrumb outweighs their content.
+* **Real repo names (#640).** The scanner derives `repo` per file — the
+  deepest ancestor with a `.git` entry (directory or worktree file),
+  else the first path segment under the scan root — instead of stamping
+  every point with the root's basename (218k of 222k live points said
+  `repo="src"`). The `RetrievalFilters.repo` filter is meaningful for
+  scanner content from the 028 re-scan onward.
+* **Content-only storage dedupe with copy bookkeeping (#642).** ONE
+  Qdrant point per `content_hash` (Ken's #641 ruling extended to
+  storage). The (host, file) identity that sprints 022/023 encoded as
+  point identity became payload bookkeeping: `copies[]`
+  ({machine, file, repo} structs, authoritative), with derived
+  keyword-indexed `machines[]` / `files[]` lists, and the singular
+  `machine`/`file`/`repo` retained as the *canonical* copy (re-promoted
+  when the canonical copy is deleted). Dedupe hits attach the new
+  location; `delete_knowledge_by_source_file` removes one copy and
+  deletes the point only when the last copy goes. Pre-028 points carry
+  no `copies` list — their singular fields synthesize as their only
+  copy, so they behave exactly as before. Bookkeeping is serialized by a
+  process-wide mutex (Qdrant has no transactions; a lost update here
+  could delete a point a host still relies on). The content-hash probe
+  now also excludes soft-deleted points — a scanner chunk deduping onto
+  a deleted memory made live content unsearchable.
+* **GPU embedder (#655).** TEI moved from the CPU image to the CUDA
+  image on kubs0's RTX 4080 SUPER (16 GB, CDI passthrough — see
+  `deploy/docker-compose.gpu.yml`), with an eval-selected long-context
+  model replacing `bge-small-en-v1.5` (384-dim, 512 tokens). The
+  `[embeddings] query_prefix` key supports asymmetric retrieval models
+  (prefix on queries, never on documents). TEI ≥1.8 note: the
+  `--auto-truncate` default flipped to `true`; klams passes an explicit
+  `false` — a silently truncated chunk looks complete but is unfindable
+  by its tail (standing decision).
+* **Obsidian out of the corpus (#657).** The vault root was removed from
+  kubs0's scanner config, its cursor rows cleared, and its points fell
+  with the corpus reset. Rationale and revisit criteria in
+  `docs/setup.md`.
+
 ## 3. Deployment topology on `kubs0`
 
 ```text

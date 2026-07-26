@@ -22,8 +22,12 @@ url = "http://127.0.0.1:7777"
 # Treat as a secret — this example carries a placeholder only.
 token = "changeme-scanner-bearer"
 
-# Absolute roots to walk. NOT "~/src" / "~/obsidian".
-roots = ["/home/ken/src", "/home/ken/obsidian"]
+# Absolute roots to walk. NOT "~/src".
+# The Obsidian vault is deliberately absent (sprint 028 #657): stale
+# notes recalled confidently cost more than a miss. Don't reinstate the
+# whole vault; if a subtree earns its way back, add it as a targeted
+# root behind a .klamsignore allowlist.
+roots = ["/home/ken/src"]
 
 # Seconds between cycles when run as a long-lived loop. The deployed
 # unit runs `--once` under klams-scanner.timer, so the timer's cadence

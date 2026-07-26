@@ -302,6 +302,7 @@ mod tests {
             repo: Some("klams".into()),
             file: Some("/home/ken/src/klams/README.md".into()),
             machine: Some("kai".into()),
+            machines: vec![],
             heading_path: Some("klams > MCP tools".into()),
             language: Some("markdown".into()),
             chunk_index: Some(3),

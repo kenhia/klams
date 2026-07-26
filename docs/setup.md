@@ -241,10 +241,18 @@ missing):
 ```toml
 url = "http://127.0.0.1:7777"
 token = "<bearer from /etc/klams/klams.toml>"
-roots = ["/home/ken/src", "/home/ken/obsidian"]   # MUST be absolute
+roots = ["/home/ken/src"]       # MUST be absolute
 interval_secs = 3600            # ignored when running with --once
 state_dir = "/var/lib/klams"    # SQLite cursor lives here
 ```
+
+> **The Obsidian vault is deliberately NOT scanned** (sprint 028,
+> WI #657 — Ken's decision, 2026-07-25). The vault is largely
+> historical notes; to a recall-first agent a confident stale hit costs
+> more than a miss. Do not reinstate `/home/ken/obsidian` on a rebuild.
+> If specific vault subtrees earn their way back in, add them as
+> targeted roots behind a `.klamsignore` allowlist — not the whole
+> vault.
 
 `roots` **must be absolute paths**. The walker honours `.gitignore`
 and a repo-root `.klamsignore`, and always prunes heavy dependency /

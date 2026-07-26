@@ -190,6 +190,104 @@ fn shell_and_toml_hash_lines_are_not_headings() {
     }
 }
 
+// Sprint 028 (#639) — a realistic README with `#` comments inside fenced
+// code. The fence-unaware chunker turned those comments into headings:
+// content-free `"<breadcrumb>\n\n```bash"` fragments plus corrupted
+// breadcrumbs for everything after the fence.
+const README_WITH_FENCES: &str = "\
+# kpidash
+
+Homelab KPI dashboard: a small SvelteKit app that renders Prometheus
+series for the machines Ken cares about, deployed behind caddy on kubs0.
+
+## Build
+
+The build is pinned to the workspace toolchain so CI and local agree on
+the bundle hash. Run it from the repo root:
+
+```bash
+# install the pinned deps first
+npm ci
+
+# then produce the production bundle under build/
+npm run build
+```
+
+## Deploy
+
+Deployment is a straight rsync of the bundle followed by a service
+reload; the unit file lives in deploy/systemd:
+
+```bash
+# push the bundle and reload
+rsync -a build/ kubs0:/srv/kpidash/
+ssh kubs0 sudo systemctl reload kpidash
+```
+
+## Troubleshooting
+
+If panels come up empty, check that Prometheus is scraping the node
+exporter and that the dashboard's time window isn't in the future.
+";
+
+#[test]
+fn readme_with_fenced_bash_comments_chunks_cleanly() {
+    let chunks = chunk(
+        README_WITH_FENCES,
+        Lang::Markdown,
+        klams_types::EmbedLimit::default(),
+    );
+
+    // 1. No content-free fence fragments (the 0.956-cosine junk class).
+    for c in &chunks {
+        let stripped = c
+            .heading_path
+            .as_deref()
+            .map_or(c.text.as_str(), |p| {
+                c.text.strip_prefix(p).unwrap_or(&c.text)
+            })
+            .trim();
+        assert!(
+            stripped.len() >= 40,
+            "near-content-free chunk leaked: {:?}",
+            c.text
+        );
+    }
+
+    // 2. Fenced comments never become headings/breadcrumbs.
+    for c in &chunks {
+        let p = c.heading_path.as_deref().unwrap_or_default();
+        assert!(
+            !p.contains("install the pinned deps")
+                && !p.contains("push the bundle")
+                && !p.contains("then produce"),
+            "fenced comment leaked into a breadcrumb: {p:?}"
+        );
+    }
+
+    // 3. Section bodies keep their fences and carry correct breadcrumbs.
+    let build = chunks
+        .iter()
+        .find(|c| c.text.contains("npm run build"))
+        .expect("build chunk");
+    assert_eq!(build.heading_path.as_deref(), Some("kpidash > Build"));
+
+    let deploy = chunks
+        .iter()
+        .find(|c| c.text.contains("systemctl reload kpidash"))
+        .expect("deploy chunk");
+    assert_eq!(deploy.heading_path.as_deref(), Some("kpidash > Deploy"));
+
+    let ts = chunks
+        .iter()
+        .find(|c| c.text.contains("node\nexporter") || c.text.contains("node exporter"))
+        .expect("troubleshooting chunk");
+    assert_eq!(
+        ts.heading_path.as_deref(),
+        Some("kpidash > Troubleshooting")
+    );
+}
+
 #[test]
 fn chunk_indices_are_contiguous_from_zero() {
     let chunks = chunk(MARKDOWN, Lang::Markdown, klams_types::EmbedLimit::default());

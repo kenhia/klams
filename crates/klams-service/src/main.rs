@@ -127,8 +127,14 @@ async fn main() -> Result<()> {
         "embedder size gate active"
     );
     let (bumper, bumps_rx) = LastUsedBumper::channel();
-    let store =
-        Arc::new(CompositeStore::new(postgres, qdrant, embedder).with_bump_sender(bumper.sender()));
+    if !cfg.embeddings.query_prefix.is_empty() {
+        tracing::info!(prefix = %cfg.embeddings.query_prefix, "asymmetric query prefix active");
+    }
+    let store = Arc::new(
+        CompositeStore::new(postgres, qdrant, embedder)
+            .with_bump_sender(bumper.sender())
+            .with_query_prefix(cfg.embeddings.query_prefix.clone()),
+    );
 
     cfg.decay.log_resolved();
     if let Err(err) = cfg.decay.validate() {

@@ -81,12 +81,31 @@ pub async fn index<S: Store>(
 
     if let Some(existing) = state
         .store
-        .find_knowledge_by_content_hash(&content_hash, req.file.as_deref(), req.machine.as_deref())
+        .find_knowledge_by_content_hash(&content_hash)
         .await
         .map_err(|e| ApiError::Internal {
             request_id: format!("store-error: {e}"),
         })?
     {
+        // Sprint 028 (#642): content-only identity — the dedupe hit must
+        // still record that THIS (machine, file) holds the content, or a
+        // later delete for the original location would drop a point this
+        // host still relies on. A failed attach is a failed write: 500
+        // leaves the scanner's cursor unadvanced so the chunk retries.
+        if req.machine.is_some() || req.file.is_some() {
+            state
+                .store
+                .attach_knowledge_copy(
+                    existing,
+                    req.machine.as_deref(),
+                    req.file.as_deref(),
+                    req.repo.as_deref(),
+                )
+                .await
+                .map_err(|e| ApiError::Internal {
+                    request_id: format!("store-error: {e}"),
+                })?;
+        }
         m::incr_writes_total("knowledge", req.source, WritePath::Canonical);
         return Ok((
             StatusCode::ACCEPTED,
