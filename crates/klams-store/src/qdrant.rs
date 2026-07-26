@@ -157,6 +157,9 @@ impl QdrantStore {
             repo: req.repo.clone(),
             file: req.file.clone(),
             machine: req.machine.clone(),
+            heading_path: req.heading_path.clone(),
+            language: req.language.clone(),
+            chunk_index: req.chunk_index,
             confidence: 1.0,
             decay_weight: 1.0,
             use_count: 0,
@@ -551,6 +554,18 @@ fn payload_to_item(payload: &HashMap<String, Value>) -> Option<KnowledgeItem> {
         repo: payload.get("repo").and_then(|v| v.as_str().cloned()),
         file: payload.get("file").and_then(|v| v.as_str().cloned()),
         machine: payload.get("machine").and_then(|v| v.as_str().cloned()),
+        // Sprint 026 (#641): these three have been written to the
+        // payload since sprint 022 but were never read back, so no read
+        // path could project them. Optional on the way out — points
+        // written before 022, and non-chunked agent memories, have none.
+        heading_path: payload
+            .get("heading_path")
+            .and_then(|v| v.as_str().cloned()),
+        language: payload.get("language").and_then(|v| v.as_str().cloned()),
+        chunk_index: payload
+            .get("chunk_index")
+            .and_then(qdrant_client::qdrant::Value::as_integer)
+            .and_then(|i| u32::try_from(i).ok()),
         confidence: payload
             .get("confidence")
             .and_then(qdrant_client::qdrant::Value::as_double)

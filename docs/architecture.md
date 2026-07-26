@@ -997,6 +997,53 @@ eval harness. No storage or schema change.
   the contract change is recorded in that repo at
   `sprints/planning/001-cross-project-note.md`.
 
+## 2k. Sprint 026 deltas — query-time dedupe + projection additions
+
+Sprint 026 ([sprints/026-retrieval-measurement/](../sprints/026-retrieval-measurement/sprint.md),
+WI #641) collapses duplicate content at query time and widens the
+knowledge projection. No storage or schema change, no migration.
+
+* **Why**: sprint 023 deliberately made *ingest* dedupe host-scoped
+  (`find_knowledge_by_content_hash(hash, file, machine)`) so that
+  per-host delete works. `kai` and `kubs0` scan a synced `~/src`, so
+  nearly every chunk is stored twice. Measured on the live corpus:
+  221,982 points, 124,034 unique `content_hash`, 36,121 hashes on both
+  hosts — and a 10-result page was reliably 5 duplicate pairs.
+* **Query-time collapse** (`klams_core::dedupe::collapse_duplicates`)
+  groups knowledge hits by `content_hash` and keeps the best-ranked
+  copy. It runs **before** rank fusion, so freed ranks compact and the
+  released slots fill with new content instead of leaving holes. The
+  fetch over-fetches (MCP ×2, the hybrid adapter's existing ×3) so a
+  page stays full after collapse.
+  - Keys on **content only** — host/file/repo never keep two copies
+    apart. Duplicate storage was never the problem; duplicate top-k
+    slots were.
+  - The survivor carries `copies: [{id, host, file}]` for every
+    duplicate it absorbed, so nothing becomes unreachable.
+  - **Top-k scope**: a copy outside the fetch window is not hunted down.
+  - Applied on all three read paths: MCP `memory_search`, REST
+    `/memory/search`, and `/memory/context` (the latter two share the
+    `StoreHybridAdapter` seam). Facts and events carry no
+    `content_hash` and are never collapsed. Distinct from the
+    `ContextBuilder`'s cross-section dedupe (repo+file), which is
+    unchanged.
+* **Projection additions** on knowledge results:
+  `content_hash` (the collapse key, and the eval's no-duplicates
+  assertion), `heading_path` / `language` / `chunk_index`, and
+  `author.id` (ownership reasoning for delete/supersede without a
+  `register_author` round-trip).
+* **`KnowledgeItem` gained `heading_path` / `language` / `chunk_index`.**
+  Sprint 022 wrote these to the Qdrant payload but `payload_to_item`
+  never read them back, so no read path could project them. The
+  knowledge→public mapping now lives in one place
+  (`PublicMemoryContent::knowledge_from`), as does the author mapping
+  (`PublicAuthorRef::from_record`); both were previously hand-rolled at
+  four call sites, which is how the fields came to be dropped.
+* **Incidental fix**: `matches_filters` reads `host` from the retrieval
+  payload, but the vector payload never carried a `host` key — so a
+  host-filtered knowledge query silently dropped every row. The payload
+  now carries it.
+
 ## 3. Deployment topology on `kubs0`
 
 ```text

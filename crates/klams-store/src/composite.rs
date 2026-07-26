@@ -318,11 +318,7 @@ async fn list_author_memories_impl(
         .get_author_by_id(q.author_id)
         .await?
         .ok_or_else(|| StoreError::Other(format!("author {} not found", q.author_id)))?;
-    let author_ref = PublicAuthorRef {
-        agent_name: author.agent_name.clone(),
-        model: author.model.clone(),
-        repo: author.repo.clone(),
-    };
+    let author_ref = PublicAuthorRef::from_record(&author);
 
     let limit = if q.limit == 0 { 50 } else { q.limit };
     let pg_state = match q.state {
@@ -489,12 +485,7 @@ async fn list_author_memories_impl(
                 };
                 let mem = PublicMemory {
                     id: item.id,
-                    content: PublicMemoryContent::Knowledge {
-                        text: item.text.clone(),
-                        source_path: item.file.clone(),
-                        repo: item.repo.clone(),
-                        host: item.machine.clone(),
-                    },
+                    content: PublicMemoryContent::knowledge_from(&item),
                     tags: item.tags.clone(),
                     author: author_ref.clone(),
                     created_at: offset_to_chrono(item.created_at),
@@ -529,14 +520,7 @@ async fn bulk_fetch_authors(
             continue;
         }
         if let Ok(Some(a)) = composite.postgres.get_author_by_id(*id).await {
-            out.insert(
-                *id,
-                klams_types::PublicAuthorRef {
-                    agent_name: a.agent_name,
-                    model: a.model,
-                    repo: a.repo,
-                },
-            );
+            out.insert(*id, klams_types::PublicAuthorRef::from_record(&a));
         }
     }
     out
@@ -600,11 +584,7 @@ fn _dummy_error_ref() -> Option<StoreError> {
 // Sprint 008 — `GET /v1/memories` and `event_search` impls.
 
 fn unknown_author_ref() -> klams_types::PublicAuthorRef {
-    klams_types::PublicAuthorRef {
-        agent_name: "unknown".into(),
-        model: None,
-        repo: None,
-    }
+    klams_types::PublicAuthorRef::unknown()
 }
 
 /// Encode the unified newest-first cursor for `list_memories` (#54): the
@@ -811,12 +791,7 @@ async fn list_memories_impl(
                 .unwrap_or_else(unknown_author_ref);
             let mem = PublicMemory {
                 id: item.id,
-                content: PublicMemoryContent::Knowledge {
-                    text: item.text.clone(),
-                    source_path: item.file.clone(),
-                    repo: item.repo.clone(),
-                    host: item.machine.clone(),
-                },
+                content: PublicMemoryContent::knowledge_from(&item),
                 tags: item.tags.clone(),
                 author: author_ref,
                 created_at: offset_to_chrono(item.created_at),

@@ -41,6 +41,31 @@ pub enum PublicMemoryContent {
         /// agent can act on without an extra lookup.
         #[serde(skip_serializing_if = "Option::is_none")]
         host: Option<String>,
+        /// Sprint 026 (#641): the chunk's content hash. Clients and the
+        /// retrieval eval assert the no-duplicates invariant on this —
+        /// it is the key query-time collapse groups by.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content_hash: Option<String>,
+        /// Sprint 026 (#641): heading breadcrumb the chunker prepended
+        /// (scanner v2, sprint 022). Written to the payload since 022 but
+        /// never projected until now; lets a client strip the breadcrumb
+        /// back off the text.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        heading_path: Option<String>,
+        /// Sprint 026 (#641): source language the chunker detected.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        language: Option<String>,
+        /// Sprint 026 (#641): 0-based index of this chunk within its
+        /// source file — lets a client judge fragment-ness and reassemble.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        chunk_index: Option<u32>,
+        /// Sprint 026 (#641): the duplicates this result absorbed at
+        /// query time. Empty on a result that collapsed nothing. Ken's
+        /// ruling (WI #641): dedupe keys on **content only**, and the
+        /// survivor carries the *list of collapsed points* rather than
+        /// merged metadata — lossless, and a caller can reach any copy.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        copies: Vec<KnowledgeCopy>,
     },
     Event {
         category: String,
@@ -48,6 +73,72 @@ pub enum PublicMemoryContent {
         #[serde(skip_serializing_if = "Option::is_none")]
         task_id: Option<Uuid>,
     },
+}
+
+impl PublicMemoryContent {
+    /// Project a [`KnowledgeItem`] to its public content body.
+    ///
+    /// Sprint 026 (#641): this mapping used to be hand-rolled at each
+    /// read path (the MCP projection layer plus two sites in
+    /// `klams-store::composite`), which is exactly why `heading_path` /
+    /// `language` / `chunk_index` were stored since sprint 022 and
+    /// projected by nobody. Centralizing it here means a field added to
+    /// the wire shape reaches every read path or fails to compile.
+    ///
+    /// `copies` starts empty; only the search paths that run query-time
+    /// collapse populate it (see `klams_core::dedupe`).
+    #[must_use]
+    pub fn knowledge_from(item: &crate::KnowledgeItem) -> Self {
+        Self::Knowledge {
+            text: item.text.clone(),
+            source_path: item.file.clone(),
+            repo: item.repo.clone(),
+            host: item.machine.clone(),
+            content_hash: Some(item.content_hash.clone()),
+            heading_path: item.heading_path.clone(),
+            language: item.language.clone(),
+            chunk_index: item.chunk_index,
+            copies: Vec::new(),
+        }
+    }
+
+    /// The content hash, when this is a knowledge body. The key
+    /// query-time duplicate collapse groups by (sprint 026, #641).
+    #[must_use]
+    pub fn content_hash(&self) -> Option<&str> {
+        match self {
+            Self::Knowledge { content_hash, .. } => content_hash.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Record the duplicates this result absorbed at query time
+    /// (sprint 026, #641). No-op for fact/event bodies, which are never
+    /// collapsed.
+    pub fn set_copies(&mut self, absorbed: Vec<KnowledgeCopy>) {
+        if let Self::Knowledge { copies, .. } = self {
+            *copies = absorbed;
+        }
+    }
+}
+
+/// One duplicate absorbed by a surviving search result (sprint 026,
+/// WI #641). klams stores the same chunk once per host (sprint 023 made
+/// ingest dedupe host-scoped so per-host delete works), so ~44% of the
+/// corpus is duplicate content and half of a typical result page was
+/// wasted on it. Query-time collapse keeps the best-ranked copy and
+/// records the rest here, so nothing is lost — a caller that needs the
+/// copy on a particular host can address it by `id`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KnowledgeCopy {
+    /// Point id of the collapsed duplicate.
+    pub id: Uuid,
+    /// Host the collapsed copy's source file lives on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// Source path of the collapsed copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
 }
 
 /// Sanitized wire shape returned by every MCP tool that yields memories.
@@ -143,9 +234,15 @@ mod tests {
                 source_path: None,
                 repo: None,
                 host: None,
+                content_hash: None,
+                heading_path: None,
+                language: None,
+                chunk_index: None,
+                copies: Vec::new(),
             },
             tags: vec![],
             author: PublicAuthorRef {
+                id: None,
                 agent_name: "a".into(),
                 model: None,
                 repo: None,
@@ -167,6 +264,11 @@ mod tests {
             source_path: Some("/home/ken/src/x.rs".into()),
             repo: Some("src".into()),
             host: Some("kai".into()),
+            content_hash: None,
+            heading_path: None,
+            language: None,
+            chunk_index: None,
+            copies: Vec::new(),
         };
         let j = serde_json::to_value(&with_host).unwrap();
         assert_eq!(j["host"], "kai");
@@ -176,9 +278,91 @@ mod tests {
             source_path: None,
             repo: None,
             host: None,
+            content_hash: None,
+            heading_path: None,
+            language: None,
+            chunk_index: None,
+            copies: Vec::new(),
         };
         let j2 = serde_json::to_value(&without).unwrap();
         assert!(j2.get("host").is_none(), "host must be omitted when None");
+    }
+
+    /// Sprint 026 (#641): the projection additions the dedupe, the eval
+    /// suite, and the authz work all need. `knowledge_from` is the single
+    /// mapping every read path goes through, so this pins what they carry.
+    #[test]
+    fn knowledge_projection_carries_hash_chunk_metadata_and_no_copies() {
+        let item = crate::KnowledgeItem {
+            id: Uuid::nil(),
+            text: "body".into(),
+            content_hash: "abc123".into(),
+            source: crate::Source::AgentProposal,
+            tags: vec![],
+            repo: Some("klams".into()),
+            file: Some("/home/ken/src/klams/README.md".into()),
+            machine: Some("kai".into()),
+            heading_path: Some("klams > MCP tools".into()),
+            language: Some("markdown".into()),
+            chunk_index: Some(3),
+            confidence: 1.0,
+            decay_weight: 1.0,
+            use_count: 0,
+            last_used_at: None,
+            created_at: time::OffsetDateTime::UNIX_EPOCH,
+            updated_at: time::OffsetDateTime::UNIX_EPOCH,
+        };
+        let j = serde_json::to_value(PublicMemoryContent::knowledge_from(&item)).unwrap();
+        assert_eq!(j["content_hash"], "abc123");
+        assert_eq!(j["heading_path"], "klams > MCP tools");
+        assert_eq!(j["language"], "markdown");
+        assert_eq!(j["chunk_index"], 3);
+        assert!(
+            j.get("copies").is_none(),
+            "a result that collapsed nothing carries no copies array"
+        );
+    }
+
+    /// The `copies` list is how a collapsed duplicate stays reachable.
+    #[test]
+    fn collapsed_copies_serialize_with_id_host_and_file() {
+        let mut content = PublicMemoryContent::Knowledge {
+            text: "t".into(),
+            source_path: None,
+            repo: None,
+            host: Some("kai".into()),
+            content_hash: Some("abc".into()),
+            heading_path: None,
+            language: None,
+            chunk_index: None,
+            copies: Vec::new(),
+        };
+        content.set_copies(vec![KnowledgeCopy {
+            id: Uuid::nil(),
+            host: Some("kubs0".into()),
+            file: Some("/home/ken/src/x.md".into()),
+        }]);
+        let j = serde_json::to_value(&content).unwrap();
+        assert_eq!(j["copies"][0]["host"], "kubs0");
+        assert_eq!(j["copies"][0]["file"], "/home/ken/src/x.md");
+        assert_eq!(j["copies"][0]["id"], Uuid::nil().to_string());
+    }
+
+    /// `set_copies` is a no-op on non-knowledge bodies — facts and
+    /// events are never collapsed.
+    #[test]
+    fn set_copies_does_nothing_to_a_fact() {
+        let mut content = PublicMemoryContent::Fact {
+            fact_type: "EnvFact".into(),
+            payload: serde_json::json!({}),
+        };
+        content.set_copies(vec![KnowledgeCopy {
+            id: Uuid::nil(),
+            host: None,
+            file: None,
+        }]);
+        let j = serde_json::to_value(&content).unwrap();
+        assert!(j.get("copies").is_none());
     }
 
     /// Sprint 016 — the `ScoredMemory` envelope carries `score` +

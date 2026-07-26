@@ -42,6 +42,12 @@ const MAX_QUERY_LEN: usize = 1024;
 /// cross-kind comparable yet), so only applied to a knowledge top hit.
 const LOW_SCORE_THRESHOLD: f32 = 0.5;
 
+/// Over-fetch multiplier for the knowledge ANN search (sprint 026, #641).
+/// Query-time duplicate collapse discards hits, so fetching exactly
+/// `top_k` would return a short page. Measured: the dominant duplicate
+/// shape is a cross-host *pair*, so ×2 restores a full page.
+const KNOWLEDGE_OVERFETCH: u32 = 2;
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum MemoryKindFilter {
@@ -133,9 +139,16 @@ pub async fn run(
                 5,
             )
         })?;
+        // Sprint 026 (#641): over-fetch so the page is still full after
+        // query-time duplicate collapse. ~44% of the corpus is duplicate
+        // content (the same chunk stored once per host), so a top_k fetch
+        // routinely collapsed to half a page. ×2 covers the measured
+        // cross-host pair case; a chunk on three hosts can still shrink
+        // the page, which is the accepted top-k-scope tradeoff (#641).
+        let fetch_k = top_k.saturating_mul(KNOWLEDGE_OVERFETCH);
         let hits = state
             .store
-            .search_knowledge(embedding, top_k)
+            .search_knowledge(embedding, fetch_k)
             .await
             .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("search_knowledge: {e}")))?;
         if !hits.is_empty() {
@@ -195,11 +208,7 @@ pub async fn run(
             for (fact, author) in rows {
                 let score = score_by_id.get(&fact.id).copied().unwrap_or(0.0);
                 let source_rank = rank_by_id.get(&fact.id).copied().unwrap_or(0);
-                let author_ref = PublicAuthorRef {
-                    agent_name: author.agent_name,
-                    model: author.model,
-                    repo: author.repo,
-                };
+                let author_ref = PublicAuthorRef::from_record(&author);
                 scored.push((
                     score,
                     source_rank,
@@ -225,11 +234,7 @@ pub async fn run(
             for (event, author) in rows {
                 let score = score_by_id.get(&event.id).copied().unwrap_or(0.0);
                 let source_rank = rank_by_id.get(&event.id).copied().unwrap_or(0);
-                let author_ref = PublicAuthorRef {
-                    agent_name: author.agent_name,
-                    model: author.model,
-                    repo: author.repo,
-                };
+                let author_ref = PublicAuthorRef::from_record(&author);
                 scored.push((
                     score,
                     source_rank,
@@ -244,6 +249,12 @@ pub async fn run(
     if let Some(want_tags) = args.tags.as_ref().filter(|v| !v.is_empty()) {
         scored.retain(|(_, _, mem)| want_tags.iter().all(|t| mem.tags.iter().any(|m| m == t)));
     }
+
+    // Query-time duplicate collapse (sprint 026, #641) — BEFORE fusion,
+    // so freed ranks compact and the released slots fill with new
+    // content instead of leaving holes. Keys on content only (Ken's
+    // ruling): the same text on kai and kubs0 is one logical result.
+    collapse_duplicates_in_place(&mut scored);
 
     // Snapshot the RAW per-source scores by id before rank-fusion
     // rescoring overwrites them: the miss-log low-score signal is about a
@@ -302,6 +313,42 @@ pub async fn run(
         .collect())
 }
 
+/// Collapse duplicate knowledge hits in place (sprint 026, #641).
+///
+/// `scored` is best-first within each source, so the surviving copy is
+/// the best-ranked one. Fact and event entries carry no `content_hash`
+/// and pass through untouched. Each survivor is annotated with the
+/// copies it absorbed, so nothing is lost — a caller that wants the copy
+/// on a particular host can address it by id.
+fn collapse_duplicates_in_place(scored: &mut Vec<(f32, u32, PublicMemory)>) {
+    let collapsed = klams_core::dedupe::collapse_duplicates(
+        std::mem::take(scored),
+        |(_, _, mem)| mem.content.content_hash().map(str::to_string),
+        |(_, _, mem)| {
+            let (host, file) = match &mem.content {
+                klams_types::PublicMemoryContent::Knowledge {
+                    host, source_path, ..
+                } => (host.clone(), source_path.clone()),
+                _ => (None, None),
+            };
+            klams_types::KnowledgeCopy {
+                id: mem.id,
+                host,
+                file,
+            }
+        },
+    );
+    *scored = collapsed
+        .into_iter()
+        .map(|((score, rank, mut mem), copies)| {
+            if !copies.is_empty() {
+                mem.content.set_copies(copies);
+            }
+            (score, rank, mem)
+        })
+        .collect();
+}
+
 /// Build `(score_by_id, rank_by_id)` from an ordered iterator of
 /// `(id, score)` pairs. The rank is the 0-based enumeration position,
 /// i.e. the hit's rank within its source's own result list.
@@ -330,25 +377,14 @@ async fn fetch_authors(
     let mut out = HashMap::with_capacity(ids.len());
     for id in ids {
         if let Ok(Some(a)) = state.store.postgres.get_author_by_id(*id).await {
-            out.insert(
-                *id,
-                PublicAuthorRef {
-                    agent_name: a.agent_name,
-                    model: a.model,
-                    repo: a.repo,
-                },
-            );
+            out.insert(*id, PublicAuthorRef::from_record(&a));
         }
     }
     out
 }
 
 fn unknown_author_ref() -> PublicAuthorRef {
-    PublicAuthorRef {
-        agent_name: "unknown".into(),
-        model: None,
-        repo: None,
-    }
+    PublicAuthorRef::unknown()
 }
 
 /// Classify a completed search for the miss log (sprint 021 #317).
@@ -479,6 +515,11 @@ mod tests {
                 source_path: None,
                 repo: None,
                 host: None,
+                content_hash: None,
+                heading_path: None,
+                language: None,
+                chunk_index: None,
+                copies: Vec::new(),
             },
             MemoryKind::Fact => PublicMemoryContent::Fact {
                 fact_type: "EnvFact".into(),
@@ -495,6 +536,7 @@ mod tests {
             content,
             tags: vec![],
             author: PublicAuthorRef {
+                id: None,
                 agent_name: "t".into(),
                 model: None,
                 repo: None,
@@ -538,6 +580,144 @@ mod tests {
             pos(f0id) < pos(k1id),
             "fact@rank0 must outrank knowledge@rank1 under RRF (the fix)"
         );
+    }
+
+    // ---- Sprint 026 (#641): query-time duplicate collapse. The live
+    // failure: the same chunk is stored once per host (sprint 023 made
+    // ingest dedupe host-scoped so per-host delete works), so a
+    // 10-result page was 5 duplicate pairs.
+
+    /// Knowledge hit with an explicit content hash and host.
+    fn dup(hash: &str, host: &str) -> PublicMemory {
+        let mut m = mem(MemoryKind::Knowledge, hash);
+        m.content = PublicMemoryContent::Knowledge {
+            text: format!("body of {hash}"),
+            source_path: Some(format!("/home/ken/src/{hash}.md")),
+            repo: Some("klams".into()),
+            host: Some(host.into()),
+            content_hash: Some(hash.into()),
+            heading_path: None,
+            language: None,
+            chunk_index: None,
+            copies: Vec::new(),
+        };
+        m
+    }
+
+    fn copies_of(mem: &PublicMemory) -> &[klams_types::KnowledgeCopy] {
+        match &mem.content {
+            PublicMemoryContent::Knowledge { copies, .. } => copies,
+            _ => &[],
+        }
+    }
+
+    #[test]
+    fn a_page_of_duplicate_pairs_collapses_to_distinct_results() {
+        // The #641 acceptance case, in miniature: 6 hits that are really
+        // 3 chunks, each stored on both hosts.
+        let mut scored: Vec<(f32, u32, PublicMemory)> = vec![
+            (0.91, 0, dup("aaa", "kai")),
+            (0.90, 1, dup("aaa", "kubs0")),
+            (0.88, 2, dup("bbb", "kai")),
+            (0.87, 3, dup("bbb", "kubs0")),
+            (0.85, 4, dup("ccc", "kai")),
+            (0.84, 5, dup("ccc", "kubs0")),
+        ];
+        collapse_duplicates_in_place(&mut scored);
+        assert_eq!(scored.len(), 3, "half the page was duplicate content");
+        let hashes: Vec<_> = scored
+            .iter()
+            .map(|(_, _, m)| m.content.content_hash().unwrap().to_string())
+            .collect();
+        assert_eq!(hashes, vec!["aaa", "bbb", "ccc"]);
+        assert!(
+            scored.iter().all(|(_, _, m)| copies_of(m).len() == 1),
+            "each survivor absorbed exactly one duplicate"
+        );
+    }
+
+    #[test]
+    fn the_survivor_carries_the_collapsed_copies_id_host_and_file() {
+        // Ken's ruling: the survivor carries the *list of collapsed
+        // points* (lossless), not merged metadata.
+        let other = dup("aaa", "kubs0");
+        let other_id = other.id;
+        let mut scored = vec![(0.91, 0, dup("aaa", "kai")), (0.90, 1, other)];
+        collapse_duplicates_in_place(&mut scored);
+        assert_eq!(scored.len(), 1);
+        let copies = copies_of(&scored[0].2);
+        assert_eq!(copies.len(), 1);
+        assert_eq!(copies[0].id, other_id, "the copy is addressable by id");
+        assert_eq!(copies[0].host.as_deref(), Some("kubs0"));
+        assert_eq!(copies[0].file.as_deref(), Some("/home/ken/src/aaa.md"));
+    }
+
+    #[test]
+    fn collapse_keeps_the_best_ranked_copy_and_its_score() {
+        // Collapse must never promote a weaker match over a stronger one.
+        let mut scored = vec![(0.91, 0, dup("aaa", "kai")), (0.60, 7, dup("aaa", "kubs0"))];
+        collapse_duplicates_in_place(&mut scored);
+        assert_eq!(scored.len(), 1);
+        assert!((scored[0].0 - 0.91).abs() < f32::EPSILON);
+        assert_eq!(scored[0].1, 0, "the best copy's source rank is kept");
+        assert_eq!(
+            scored[0].2.content,
+            PublicMemoryContent::Knowledge {
+                text: "body of aaa".into(),
+                source_path: Some("/home/ken/src/aaa.md".into()),
+                repo: Some("klams".into()),
+                host: Some("kai".into()),
+                content_hash: Some("aaa".into()),
+                heading_path: None,
+                language: None,
+                chunk_index: None,
+                copies: copies_of(&scored[0].2).to_vec(),
+            }
+        );
+    }
+
+    #[test]
+    fn facts_and_events_are_never_collapsed() {
+        // They carry no content_hash. Two of them must not fuse into one
+        // just because both keys are absent.
+        let mut scored = vec![
+            (0.07, 0, mem(MemoryKind::Fact, "f0")),
+            (0.06, 1, mem(MemoryKind::Fact, "f1")),
+            (0.05, 0, mem(MemoryKind::Event, "e0")),
+        ];
+        collapse_duplicates_in_place(&mut scored);
+        assert_eq!(scored.len(), 3);
+    }
+
+    #[test]
+    fn a_knowledge_hit_without_a_hash_is_not_collapsed_into_another() {
+        // Pre-022 points and hermetic fixtures have no content_hash.
+        let mut scored = vec![
+            (0.91, 0, mem(MemoryKind::Knowledge, "k0")),
+            (0.90, 1, mem(MemoryKind::Knowledge, "k1")),
+        ];
+        collapse_duplicates_in_place(&mut scored);
+        assert_eq!(scored.len(), 2);
+    }
+
+    #[test]
+    fn collapse_leaves_no_duplicate_hash_in_the_page() {
+        // The invariant the eval suite (#643) asserts, stated here so a
+        // regression fails in unit tests too.
+        let mut scored: Vec<(f32, u32, PublicMemory)> = vec![
+            (0.91, 0, dup("aaa", "kai")),
+            (0.90, 1, dup("bbb", "kai")),
+            (0.89, 2, dup("aaa", "kubs0")),
+            (0.88, 3, dup("aaa", "cleo")),
+            (0.87, 4, dup("bbb", "kubs0")),
+        ];
+        collapse_duplicates_in_place(&mut scored);
+        let mut seen = std::collections::HashSet::new();
+        for (_, _, m) in &scored {
+            let h = m.content.content_hash().unwrap().to_string();
+            assert!(seen.insert(h), "duplicate content_hash survived the page");
+        }
+        assert_eq!(copies_of(&scored[0].2).len(), 2, "aaa absorbed two copies");
     }
 
     #[test]

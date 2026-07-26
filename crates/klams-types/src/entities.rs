@@ -105,6 +105,19 @@ pub struct KnowledgeItem {
     pub repo: Option<String>,
     pub file: Option<String>,
     pub machine: Option<String>,
+    /// Heading breadcrumb the chunker prepended (scanner v2, sprint 022).
+    /// Sprint 026 (#641): written to the Qdrant payload since 022 but
+    /// never read back, so no read path could project it. Now it is.
+    #[serde(default)]
+    pub heading_path: Option<String>,
+    /// Source language the chunker detected. Same sprint-026 history as
+    /// [`Self::heading_path`].
+    #[serde(default)]
+    pub language: Option<String>,
+    /// 0-based index of this chunk within its source file. Same
+    /// sprint-026 history as [`Self::heading_path`].
+    #[serde(default)]
+    pub chunk_index: Option<u32>,
     pub confidence: f32,
     pub decay_weight: f32,
     pub use_count: i64,

@@ -89,14 +89,7 @@ pub async fn run(
     let mut authors: HashMap<Uuid, PublicAuthorRef> = HashMap::with_capacity(wanted.len());
     for aid in wanted {
         if let Ok(Some(a)) = state.store.postgres.get_author_by_id(aid).await {
-            authors.insert(
-                aid,
-                PublicAuthorRef {
-                    agent_name: a.agent_name,
-                    model: a.model,
-                    repo: a.repo,
-                },
-            );
+            authors.insert(aid, PublicAuthorRef::from_record(&a));
         }
     }
 
@@ -106,11 +99,7 @@ pub async fn run(
             .get(&item.id)
             .and_then(|aid| authors.get(aid))
             .cloned()
-            .unwrap_or_else(|| PublicAuthorRef {
-                agent_name: "unknown".into(),
-                model: None,
-                repo: None,
-            });
+            .unwrap_or_else(PublicAuthorRef::unknown);
         out.push(projection::project_knowledge(&item, author_ref));
     }
     Ok(out)
