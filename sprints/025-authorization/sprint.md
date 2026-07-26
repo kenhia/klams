@@ -517,20 +517,40 @@ with it, closing out that test's own footprint. Block-if-owned works: removing
 
 ### Config changes
 
-**Outstanding — the `viewport` grant is still `scopes = ["read"]`** in
-`/etc/klams/klams.toml`. Per the decision recorded above it needs
-`["read", "write", "manage"]`, or the viewport's fact editing and dissent
-resolution will 403 (the smoke test above shows exactly that happening).
-Ken's to edit — the file holds bearer tokens; hot-reloads with
-`sudo systemctl reload klams-service`, no restart.
+The `viewport` grant was `scopes = ["read"]` at deploy time, which the smoke
+test above caught 403-ing on its own curation routes. **Ken updated it to
+`["read", "write", "manage"]` and reloaded** — verified live: a `promote` on a
+nonexistent dissent id now returns `422` (validation, i.e. past the gate) rather
+than `403 scope_insufficient`, so the hot reload took effect without a restart.
+
+`ghcp`, `claude` and `ken-admin` already carried `manage`. All 14 grants have an
+`agent_name`, so nothing lost the ability to delete.
 
 `ghcp`, `claude` and `ken-admin` already carry `manage`. All 14 grants have an
 `agent_name`, so nothing lost the ability to delete.
 
-### Still owed
+### #636 acceptance case closed
 
-The #636 acceptance case — stray author row
-`019f9a90-abe5-7711-9b0f-c467f597832f` (`agent_name: claude`) — is **not yet
-removed**, so WI #636 stays `open`. The new tooling confirms it owns nothing
-(facts 0, events 0, knowledge 0, soft-deletes 0), so removal is provably
-non-destructive; it just wasn't authorized in this session.
+The stray author row `019f9a90-abe5-7711-9b0f-c467f597832f` (`agent_name:
+claude`, created 2026-07-25T18:36:40Z) was **removed** with this sprint's own
+tooling, once Ken authorized it: `memory_admin_list_authors { only_empty: true }`
+confirmed it owned nothing, then `memory_admin_remove_author`. Verified after —
+zero rows for that id, and the real bearer-bound `claude` author
+(`019f4986-0ee3-…`, created 2026-07-10, owns 4 events) untouched, which was the
+actual risk in removing a duplicate that shares a name. WI #636 resolved.
+
+Remaining duplicate clusters are now collapsible with
+`memory_admin_merge_authors` whenever it is worth doing: `klams-mind` ×8,
+`kyac` ×6, `GitHub Copilot` ×3, `mv-cli` ×3, `copilot-claude-opus-4.7` ×2,
+`token-master` ×2. `GitHub Copilot` can no longer be re-created — the aligned
+validation refuses it — so collapsing that one is a one-way cleanup.
+
+### Follow-up filed
+
+korg **#669** (project `claude-cleo`): `/sprint-ship` Phase 7.3 tells the agent
+to push the deploy record straight to `main`, which is right, but says nothing
+about the `Bypassed rule violations / Changes must be made through a pull
+request` warning that branch protection then emits. An agent following the
+skill correctly still meets an alarming message with no guidance. Also notes
+that 7.3 hardcodes `README.md` as the record filename, which is why this repo's
+deploy skill has to override it.
