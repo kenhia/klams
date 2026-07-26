@@ -272,3 +272,66 @@ Memory `019f9ae4-79c0-7480-959d-a0c5a5d4611f` documents the 413 ceiling and ends
 with *"supersede this memory when it lands."* It describes **currently deployed**
 behaviour, so replacing it before the deploy would tell agents a story that is
 not yet true. Supersede it as part of shipping, once 0.1.27 is live on kubs0.
+
+## Deployed 2026-07-26
+
+- Version `0.1.27` live on kubs0 (`/healthz` reports `0.1.27`, status `Ok`,
+  postgres/qdrant/embeddings all `Ok`). Units `klams-service` and
+  `klams-monitor` active with `NRestarts=0` — no crash loop.
+- **Rollback target: `0.1.26`** via `just rollback` (`.prev` binaries in place).
+  ⚠️ Binary rollback does **not** undo migration 0012 — crossing back over it
+  needs `just restore-from 2026-07-25`.
+- **Migrations applied: `0012_oversize_write.sql`** (additive: one new table).
+  Data preserved exactly — facts 29→29, events 27→27, authors 43→43,
+  search_miss 86→86, Qdrant 221152→221152 after smoke cleanup.
+- Backups verified current before deploying: `postgres-2026-07-25.dump` +
+  `qdrant-2026-07-25.snapshot` (~22h old on a daily cadence; snapshots growing
+  686→747 MB, not shrinking).
+
+### Verified live, beyond `/healthz`
+
+- **#420, the silent-drop regression.** 3999 chars of prose — under the retired
+  8192-char cap, over the token ceiling — now returns `413 payload_too_large`
+  *before* the `202`, with the numbers attached:
+  `"3999 characters (~1137 tokens) exceeds the embedder's 512-token limit;
+  split into pieces of at most 1530 characters"`. Pre-027 this was accepted,
+  the scanner's cursor advanced, and the worker dropped it silently.
+- **Exact token counting is genuinely live**, not the fallback estimate. Two
+  independent proofs: the 413 above reports ~1137 tokens where the character
+  estimate would have said ~1335; and a 3000-character base64 blob — which the
+  estimate refuses at ~1002 tokens but the model accepts at ~77 — was accepted
+  with `202` and landed in Qdrant. That second case is the one the estimate
+  would have turned into a *new* lost write.
+- **#629, the misleading error.** MCP `memory_add` with 2738 characters returns
+  `PAYLOAD_TOO_LARGE` and **no `retry_after_seconds`** — the signal that
+  previously told agents to wait and retry something that could never succeed.
+  Token count reported exactly (~559; the estimate would have said ~915).
+- **#656, the oversize log.** That rejection wrote exactly one `oversize_write`
+  row: `agent_name=claude`, `submitted_chars=2738`, `estimated_tokens=559`,
+  `limit_tokens=512`, `max_chars=1530`, and `length(text)=2738` — the **full**
+  payload retained, which is the whole point. `klams_mcp_oversize_writes_total{agent_name="claude"}`
+  incremented. That row is left in place deliberately as the demonstration
+  #656's acceptance asks for; it ages out via the 90-day prune.
+- **The normal path is untouched** — an 800-character prose chunk still gets
+  `202` and lands.
+- Smoke writes were cleaned up afterwards (2 knowledge chunks deleted, 1
+  memory + 1 fact soft-deleted); counts above are post-cleanup.
+
+### Config changes required: none
+
+`[embeddings] max_input_tokens` and `oversize_log_retention_days` both have
+defaults matching the deployed model (512) and the intended retention (90), so
+`/etc/klams/klams.toml` needed no edit. **Sprint 028 must set both explicitly**
+when it swaps the model, along with the scanner's matching `max_input_tokens`
+in `/etc/klams/scanner.toml` on kubs0 *and* kai.
+
+### Found during deploy verification
+
+`scripts/verify-mvp.sh` SC-001 is **stale and has been failing regardless of
+this sprint** — it posts `{"key","value","subject","source":"verify-mvp.sh"}`,
+but the fact API has required `{"type","payload","source"}` with a `Source`
+enum since sprint 003. So `just health` and `just verify` cannot pass on any
+recent build. Confirmed unrelated to 027 (which touched neither the script nor
+`entities.rs`). A hand-built fact write with the current schema succeeds, and
+the validator returns correct structured detail, so the write path itself is
+healthy. Filed as a WI.
