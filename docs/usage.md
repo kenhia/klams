@@ -1004,3 +1004,72 @@ for N inputs on TEI `/embed` and the openai-compat `/embeddings` route)
 for a future high-throughput bulk re-embed; the scanner's per-chunk
 ingest is unchanged, so the re-index above runs through the normal
 write queue.
+
+## Sprint 026 — measuring retrieval
+
+### `just eval` — the retrieval regression bar
+
+The suite and runner live in **klams-mind**
+(`evals/suites/homelab-retrieval.toml`); the recipe lives in klams
+because klams is what regresses.
+
+| Recipe                 | What it does |
+|------------------------|--------------|
+| `eval`                 | Runs the suite against the configured klams (`KLAMS_URL` / `KLAMS_TOKEN`). Exits non-zero on a **regression**. |
+| `eval-report <OUT>`    | Same, also writing the markdown report to `<OUT>` — use it to capture a before/after around a retrieval change or the corpus reset. |
+
+Point it at a klams-mind checkout other than `../klams-mind` with
+`KLAMS_MIND_DIR`. It is **not** part of `just gate`: it needs a live
+service with the real corpus, so it is a pre-deploy check, not a
+per-commit one.
+
+Reading the result:
+
+- **`REGRESSION`** — a query marked `expect = "pass"` stopped passing.
+  This is the only thing that fails the run.
+- **Known open** — queries marked `expect = "known_open"`, failing
+  against tracked work (the #628 curated-beats-bulk pair awaits the
+  ranking sprint; the junk-ceiling cases await the fence-unaware chunker
+  fix). They do not fail the run, and each carries a `tracking` note.
+- **Newly fixed** — a `known_open` query that now passes. Promote it to
+  `expect = "pass"` so the next regression in it is caught.
+
+Capture a report before and after any deploy that touches retrieval, and
+before the corpus reset — a before/after is the whole point.
+
+### Reading the search-sample log
+
+Every search is recorded in `search_sample` (migration 0011). This is
+what agent queries actually look like, and it is the honest source for
+both future eval queries and the next miss-log threshold.
+
+```sh
+# What are agents asking, and how well is it going?
+just db-psql -c "SELECT query, caller, top_kind, top_raw_score, hit_count,
+                        duplicates_collapsed
+                 FROM search_sample ORDER BY created_at DESC LIMIT 20"
+
+# The score distribution — recalibrate LOW_SCORE_THRESHOLD from THIS,
+# not from a handful of examples. Knowledge only: the raw scales are not
+# comparable across kinds.
+just db-psql -c "SELECT width_bucket(top_raw_score, 0.6, 1.0, 20) AS bucket,
+                        count(*), round(min(top_raw_score)::numeric, 3) AS lo,
+                        round(max(top_raw_score)::numeric, 3) AS hi
+                 FROM search_sample
+                 WHERE top_kind = 'knowledge' AND top_raw_score IS NOT NULL
+                 GROUP BY bucket ORDER BY bucket"
+
+# How much work is query-time dedupe (#641) actually doing?
+just db-psql -c "SELECT count(*) FILTER (WHERE duplicates_collapsed > 0) AS pages_with_dupes,
+                        count(*) AS total,
+                        round(avg(duplicates_collapsed), 2) AS avg_collapsed
+                 FROM search_sample"
+```
+
+Retention is an operator concern — the table is append-only and
+unpruned. Prune by `created_at` when it gets large.
+
+**After the #655 model swap (sprint 028), `LOW_SCORE_THRESHOLD` is
+stale.** The new embedder has a different score distribution; re-derive
+the threshold from the bucket query above before trusting the miss log
+again.

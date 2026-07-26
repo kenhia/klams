@@ -163,3 +163,58 @@ proceeds._
   6 in `memory_search` (the MCP page), 3 in `klams-types` (wire shape).
   `just gate` green; docker-gated integration tests still to run locally
   before merge.
+
+- **2026-07-25 — #643 landed.** Both halves now in. Notes:
+
+  - **The docker-gated suite caught a real defect `just gate` could not.**
+    `memory_search_smoke` failed with `source_rank`s of `[0, 25]` where it
+    expected `[0, 1]`: collapse removes entries, so survivors kept their
+    *pre-collapse* ranks and the ×2 over-fetch leaked out as an
+    uninterpretable gap — also breaking the sprint-017 contiguity
+    invariant. Fixed by re-numbering `source_rank` per kind after collapse
+    (`renumber_source_ranks`), since the list the caller receives is the
+    collapsed one. This is precisely the failure mode the run notes warned
+    about: CI does not run `--ignored` on branches until #646.
+
+  - **The eval suite needed an `expect` concept before it could be honest.**
+    Several cases this WI mandates are *currently failing* — #628's Query A
+    (awaits the ranking sprint), the junk ceiling (awaits the fence-chunker
+    fix), the rpidash3 re-merge (awaits #632), and two identifier lookups
+    (feed the #333 lexical decision). A suite containing them is
+    permanently red and useless as a gate; a suite omitting them measures
+    nothing that matters — which is exactly how the old four queries scored
+    4/4 while every #628 failure was live. So queries now carry
+    `expect = "pass" | "known_open"` plus a `tracking` reference, and the
+    gate keys on **regressions**, not raw failures. A `known_open` that
+    starts passing is reported loudly as "newly fixed — promote it".
+
+  - **Every eval query was verified against the live corpus, not invented.**
+    Mined via MCP on 2026-07-25. Findings worth keeping:
+    - `kpidash`/`rpidash3` queries reproduce the duplicate problem exactly:
+      a 6-result page came back with two duplicate pairs (same doc on kai
+      and kubs0 at ranks 1–2, same README at 3–4).
+    - The junk chunk from F-2.3 is real and live: `019f509b-2f45` is
+      `"kpidash … > Dashboard build\n\n```bash"` — seven characters of body
+      once the breadcrumb is stripped.
+    - The rpidash3 regression reproduces: querying that record's *own*
+      last-paragraph terms (tailscale/ed25519/cloud-init) returns an
+      obsidian Rust-course note at rank 0 and never surfaces the record.
+    - #628's Query B still works (gotcha at rank 0, raw 0.785), so the
+      Query A failure is ranking, not absence — as #628 claimed.
+
+  - **Threshold set to 0.80, and it is a calibrated constant, not a derived
+    one.** Honest only against bge-small. #655's model swap invalidates it;
+    `docs/usage.md` now carries the bucket query to re-derive it from the
+    sample log, and the constant's doc comment says so.
+
+  - **Baseline not captured as a report.** `just eval` needs `KLAMS_TOKEN`;
+    no klams-mind config exists on kubs0 and the service config is not
+    readable from Ken's account, so the suite could not be run end-to-end
+    here. The before/after was verified through MCP search instead (see the
+    deploy record). Setting up a scoped klams-mind token is a small
+    follow-up that makes `just eval` usable unattended.
+
+  Tests added this half: 4 in `memory_search` (threshold band, caller
+  attribution), 3 more (rank re-numbering), 13 in klams-mind (new check
+  types), 8 in klams-mind (expect/known_open gating). Suite grew 4 → 21
+  queries. `just gate` green (428 tests); docker-gated suite green (119).

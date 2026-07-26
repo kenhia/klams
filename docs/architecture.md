@@ -1044,6 +1044,54 @@ knowledge projection. No storage or schema change, no migration.
   host-filtered knowledge query silently dropped every row. The payload
   now carries it.
 
+## 2l. Sprint 026 deltas — retrieval measurement (#643)
+
+The other half of sprint 026: make retrieval quality *measurable*, so the
+ranking work in sprint 029 is a measured change rather than a guess.
+
+* **The miss log was a dead instrument.** `LOW_SCORE_THRESHOLD` was 0.5,
+  but bge-small cosine on this corpus sits ~0.75–0.96 **even for junk** (a
+  content-free fragment measured 0.956) — the threshold sat below the
+  floor of the distribution, so `low_score` could never fire. Two weeks of
+  production recorded **one** miss, and that one was a `zero_hit` from an
+  emptied filter. Recalibrated to **0.80**, inside the observed
+  weak/strong boundary (~0.78–0.82, from #628's paired queries). This is a
+  *calibrated* constant, honest only against the current embedding model —
+  the #655 GPU model swap (sprint 028) changes the distribution wholesale
+  and must re-derive it.
+* **New: the search-sample log** (`search_sample`, migration 0011).
+  Records **every** search — query, caller, top **raw** (pre-fusion) score,
+  that hit's kind, hit count, kinds queried, and how many duplicates the
+  #641 collapse removed. klams previously had no record of what agents ask
+  it, which is why every eval query to date was invented rather than
+  observed, and why the threshold above could only be calibrated from a
+  handful of data points. Written fire-and-forget, exactly like
+  `search_miss`; retention is an operator prune concern.
+  - `top_raw_score` is deliberately the pre-fusion score: post-024 `score`
+    is pure RRF and carries no magnitude, so a distribution over fused
+    scores would say nothing about match quality.
+* **Caller attribution fixed.** `record_search` was hardcoded to
+  `"anonymous"` since sprint 020, so the per-agent search counter had
+  exactly one label value — while the caller's agent name sat unused in
+  the argument list. The miss log, the sample log, and the metric now
+  share one `caller_label` helper so they cannot disagree.
+* **`source_rank` is re-numbered after duplicate collapse.** Collapse
+  removes entries, so survivors kept holed pre-collapse ranks (a caller
+  asking for 20 could see ranks 0 and 25) — leaking the over-fetch
+  multiplier as a gap. Ranks are now contiguous over the list the caller
+  actually receives, restoring the sprint-017 invariant.
+* **The eval suite is the gate** (`just eval`). The suite and runner live
+  in klams-mind (`evals/suites/homelab-retrieval.toml`); the recipe lives
+  here because klams is what regresses. It grew from 4 queries to 21, with
+  three new check types — `no_duplicates` (#641's invariant),
+  `min_body_chars` (the junk ceiling, breadcrumb stripped), and
+  `memory_id` with `max_rank` (curated-beats-bulk; presence alone would
+  have passed while #628 was live). Queries carry `expect`: `pass` is the
+  regression bar, `known_open` is a tracked failure that does not fail the
+  run. Without that distinction a measurement suite can only contain
+  queries that already pass — which is exactly how the old four scored
+  4/4 while every real failure was happening.
+
 ## 3. Deployment topology on `kubs0`
 
 ```text

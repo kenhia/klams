@@ -17,6 +17,11 @@ klams_url     := env_var_or_default('KLAMS_URL',   'http://127.0.0.1:7777')
 klams_token   := env_var_or_default('KLAMS_TOKEN', 'dev-token')
 compose_file  := 'deploy/docker-compose.yml'
 
+# klams-mind checkout — it owns the retrieval eval suite + runner (the
+# TOML and the Python harness live there; the gate lives here, because
+# klams is what regresses). Override if your checkout is elsewhere.
+klams_mind    := env_var_or_default('KLAMS_MIND_DIR', justfile_directory() / '../klams-mind')
+
 # Bring the Postgres+Qdrant+TEI stack up in the background.
 compose-up:
     docker compose -f {{compose_file}} up -d
@@ -108,6 +113,30 @@ db-migrate:
 # both work.
 db-psql *ARGS:
     @docker exec -i klams-postgres psql -U klams -d klams "$@"
+
+# Sprint 026 (#643) — the retrieval regression bar.
+#
+# The suite lives in klams-mind (it owns the TOML and the runner), but the
+# gate belongs here: klams is what regresses. Exits non-zero on a
+# REGRESSION — a query marked `expect = "pass"` that stopped passing.
+# Queries marked `known_open` are failing against tracked work (klams#628
+# curated-beats-bulk, the fence-unaware chunker) and do NOT fail the run;
+# if one starts passing, the report says so and it should be promoted.
+#
+# Not folded into `gate`: it needs a live klams with the real corpus, so
+# it is a pre-deploy check rather than a per-commit one. Run it before
+# and after a deploy that touches retrieval.
+eval:
+    KLAMS_TOKEN={{klams_token}} KLAMS_URL={{klams_url}} \
+        uv run --project {{klams_mind}} klams-mind eval run \
+        {{klams_mind}}/evals/suites/homelab-retrieval.toml
+
+# Same, writing the markdown report somewhere durable — use this to
+# capture a before/after around a retrieval change or the corpus reset.
+eval-report OUT:
+    KLAMS_TOKEN={{klams_token}} KLAMS_URL={{klams_url}} \
+        uv run --project {{klams_mind}} klams-mind eval run \
+        {{klams_mind}}/evals/suites/homelab-retrieval.toml --out {{OUT}}
 
 # Full SC-001..SC-009 functional smoke (slower than `health`).
 verify:

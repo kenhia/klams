@@ -38,9 +38,25 @@ const MAX_QUERY_LEN: usize = 1024;
 
 /// Below this top-of-list Qdrant cosine score a knowledge result is a
 /// weak semantic match — the exact-identifier gap the §2.1 lexical
-/// decision (sprint 024) is measuring. Coarse pre-023 (scores aren't
-/// cross-kind comparable yet), so only applied to a knowledge top hit.
-const LOW_SCORE_THRESHOLD: f32 = 0.5;
+/// decision (sprint 024) is measuring. Only applied to a knowledge top
+/// hit; fact/event `ts_rank` is not on this scale.
+///
+/// **Sprint 026 (#643) — recalibrated from 0.5, which could never fire.**
+/// bge-small cosine on this corpus sits ~0.75–0.96 *even for junk* (a
+/// measured content-free fragment scored 0.956), so the old threshold
+/// was below the floor of the distribution: the miss log recorded **one**
+/// row in two weeks, and that one was a `zero_hit` from an emptied
+/// filter. The observed weak/strong boundary is ~0.78–0.82 (#628's
+/// paired queries: the correct answer scored 0.785, the wrong-but-
+/// confident competitor 0.790). 0.80 sits in that band.
+///
+/// This is a *calibrated* constant, not a derived one — it is only
+/// honest against the current embedding model. The GPU model upgrade
+/// (#655, sprint 028) changes the score distribution wholesale and MUST
+/// re-derive it from the search-sample log this sprint adds. Until then
+/// the log is what makes the next calibration evidence-based rather
+/// than another guess.
+const LOW_SCORE_THRESHOLD: f32 = 0.80;
 
 /// Over-fetch multiplier for the knowledge ANN search (sprint 026, #641).
 /// Query-time duplicate collapse discards hits, so fetching exactly
@@ -254,7 +270,16 @@ pub async fn run(
     // so freed ranks compact and the released slots fill with new
     // content instead of leaving holes. Keys on content only (Ken's
     // ruling): the same text on kai and kubs0 is one logical result.
+    let before_collapse = scored.len();
     collapse_duplicates_in_place(&mut scored);
+    let duplicates_collapsed = before_collapse - scored.len();
+    // Collapse removes entries, so the survivors' `source_rank`s are now
+    // holed — a caller asking for 20 could see ranks 0 and 25, which
+    // exposes the over-fetch multiplier (an implementation detail) as a
+    // gap the caller cannot interpret. `source_rank` is contractually
+    // "the hit's rank within its own source's result list", and the list
+    // the caller receives is the collapsed one, so re-number against it.
+    renumber_source_ranks(&mut scored);
 
     // Snapshot the RAW per-source scores by id before rank-fusion
     // rescoring overwrites them: the miss-log low-score signal is about a
@@ -286,7 +311,7 @@ pub async fn run(
         klams_core::metrics::incr_search_miss(reason);
         let miss = klams_store::SearchMiss {
             query: query.clone(),
-            caller: caller.unwrap_or("unknown").to_string(),
+            caller: caller_label(caller).to_string(),
             reason: reason.to_string(),
             top_score: raw_top.map(|(s, _)| s),
             hit_count: i32::try_from(hit_count).unwrap_or(i32::MAX),
@@ -300,7 +325,36 @@ pub async fn run(
         });
     }
 
-    mcp_metrics::record_search("anonymous", None);
+    // Search-sample log (sprint 026, #643): record EVERY search, not
+    // just the ones classified as misses. klams had no record of what
+    // agents actually ask it — which is why every eval query to date was
+    // invented rather than observed, and why the miss threshold above
+    // could only be calibrated from #628's handful of data points.
+    // Fire-and-forget, same as the miss log.
+    {
+        let sample = klams_store::SearchSample {
+            query: query.clone(),
+            caller: caller_label(caller).to_string(),
+            top_raw_score: raw_top.map(|(s, _)| s),
+            top_kind: raw_top.map(|(_, k)| kind_label(k).to_string()),
+            hit_count: i32::try_from(hit_count).unwrap_or(i32::MAX),
+            kinds: kinds_label(&kinds),
+            duplicates_collapsed: i32::try_from(duplicates_collapsed).unwrap_or(i32::MAX),
+        };
+        let store = state.store.clone();
+        tokio::spawn(async move {
+            if let Err(e) = store.postgres.insert_search_sample(&sample).await {
+                tracing::debug!(%e, "insert_search_sample failed (sample log best-effort)");
+            }
+        });
+    }
+
+    // Sprint 026 (#643): attribute the caller. This was hardcoded
+    // `"anonymous"` since sprint 020, so the per-agent search counter had
+    // exactly one label value and answered no question it was added to
+    // answer — while the caller's agent name was sitting right there in
+    // the argument list.
+    mcp_metrics::record_search(caller_label(caller), None);
 
     Ok(scored
         .into_iter()
@@ -347,6 +401,27 @@ fn collapse_duplicates_in_place(scored: &mut Vec<(f32, u32, PublicMemory)>) {
             (score, rank, mem)
         })
         .collect();
+}
+
+/// Re-number `source_rank` per kind, 0-based and contiguous, preserving
+/// the current order (sprint 026, #641).
+///
+/// Each kind's entries are still in that source's best-first order — the
+/// collapse only removed entries, it never reordered them — so counting
+/// per kind restores the sprint-017 invariant (`source_rank`s of a
+/// single-source result are 0-based and contiguous, and a lower rank
+/// carries a higher-or-equal score) without re-sorting anything.
+fn renumber_source_ranks(scored: &mut [(f32, u32, PublicMemory)]) {
+    let mut next: [u32; 3] = [0; 3];
+    for (_, rank, mem) in scored.iter_mut() {
+        let idx = match mem.kind() {
+            MemoryKind::Knowledge => 0usize,
+            MemoryKind::Fact => 1,
+            MemoryKind::Event => 2,
+        };
+        *rank = next[idx];
+        next[idx] += 1;
+    }
 }
 
 /// Build `(score_by_id, rank_by_id)` from an ordered iterator of
@@ -451,15 +526,32 @@ fn fuse_in_place(scored: &mut [(f32, u32, PublicMemory)], strategy: FusionStrate
     scored.sort_by_key(|(_, _, m)| order.get(&m.id).map_or(usize::MAX, |&(p, _)| p));
 }
 
+/// Label for the calling agent (sprint 026, #643). One helper so the
+/// miss log, the sample log, and the metric counter can never disagree
+/// about who ran a search — they used three different answers before
+/// (`"unknown"`, nothing, and the literal `"anonymous"`).
+fn caller_label(caller: Option<&str>) -> &str {
+    match caller {
+        Some(c) if !c.trim().is_empty() => c,
+        _ => "unknown",
+    }
+}
+
+/// Single kind label, for the sample log's `top_kind` column.
+fn kind_label(kind: MemoryKind) -> &'static str {
+    match kind {
+        MemoryKind::Fact => "fact",
+        MemoryKind::Knowledge => "knowledge",
+        MemoryKind::Event => "event",
+    }
+}
+
 /// Comma-joined kind labels for the miss-log `kinds` column.
 fn kinds_label(kinds: &[MemoryKind]) -> String {
     kinds
         .iter()
-        .map(|k| match k {
-            MemoryKind::Fact => "fact",
-            MemoryKind::Knowledge => "knowledge",
-            MemoryKind::Event => "event",
-        })
+        .copied()
+        .map(kind_label)
         .collect::<Vec<_>>()
         .join(",")
 }
@@ -486,11 +578,72 @@ mod tests {
         assert_eq!(classify_miss(3, Some((0.81, MemoryKind::Knowledge))), None);
     }
 
+    // ---- Sprint 026 (#643): the threshold recalibration. The old 0.5
+    // sat below the floor of the bge-small distribution on this corpus
+    // (~0.75–0.96), so `low_score` could never fire — one miss logged in
+    // two weeks. These pin the new boundary so a future model swap that
+    // shifts the distribution fails here loudly instead of silently
+    // killing the instrument again.
+
+    #[test]
+    fn a_junk_floor_score_fires_the_miss_log() {
+        // The whole defect: bge-small on this corpus floors around 0.75
+        // even for content-free fragments, so the old 0.5 threshold sat
+        // BELOW the distribution and could never fire. A score at the
+        // junk floor must now register.
+        assert_eq!(
+            classify_miss(5, Some((0.75, MemoryKind::Knowledge))),
+            Some("low_score"),
+            "a threshold that doesn't fire at the junk floor is dead again"
+        );
+    }
+
+    #[test]
+    fn a_strong_match_still_does_not_fire_the_miss_log() {
+        // The overcorrection guard: measured strong matches reach ~0.96.
+        // If those logged as misses the instrument would be just as
+        // useless in the other direction.
+        assert_eq!(classify_miss(5, Some((0.96, MemoryKind::Knowledge))), None);
+        assert_eq!(classify_miss(5, Some((0.85, MemoryKind::Knowledge))), None);
+    }
+
+    #[test]
+    fn the_628_query_b_retrieval_registers_as_weak() {
+        // #628's Query B surfaced the correct hand-authored gotcha, but
+        // only at raw 0.785 — and only because the query nearly quoted
+        // it. Logging that as weak is intended: "right answer, weak
+        // retrieval" is precisely the signal the lexical-gap decision
+        // (#333) needs to see.
+        assert_eq!(
+            classify_miss(5, Some((0.785, MemoryKind::Knowledge))),
+            Some("low_score")
+        );
+    }
+
     #[test]
     fn weak_fact_top_hit_is_not_judged() {
         // fact/event ts_rank is not on the cosine scale — don't flag it
         // as low_score (would flood the log). Only knowledge is judged.
         assert_eq!(classify_miss(3, Some((0.01, MemoryKind::Fact))), None);
+    }
+
+    // ---- Sprint 026 (#643): caller attribution. `record_search` was
+    // hardcoded to "anonymous" since sprint 020, so the per-agent search
+    // counter had one label value and answered nothing.
+
+    #[test]
+    fn a_known_caller_is_attributed_by_name() {
+        assert_eq!(caller_label(Some("claude")), "claude");
+    }
+
+    #[test]
+    fn an_absent_or_blank_caller_falls_back_to_unknown() {
+        // Never "anonymous" — that string was the bug, and a distinct
+        // fallback keeps "we don't know" separable from an agent that
+        // actually calls itself something.
+        assert_eq!(caller_label(None), "unknown");
+        assert_eq!(caller_label(Some("   ")), "unknown");
+        assert_eq!(caller_label(Some("")), "unknown");
     }
 
     #[test]
@@ -698,6 +851,59 @@ mod tests {
         ];
         collapse_duplicates_in_place(&mut scored);
         assert_eq!(scored.len(), 2);
+    }
+
+    #[test]
+    fn source_ranks_are_renumbered_contiguously_after_a_collapse() {
+        // Caught by the docker-gated integration suite, which CI does not
+        // run on branches (#646). Survivors kept their PRE-collapse ranks,
+        // so a caller saw e.g. [0, 25] — the ×2 over-fetch leaking out as
+        // an uninterpretable gap, and a break of the sprint-017 invariant.
+        let mut scored: Vec<(f32, u32, PublicMemory)> = vec![
+            (0.91, 0, dup("aaa", "kai")),
+            (0.90, 1, dup("aaa", "kubs0")),
+            (0.89, 2, dup("aaa", "cleo")),
+            (0.88, 3, dup("bbb", "kai")),
+        ];
+        collapse_duplicates_in_place(&mut scored);
+        renumber_source_ranks(&mut scored);
+        assert_eq!(
+            scored.iter().map(|(_, r, _)| *r).collect::<Vec<_>>(),
+            vec![0, 1],
+            "ranks must be 0-based and contiguous over the collapsed list"
+        );
+    }
+
+    #[test]
+    fn renumbering_counts_each_kind_independently() {
+        // `source_rank` is per-source, so knowledge and facts each start
+        // at 0 — interleaving them into one counter would make a fact at
+        // rank 0 look like it outranked the knowledge hit above it.
+        let mut scored = vec![
+            (0.91, 9, mem(MemoryKind::Knowledge, "k0")),
+            (0.07, 4, mem(MemoryKind::Fact, "f0")),
+            (0.90, 7, mem(MemoryKind::Knowledge, "k1")),
+            (0.06, 2, mem(MemoryKind::Fact, "f1")),
+            (0.05, 8, mem(MemoryKind::Event, "e0")),
+        ];
+        renumber_source_ranks(&mut scored);
+        assert_eq!(
+            scored.iter().map(|(_, r, _)| *r).collect::<Vec<_>>(),
+            vec![0, 0, 1, 1, 0]
+        );
+    }
+
+    #[test]
+    fn renumbering_preserves_order_and_scores() {
+        let mut scored = vec![
+            (0.91, 5, mem(MemoryKind::Knowledge, "k0")),
+            (0.80, 9, mem(MemoryKind::Knowledge, "k1")),
+        ];
+        let ids: Vec<_> = scored.iter().map(|(_, _, m)| m.id).collect();
+        renumber_source_ranks(&mut scored);
+        assert_eq!(scored.iter().map(|(_, _, m)| m.id).collect::<Vec<_>>(), ids);
+        // The sprint-017 pairing still holds: lower rank, higher score.
+        assert!(scored[0].0 >= scored[1].0);
     }
 
     #[test]
