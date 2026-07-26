@@ -117,6 +117,12 @@ pub struct McpState {
     /// no length check whatsoever before this — an over-budget write went
     /// straight to TEI and came back as a misleading transient error.
     pub embed_limit: klams_types::EmbedLimit,
+    /// Sprint 030 (#685): optional second-stage cross-encoder for
+    /// `memory_search`, from `[retrieval] reranker_url`. `None` = the
+    /// stage is off.
+    pub reranker: Option<Arc<klams_store::TeiReranker>>,
+    /// Max candidates per rerank call (`[retrieval] rerank_window`).
+    pub rerank_window: usize,
 }
 
 impl std::fmt::Debug for McpState {
@@ -144,6 +150,10 @@ impl McpState {
             // `klams-service` overrides it from `[embeddings]
             // max_input_tokens` (sprint 027 #420).
             embed_limit: klams_types::EmbedLimit::default(),
+            // Off unless `klams-service` wires `[retrieval]
+            // reranker_url` (sprint 030 #685).
+            reranker: None,
+            rerank_window: 50,
         }
     }
 

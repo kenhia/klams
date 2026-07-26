@@ -21,11 +21,13 @@ pub mod embeddings;
 pub mod postgres;
 pub mod qdrant;
 pub mod repair;
+pub mod rerank;
 
 pub use composite::CompositeStore;
 pub use embeddings::{Embedder, OpenAiCompatEmbedder, TeiEmbedder};
 pub use postgres::PostgresStore;
 pub use qdrant::QdrantStore;
+pub use rerank::{RerankHit, TeiReranker};
 
 /// Whether retrying the same operation could plausibly succeed.
 ///

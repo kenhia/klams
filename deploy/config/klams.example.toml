@@ -182,6 +182,15 @@ per_source_top_k = 100      # each retrieval source returns top-k before fusion
 # fts    = 1.0
 # normalization = "zscore"  # "zscore" | "minmax"
 
+# Sprint 030 (#685): optional second-stage cross-encoder for
+# memory_search — the `reranker` compose service. Absent = stage off
+# (that is the rollback switch; the stage is also best-effort at
+# runtime, so a sick reranker only costs the reorder, never the
+# search). rerank_window must stay <= the container's
+# --max-client-batch-size (compose serves 64).
+# reranker_url  = "http://127.0.0.1:7071"
+# rerank_window = 50
+
 [tokens]
 # Token-cost estimator for /memory/context budget accounting.
 # "tiktoken" uses cl100k_base (matches OpenAI/Anthropic chat tokenizers).

@@ -152,11 +152,35 @@ impl TestServer {
         Self::spawn_inner(false, collection, true).await
     }
 
-    #[allow(clippy::too_many_lines)]
+    /// Sprint 030 (#685): isolated server with the second-stage
+    /// reranker wired to `reranker_url` (which may be dead — the
+    /// best-effort skip path is itself under test).
+    pub async fn spawn_isolated_with_reranker(reranker_url: &str) -> Self {
+        let collection = format!("klams_test_{}", Uuid::new_v4().simple());
+        Self::spawn_inner_with_reranker(false, collection, true, Some(reranker_url.to_string()))
+            .await
+    }
+
     async fn spawn_inner(
         with_summary_store: bool,
         qdrant_collection: String,
         truncate_postgres: bool,
+    ) -> Self {
+        Self::spawn_inner_with_reranker(
+            with_summary_store,
+            qdrant_collection,
+            truncate_postgres,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn spawn_inner_with_reranker(
+        with_summary_store: bool,
+        qdrant_collection: String,
+        truncate_postgres: bool,
+        reranker_url: Option<String>,
     ) -> Self {
         let pg_url = std::env::var("TEST_DATABASE_URL")
             .unwrap_or_else(|_| "postgres://klams:klams_test@127.0.0.1:55432/klams".into());
@@ -287,11 +311,16 @@ impl TestServer {
                 ),
             ];
             let auth_state = klams_api::auth::AuthState::with_grants(grants);
-            let mcp_state = klams_mcp::tools::McpState::new(
+            let mut mcp_state = klams_mcp::tools::McpState::new(
                 Arc::clone(&store),
                 std::sync::Arc::new(klams_types::MaintenanceState::default()),
                 klams_types::ApiConfig::default(),
             );
+            if let Some(url) = reranker_url.as_deref() {
+                mcp_state.reranker = Some(Arc::new(
+                    klams_store::TeiReranker::new(url).expect("reranker client"),
+                ));
+            }
             let mcp_router = klams_mcp::router(mcp_state, Vec::new()).layer(
                 axum::middleware::from_fn_with_state(auth_state.clone(), klams_api::require_bearer),
             );

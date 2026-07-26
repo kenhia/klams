@@ -302,6 +302,15 @@ pub struct RetrievalConfig {
     pub per_source_top_k: u32,
     #[serde(default)]
     pub weights: Option<RetrievalWeights>,
+    /// Second-stage cross-encoder (sprint 030, #685): base URL of the
+    /// `reranker` compose service (e.g. `http://127.0.0.1:7071`).
+    /// Absent = the stage is off — that is the rollback switch.
+    #[serde(default)]
+    pub reranker_url: Option<String>,
+    /// Max candidates submitted per rerank call. Must not exceed the
+    /// reranker's `--max-client-batch-size` (compose serves 64).
+    #[serde(default = "default_rerank_window")]
+    pub rerank_window: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -324,6 +333,9 @@ fn default_per_source_top_k() -> u32 {
 fn default_weighted_norm() -> String {
     "zscore".into()
 }
+fn default_rerank_window() -> u32 {
+    50
+}
 
 impl Default for RetrievalConfig {
     fn default() -> Self {
@@ -332,6 +344,8 @@ impl Default for RetrievalConfig {
             rrf_k: default_rrf_k(),
             per_source_top_k: default_per_source_top_k(),
             weights: None,
+            reranker_url: None,
+            rerank_window: default_rerank_window(),
         }
     }
 }

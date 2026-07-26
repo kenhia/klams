@@ -66,7 +66,8 @@ named klams metrics below.
 | `klams_writes_accepted_total` | counter | `type=fact\|event\|knowledge` | Writes accepted onto the queue. |
 | `klams_writes_failed_total` | counter | `type`, `reason=queue_full\|store_error\|too_large` | Writes rejected or failed downstream. |
 | `klams_write_latency_seconds` | histogram | `type` | Handler-side latency from validation to enqueue completion. |
-| `klams_retrieval_duration_seconds` | summary (quantile label) | `op=search\|context`, `transport=rest\|mcp` | Retrieval latency at every entry point — REST and MCP (sprint 020, WI 63; replaces `klams_search_latency_seconds` / `klams_context_request_seconds`). |
+| `klams_retrieval_duration_seconds` | summary (quantile label) | `op=search\|context\|rerank`, `transport=rest\|mcp` | Retrieval latency at every entry point — REST and MCP (sprint 020, WI 63; replaces `klams_search_latency_seconds` / `klams_context_request_seconds`). `op=rerank` is the second-stage cross-encoder's share of an MCP search (sprint 030, #685; ~34 ms median live). |
+| `klams_rerank_skipped_total` | counter | – | Rerank stages skipped because the reranker call failed; the search was served un-reranked. Nonzero = the `klams-reranker` container is sick, not the search path (sprint 030, #685). |
 | `klams_embedding_latency_seconds` | histogram | – | Latency of a single TEI call. |
 
 ## Exit codes

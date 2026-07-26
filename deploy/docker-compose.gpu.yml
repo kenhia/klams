@@ -16,3 +16,6 @@ services:
   tei:
     devices:
       - nvidia.com/gpu=all
+  reranker:
+    devices:
+      - nvidia.com/gpu=all

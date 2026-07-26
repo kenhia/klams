@@ -383,6 +383,22 @@ pub async fn run(
         .map(|(s, _, m)| (*s, m.kind()));
     let raw_by_id: HashMap<uuid::Uuid, f32> = scored.iter().map(|(s, _, m)| (m.id, *s)).collect();
 
+    // Second-stage rerank (sprint 030, #685) — AFTER the raw-score
+    // snapshot (raw_score stays the cosine; the cross-encoder only
+    // reorders), BEFORE fusion, so provenance weights and the curated
+    // stratum's boost apply to the RERANKED order. Best-effort: any
+    // reranker failure logs and falls through to the un-reranked order.
+    if let Some(reranker) = state.reranker.as_ref() {
+        rerank_stage(
+            reranker,
+            &query,
+            &mut scored,
+            &mut curated_order,
+            state.rerank_window,
+        )
+        .await;
+    }
+
     // Cross-source rank fusion (sprint 024 #328). Each source is ranked
     // best-first within itself but on an incomparable score scale
     // (Qdrant cosine vs Postgres ts_rank), so a raw score sort
@@ -665,6 +681,110 @@ fn fuse_in_place(
         }
     }
     scored.sort_by_key(|(_, _, m)| order.get(&m.id).map_or(usize::MAX, |&(p, _)| p));
+}
+
+/// Second-stage cross-encoder rerank of the knowledge candidates
+/// (sprint 030, #685).
+///
+/// Scores up to `window` knowledge entries against the query via TEI
+/// `/rerank` and reorders the knowledge *source list* — the within-
+/// source rank order that feeds weighted RRF — plus `curated_order`,
+/// the stratum's own rank list, by the same scores. Facts and events
+/// are not submitted: their payloads are JSON, not prose, and the
+/// cross-encoder's scores for them would be noise.
+///
+/// This placement is #685's ruling: the cross-encoder fixes semantic
+/// order *within* the knowledge source, then 029's provenance weights
+/// and stratum boost apply to that reranked order at fusion — it
+/// complements the provenance work rather than replacing it. In
+/// particular, two same-tier curated hits (the 029 known-open shape:
+/// target stuck at rank 1 behind a sibling memory) are exactly what
+/// per-hit weights cannot separate and a cross-encoder can.
+///
+/// Best-effort by contract: on any reranker error the un-reranked
+/// order is served and a warning logged. A search must never fail
+/// because an optional quality stage is sick.
+async fn rerank_stage(
+    reranker: &klams_store::TeiReranker,
+    query: &str,
+    scored: &mut Vec<(f32, u32, PublicMemory)>,
+    curated_order: &mut [uuid::Uuid],
+    window: usize,
+) {
+    let candidates: Vec<(uuid::Uuid, &str)> = scored
+        .iter()
+        .filter(|(_, _, m)| m.kind() == MemoryKind::Knowledge)
+        .map(|(_, _, m)| {
+            let text = match &m.content {
+                klams_types::PublicMemoryContent::Knowledge { text, .. } => text.as_str(),
+                _ => "",
+            };
+            (m.id, text)
+        })
+        .take(window)
+        .collect();
+    if candidates.len() < 2 {
+        return; // nothing to reorder
+    }
+    let _guard = klams_core::metrics::LatencyGuard::retrieval("rerank", "mcp");
+    let texts: Vec<&str> = candidates.iter().map(|(_, t)| *t).collect();
+    match reranker.rerank(query, &texts).await {
+        Ok(hits) => {
+            let window_ids: Vec<uuid::Uuid> = candidates.iter().map(|(id, _)| *id).collect();
+            apply_rerank_order(scored, curated_order, &window_ids, &hits);
+        }
+        Err(e) => {
+            klams_core::metrics::incr_rerank_skipped();
+            tracing::warn!(%e, "rerank stage skipped (serving un-reranked order)");
+        }
+    }
+}
+
+/// Apply a rerank result: the knowledge subsequence of `scored` is
+/// permuted so the reranked window leads in cross-encoder order,
+/// followed by any beyond-window knowledge entries in their prior
+/// order; knowledge `source_rank`s are renumbered to the new order and
+/// `curated_order` is sorted by it. Facts and events keep both their
+/// entries and their ranks untouched.
+fn apply_rerank_order(
+    scored: &mut Vec<(f32, u32, PublicMemory)>,
+    curated_order: &mut [uuid::Uuid],
+    window_ids: &[uuid::Uuid],
+    hits: &[klams_store::RerankHit],
+) {
+    // id -> new knowledge rank: reranked window first, then the tail.
+    let mut new_rank: HashMap<uuid::Uuid, usize> = hits
+        .iter()
+        .enumerate()
+        .map(|(rank, h)| (window_ids[h.index], rank))
+        .collect();
+    let mut next = new_rank.len();
+    for (_, _, m) in scored.iter() {
+        if m.kind() == MemoryKind::Knowledge && !new_rank.contains_key(&m.id) {
+            new_rank.insert(m.id, next);
+            next += 1;
+        }
+    }
+    // Partition, reorder knowledge, reassemble. `run` builds the list
+    // as knowledge-then-facts-then-events, so this preserves the
+    // original kind layout; and fusion partitions per kind anyway, so
+    // only the within-kind order matters downstream.
+    let mut knowledge: Vec<(f32, u32, PublicMemory)> = Vec::new();
+    let mut others: Vec<(f32, u32, PublicMemory)> = Vec::new();
+    for entry in scored.drain(..) {
+        if entry.2.kind() == MemoryKind::Knowledge {
+            knowledge.push(entry);
+        } else {
+            others.push(entry);
+        }
+    }
+    knowledge.sort_by_key(|(_, _, m)| new_rank.get(&m.id).copied().unwrap_or(usize::MAX));
+    for (rank, entry) in knowledge.iter_mut().enumerate() {
+        entry.1 = rank_u32(rank);
+    }
+    scored.extend(knowledge);
+    scored.extend(others);
+    curated_order.sort_by_key(|id| new_rank.get(id).copied().unwrap_or(usize::MAX));
 }
 
 /// Label for the calling agent (sprint 026, #643). One helper so the
@@ -1141,6 +1261,135 @@ mod tests {
             assert!(seen.insert(h), "duplicate content_hash survived the page");
         }
         assert_eq!(copies_of(&scored[0].2).len(), 2, "aaa absorbed two copies");
+    }
+
+    // ---- Sprint 030 (#685): second-stage rerank order application.
+
+    use klams_store::RerankHit;
+
+    #[test]
+    fn rerank_reorders_knowledge_and_renumbers_ranks() {
+        let k0 = mem(MemoryKind::Knowledge, "k0");
+        let k1 = mem(MemoryKind::Knowledge, "k1");
+        let k2 = mem(MemoryKind::Knowledge, "k2");
+        let ids = [k0.id, k1.id, k2.id];
+        let mut scored = vec![(0.7_f32, 0, k0), (0.6_f32, 1, k1), (0.5_f32, 2, k2)];
+        // Cross-encoder disagrees with the cosine order: k2 > k0 > k1.
+        let hits = [
+            RerankHit {
+                index: 2,
+                score: 0.9,
+            },
+            RerankHit {
+                index: 0,
+                score: 0.5,
+            },
+            RerankHit {
+                index: 1,
+                score: 0.1,
+            },
+        ];
+        let mut curated: Vec<uuid::Uuid> = Vec::new();
+        apply_rerank_order(&mut scored, &mut curated, &ids, &hits);
+        assert_eq!(
+            scored.iter().map(|(_, _, m)| m.id).collect::<Vec<_>>(),
+            vec![ids[2], ids[0], ids[1]]
+        );
+        assert_eq!(
+            scored.iter().map(|(_, r, _)| *r).collect::<Vec<_>>(),
+            vec![0, 1, 2],
+            "knowledge source_ranks must be renumbered to the reranked order"
+        );
+        // raw scores ride along untouched — raw_score stays the cosine.
+        assert!((scored[0].0 - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn rerank_reorders_the_curated_stratum_list_too() {
+        // The 029 known-open shape this sprint exists for: two curated
+        // siblings, the true target stuck at stratum rank 1. The
+        // cross-encoder's order must flow into curated_order so the 4th
+        // fusion source stops double-boosting the wrong sibling.
+        let sib = mem(MemoryKind::Knowledge, "sibling");
+        let target = mem(MemoryKind::Knowledge, "target");
+        let ids = [sib.id, target.id];
+        let mut scored = vec![(0.66_f32, 0, sib), (0.64_f32, 1, target)];
+        let mut curated = vec![ids[0], ids[1]];
+        let hits = [
+            RerankHit {
+                index: 1,
+                score: 0.95,
+            },
+            RerankHit {
+                index: 0,
+                score: 0.40,
+            },
+        ];
+        apply_rerank_order(&mut scored, &mut curated, &ids, &hits);
+        assert_eq!(curated, vec![ids[1], ids[0]]);
+        assert_eq!(scored[0].2.id, ids[1]);
+    }
+
+    #[test]
+    fn rerank_leaves_facts_and_events_untouched() {
+        let k0 = mem(MemoryKind::Knowledge, "k0");
+        let k1 = mem(MemoryKind::Knowledge, "k1");
+        let f0 = mem(MemoryKind::Fact, "f0");
+        let e0 = mem(MemoryKind::Event, "e0");
+        let kids = [k0.id, k1.id];
+        let (fid, eid) = (f0.id, e0.id);
+        let mut scored = vec![
+            (0.7_f32, 0, k0),
+            (0.6_f32, 1, k1),
+            (0.05_f32, 0, f0),
+            (0.04_f32, 0, e0),
+        ];
+        let hits = [
+            RerankHit {
+                index: 1,
+                score: 0.9,
+            },
+            RerankHit {
+                index: 0,
+                score: 0.1,
+            },
+        ];
+        apply_rerank_order(&mut scored, &mut Vec::new(), &kids, &hits);
+        // Kind layout preserved (knowledge, then facts, then events),
+        // and the non-knowledge entries keep their ranks.
+        assert_eq!(
+            scored.iter().map(|(_, _, m)| m.id).collect::<Vec<_>>(),
+            vec![kids[1], kids[0], fid, eid]
+        );
+        assert_eq!(scored[2].1, 0);
+        assert_eq!(scored[3].1, 0);
+    }
+
+    #[test]
+    fn beyond_window_knowledge_keeps_its_order_after_the_window() {
+        // Only k0/k1 were in the rerank window; k2 was beyond it and
+        // must trail the reranked window in its prior relative order.
+        let k0 = mem(MemoryKind::Knowledge, "k0");
+        let k1 = mem(MemoryKind::Knowledge, "k1");
+        let k2 = mem(MemoryKind::Knowledge, "k2");
+        let ids = [k0.id, k1.id, k2.id];
+        let mut scored = vec![(0.7_f32, 0, k0), (0.6_f32, 1, k1), (0.5_f32, 2, k2)];
+        let window = [ids[0], ids[1]];
+        let hits = [
+            RerankHit {
+                index: 1,
+                score: 0.9,
+            },
+            RerankHit {
+                index: 0,
+                score: 0.1,
+            },
+        ];
+        apply_rerank_order(&mut scored, &mut Vec::new(), &window, &hits);
+        assert_eq!(
+            scored.iter().map(|(_, _, m)| m.id).collect::<Vec<_>>(),
+            vec![ids[1], ids[0], ids[2]]
+        );
     }
 
     #[test]
