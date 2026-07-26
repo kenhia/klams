@@ -93,7 +93,7 @@ scopes = [\"read\", \"write\"]
 
 #[test]
 fn markdown_junk_headings_become_substantive_chunks_with_paths() {
-    let chunks = chunk(MARKDOWN, Lang::Markdown);
+    let chunks = chunk(MARKDOWN, Lang::Markdown, klams_types::EmbedLimit::default());
     // None of the crossroads bare-heading hits appear as a chunk that is
     // just the heading text.
     for junk in ["## MCP tools", "# PHASE 8 — Restore Data", "## Restore"] {
@@ -146,7 +146,7 @@ fn markdown_junk_headings_become_substantive_chunks_with_paths() {
 
 #[test]
 fn rust_chunks_by_item_with_symbols_and_indentation() {
-    let chunks = chunk(RUST, Lang::Rust);
+    let chunks = chunk(RUST, Lang::Rust, klams_types::EmbedLimit::default());
     let syms: Vec<String> = chunks.iter().flat_map(|c| c.symbols.clone()).collect();
     assert!(syms.contains(&"add".to_string()), "syms={syms:?}");
     assert!(syms.contains(&"Bag".to_string()), "syms={syms:?}");
@@ -159,7 +159,7 @@ fn rust_chunks_by_item_with_symbols_and_indentation() {
 
 #[test]
 fn python_hash_comments_do_not_fragment() {
-    let chunks = chunk(PYTHON, Lang::Python);
+    let chunks = chunk(PYTHON, Lang::Python, klams_types::EmbedLimit::default());
     // The `#` comment lines must not have split the file heading-style;
     // a small file stays a single coherent chunk.
     assert_eq!(chunks.len(), 1, "got {chunks:#?}");
@@ -175,7 +175,7 @@ fn python_hash_comments_do_not_fragment() {
 #[test]
 fn shell_and_toml_hash_lines_are_not_headings() {
     for (src, lang, label) in [(SHELL, Lang::Shell, "shell"), (TOML, Lang::Toml, "toml")] {
-        let chunks = chunk(src, lang);
+        let chunks = chunk(src, lang, klams_types::EmbedLimit::default());
         assert!(!chunks.is_empty());
         // No chunk is a lone `#`-comment line masquerading as a heading.
         for c in &chunks {
@@ -192,7 +192,7 @@ fn shell_and_toml_hash_lines_are_not_headings() {
 
 #[test]
 fn chunk_indices_are_contiguous_from_zero() {
-    let chunks = chunk(MARKDOWN, Lang::Markdown);
+    let chunks = chunk(MARKDOWN, Lang::Markdown, klams_types::EmbedLimit::default());
     for (i, c) in chunks.iter().enumerate() {
         assert_eq!(
             c.index as usize, i,

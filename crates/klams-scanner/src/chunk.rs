@@ -111,8 +111,13 @@ pub fn sha256_hex(s: &str) -> String {
 }
 
 /// Split `body` into chunks using the strategy for `lang`.
+///
+/// `limit` is the embedder's input ceiling (sprint 027 #420). It does not
+/// drive normal chunking — [`TARGET_CHARS`] still does, because ~800
+/// characters is the size that retrieves well — it is the guarantee that
+/// no chunk the scanner publishes can be refused by the embedder.
 #[must_use]
-pub fn chunk(body: &str, lang: Lang) -> Vec<Chunk> {
+pub fn chunk(body: &str, lang: Lang, limit: klams_types::EmbedLimit) -> Vec<Chunk> {
     let norm = normalize(body);
     if norm.is_empty() {
         return Vec::new();
@@ -157,16 +162,81 @@ pub fn chunk(body: &str, lang: Lang) -> Vec<Chunk> {
         if text.is_empty() {
             continue;
         }
-        let content_hash = sha256_hex(&text);
-        out.push(Chunk {
-            index: idx,
-            text,
-            content_hash,
-            heading_path: path,
-            language: language.clone(),
-            symbols,
-        });
-        idx += 1;
+        // Sprint 027 (#420): the final gate, applied to the text that
+        // will actually be embedded.
+        //
+        // Three things upstream can push a piece past the model's token
+        // budget even though `TARGET_CHARS` is only 800: the heading
+        // breadcrumb is prepended *after* packing; the tree-sitter code
+        // path bypasses `pack_blocks` entirely and emits whole functions;
+        // and 800 characters of dense content (CJK, minified code, wide
+        // tables) is far more than 800 characters of prose is in tokens.
+        //
+        // A chunk that exceeds the ceiling used to be published anyway,
+        // accepted with 202, and then dropped at the worker when the
+        // embed failed. Splitting here means the scanner never offers one.
+        for piece in enforce_limit(&text, limit) {
+            let content_hash = sha256_hex(&piece);
+            out.push(Chunk {
+                index: idx,
+                text: piece,
+                content_hash,
+                heading_path: path.clone(),
+                language: language.clone(),
+                symbols: symbols.clone(),
+            });
+            idx += 1;
+        }
+    }
+    out
+}
+
+/// Split `text` until every piece fits the embedder's ceiling.
+///
+/// Returns `text` untouched in the overwhelming majority of cases — an
+/// 800-character prose chunk is nowhere near a 512-token budget. The
+/// splitting path exists for the dense content that provoked #420.
+fn enforce_limit(text: &str, limit: klams_types::EmbedLimit) -> Vec<String> {
+    if limit.fits(text) {
+        return vec![text.to_owned()];
+    }
+    // Halve the window until the densest piece fits. Character-count
+    // windows cannot express a token budget directly (that is the whole
+    // problem), so converge on one instead of guessing a ratio.
+    let mut window = limit.max_chars();
+    loop {
+        let pieces = split_on_char_window(text, window);
+        if pieces.iter().all(|p| limit.fits(p)) {
+            return pieces;
+        }
+        window /= 2;
+        if window < MIN_CHARS {
+            // Pathological input (e.g. one enormous CJK run). Emit the
+            // per-character floor rather than looping forever; the gate
+            // downstream is still authoritative.
+            return split_on_char_window(text, MIN_CHARS);
+        }
+    }
+}
+
+/// Split into `window`-character pieces with the usual overlap, on char
+/// boundaries so multi-byte content is never cut mid-character.
+fn split_on_char_window(s: &str, window: usize) -> Vec<String> {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= window {
+        return vec![s.to_owned()];
+    }
+    let overlap = OVERLAP_CHARS.min(window / 4);
+    let step = (window - overlap).max(1);
+    let mut out = Vec::new();
+    let mut start = 0;
+    while start < chars.len() {
+        let end = (start + window).min(chars.len());
+        out.push(chars[start..end].iter().collect());
+        if end == chars.len() {
+            break;
+        }
+        start += step;
     }
     out
 }
@@ -326,8 +396,95 @@ mod tests {
 
     #[test]
     fn empty_input_returns_no_chunks() {
-        assert!(chunk("", Lang::Markdown).is_empty());
-        assert!(chunk("    \n\n   ", Lang::Text).is_empty());
+        assert!(chunk("", Lang::Markdown, klams_types::EmbedLimit::default()).is_empty());
+        assert!(chunk(
+            "    \n\n   ",
+            Lang::Text,
+            klams_types::EmbedLimit::default()
+        )
+        .is_empty());
+    }
+
+    // -----------------------------------------------------------------
+    // Sprint 027 (#420) — no chunk the scanner emits may exceed the
+    // embedder's ceiling. Before this, an over-budget chunk was published
+    // anyway, accepted with 202 (advancing the cursor), and then dropped
+    // at the worker when the embed failed: silent, unretried data loss.
+
+    #[test]
+    fn every_emitted_chunk_fits_the_embedder_ceiling() {
+        let limit = klams_types::EmbedLimit::default();
+        // Dense CJK: ~1 token per character, so a piece well under
+        // TARGET_CHARS in *characters* is far over budget in *tokens*.
+        // This is exactly the "well under 8192 chars but over 512 tokens"
+        // shape #420 describes.
+        let body = "日本語のテキストが延々と続く段落です。".repeat(200);
+        let chunks = chunk(&body, Lang::Text, limit);
+
+        assert!(!chunks.is_empty(), "dense input must still produce chunks");
+        for c in &chunks {
+            assert!(
+                limit.fits(&c.text),
+                "chunk {} is over budget ({} chars, ~{} tokens)",
+                c.index,
+                c.text.chars().count(),
+                klams_types::estimate_tokens(&c.text),
+            );
+        }
+    }
+
+    #[test]
+    fn long_markdown_with_breadcrumbs_stays_within_budget() {
+        // The breadcrumb is prepended *after* packing, so a piece that
+        // fit before can stop fitting. Deep heading paths make that worst.
+        let limit = klams_types::EmbedLimit::default();
+        let heading = "# Very Long Top Level Heading\n\n## And A Nested One\n\n";
+        let body = format!("{heading}{}", "prose about the homelab. ".repeat(400));
+        for c in chunk(&body, Lang::Markdown, limit) {
+            assert!(limit.fits(&c.text), "chunk {} over budget", c.index);
+        }
+    }
+
+    #[test]
+    fn oversized_code_blocks_are_split_rather_than_published_whole() {
+        // The tree-sitter code path bypasses pack_blocks entirely and can
+        // emit a whole function, so the final gate is what protects it.
+        let limit = klams_types::EmbedLimit::default();
+        let huge_fn = format!(
+            "fn enormous() {{\n{}\n}}",
+            "    let x = compute_something_with_a_long_name(alpha, beta);\n".repeat(60)
+        );
+        let chunks = chunk(&huge_fn, Lang::Rust, limit);
+        assert!(!chunks.is_empty());
+        for c in &chunks {
+            assert!(limit.fits(&c.text), "chunk {} over budget", c.index);
+        }
+    }
+
+    #[test]
+    fn chunk_indices_stay_contiguous_after_a_split() {
+        // Splitting happens inside the emit loop, so the index counter
+        // has to keep running rather than repeat or skip.
+        let limit = klams_types::EmbedLimit::default();
+        let body = "文字".repeat(3000);
+        let chunks = chunk(&body, Lang::Text, limit);
+        assert!(chunks.len() > 1, "fixture should force a split");
+        for (i, c) in chunks.iter().enumerate() {
+            assert_eq!(c.index as usize, i, "indices must be contiguous");
+        }
+    }
+
+    #[test]
+    fn ordinary_prose_is_untouched_by_the_gate() {
+        // The gate must be invisible in the common case — an 800-char
+        // prose chunk is nowhere near 512 tokens, and re-splitting it
+        // would wreck retrieval quality.
+        let limit = klams_types::EmbedLimit::default();
+        let body = "The klams service runs on kubs0 behind tailscale.\n\n\
+                    Retrieval fuses Qdrant and Postgres results with RRF.";
+        let with_gate = chunk(body, Lang::Text, limit);
+        let with_huge_gate = chunk(body, Lang::Text, klams_types::EmbedLimit::new(100_000));
+        assert_eq!(with_gate, with_huge_gate);
     }
 
     #[test]
@@ -343,7 +500,7 @@ mod tests {
     #[test]
     fn markdown_heading_becomes_breadcrumb_not_a_bare_chunk() {
         let body = "# klams\n\n## MCP tools\n\nThe server exposes memory_search, memory_add, and friends over the streamable HTTP transport at kubs0:7777.";
-        let chunks = chunk(body, Lang::Markdown);
+        let chunks = chunk(body, Lang::Markdown, klams_types::EmbedLimit::default());
         assert_eq!(chunks.len(), 1, "got {chunks:?}");
         let c = &chunks[0];
         assert_eq!(c.heading_path.as_deref(), Some("klams > MCP tools"));
@@ -358,7 +515,7 @@ mod tests {
         // A heading immediately followed by another heading (or EOF)
         // contributes context but never its own chunk.
         let body = "## MCP tools\n\n# PHASE 8 — Restore Data";
-        let chunks = chunk(body, Lang::Markdown);
+        let chunks = chunk(body, Lang::Markdown, klams_types::EmbedLimit::default());
         assert!(
             chunks.is_empty(),
             "bare headings must not become chunks: {chunks:?}"
@@ -370,7 +527,7 @@ mod tests {
         // Sprint 022 (#320): `#` comments in Python/shell/TOML must not
         // be treated as markdown headings and fragment the file.
         let body = "# module docstring comment\nimport os\n\n\ndef go():\n    return os.getcwd()";
-        let chunks = chunk(body, Lang::Python);
+        let chunks = chunk(body, Lang::Python, klams_types::EmbedLimit::default());
         assert_eq!(chunks.len(), 1, "python must not split on # comment");
         assert_eq!(chunks[0].language.as_deref(), Some("python"));
         assert!(chunks[0].heading_path.is_none());
@@ -382,7 +539,7 @@ mod tests {
     #[test]
     fn heading_nesting_pops_stack() {
         let body = "# A\n\nalpha body long enough to matter here padding padding\n\n## B\n\nbeta body also long enough padding padding padding\n\n# C\n\ngamma body enough padding padding padding padding";
-        let chunks = chunk(body, Lang::Markdown);
+        let chunks = chunk(body, Lang::Markdown, klams_types::EmbedLimit::default());
         let paths: Vec<_> = chunks
             .iter()
             .filter_map(|c| c.heading_path.as_deref())
@@ -395,7 +552,7 @@ mod tests {
     #[test]
     fn large_section_slides_with_overlap() {
         let para = "lorem ipsum ".repeat(120); // ~1440 chars
-        let chunks = chunk(&para, Lang::Text);
+        let chunks = chunk(&para, Lang::Text, klams_types::EmbedLimit::default());
         assert!(chunks.len() >= 2, "expected slide, got {}", chunks.len());
         let head: String = chunks[0].text.chars().rev().take(40).collect();
         let tail_fwd: String = head.chars().rev().collect();
@@ -422,8 +579,16 @@ mod tests {
 
     #[test]
     fn sha256_stable_across_leading_trailing_blank_lines() {
-        let a = chunk("hello world\n\n\n", Lang::Text);
-        let b = chunk("\n\nhello world", Lang::Text);
+        let a = chunk(
+            "hello world\n\n\n",
+            Lang::Text,
+            klams_types::EmbedLimit::default(),
+        );
+        let b = chunk(
+            "\n\nhello world",
+            Lang::Text,
+            klams_types::EmbedLimit::default(),
+        );
         assert_eq!(a.len(), 1);
         assert_eq!(b.len(), 1);
         assert_eq!(a[0].content_hash, b[0].content_hash);

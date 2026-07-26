@@ -10,6 +10,7 @@ pub mod config;
 pub mod context;
 pub mod decay;
 pub mod dissent;
+pub mod embed_limit;
 pub mod entities;
 pub mod error;
 pub mod hash;
@@ -58,6 +59,7 @@ pub use context::{
 };
 pub use decay::DecayConfig;
 pub use dissent::{Dissent, DissentStatus, DissentSubmittedResponse, FactWriteOutcome};
+pub use embed_limit::{estimate_tokens, EmbedLimit, Oversize, DEFAULT_MAX_INPUT_TOKENS};
 pub use entities::{Event, Fact, FactType, KnowledgeItem, Source};
 pub use error::ApiError;
 pub use hash::canonical_json_hash;

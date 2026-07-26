@@ -205,6 +205,21 @@ runs them as a side effect. `just rollback` swaps binaries only and
 cannot undo one; crossing a migration boundary backwards needs
 `just restore-from <date>`.
 
+**Sprint 027 adds `0012_oversize_write.sql`** (additive: one new table,
+no changes to existing ones) and two config keys under `[embeddings]`:
+
+| Key | Default | What it does |
+|-----|---------|--------------|
+| `max_input_tokens` | `512` | The embedding model's input ceiling. Every ingest path gates against it. Verify with `curl -s http://127.0.0.1:7070/info \| jq .max_input_length` before changing. |
+| `oversize_log_retention_days` | `90` | How long refused-write rows (which hold full payloads) are kept before the daily prune. |
+
+**The scanner has a matching `max_input_tokens` in `/etc/klams/scanner.toml`
+and the two must be kept in step.** They are separate processes on
+separate hosts, so nothing enforces agreement: if the scanner's value is
+higher than the service's, it will publish chunks the service refuses,
+and those files' cursors will stall (visibly, in the scanner's logs —
+not silently, which is the pre-027 behaviour this replaces).
+
 The whole procedure, with preflight and verification, is packaged as
 the repo-local `deploy-kubs0` skill (`.claude/skills/deploy-kubs0/`),
 which `/sprint-ship` invokes automatically via `.sprint-deploy`.

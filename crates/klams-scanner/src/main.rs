@@ -58,6 +58,12 @@ struct Config {
     /// mount-scan mode (#406) where one process scans several hosts.
     #[serde(default)]
     host: Option<String>,
+    /// Sprint 027 (#420): the embedding model's input ceiling in tokens.
+    /// Must match the service's `[embeddings] max_input_tokens` — the
+    /// scanner splits against it so it never publishes a chunk the
+    /// service will refuse. Keep the two in step when 028 swaps models.
+    #[serde(default = "default_max_input_tokens")]
+    max_input_tokens: usize,
 }
 
 fn default_roots() -> Vec<String> {
@@ -68,6 +74,9 @@ fn default_interval() -> u64 {
 }
 fn default_state_dir() -> String {
     "~/.local/state/klams".into()
+}
+fn default_max_input_tokens() -> usize {
+    klams_types::DEFAULT_MAX_INPUT_TOKENS
 }
 
 #[tokio::main]
@@ -105,18 +114,31 @@ async fn main() -> Result<()> {
         args.root.clone()
     };
 
+    // Sprint 027 (#420): split against the same ceiling the service
+    // enforces, so no chunk is published that the embedder will refuse.
+    let embed_limit = klams_types::EmbedLimit::new(cfg.max_input_tokens);
+
     tracing::info!(
         roots = roots.len(),
         interval_secs = interval.as_secs(),
         once = args.once,
         host = %host,
+        max_input_tokens = embed_limit.max_input_tokens(),
         "klams-scanner starting"
     );
 
     loop {
         for root in &roots {
-            if let Err(e) =
-                scan_root(&client, &cfg.url, &cfg.token, &host, &cursor_path, root).await
+            if let Err(e) = scan_root(
+                &client,
+                &cfg.url,
+                &cfg.token,
+                &host,
+                &cursor_path,
+                root,
+                embed_limit,
+            )
+            .await
             {
                 tracing::warn!(root = %root.display(), error = %e, "scan failed");
             }
@@ -145,6 +167,7 @@ fn load_config(args: &Args) -> Result<Config> {
         interval_secs: default_interval(),
         state_dir: default_state_dir(),
         host: None,
+        max_input_tokens: default_max_input_tokens(),
     })
 }
 

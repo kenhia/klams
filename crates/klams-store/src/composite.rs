@@ -135,6 +135,29 @@ impl Store for CompositeStore {
         out
     }
 
+    /// Sprint 027 (#420): ask the embedder for the *exact* token count
+    /// rather than estimating from character counts. Measured against
+    /// the live model, no character ratio is both safe and useful —
+    /// punctuation-dense text hits the ceiling at ~525 characters while
+    /// base64 survives past 20,000 — so the tokenizer is the only
+    /// honest arbiter, and TEI's `/tokenize` provides it without a model
+    /// forward pass.
+    async fn check_embed_size(
+        &self,
+        text: &str,
+        limit: klams_types::EmbedLimit,
+    ) -> StoreResult<()> {
+        let counts = self.embedder.count_tokens(&[text]).await?;
+        let tokens = counts.first().copied().unwrap_or(0);
+        if tokens <= limit.max_input_tokens() {
+            return Ok(());
+        }
+        Err(StoreError::PayloadTooLarge {
+            oversize: crate::embeddings::oversize_from_exact_count(text, tokens, limit),
+            detail: "exact token count from the embedding model".into(),
+        })
+    }
+
     async fn health_postgres(&self) -> StoreResult<()> {
         self.postgres.health().await
     }

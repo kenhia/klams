@@ -45,6 +45,12 @@ pub struct ApiState<S: Store> {
     /// Sprint 006: backup-window flag. Default-constructed in test
     /// fixtures; populated by the backup orchestrator in production.
     pub maintenance: MaintenanceState,
+    /// Sprint 027 (#420): the embedder's input ceiling, so knowledge
+    /// ingest refuses over-budget text at the boundary instead of
+    /// accepting it and losing it at the worker. Defaults to the
+    /// deployed model's 512 tokens; production sets it from
+    /// `[embeddings] max_input_tokens`.
+    pub embed_limit: klams_types::EmbedLimit,
 }
 
 impl<S: Store> Clone for ApiState<S> {
@@ -59,6 +65,7 @@ impl<S: Store> Clone for ApiState<S> {
             validators: Arc::clone(&self.validators),
             context_builder: Arc::clone(&self.context_builder),
             maintenance: self.maintenance.clone(),
+            embed_limit: self.embed_limit,
         }
     }
 }

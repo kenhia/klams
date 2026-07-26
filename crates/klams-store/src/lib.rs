@@ -27,11 +27,53 @@ pub use embeddings::{Embedder, OpenAiCompatEmbedder, TeiEmbedder};
 pub use postgres::PostgresStore;
 pub use qdrant::QdrantStore;
 
+/// Whether retrying the same operation could plausibly succeed.
+///
+/// Sprint 027 (WI #629, review F-3.1). Before this existed, klams got the
+/// question wrong in *both* directions: a permanent HTTP 413 from the
+/// embedder was retried three times and reported as
+/// `EMBEDDING_UNAVAILABLE` + `retry_after_seconds`, while a transient
+/// Postgres pool exhaustion surfaced as a bare `INTERNAL_ERROR` with no
+/// retry hint at all. The classification has to live on the error itself,
+/// because by the time a caller sees it the evidence is gone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transience {
+    /// The condition is expected to clear on its own: connection
+    /// refused, a 5xx, a timeout, an exhausted pool. Retrying is
+    /// reasonable and `retry_after_seconds` is honest.
+    Transient,
+    /// The condition is a property of the request. Retrying it
+    /// unchanged will fail identically, forever. Never attach a retry
+    /// hint to one of these.
+    Permanent,
+}
+
 #[derive(Debug)]
 pub enum StoreError {
+    /// A backend failed in a way that will not fix itself (bad SQL,
+    /// constraint violation, malformed response).
     Backend(String),
+    /// A backend is momentarily unreachable or over capacity — pool
+    /// exhaustion, connection reset, a 5xx from Qdrant. Distinct from
+    /// [`StoreError::Backend`] purely so callers can offer an honest
+    /// retry hint (sprint 027, the mirror half of #629).
+    BackendUnavailable(String),
     Conflict(String),
+    /// The embedder is unavailable or failed transiently.
     Embedding(String),
+    /// The embedder refused this input and will refuse it again —
+    /// an unsupported content type, a malformed request, any permanent
+    /// 4xx that is not a size problem.
+    EmbeddingRejected(String),
+    /// The input exceeds the embedder's token ceiling, with the numbers
+    /// needed to split it correctly on the first retry rather than by
+    /// bisection (sprint 027, #629/#632).
+    PayloadTooLarge {
+        oversize: klams_types::Oversize,
+        /// Where the rejection came from — the local gate, or the
+        /// embedder's own response body.
+        detail: String,
+    },
     Other(String),
     /// Sprint-002 US2: optimistic-version mismatch on a canonical
     /// fact write or dissent promote. Maps to HTTP 409 with the
@@ -44,12 +86,70 @@ pub enum StoreError {
     Gone(String),
 }
 
+impl StoreError {
+    /// Classify a `sqlx` failure so transient database trouble is
+    /// reported as retryable and everything else is not.
+    ///
+    /// Used at every Postgres call site in place of the old blanket
+    /// `Backend(format!("ctx: {e}"))`, which erased the distinction.
+    pub fn from_sqlx(ctx: &str, e: &sqlx::Error) -> Self {
+        let transient = match e {
+            // The pool could not hand out a connection in time, or the
+            // socket died mid-flight. Both clear on their own.
+            sqlx::Error::PoolTimedOut | sqlx::Error::Io(_) | sqlx::Error::Tls(_) => true,
+            sqlx::Error::Database(db) => db.code().is_some_and(|c| is_transient_sqlstate(&c)),
+            _ => false,
+        };
+        let msg = format!("{ctx}: {e}");
+        if transient {
+            StoreError::BackendUnavailable(msg)
+        } else {
+            StoreError::Backend(msg)
+        }
+    }
+
+    /// Whether retrying this operation unchanged could succeed.
+    pub fn transience(&self) -> Transience {
+        match self {
+            StoreError::BackendUnavailable(_) | StoreError::Embedding(_) => Transience::Transient,
+            StoreError::Backend(_)
+            | StoreError::Conflict(_)
+            | StoreError::EmbeddingRejected(_)
+            | StoreError::PayloadTooLarge { .. }
+            | StoreError::Other(_)
+            | StoreError::VersionConflict { .. }
+            | StoreError::Gone(_) => Transience::Permanent,
+        }
+    }
+
+    /// Convenience predicate for the many call sites that only need to
+    /// decide whether to attach `retry_after_seconds`.
+    pub fn is_transient(&self) -> bool {
+        self.transience() == Transience::Transient
+    }
+}
+
+/// SQLSTATE classes that describe a condition worth retrying.
+///
+/// `08` connection exception, `40` transaction rollback (deadlock and
+/// serialization failure — retrying is the documented remedy), `53`
+/// insufficient resources (out of connections/memory/disk), `57`
+/// operator intervention (admin shutdown, cancelled statement).
+fn is_transient_sqlstate(code: &str) -> bool {
+    matches!(code.get(..2), Some("08" | "40" | "53" | "57"))
+}
+
 impl fmt::Display for StoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             StoreError::Backend(m) => write!(f, "store backend error: {m}"),
+            StoreError::BackendUnavailable(m) => write!(f, "store backend unavailable: {m}"),
             StoreError::Conflict(m) => write!(f, "store conflict: {m}"),
             StoreError::Embedding(m) => write!(f, "embedding error: {m}"),
+            StoreError::EmbeddingRejected(m) => write!(f, "embedding rejected input: {m}"),
+            StoreError::PayloadTooLarge { oversize, detail } => {
+                write!(f, "payload too large: {oversize} [{detail}]")
+            }
             StoreError::Other(m) => write!(f, "store error: {m}"),
             StoreError::VersionConflict { current_version } => {
                 write!(f, "version conflict: current_version={current_version}")
@@ -118,6 +218,47 @@ pub struct SearchMiss {
     pub top_score: Option<f32>,
     pub hit_count: i32,
     pub kinds: String,
+}
+
+/// A knowledge write refused for exceeding the embedder's ceiling
+/// (sprint 027, #656).
+///
+/// Carries the full rejected `text` on purpose: it is the "what did we
+/// lose" corpus. Everything else here is what makes the loss
+/// *interpretable* — who hit it, by how much, and against which ceiling,
+/// since the ceiling itself moves when the model changes.
+#[derive(Debug, Clone)]
+pub struct OversizeWrite {
+    pub author_id: Option<Uuid>,
+    pub agent_name: String,
+    pub submitted_chars: i32,
+    pub estimated_tokens: i32,
+    pub limit_tokens: i32,
+    pub max_chars: i32,
+    pub text: String,
+}
+
+impl OversizeWrite {
+    /// Build a log row from the gate's verdict.
+    #[must_use]
+    pub fn from_oversize(
+        oversize: &klams_types::Oversize,
+        author_id: Option<Uuid>,
+        agent_name: impl Into<String>,
+        text: impl Into<String>,
+    ) -> Self {
+        Self {
+            author_id,
+            agent_name: agent_name.into(),
+            // Sizes are bounded by the request the caller already sent,
+            // so a saturating cast cannot lose anything meaningful.
+            submitted_chars: i32::try_from(oversize.submitted_chars).unwrap_or(i32::MAX),
+            estimated_tokens: i32::try_from(oversize.estimated_tokens).unwrap_or(i32::MAX),
+            limit_tokens: i32::try_from(oversize.limit_tokens).unwrap_or(i32::MAX),
+            max_chars: i32::try_from(oversize.max_chars).unwrap_or(i32::MAX),
+            text: text.into(),
+        }
+    }
 }
 
 /// A record of one search, hit or miss (sprint 026, #643).
@@ -205,6 +346,34 @@ pub trait Store: Send + Sync + 'static {
     /// [`search_knowledge`]. Implementations backed by Qdrant + TEI
     /// delegate to the embedder; mock stores can return a zero vector.
     async fn embed_query(&self, query: &str) -> StoreResult<Vec<f32>>;
+
+    /// Check `text` against the embedder's input ceiling, using the
+    /// model's real tokenizer where the backend has one (sprint 027,
+    /// WI #420).
+    ///
+    /// The ingest handler calls this **before** returning `202`, because
+    /// the write is completed asynchronously by a worker that has no
+    /// reply channel: anything accepted here and refused later is lost
+    /// outright, and the scanner has already advanced its cursor past it.
+    ///
+    /// The default implementation uses the character estimate, which is
+    /// what mock stores and tokenizer-less backends get.
+    ///
+    /// # Errors
+    /// Returns [`StoreError::PayloadTooLarge`] when the text exceeds the
+    /// ceiling, carrying the numbers needed to split it correctly.
+    async fn check_embed_size(
+        &self,
+        text: &str,
+        limit: klams_types::EmbedLimit,
+    ) -> StoreResult<()> {
+        limit
+            .check(text)
+            .map_err(|oversize| StoreError::PayloadTooLarge {
+                oversize,
+                detail: "character estimate (no tokenizer available)".into(),
+            })
+    }
 
     // Dissent operations (sprint 002 US2). Default impls return
     // `Other` so mock stores need not implement them; the Postgres

@@ -61,6 +61,7 @@ async fn fresh_file_is_indexed_edit_replaces_delete_removes() {
         "testhost",
         &cursor_path,
         tmp_root.path(),
+        klams_types::EmbedLimit::default(),
     )
     .await
     .expect("scan 1");
@@ -85,6 +86,7 @@ async fn fresh_file_is_indexed_edit_replaces_delete_removes() {
         "testhost",
         &cursor_path,
         tmp_root.path(),
+        klams_types::EmbedLimit::default(),
     )
     .await
     .expect("scan 2");
@@ -112,6 +114,7 @@ async fn fresh_file_is_indexed_edit_replaces_delete_removes() {
         "testhost",
         &cursor_path,
         tmp_root.path(),
+        klams_types::EmbedLimit::default(),
     )
     .await
     .expect("scan 3");

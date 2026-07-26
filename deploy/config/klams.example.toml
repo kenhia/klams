@@ -95,6 +95,35 @@ model_id = "BAAI/bge-small-en-v1.5"
 vector_dim = 384
 api = "tei"
 
+# The model's maximum input length in TOKENS (sprint 027, #420). This is
+# the single ceiling every ingest path gates against — REST
+# /memory/knowledge/index, MCP memory_add, and the embedder itself — so
+# text the model would refuse is refused at the boundary with an honest
+# PAYLOAD_TOO_LARGE naming the limit, instead of being accepted with a
+# 202 and dropped later at the worker.
+#
+# Verify against the live endpoint before changing it:
+#   curl -s http://127.0.0.1:7070/info | jq '{max_input_length, auto_truncate}'
+#
+# bge-small-en-v1.5 reports 512. Do NOT translate that into a character
+# count: measured on this model, 512 tokens buys ~525 characters of
+# punctuation-dense text but >20,000 of base64 — a 32x spread. The
+# service asks TEI's /tokenize for the exact count rather than
+# estimating. Sprint 028's longer-context model raises this value — and
+# the scanner's matching `max_input_tokens` in scanner.example.toml,
+# which must be kept in step.
+#
+# Leave `auto_truncate` OFF at the TEI container. A silently truncated
+# chunk looks complete but is unfindable by its tail; a visible rejection
+# is strictly better.
+max_input_tokens = 512
+
+# Retention for the oversize-write log (sprint 027, #656), which records
+# refused knowledge writes INCLUDING the full submitted text so "what did
+# we lose, how often, and to whom" is answerable. Because it stores whole
+# payloads it is pruned on a daily timer rather than left to grow.
+oversize_log_retention_days = 90
+
 [queue]
 # Bounded mpsc capacity for the worker pool. When full, the API
 # returns 503 with Retry-After.

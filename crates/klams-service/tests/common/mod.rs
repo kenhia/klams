@@ -234,6 +234,7 @@ impl TestServer {
             validators: Arc::new(klams_core::ValidatorRegistry::with_defaults()),
             context_builder: Arc::new(builder),
             maintenance: klams_types::MaintenanceState::default(),
+            embed_limit: klams_types::EmbedLimit::default(),
         };
         let router = {
             // Mirror main.rs's wiring: single AuthState gates both REST

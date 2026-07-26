@@ -26,9 +26,6 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-/// Maximum normalized-text length accepted by the API, per `OpenAPI`
-/// (`413` is returned for anything longer).
-const MAX_TEXT_LEN: usize = 8192;
 /// Maximum number of tags accepted per request.
 const MAX_TAGS: usize = 32;
 /// Maximum length of any single tag.
@@ -40,9 +37,35 @@ pub async fn index<S: Store>(
     Json(req): Json<IndexKnowledgeRequest>,
 ) -> Result<(StatusCode, Json<IndexKnowledgeResponse>), ApiError> {
     let normalized = normalize_text(&req.text)?;
-    if normalized.len() > MAX_TEXT_LEN {
-        m::incr_writes_failed("knowledge", "too_large");
-        return Err(ApiError::TooLarge);
+    // Sprint 027 (#420): gate on the embedder's real token budget, not a
+    // hardcoded 8192 characters. The old cap sat ~4x above what the model
+    // accepts, so a chunk in the gap was accepted with 202, the scanner
+    // advanced its cursor, and the worker then dropped the job when the
+    // embed failed — silent corpus loss. Rejecting here happens BEFORE
+    // the 202, so the scanner's cursor never advances past a chunk that
+    // was never stored.
+    //
+    // The check asks the model's own tokenizer, not a character ratio:
+    // measured live, punctuation-dense text hits the 512-token ceiling at
+    // ~525 characters while base64 survives past 20,000, so no single
+    // chars-per-token constant is both safe and usable.
+    if let Err(e) = state
+        .store
+        .check_embed_size(&normalized, state.embed_limit)
+        .await
+    {
+        return match e {
+            klams_store::StoreError::PayloadTooLarge { oversize, .. } => {
+                m::incr_writes_failed("knowledge", "too_large");
+                Err(ApiError::TooLarge(oversize))
+            }
+            // The tokenizer was unreachable. Fail the write rather than
+            // guess: a 503 leaves the scanner's cursor unadvanced so the
+            // chunk is retried, which is the recoverable outcome.
+            other => Err(ApiError::Internal {
+                request_id: format!("check_embed_size: {other}"),
+            }),
+        };
     }
     validate_tags(&req.tags)?;
     let _guard = m::LatencyGuard::with_type(m::WRITE_LATENCY, "knowledge");

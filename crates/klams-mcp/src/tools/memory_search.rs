@@ -148,13 +148,14 @@ pub async fn run(
         // `Store` trait rather than reaching into `.embedder` / `.qdrant`
         // / `.postgres`, so a third source (025 lexical) is added at the
         // trait + fusion seam, not wired into this tool concretely.
-        let embedding = state.store.embed_query(&query).await.map_err(|e| {
-            crate::errors::envelope_with_retry(
-                errors::EMBEDDING_UNAVAILABLE,
-                format!("TEI embedding failed: {e}"),
-                5,
-            )
-        })?;
+        // Sprint 027 (#629): classify rather than assuming transience.
+        // A query long enough to exceed the model's ceiling is a
+        // permanent `PAYLOAD_TOO_LARGE`, not an outage.
+        let embedding = state
+            .store
+            .embed_query(&query)
+            .await
+            .map_err(|e| crate::errors::from_store_error("embed_query", &e))?;
         // Sprint 026 (#641): over-fetch so the page is still full after
         // query-time duplicate collapse. ~44% of the corpus is duplicate
         // content (the same chunk stored once per host), so a top_k fetch

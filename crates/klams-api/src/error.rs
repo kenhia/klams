@@ -33,8 +33,11 @@ pub enum ApiError {
     Unauthorized,
     #[error("insufficient scope: {needed:?} required")]
     ScopeInsufficient { needed: klams_types::Scope },
-    #[error("payload too large")]
-    TooLarge,
+    /// Sprint 027 (#420/#629): carries the size numbers rather than a
+    /// bare "too large". Before this, a caller learned only that some
+    /// unnamed limit existed and had to bisect to find it.
+    #[error("payload too large: {0}")]
+    TooLarge(klams_types::Oversize),
     #[error("queue at capacity")]
     QueueFull { retry_after: u32 },
     #[error("all retrieval sources are unavailable")]
@@ -95,7 +98,7 @@ impl ApiError {
                 StatusCode::FORBIDDEN
             }
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
-            ApiError::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            ApiError::TooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
             ApiError::QueueFull { .. } | ApiError::AllSourcesUnavailable { .. } => {
                 StatusCode::SERVICE_UNAVAILABLE
             }
@@ -168,10 +171,10 @@ impl ApiError {
                 current_version: None,
                 window_max_days: None,
             },
-            ApiError::TooLarge => WireApiError {
+            ApiError::TooLarge(oversize) => WireApiError {
                 code: "payload_too_large".into(),
-                message: "request payload exceeds configured limit".into(),
-                field: None,
+                message: oversize.to_string(),
+                field: Some("text".into()),
                 request_id: None,
                 details: None,
                 current_version: None,
@@ -308,11 +311,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn too_large_maps_to_413() {
-        let resp = ApiError::TooLarge.into_response();
+    async fn too_large_maps_to_413_and_names_the_numbers() {
+        let oversize = klams_types::EmbedLimit::default()
+            .check(&"a".repeat(9000))
+            .expect_err("9000 chars must exceed the default ceiling");
+        let resp = ApiError::TooLarge(oversize).into_response();
         let (status, wire, _) = body_json(resp).await;
         assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
         assert_eq!(wire.code, "payload_too_large");
+        // Sprint 027: the message must be actionable on its own — the
+        // submitted size and the ceiling to split below.
+        assert!(wire.message.contains("9000"), "{}", wire.message);
+        assert!(
+            wire.message.contains(&oversize.max_chars.to_string()),
+            "{}",
+            wire.message
+        );
+        assert_eq!(wire.field.as_deref(), Some("text"));
     }
 
     #[tokio::test]

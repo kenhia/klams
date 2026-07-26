@@ -16,6 +16,7 @@ use crate::{
     projection,
     tools::McpState,
 };
+use klams_store::Store as _;
 use klams_types::{FactType, IndexKnowledge, PublicAuthorRef, PublicMemory, Source, UpsertFact};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -92,6 +93,12 @@ pub struct MemoryAddArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload: Option<serde_json::Value>,
     /// Required when `kind` is `knowledge`: the text to embed.
+    ///
+    /// Bounded by the embedding model's input length. Oversized text is
+    /// refused with `PAYLOAD_TOO_LARGE`, whose message names both the
+    /// limit and what you submitted — split at that size and retry. The
+    /// error is permanent for that text: it will never carry
+    /// `retry_after_seconds`, and retrying it unchanged always fails.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     /// Optional, `knowledge` only.
@@ -258,6 +265,41 @@ pub async fn run(state: &McpState, args: MemoryAddArgs) -> Result<PublicMemory, 
                     "knowledge text must be non-empty",
                 ));
             }
+            // Sprint 027 (#420/#629): this path had NO length check at
+            // all — `memory_search` in the same crate enforced
+            // MAX_QUERY_LEN, but a write of any size went straight to
+            // the embedder and came back as a transient-looking error.
+            // Fail here instead, with numbers the caller can act on.
+            let oversize = match state.store.check_embed_size(&text, state.embed_limit).await {
+                Ok(()) => None,
+                Err(klams_store::StoreError::PayloadTooLarge { oversize, .. }) => Some(oversize),
+                // The tokenizer was unreachable. Fall through and let the
+                // embed attempt produce the real error rather than
+                // inventing one — but say so, because a size check that
+                // quietly stopped working is how this class of bug hides.
+                Err(e) => {
+                    tracing::warn!(%e, "check_embed_size failed; proceeding to embed");
+                    None
+                }
+            };
+            if let Some(oversize) = oversize {
+                // Sprint 027 (#656): keep the payload we are refusing.
+                // The agent will now go split it by hand; without this
+                // row, the coherent original — and the fact that it ever
+                // existed — is gone. Best-effort: a logging failure must
+                // not change the error the caller gets.
+                let row = klams_store::OversizeWrite::from_oversize(
+                    &oversize,
+                    Some(author.id),
+                    &author.agent_name,
+                    &text,
+                );
+                if let Err(e) = state.store.postgres.insert_oversize_write(&row).await {
+                    tracing::warn!(%e, "insert_oversize_write failed (log is best-effort)");
+                }
+                mcp_metrics::record_oversize_write(&author.agent_name);
+                return Err(envelope(errors::PAYLOAD_TOO_LARGE, oversize.to_string()));
+            }
             let hash = sha256_hex(&text);
             let req = IndexKnowledge {
                 id: Uuid::now_v7(),
@@ -276,19 +318,22 @@ pub async fn run(state: &McpState, args: MemoryAddArgs) -> Result<PublicMemory, 
                 heading_path: None,
                 symbols: Vec::new(),
             };
-            let embedding = state.store.embedder.embed(&req.text).await.map_err(|e| {
-                crate::errors::envelope_with_retry(
-                    errors::EMBEDDING_UNAVAILABLE,
-                    format!("TEI embedding failed: {e}"),
-                    5,
-                )
-            })?;
+            // Sprint 027 (#629): classify instead of assuming. The old
+            // code attached `EMBEDDING_UNAVAILABLE` + retry_after to
+            // every failure including permanent ones — the misdirection
+            // that made agents give up and lose the write.
+            let embedding = state
+                .store
+                .embedder
+                .embed(&req.text)
+                .await
+                .map_err(|e| errors::from_store_error("embedding", &e))?;
             let item = state
                 .store
                 .qdrant
                 .index_knowledge(req, embedding)
                 .await
-                .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("qdrant: {e}")))?;
+                .map_err(|e| errors::from_store_error("qdrant", &e))?;
             mcp_metrics::record_write(
                 &author.agent_name,
                 author.model.as_deref(),

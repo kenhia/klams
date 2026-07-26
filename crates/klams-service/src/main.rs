@@ -98,13 +98,17 @@ async fn main() -> Result<()> {
     // Sprint 014 — the embedder engine is a config choice; `tei`
     // keeps the pre-014 behavior, `openai` speaks the OpenAI-compat
     // dialect (vLLM, TEI's /v1 route, …).
+    // Sprint 027 (#420) — one ceiling, configured once, enforced by the
+    // embedder and by every ingest path that can reach it.
+    let embed_limit = cfg.embeddings.limit();
     let embedder: Arc<dyn Embedder> = match cfg.embeddings.api {
         config::EmbeddingsApi::Tei => Arc::new(
             TeiEmbedder::new(
                 cfg.embeddings.url.clone(),
                 cfg.embeddings.vector_dim as usize,
             )
-            .context("building TEI client")?,
+            .context("building TEI client")?
+            .with_limit(embed_limit),
         ),
         config::EmbeddingsApi::Openai => Arc::new(
             OpenAiCompatEmbedder::new(
@@ -113,9 +117,15 @@ async fn main() -> Result<()> {
                 cfg.embeddings.vector_dim as usize,
                 cfg.embeddings.api_key.clone(),
             )
-            .context("building OpenAI-compat embedding client")?,
+            .context("building OpenAI-compat embedding client")?
+            .with_limit(embed_limit),
         ),
     };
+    tracing::info!(
+        max_input_tokens = embed_limit.max_input_tokens(),
+        max_chars = embed_limit.max_chars(),
+        "embedder size gate active"
+    );
     let (bumper, bumps_rx) = LastUsedBumper::channel();
     let store =
         Arc::new(CompositeStore::new(postgres, qdrant, embedder).with_bump_sender(bumper.sender()));
@@ -155,6 +165,25 @@ async fn main() -> Result<()> {
             loop {
                 tick.tick().await;
                 klams_core::metrics::record_queue(queue.depth(), capacity, workers);
+            }
+        });
+    }
+
+    // Sprint 027 (#656): the oversize-write log keeps whole rejected
+    // payloads, so unlike the miss log it cannot be left to grow. Prune
+    // daily against the configured retention.
+    {
+        let store = Arc::clone(&store);
+        let retention_days = cfg.embeddings.oversize_log_retention_days;
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(24 * 60 * 60));
+            loop {
+                tick.tick().await;
+                match store.postgres.prune_oversize_writes(retention_days).await {
+                    Ok(0) => {}
+                    Ok(n) => info!(pruned = n, retention_days, "pruned oversize-write log"),
+                    Err(e) => tracing::warn!(%e, "prune_oversize_writes failed"),
+                }
             }
         });
     }
@@ -206,6 +235,7 @@ async fn main() -> Result<()> {
         validators: Arc::new(ValidatorRegistry::with_defaults()),
         context_builder,
         maintenance: maintenance_state.clone(),
+        embed_limit,
     };
     // Sprint 007 — unify legacy `bearer_token` + scoped `[[auth.tokens]]`
     // into a single `AuthState` and apply the same `require_bearer`
@@ -229,6 +259,9 @@ async fn main() -> Result<()> {
     );
     // Sprint 024 (#330): MCP search fuses with the configured strategy.
     mcp_state.fusion = cfg.retrieval.fusion_strategy();
+    // Sprint 027 (#420): the same ceiling the REST path and the embedder
+    // enforce, so `memory_add` refuses over-budget text up front.
+    mcp_state.embed_limit = embed_limit;
     let mcp_router = klams_mcp::router(mcp_state, cfg.server.mcp_allowed_hosts.clone()).layer(
         axum::middleware::from_fn_with_state(auth_state, klams_api::require_bearer),
     );

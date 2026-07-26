@@ -311,6 +311,40 @@
       ],
       "fieldConfig": { "defaults": { "unit": "reqpm" }, "overrides": [] },
       "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } }
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Oversize writes refused by agent (per hour)",
+      "description": "memory_add calls refused because the text exceeded the embedding model's token ceiling (sprint 027 #656). Each tick is a coherent record an agent wanted to store and had to split by hand; the full rejected payload is kept in the `oversize_write` table. After the 028 model upgrade this should fall to near zero — a line that stays up means the ceiling still bites and #632's server-side chunking is worth revisiting.",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 46 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (agent_name) (rate(klams_mcp_oversize_writes_total[15m])) * 3600",
+          "legendFormat": "{{agent_name}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqph" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } }
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "Dropped queued writes by reason (per hour)",
+      "description": "Queued writes that failed at the worker with no reply channel (sprint 027 #420). The caller already had its 202 and the scanner already advanced its cursor, so every tick here is data that is simply gone. This was invisible before 027: ~30k chunks were lost on kai in one 2h window without moving a counter, while /healthz stayed green. Any sustained non-zero value needs investigating.",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 46 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (type, reason) (rate(klams_writes_failed_total[15m])) * 3600",
+          "legendFormat": "{{type}} / {{reason}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqph" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } }
     }
   ]
 }
