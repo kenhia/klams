@@ -34,7 +34,7 @@ async fn memory_search_smoke() {
     let author = register(
         &state,
         RegisterAuthorInput {
-            agent_name: "GHCP-test-search".into(),
+            agent_name: "ghcp-test-search".into(),
             model: None,
             session_title: None,
             repo: None,
@@ -259,7 +259,7 @@ async fn memory_related_smoke() {
     let author = register(
         &state,
         RegisterAuthorInput {
-            agent_name: "GHCP-test-related".into(),
+            agent_name: "ghcp-test-related".into(),
             model: None,
             session_title: None,
             repo: None,

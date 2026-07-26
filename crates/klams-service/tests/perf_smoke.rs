@@ -27,6 +27,16 @@ const N_KNOWLEDGE: usize = 10_000;
 const N_QUERIES: usize = 100;
 const P95_BUDGET_MS: u128 = 500;
 
+/// `503 queue_full` is the write queue applying backpressure, not a
+/// failure — the seed loop should wait rather than give up.
+fn is_queue_full(e: &klams_client::ClientError) -> bool {
+    matches!(
+        e,
+        klams_client::ClientError::Api { status, body }
+            if status.as_u16() == 503 && body.code == "queue_full"
+    )
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "perf: requires docker-compose.test.yml + minutes to seed"]
 async fn search_p95_under_500ms_at_mvp_corpus() {
@@ -41,7 +51,11 @@ async fn search_p95_under_500ms_at_mvp_corpus() {
             .client
             .upsert_fact(&UpsertFactRequest {
                 fact_type: FactType::UserFact,
-                payload: json!({"note": format!("perf {run_id} fact {i} content")}),
+                // `UserFactValidator` requires `name` (1..=256 chars).
+                // This said `note` until sprint 025, so the test died on
+                // the first upsert with a 422 and never reached the
+                // measurement it exists to take.
+                payload: json!({"name": format!("perf {run_id} fact {i} content")}),
                 source: Source::Controller,
                 explicit_id: None,
                 expected_version: None,
@@ -70,25 +84,40 @@ async fn search_p95_under_500ms_at_mvp_corpus() {
 
     println!("seeding {N_KNOWLEDGE} knowledge items...");
     let t0 = Instant::now();
+    let mut backoffs = 0_usize;
     for i in 0..N_KNOWLEDGE {
-        server
-            .client
-            .index_knowledge(&IndexKnowledgeRequest {
-                text: format!("perf {run_id} knowledge {i} about distributed memory subsystems"),
-                source: Source::Controller,
-                tags: vec![],
-                repo: None,
-                file: None,
-                machine: None,
-                chunk_index: None,
-                language: None,
-                heading_path: None,
-                symbols: vec![],
-            })
-            .await
-            .expect("knowledge index");
+        let req = IndexKnowledgeRequest {
+            text: format!("perf {run_id} knowledge {i} about distributed memory subsystems"),
+            source: Source::Controller,
+            tags: vec![],
+            repo: None,
+            file: None,
+            machine: None,
+            chunk_index: None,
+            language: None,
+            heading_path: None,
+            symbols: vec![],
+        };
+        // Knowledge indexing is queued and embedded asynchronously, so an
+        // unthrottled seed loop outruns the workers and the API answers
+        // 503 `queue_full` (correctly — it is backpressure, not a fault).
+        // The loop had no retry, so the seed died on the first full queue
+        // and the p95 measurement below was never reached.
+        loop {
+            match server.client.index_knowledge(&req).await {
+                Ok(_) => break,
+                Err(e) if is_queue_full(&e) => {
+                    backoffs += 1;
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(e) => panic!("knowledge index: {e:?}"),
+            }
+        }
     }
-    println!("  knowledge seeded in {:?}", t0.elapsed());
+    println!(
+        "  knowledge seeded in {:?} ({backoffs} backpressure waits)",
+        t0.elapsed()
+    );
 
     // Let async workers drain.
     println!("waiting for workers to drain...");

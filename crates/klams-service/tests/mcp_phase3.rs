@@ -33,7 +33,7 @@ async fn register_author_smoke() {
     let out = register(
         &state,
         RegisterAuthorInput {
-            agent_name: "GHCP-test".into(),
+            agent_name: "ghcp-test".into(),
             model: Some("claude-opus-4.7".into()),
             session_title: Some("phase 3 smoke".into()),
             repo: Some("/tmp/x".into()),
@@ -44,7 +44,7 @@ async fn register_author_smoke() {
     )
     .await
     .expect("register_author");
-    assert_eq!(out.agent_name, "GHCP-test");
+    assert_eq!(out.agent_name, "ghcp-test");
     // UUID v7 has variant 0b10 and version 7 (top nibble of bytes[6] = 0x7).
     let bytes = out.author_id.as_bytes();
     assert_eq!(bytes[6] >> 4, 0x7, "expected UUID v7");
@@ -58,7 +58,7 @@ async fn memory_add_fact_smoke() {
     let author = register(
         &state,
         RegisterAuthorInput {
-            agent_name: "GHCP-test-fact".into(),
+            agent_name: "ghcp-test-fact".into(),
             model: None,
             session_title: None,
             repo: None,
@@ -82,7 +82,7 @@ async fn memory_add_fact_smoke() {
     .expect("memory_add fact");
 
     assert_eq!(mem.kind(), MemoryKind::Fact);
-    assert_eq!(mem.author.agent_name, "GHCP-test-fact");
+    assert_eq!(mem.author.agent_name, "ghcp-test-fact");
     match mem.content {
         PublicMemoryContent::Fact { fact_type, .. } => assert_eq!(fact_type, "EnvFact"),
         _ => panic!("expected fact content"),
@@ -110,7 +110,7 @@ async fn memory_add_knowledge_smoke() {
     let author = register(
         &state,
         RegisterAuthorInput {
-            agent_name: "GHCP-test-know".into(),
+            agent_name: "ghcp-test-know".into(),
             model: None,
             session_title: None,
             repo: None,
@@ -134,5 +134,5 @@ async fn memory_add_knowledge_smoke() {
     .await
     .expect("memory_add knowledge");
     assert_eq!(mem.kind(), MemoryKind::Knowledge);
-    assert_eq!(mem.author.agent_name, "GHCP-test-know");
+    assert_eq!(mem.author.agent_name, "ghcp-test-know");
 }

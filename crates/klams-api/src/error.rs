@@ -161,14 +161,7 @@ impl ApiError {
             },
             ApiError::ScopeInsufficient { needed } => WireApiError {
                 code: "scope_insufficient".into(),
-                message: format!(
-                    "this token does not carry the required `{}` scope",
-                    match needed {
-                        klams_types::Scope::Read => "read",
-                        klams_types::Scope::Write => "write",
-                        klams_types::Scope::Admin => "admin",
-                    }
-                ),
+                message: format!("this token does not carry the required `{needed}` scope"),
                 field: None,
                 request_id: None,
                 details: None,

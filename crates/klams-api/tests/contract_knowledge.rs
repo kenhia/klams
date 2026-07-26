@@ -356,7 +356,7 @@ async fn knowledge_delete_removes_matching_chunks() {
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/memory/knowledge/delete?source_file=%2Fabs%2Fpath%2Fnote.md")
+                .uri("/memory/knowledge/delete?source_file=%2Fabs%2Fpath%2Fnote.md&machine=kubs0")
                 .header(header::AUTHORIZATION, "Bearer test-bearer")
                 .body(Body::empty())
                 .unwrap(),
@@ -379,7 +379,7 @@ async fn knowledge_delete_missing_source_file_returns_zero() {
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/memory/knowledge/delete?source_file=%2Fno%2Fsuch%2Fpath")
+                .uri("/memory/knowledge/delete?source_file=%2Fno%2Fsuch%2Fpath&machine=kubs0")
                 .header(header::AUTHORIZATION, "Bearer test-bearer")
                 .body(Body::empty())
                 .unwrap(),
@@ -391,4 +391,48 @@ async fn knowledge_delete_missing_source_file_returns_zero() {
     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(v["deleted"], 0);
     assert_eq!(v["path"], "canonical");
+}
+
+/// Sprint 025 (#637) — `machine` is required. Omitting it used to mean
+/// "delete this `source_file`'s chunks on every host", so a hand-run
+/// cleanup for one machine silently wiped the others.
+#[tokio::test]
+async fn knowledge_delete_without_machine_is_rejected() {
+    let store = Arc::new(MockStore::default());
+    let app = router_with_store(store);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/memory/knowledge/delete?source_file=%2Fabs%2Fpath%2Fnote.md")
+                .header(header::AUTHORIZATION, "Bearer test-bearer")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let bytes = to_bytes(resp.into_body(), 4096).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(v["field"], "machine", "error must name the missing field");
+}
+
+/// Blank is the same as absent — a `machine=` with nothing after it
+/// must not fall through to the cross-host delete.
+#[tokio::test]
+async fn knowledge_delete_with_blank_machine_is_rejected() {
+    let store = Arc::new(MockStore::default());
+    let app = router_with_store(store);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/memory/knowledge/delete?source_file=%2Fa%2Fb.md&machine=%20%20")
+                .header(header::AUTHORIZATION, "Bearer test-bearer")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }

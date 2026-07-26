@@ -114,14 +114,19 @@ pub struct DeleteParams {
     pub source_file: String,
     /// Sprint 023 (#408): scope the delete to a host so one host's
     /// re-index can't drop another host's chunk for the same path.
-    /// Optional for back-compat with callers that omit it.
+    ///
+    /// Sprint 025 (#637): **required**. It was optional for back-compat,
+    /// and omitting it deleted the path's chunks on *every* host — a
+    /// hand-run cleanup for one machine silently wiped the others. The
+    /// scanner has always sent it; there is no cross-host caller to
+    /// preserve.
     #[serde(default)]
     pub machine: Option<String>,
 }
 
-/// `POST /memory/knowledge/delete?source_file=<abs_path>` — remove
-/// every chunk whose payload `source_file` matches. Used by the
-/// scanner's vanished-file cleanup (FR-008).
+/// `POST /memory/knowledge/delete?source_file=<abs_path>&machine=<host>`
+/// — remove every chunk whose payload `source_file` matches, on that
+/// host. Used by the scanner's vanished-file cleanup (FR-008).
 pub async fn delete<S: Store>(
     State(state): State<ApiState<S>>,
     Query(params): Query<DeleteParams>,
@@ -132,9 +137,18 @@ pub async fn delete<S: Store>(
             message: "source_file must be non-empty".into(),
         });
     }
+    let machine = params.machine.as_deref().map(str::trim).unwrap_or_default();
+    if machine.is_empty() {
+        return Err(ApiError::Validation {
+            field: "machine".into(),
+            message: "machine is required — a delete without it would remove \
+                      this source_file's chunks on every host"
+                .into(),
+        });
+    }
     let deleted = state
         .store
-        .delete_knowledge_by_source_file(&params.source_file, params.machine.as_deref())
+        .delete_knowledge_by_source_file(&params.source_file, Some(machine))
         .await
         .map_err(|e| ApiError::Internal {
             request_id: format!("store-error: {e}"),

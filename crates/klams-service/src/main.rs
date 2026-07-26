@@ -358,9 +358,13 @@ async fn build_auth_grants(
     if !auth.bearer_token.is_empty() {
         all_grants.push(klams_api::auth::TokenGrant::new(
             auth.bearer_token.clone(),
+            // Sprint 025: `Manage` included — the legacy bearer is the
+            // "everything" token, and scopes are flat, so leaving it out
+            // would silently strip cross-author curation on upgrade.
             vec![
                 klams_types::Scope::Read,
                 klams_types::Scope::Write,
+                klams_types::Scope::Manage,
                 klams_types::Scope::Admin,
             ],
             Some("legacy".into()),

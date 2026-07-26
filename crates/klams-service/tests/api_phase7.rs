@@ -62,7 +62,7 @@ async fn http_get(server: &TestServer, path: &str) -> (reqwest::StatusCode, Valu
 async fn authors_list_returns_registered_author_with_counts() {
     let server = TestServer::spawn().await;
     let state = mcp_state_from(&server);
-    let author = make_author(&state, "GHCP-phase7-list").await;
+    let author = make_author(&state, "ghcp-phase7-list").await;
     let uniq = Uuid::now_v7();
 
     // Write one fact + one event so counts are non-zero.
@@ -89,7 +89,7 @@ async fn authors_list_returns_registered_author_with_counts() {
     .expect("event");
 
     let (status, body) =
-        http_get(&server, "/v1/authors?agent_name=GHCP-phase7-list&limit=50").await;
+        http_get(&server, "/v1/authors?agent_name=ghcp-phase7-list&limit=50").await;
     assert_eq!(status, 200);
     let authors = body["authors"].as_array().expect("authors array");
     let row = authors
@@ -116,11 +116,11 @@ async fn authors_detail_returns_404_for_unknown() {
 async fn authors_detail_returns_author_projection() {
     let server = TestServer::spawn().await;
     let state = mcp_state_from(&server);
-    let author = make_author(&state, "GHCP-phase7-detail").await;
+    let author = make_author(&state, "ghcp-phase7-detail").await;
     let (status, body) = http_get(&server, &format!("/v1/authors/{author}")).await;
     assert_eq!(status, 200);
     assert_eq!(body["id"].as_str(), Some(author.to_string().as_str()));
-    assert_eq!(body["agent_name"].as_str(), Some("GHCP-phase7-detail"));
+    assert_eq!(body["agent_name"].as_str(), Some("ghcp-phase7-detail"));
     assert!(body["counts"].is_object());
 }
 
@@ -129,7 +129,7 @@ async fn authors_detail_returns_author_projection() {
 async fn authors_memories_lists_facts_and_events() {
     let server = TestServer::spawn().await;
     let state = mcp_state_from(&server);
-    let author = make_author(&state, "GHCP-phase7-memories").await;
+    let author = make_author(&state, "ghcp-phase7-memories").await;
     let uniq = Uuid::now_v7();
 
     let fact = memory_add(
@@ -190,7 +190,7 @@ async fn authors_memories_lists_facts_and_events() {
 async fn authors_memories_bad_state_returns_400() {
     let server = TestServer::spawn().await;
     let state = mcp_state_from(&server);
-    let author = make_author(&state, "GHCP-phase7-badstate").await;
+    let author = make_author(&state, "ghcp-phase7-badstate").await;
     let (status, _) = http_get(
         &server,
         &format!("/v1/authors/{author}/memories?state=bogus"),
