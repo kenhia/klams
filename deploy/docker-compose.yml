@@ -69,11 +69,16 @@ services:
     # a visible rejection (standing decision, sprints 027/028). If this
     # command runs against a pre-1.8 image (rollback), drop the
     # "--auto-truncate false" pair: old clap treated it as a switch.
+    # --max-batch-tokens must be >= the model's max input length when
+    # auto-truncate is off — TEI refuses to start otherwise (which is
+    # the honest failure; do not "fix" it by enabling truncation).
+    # 32768 matches Qwen3-Embedding's context.
     command:
       [
         "--model-id", "${TEI_MODEL_ID}",
         "--port", "80",
         "--auto-truncate", "false",
+        "--max-batch-tokens", "32768",
         "--max-client-batch-size", "64",
       ]
     ports:
