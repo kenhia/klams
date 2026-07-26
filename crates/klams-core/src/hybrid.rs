@@ -59,12 +59,24 @@ impl<S: Store> HybridStore for StoreHybridAdapter<S> {
                 let vec = self.store.embed_query(query).await?;
                 let hits = self.store.search_knowledge(vec, fetch_cap).await?;
                 let max = hits.iter().map(|(_, s)| *s).fold(0.0_f32, f32::max);
+                // Sprint 029 (#644): tier boost only for hits that are
+                // raw-score-competitive for this query (same rule as
+                // MCP memory_search's `boost_threshold`).
+                let boost_floor = crate::provenance::boost_threshold(max);
                 let rows: Vec<RankedRow> = hits
                     .into_iter()
                     .map(|(item, score)| RankedRow {
                         source: RetrievalSource::Vector,
                         id: item.id,
                         score: normalize(score, max),
+                        // Sprint 029 (#644): provenance weighting on the
+                        // shared REST/context seam. No author lookup here,
+                        // so klams-mind extracts get the hand-authored
+                        // weight rather than the mid tier — the full
+                        // three-tier split (and the curated-stratum 4th
+                        // fusion source) lives on the MCP `memory_search`
+                        // path, which already resolves authors.
+                        weight: adapter_knowledge_weight(&item, score >= boost_floor),
                         // Sprint 026 (#641): `content_hash` is the collapse
                         // key and the eval's no-duplicates assertion;
                         // `host` completes the (host, file) pair a caller
@@ -120,6 +132,20 @@ impl<S: Store> HybridStore for StoreHybridAdapter<S> {
             }
         }
     }
+}
+
+/// Provenance × volatility fusion weight for a knowledge hit on the
+/// adapter (REST `/memory/search` + `/memory/context`) path — the
+/// author-blind approximation of `memory_search`'s three-tier weight
+/// (sprint 029, #644).
+fn adapter_knowledge_weight(item: &klams_types::KnowledgeItem, boost_eligible: bool) -> f32 {
+    let tier =
+        crate::provenance::ProvenanceTier::classify(item.source, None, item.machine.is_some());
+    let tier_w = if boost_eligible { tier.weight() } else { 1.0 };
+    #[allow(clippy::cast_precision_loss)]
+    let age_days =
+        ((time::OffsetDateTime::now_utc() - item.created_at).whole_seconds() as f32) / 86_400.0;
+    tier_w * crate::provenance::volatility_demotion(item.volatility.as_deref(), age_days)
 }
 
 /// Collapse duplicate-content knowledge rows, then truncate to `top_k`
@@ -250,6 +276,7 @@ fn into_rows(hits: Vec<TextHit>, section: &'static str) -> Vec<RankedRow> {
                 source: RetrievalSource::Fts,
                 id: h.id,
                 score: normalize(h.score, max),
+                weight: 1.0,
                 payload,
             }
         })
@@ -305,7 +332,10 @@ fn rrf(sources: Vec<Vec<RankedRow>>, k: u32) -> Vec<RankedRow> {
         for (rank, row) in rows.into_iter().enumerate() {
             #[allow(clippy::cast_precision_loss)]
             let r = (rank as f32) + 1.0;
-            let inc = 1.0 / (k_f + r);
+            // Sprint 029 (#644): weighted RRF. `weight == 1.0` is the
+            // classic formula; a curated hit's weight scales its
+            // contribution from every list it appears in.
+            let inc = row.weight / (k_f + r);
             *score.entry(row.id).or_insert(0.0) += inc;
             acc.entry(row.id)
                 .and_modify(|r| r.score = 0.0)
@@ -331,7 +361,9 @@ fn weighted(
                 klams_types::RetrievalSource::Fts => w_fts,
                 klams_types::RetrievalSource::MetadataOnly => 0.0,
             };
-            *score.entry(row.id).or_insert(0.0) += ns * w;
+            // Per-hit weight composes with the per-source weight so
+            // provenance weighting (#644) survives a Weighted config.
+            *score.entry(row.id).or_insert(0.0) += ns * w * row.weight;
             acc.entry(row.id)
                 .and_modify(|r| r.score = 0.0)
                 .or_insert(row);
@@ -388,12 +420,32 @@ fn finalize(mut acc: HashMap<Uuid, RankedRow>, score: &HashMap<Uuid, f32>) -> Ve
         }
     }
     let mut out: Vec<RankedRow> = acc.into_values().collect();
+    // Sprint 029 (#644): ties must break deterministically. `acc` is a
+    // HashMap, so `into_values()` order is randomized per process; a
+    // score-only sort left equal-scored rows (e.g. fact@0 vs
+    // knowledge@0, both exactly w/(k+1)) in hash order — identical
+    // calls returned different pages. Tie-break: source discriminant
+    // (Vector < Fts < MetadataOnly), then id.
     out.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| source_order(a.source).cmp(&source_order(b.source)))
+            .then_with(|| a.id.cmp(&b.id))
     });
     out
+}
+
+/// Stable ordering discriminant for the deterministic tie-break in
+/// [`finalize`]. Vector (knowledge) wins ties over Fts (facts/events)
+/// — a choice made for stability, not semantics; provenance weights,
+/// not this ordering, decide who *should* win.
+fn source_order(s: RetrievalSource) -> u8 {
+    match s {
+        RetrievalSource::Vector => 0,
+        RetrievalSource::Fts => 1,
+        RetrievalSource::MetadataOnly => 2,
+    }
 }
 
 #[cfg(test)]
@@ -415,6 +467,7 @@ mod tests {
             source,
             id: Uuid::now_v7(),
             score,
+            weight: 1.0,
             payload: serde_json::json!({}),
         }
     }
@@ -428,6 +481,7 @@ mod tests {
             source: RetrievalSource::Vector,
             id: Uuid::now_v7(),
             score,
+            weight: 1.0,
             payload: serde_json::json!({
                 "section": "knowledge",
                 "text": format!("body of {hash}"),
@@ -592,6 +646,92 @@ mod tests {
         assert!(fused.is_empty());
         let fused = fuse(vec![Vec::<RankedRow>::new()], FusionStrategy::default_rrf());
         assert!(fused.is_empty());
+    }
+
+    // ---- Sprint 029 (#644): weighted RRF + deterministic ties.
+
+    #[test]
+    fn neutral_weights_reproduce_classic_rrf_scores() {
+        let fused = fuse(
+            vec![vec![row(RetrievalSource::Vector, 0.9)]],
+            FusionStrategy::Rrf { k: 60 },
+        );
+        assert!((fused[0].score - 1.0 / 61.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_weighted_hit_outscores_a_better_ranked_neutral_hit() {
+        // The #628 shape: a curated gotcha at rank 2 loses to bulk at
+        // rank 0 under classic RRF. With weight 2.0 it must win:
+        // 2/63 > 1/61.
+        let mut curated = row(RetrievalSource::Vector, 0.7);
+        curated.weight = 2.0;
+        let curated_id = curated.id;
+        let list = vec![
+            row(RetrievalSource::Vector, 0.9),
+            row(RetrievalSource::Vector, 0.8),
+            curated,
+        ];
+        let fused = fuse(vec![list], FusionStrategy::Rrf { k: 60 });
+        assert_eq!(
+            fused[0].id, curated_id,
+            "weight must scale contribution enough to invert a 2-rank gap"
+        );
+    }
+
+    #[test]
+    fn weights_scale_contribution_but_never_reorder_within_equal_weights() {
+        // All-equal weights ≠ 1.0 must preserve the classic ordering.
+        let mut a = row(RetrievalSource::Vector, 0.9);
+        let mut b = row(RetrievalSource::Vector, 0.5);
+        a.weight = 1.5;
+        b.weight = 1.5;
+        let (ia, ib) = (a.id, b.id);
+        let fused = fuse(vec![vec![a, b]], FusionStrategy::default_rrf());
+        assert_eq!(fused[0].id, ia);
+        assert_eq!(fused[1].id, ib);
+    }
+
+    #[test]
+    fn equal_scores_break_ties_deterministically_across_repeated_calls() {
+        // fact@0 vs knowledge@0 both score exactly w/(k+1). Before 029
+        // the winner was HashMap iteration order — different across
+        // processes, and observable as a nondeterministic page. Fuse
+        // the same inputs repeatedly: the order must never change, and
+        // Vector must win the tie (documented in `source_order`).
+        let k = row(RetrievalSource::Vector, 0.9);
+        let f = row(RetrievalSource::Fts, 0.9);
+        let (kid, fid) = (k.id, f.id);
+        for _ in 0..50 {
+            let fused = fuse(
+                vec![vec![k.clone()], vec![f.clone()]],
+                FusionStrategy::default_rrf(),
+            );
+            assert_eq!(fused[0].id, kid, "Vector wins score ties");
+            assert_eq!(fused[1].id, fid);
+        }
+    }
+
+    #[test]
+    fn same_source_ties_fall_back_to_id_order() {
+        // Two knowledge rows fused from two different lists at the
+        // same rank: equal score, equal source. The id decides —
+        // deterministically, in either insertion order.
+        let a = row(RetrievalSource::Vector, 0.9);
+        let b = row(RetrievalSource::Vector, 0.9);
+        let mut ids = [a.id, b.id];
+        ids.sort();
+        let fused_ab = fuse(
+            vec![vec![a.clone()], vec![b.clone()]],
+            FusionStrategy::default_rrf(),
+        );
+        let fused_ba = fuse(vec![vec![b], vec![a]], FusionStrategy::default_rrf());
+        assert_eq!(fused_ab[0].id, ids[0]);
+        assert_eq!(
+            fused_ab.iter().map(|r| r.id).collect::<Vec<_>>(),
+            fused_ba.iter().map(|r| r.id).collect::<Vec<_>>(),
+            "insertion order must not leak into the page"
+        );
     }
 
     #[test]

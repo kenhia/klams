@@ -670,6 +670,12 @@ pub struct RankedRow {
     pub source: RetrievalSource,
     pub id: Uuid,
     pub score: f32,
+    /// Per-hit fusion weight (sprint 029, #644): RRF contributes
+    /// `weight / (k + rank + 1)` instead of `1 / (k + rank + 1)`.
+    /// `1.0` is the neutral value; provenance weighting raises it for
+    /// curated hits. Weights scale a hit's *contribution*, never its
+    /// rank within the source list.
+    pub weight: f32,
     pub payload: serde_json::Value,
 }
 

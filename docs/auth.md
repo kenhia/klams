@@ -67,7 +67,7 @@ legacy token, if at all, as an operator break-glass credential.
 |---|---|
 | `read` | Search, retrieval, listing, and every `GET`. Reads nothing into the store. |
 | `write` | Creating memories, **and managing the ones this identity wrote** — including deleting them. |
-| `manage` | Curating memories authored by *somebody else*: cross-author delete, and resolving dissents. |
+| `manage` | Curating memories authored by *somebody else*: cross-author delete/supersede/update (sprint 029), and resolving dissents. |
 | `admin` | Recovery operations: restore, hard-delete, list soft-deleted, and the author lifecycle verbs. |
 
 ### Why `manage` exists
@@ -135,28 +135,33 @@ never sees a tool it cannot call.
 | Tools | Scope |
 |---|---|
 | `memory_search`, `memory_related`, `event_search` | `read` |
-| `memory_add`, `memory_append_event`, `memory_delete`, `dissent_propose`, `register_author` | `write` |
+| `memory_add`, `memory_append_event`, `memory_delete`, `memory_supersede`, `memory_update`, `dissent_propose`, `register_author` | `write` |
 | `memory_admin_*` (restore, hard-delete, list-deleted, list/remove/merge authors) | `admin` |
 
 Refusals come back as tool results with `error_code:
 INSUFFICIENT_SCOPE`, not transport errors.
 
-## Ownership on `memory_delete`
+## Ownership on `memory_delete` / `memory_supersede` / `memory_update`
 
 Scope is only half the decision; the other half is who owns the record.
+All three verbs ride one gate (`authorize_curation`, sprint 029 —
+supersession *is* a delete plus a write, and update is a rewrite):
 
 - **`author_id` is optional.** Omit it — the delete acts as the author
   bound to your token. This is the documented path.
 - If supplied, it must **equal** your bound author. Naming somebody else
   is refused. You cannot act on another identity's behalf, with any
   scope.
-- Deleting a memory **you wrote** needs only `write`.
-- Deleting **anyone else's** needs `manage`.
+- Acting on a memory **you wrote** needs only `write`.
+- Acting on **anyone else's** needs `manage`.
 - Knowledge points with no recorded author (legacy, pre-attribution) are
   treated as not-yours: curating them needs `manage`.
 
-`deleted_by_author_id` records who performed every soft delete, so
-cross-author curation leaves an audit trail.
+`deleted_by_author_id` records who performed every soft delete —
+including supersessions, which additionally record `superseded_by` —
+so cross-author curation leaves an audit trail. `memory_update` never
+changes a record's author: a `manage`-tier edit of another author's
+memory edits *their* record, it does not adopt it.
 
 > Before sprint 025 `author_id` was required but never checked, so any
 > authenticated caller could pass any well-formed id — minting one via

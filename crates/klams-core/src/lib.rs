@@ -6,6 +6,7 @@ pub mod dedupe;
 pub mod hybrid;
 pub mod metrics;
 pub mod policy;
+pub mod provenance;
 pub mod queue;
 pub mod summarize;
 pub mod tokens;

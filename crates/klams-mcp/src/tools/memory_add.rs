@@ -37,7 +37,28 @@ pub enum MemoryAddContent {
         tags: Vec<String>,
         source_path: Option<String>,
         repo: Option<String>,
+        volatility: Option<VolatilityArg>,
     },
+}
+
+/// Declared volatility for knowledge writes (sprint 029, #638 /
+/// review F-1.4). `volatile` memories are age-demoted in ranking after
+/// a grace week; `stable` and undeclared memories never decay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum VolatilityArg {
+    Stable,
+    Volatile,
+}
+
+impl VolatilityArg {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::Volatile => "volatile",
+        }
+    }
 }
 
 /// Memory kind discriminator for the flat `memory_add` schema.
@@ -110,6 +131,12 @@ pub struct MemoryAddArgs {
     /// Optional, `knowledge` only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
+    /// Optional, `knowledge` only: declare how this memory ages.
+    /// `volatile` = expected to go stale (IPs, versions, "not yet on
+    /// X"); ranked down as it ages. `stable` (or omitted) = never
+    /// decays.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volatility: Option<VolatilityArg>,
 }
 
 impl MemoryAddArgs {
@@ -125,6 +152,7 @@ impl MemoryAddArgs {
             tags: Vec::new(),
             source_path: None,
             repo: None,
+            volatility: None,
         }
     }
 
@@ -141,6 +169,7 @@ impl MemoryAddArgs {
             tags: Vec::new(),
             source_path: None,
             repo: None,
+            volatility: None,
         }
     }
 
@@ -178,6 +207,7 @@ impl MemoryAddArgs {
                     tags: self.tags,
                     source_path: self.source_path,
                     repo: self.repo,
+                    volatility: self.volatility,
                 }),
                 None => Err(envelope(
                     errors::SCHEMA_VALIDATION_FAILED,
@@ -185,6 +215,60 @@ impl MemoryAddArgs {
                 )),
             },
         }
+    }
+}
+
+/// Similarity floor for the similar-on-write nudge (sprint 029,
+/// #638 / review F-1.3). Only near-duplicates should trigger it — a
+/// topically-related memory is not a reason to supersede. Under
+/// Qwen3-Embedding-0.6B genuine hits run ~0.55-0.71 (sprint 028), so
+/// 0.85 sits well above "related" and flags only "you are about to
+/// write this again". Re-calibrate if the model changes.
+const SIMILAR_ON_WRITE_THRESHOLD: f32 = 0.85;
+
+/// How many near-duplicates to name in the nudge.
+const SIMILAR_ON_WRITE_LIMIT: usize = 5;
+
+/// Chars of the existing memory quoted back in the nudge.
+const SIMILAR_TEXT_HEAD: usize = 160;
+
+/// A near-duplicate agent memory found at write time (sprint 029,
+/// #638): returned in [`MemoryAddOutput::similar_existing`] so the
+/// writer can supersede instead of duplicating — the only moment that
+/// check is cheap.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SimilarExisting {
+    pub id: Uuid,
+    /// First chars of the existing memory's text.
+    pub text_head: String,
+    /// Agent name of the existing memory's author.
+    pub author: String,
+    /// Cosine similarity to the text being written.
+    pub raw_score: f32,
+}
+
+/// `memory_add` response: the persisted memory (flattened, so the wire
+/// shape is unchanged from pre-029) plus the similar-on-write nudge.
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryAddOutput {
+    #[serde(flatten)]
+    pub memory: PublicMemory,
+    /// Agent-authored memories whose similarity to the new text is
+    /// near-duplicate level. Non-blocking and purely informational: if
+    /// one of these says what you were about to write, call
+    /// `memory_supersede` on it instead of adding a twin. Omitted when
+    /// empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub similar_existing: Vec<SimilarExisting>,
+}
+
+/// The output *is* the persisted memory (its wire shape flattens to
+/// one), so expose the memory's fields directly — existing callers and
+/// tests read `.id`/`.content`/`.author` off the add result.
+impl std::ops::Deref for MemoryAddOutput {
+    type Target = PublicMemory;
+    fn deref(&self) -> &PublicMemory {
+        &self.memory
     }
 }
 
@@ -196,7 +280,7 @@ impl MemoryAddArgs {
 /// `MISSING_AUTHOR_ID`, `UNKNOWN_AUTHOR_ID`, `EMBEDDING_UNAVAILABLE`,
 /// `SCHEMA_VALIDATION_FAILED`, or `INTERNAL_ERROR`.
 #[allow(clippy::too_many_lines)]
-pub async fn run(state: &McpState, args: MemoryAddArgs) -> Result<PublicMemory, ErrorEnvelope> {
+pub async fn run(state: &McpState, args: MemoryAddArgs) -> Result<MemoryAddOutput, ErrorEnvelope> {
     if let Some(env) = maintenance::check(&state.maintenance) {
         return Err(env);
     }
@@ -251,13 +335,17 @@ pub async fn run(state: &McpState, args: MemoryAddArgs) -> Result<PublicMemory, 
                 author.model.as_deref(),
                 mcp_metrics::KIND_FACT,
             );
-            Ok(projection::project_fact(&fact, author_ref))
+            Ok(MemoryAddOutput {
+                memory: projection::project_fact(&fact, author_ref),
+                similar_existing: Vec::new(),
+            })
         }
         MemoryAddContent::Knowledge {
             text,
             tags,
             source_path,
             repo,
+            volatility,
         } => {
             if text.trim().is_empty() {
                 return Err(envelope(
@@ -270,36 +358,7 @@ pub async fn run(state: &McpState, args: MemoryAddArgs) -> Result<PublicMemory, 
             // MAX_QUERY_LEN, but a write of any size went straight to
             // the embedder and came back as a transient-looking error.
             // Fail here instead, with numbers the caller can act on.
-            let oversize = match state.store.check_embed_size(&text, state.embed_limit).await {
-                Ok(()) => None,
-                Err(klams_store::StoreError::PayloadTooLarge { oversize, .. }) => Some(oversize),
-                // The tokenizer was unreachable. Fall through and let the
-                // embed attempt produce the real error rather than
-                // inventing one — but say so, because a size check that
-                // quietly stopped working is how this class of bug hides.
-                Err(e) => {
-                    tracing::warn!(%e, "check_embed_size failed; proceeding to embed");
-                    None
-                }
-            };
-            if let Some(oversize) = oversize {
-                // Sprint 027 (#656): keep the payload we are refusing.
-                // The agent will now go split it by hand; without this
-                // row, the coherent original — and the fact that it ever
-                // existed — is gone. Best-effort: a logging failure must
-                // not change the error the caller gets.
-                let row = klams_store::OversizeWrite::from_oversize(
-                    &oversize,
-                    Some(author.id),
-                    &author.agent_name,
-                    &text,
-                );
-                if let Err(e) = state.store.postgres.insert_oversize_write(&row).await {
-                    tracing::warn!(%e, "insert_oversize_write failed (log is best-effort)");
-                }
-                mcp_metrics::record_oversize_write(&author.agent_name);
-                return Err(envelope(errors::PAYLOAD_TOO_LARGE, oversize.to_string()));
-            }
+            enforce_embed_size(state, author.id, &author.agent_name, &text).await?;
             let hash = sha256_hex(&text);
             let req = IndexKnowledge {
                 id: Uuid::now_v7(),
@@ -317,6 +376,8 @@ pub async fn run(state: &McpState, args: MemoryAddArgs) -> Result<PublicMemory, 
                 language: None,
                 heading_path: None,
                 symbols: Vec::new(),
+                volatility: volatility.map(|v| v.as_str().to_string()),
+                supersedes: None,
             };
             // Sprint 027 (#629): classify instead of assuming. The old
             // code attached `EMBEDDING_UNAVAILABLE` + retry_after to
@@ -328,6 +389,31 @@ pub async fn run(state: &McpState, args: MemoryAddArgs) -> Result<PublicMemory, 
                 .embed(&req.text)
                 .await
                 .map_err(|e| errors::from_store_error("embedding", &e))?;
+            // Sprint 029 (#638): similar-on-write. The embedding is
+            // already in hand, and the curated stratum is tiny, so the
+            // near-duplicate check costs one filtered ANN call. It runs
+            // BEFORE the upsert so the new point can never match
+            // itself. Best-effort: the nudge is informational, and a
+            // failed lookup must not fail a valid write.
+            let similar_existing = match state
+                .store
+                .qdrant
+                .search_knowledge_curated(embedding.clone(), similar_fetch_k())
+                .await
+            {
+                Ok(hits) => {
+                    let close: Vec<(klams_types::KnowledgeItem, f32)> = hits
+                        .into_iter()
+                        .filter(|(_, s)| *s >= SIMILAR_ON_WRITE_THRESHOLD)
+                        .take(SIMILAR_ON_WRITE_LIMIT)
+                        .collect();
+                    similar_refs(state, close).await
+                }
+                Err(e) => {
+                    tracing::warn!(%e, "similar-on-write lookup failed (nudge is best-effort)");
+                    Vec::new()
+                }
+            };
             let item = state
                 .store
                 .qdrant
@@ -339,12 +425,98 @@ pub async fn run(state: &McpState, args: MemoryAddArgs) -> Result<PublicMemory, 
                 author.model.as_deref(),
                 mcp_metrics::KIND_KNOWLEDGE,
             );
-            Ok(projection::project_knowledge(&item, author_ref))
+            Ok(MemoryAddOutput {
+                memory: projection::project_knowledge(&item, author_ref),
+                similar_existing,
+            })
         }
     }
 }
 
-fn sha256_hex(s: &str) -> String {
+/// Fetch size for the similar-on-write stratum search: the nudge limit
+/// plus headroom for below-threshold hits.
+fn similar_fetch_k() -> u32 {
+    u32::try_from(SIMILAR_ON_WRITE_LIMIT * 2).unwrap_or(u32::MAX)
+}
+
+/// Resolve author names for the similar-on-write hits and project them
+/// into the nudge shape.
+async fn similar_refs(
+    state: &McpState,
+    close: Vec<(klams_types::KnowledgeItem, f32)>,
+) -> Vec<SimilarExisting> {
+    if close.is_empty() {
+        return Vec::new();
+    }
+    let ids: Vec<Uuid> = close.iter().map(|(it, _)| it.id).collect();
+    let author_map = state
+        .store
+        .qdrant
+        .knowledge_authors_by_ids(&ids)
+        .await
+        .unwrap_or_default();
+    let mut names: std::collections::HashMap<Uuid, String> = std::collections::HashMap::new();
+    for author_id in author_map.values() {
+        if names.contains_key(author_id) {
+            continue;
+        }
+        if let Ok(Some(a)) = state.store.postgres.get_author_by_id(*author_id).await {
+            names.insert(*author_id, a.agent_name);
+        }
+    }
+    close
+        .into_iter()
+        .map(|(it, score)| SimilarExisting {
+            id: it.id,
+            text_head: it.text.chars().take(SIMILAR_TEXT_HEAD).collect(),
+            author: author_map
+                .get(&it.id)
+                .and_then(|aid| names.get(aid))
+                .cloned()
+                .unwrap_or_else(|| "unknown".to_string()),
+            raw_score: score,
+        })
+        .collect()
+}
+
+/// Enforce the embedder's token ceiling on a knowledge-text write,
+/// keeping the refused payload in the oversize log (sprint 027, #656:
+/// without that row, the coherent original — and the fact that it ever
+/// existed — is gone). Logging is best-effort: a logging failure must
+/// not change the error the caller gets. Shared by `memory_add` and the
+/// sprint-029 lifecycle verbs (`memory_supersede` / `memory_update`),
+/// which write new text under the same ceiling.
+pub(crate) async fn enforce_embed_size(
+    state: &McpState,
+    author_id: Uuid,
+    agent_name: &str,
+    text: &str,
+) -> Result<(), ErrorEnvelope> {
+    let oversize = match state.store.check_embed_size(text, state.embed_limit).await {
+        Ok(()) => None,
+        Err(klams_store::StoreError::PayloadTooLarge { oversize, .. }) => Some(oversize),
+        // The tokenizer was unreachable. Fall through and let the
+        // embed attempt produce the real error rather than
+        // inventing one — but say so, because a size check that
+        // quietly stopped working is how this class of bug hides.
+        Err(e) => {
+            tracing::warn!(%e, "check_embed_size failed; proceeding to embed");
+            None
+        }
+    };
+    if let Some(oversize) = oversize {
+        let row =
+            klams_store::OversizeWrite::from_oversize(&oversize, Some(author_id), agent_name, text);
+        if let Err(e) = state.store.postgres.insert_oversize_write(&row).await {
+            tracing::warn!(%e, "insert_oversize_write failed (log is best-effort)");
+        }
+        mcp_metrics::record_oversize_write(agent_name);
+        return Err(envelope(errors::PAYLOAD_TOO_LARGE, oversize.to_string()));
+    }
+    Ok(())
+}
+
+pub(crate) fn sha256_hex(s: &str) -> String {
     let mut h = Sha256::new();
     h.update(s.as_bytes());
     let out = h.finalize();

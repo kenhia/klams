@@ -37,6 +37,12 @@ pub const PAYLOAD_TOO_LARGE: &str = "PAYLOAD_TOO_LARGE";
 /// than the input being wrong. Never carries `retry_after_seconds`.
 pub const EMBEDDING_REJECTED: &str = "EMBEDDING_REJECTED";
 pub const NOT_FOUND: &str = "NOT_FOUND";
+/// Sprint 029 (#638) — `memory_supersede`/`memory_update` refused
+/// because the target is not agent-authored knowledge. Scanner chunks
+/// are derived data: the file is the source of truth, and the re-scan
+/// is their update path — fix the file instead. Facts have versioned
+/// amendments; events are append-only.
+pub const NOT_AGENT_AUTHORED: &str = "NOT_AGENT_AUTHORED";
 pub const NOT_SOFT_DELETED: &str = "NOT_SOFT_DELETED";
 pub const EVENTS_NOT_DELETABLE: &str = "EVENTS_NOT_DELETABLE";
 /// Sprint 025 (#636) — author removal refused because the row still

@@ -83,7 +83,7 @@ async fn memory_add_fact_smoke() {
 
     assert_eq!(mem.kind(), MemoryKind::Fact);
     assert_eq!(mem.author.agent_name, "ghcp-test-fact");
-    match mem.content {
+    match &mem.content {
         PublicMemoryContent::Fact { fact_type, .. } => assert_eq!(fact_type, "EnvFact"),
         _ => panic!("expected fact content"),
     }

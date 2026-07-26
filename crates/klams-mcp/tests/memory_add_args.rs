@@ -44,6 +44,7 @@ fn knowledge_wire_shape_round_trips_with_defaults() {
             tags,
             source_path,
             repo,
+            volatility: _,
         } => {
             assert_eq!(text, "TIL a thing");
             assert!(tags.is_empty());
