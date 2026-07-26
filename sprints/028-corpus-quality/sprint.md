@@ -137,3 +137,42 @@ re-embed measured at ~5–7 minutes (vs a multi-hour CPU slog).
 - Superseded the two review-era memories (413-ceiling → 32k note;
   0.1.26 search-behavior → 0.1.28 note) and added a kubs0 GPU/CDI
   gotcha memory.
+- **kai's scanner binary was three sprints stale** (Jul 13 build): its
+  first re-scan poured 55,717 `repo="src"` pre-#640/#639 chunks into the
+  fresh corpus — caught because the new baseline's junk-ceiling check
+  flagged a `'```bash'` fragment sourced from kai. Deployed the 0.1.28
+  binary to kai (documented same-binary path), invalidated its cursor
+  (021-style, so delete-before-reindex replaced its chunks), re-scanned.
+  `repo="src"` fell to 153 (all genuinely root-level files).
+- **Final corpus:** 179,762 points (was 221,327), one point per content
+  (sampled 20k: 1 duplicate — the known insert race), 95,834 points
+  listing both hosts in `machines[]`, obsidian gone, zero
+  `chunk_too_large`, `oversize_write` empty post-swap. GPU re-embed of
+  the full corpus measured at ~5 min.
+- **Final eval baseline: 18/21 (86%), 0 regressions** (was 15/21 on
+  0.1.26; same-corpus incumbent measured 14/21). 5 known-open promoted
+  to pass — including the #628 headline query. The 3 remaining
+  known-open are rank-inversions/split-record, all tracked to sprint
+  029's provenance weighting. Baseline + suite updates committed in
+  klams-mind (788275e).
+
+## Deployed 2026-07-26
+
+- Version `0.1.28` live on kubs0 (`/healthz` confirms; deployed twice —
+  once pre-rebuild, once after the TEI-422/threshold fixes).
+- Rollback targets: binaries via `just rollback` (`.prev` in place);
+  the corpus via config flip back to `knowledge_items` (v1, 384-dim,
+  retained intact) + `TEI_IMAGE_TAG=cpu-1.7` / bge-small in compose.env.
+- Migrations applied: none (0012 was 027's).
+- Verified live: fence-clean chunks, real repo names (incl. nested
+  `lvgl`), machines[] attach/delete on the real stack, calibration test
+  green against live Qwen3, eval 18/21 with 0 regressions, search smoke
+  on the rebuilt corpus, counters quiet.
+- Config changes made on hosts (documented, no tokens touched):
+  `/etc/klams/klams.toml` (model/dim/ceiling/query_prefix/collection),
+  `/ai/klams/config/compose.env` (TEI 89-1.9 + Qwen3),
+  `/etc/klams/scanner.toml` on kubs0 (+kai) — obsidian root out,
+  `max_input_tokens = 32768`.
+- Follow-up for Ken / breather sprint: drop the old `knowledge_items`
+  collection once v2 has proven out (reclaims ~2 GB); kai's 153
+  residual `repo="src"` points are genuine root-level files.
