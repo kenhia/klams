@@ -460,3 +460,77 @@ the live kubs0 database, so it is left as an explicit post-deploy step rather
 than done from the sprint branch. Once 0.1.25 is deployed:
 `memory_admin_list_authors { only_empty: true }` to confirm it owns nothing,
 then `memory_admin_remove_author` with that id.
+
+## Deployed 2026-07-25
+
+- **Version `0.1.25` live on kubs0** — `/healthz` reports it, `status: Ok`
+  with postgres / qdrant / embeddings all `Ok`, clean startup (zero
+  error/warn lines in the first three minutes), both long-running units
+  `active`.
+- **Rollback target: `0.1.24`** via `just rollback` — `.prev` binaries in place
+  for all three. **Migrations applied: none**, so this rollback is a clean
+  single-step revert.
+- **The documented gotcha reproduced exactly.** `/healthz` still reported
+  `0.1.24` after `just install-systemd` and only moved to `0.1.25` after
+  `just restart` — confirming `enable --now` does nothing for a running unit.
+  Worth the paragraph it now has in `docs/setup.md` and the deploy skill.
+
+### Verified live (beyond `/healthz`)
+
+`just health` initially failed SC-001 with **401** — that was the harness, not
+the deploy: `KLAMS_TOKEN` defaults to the literal `dev-token`. Re-ran the smoke
+tests with real grants (never printed).
+
+**#637 — REST scope enforcement.** The `viewport` (read-only) token now gets
+`403 scope_insufficient` on `POST /memory/knowledge/index`, `/memory/facts`,
+`/memory/events` and `dissents/:id/promote`, while `GET /memory/policy`,
+`/memory/dissents`, `/v1/authors` and `/v1/memories` all still answer `200`.
+The `klams-scanner` token (write, no manage) is refused on dissent promote.
+`machine` is enforced on knowledge-delete: `400` with `field: "machine"` when
+omitted, `200` with it — so the scanner's delete-before-reindex still works.
+
+**#633 — MCP surface and ownership.** A read-only token's `tools/list` returns
+exactly `event_search, memory_related, memory_search` — `register_author` is
+gone from it, which is the Read→Write move. `ken-admin` sees all 14 tools
+including the three new lifecycle verbs. Both refusal paths confirmed against
+production data with **zero mutations**:
+
+- write-scoped token deleting a `klams-mind`-owned knowledge item →
+  `INSUFFICIENT_SCOPE`, *"this memory belongs to another author…"*
+- the 2026-07-25 backdoor, verbatim — `register_author` a throwaway identity,
+  pass its id to `memory_delete` → `INSUFFICIENT_SCOPE`, *"author_id must match
+  the author bound to your bearer token"*. **This exact call succeeded before
+  0.1.25.** The target memory was verified still present afterwards.
+
+(One first attempt hit `EVENTS_NOT_DELETABLE` instead — the id chosen was an
+event, and the append-only check precedes the ownership check. Retried against
+a knowledge item.)
+
+**#636 — author lifecycle.** `memory_admin_list_authors { only_empty: true }`
+lists the removal candidates with their counts and flags the duplicate
+`agent_name`s (`GitHub Copilot`, `claude`, `copilot-claude-opus-4.7`,
+`klams-mind`, `kyac`, `mv-cli`, `token-master`). Removal works — the
+`s025-live-probe` author created during the backdoor test above was removed
+with it, closing out that test's own footprint. Block-if-owned works: removing
+`system` is refused with `AUTHOR_HAS_MEMORIES` and its exact counts (26 facts,
+1 event, 1 knowledge point).
+
+### Config changes
+
+**Outstanding — the `viewport` grant is still `scopes = ["read"]`** in
+`/etc/klams/klams.toml`. Per the decision recorded above it needs
+`["read", "write", "manage"]`, or the viewport's fact editing and dissent
+resolution will 403 (the smoke test above shows exactly that happening).
+Ken's to edit — the file holds bearer tokens; hot-reloads with
+`sudo systemctl reload klams-service`, no restart.
+
+`ghcp`, `claude` and `ken-admin` already carry `manage`. All 14 grants have an
+`agent_name`, so nothing lost the ability to delete.
+
+### Still owed
+
+The #636 acceptance case — stray author row
+`019f9a90-abe5-7711-9b0f-c467f597832f` (`agent_name: claude`) — is **not yet
+removed**, so WI #636 stays `open`. The new tooling confirms it owns nothing
+(facts 0, events 0, knowledge 0, soft-deletes 0), so removal is provably
+non-destructive; it just wasn't authorized in this session.
