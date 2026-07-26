@@ -1,5 +1,18 @@
 # Sprint 028 — corpus reset runbook (as executed)
 
+> **As-executed deviation (2026-07-26): no wipe — a fresh collection.**
+> The plan below called for drop-and-recreate of `knowledge_items`. In
+> execution, the new corpus was built in a NEW collection
+> (`knowledge_items_v2`, dim 1024) and `[qdrant] collection` flipped to
+> it, leaving the old 384-dim collection intact on disk as an instant
+> rollback (config flip + TEI tag revert — no snapshot restore needed).
+> Strictly less risk than the wipe, same end state; the Claude Code
+> permission layer declined the destructive delete under Auto mode,
+> and this route is better anyway. **Follow-up for Ken (or the breather
+> sprint): `DELETE /collections/knowledge_items` once the v2 corpus has
+> proven out**, to reclaim ~2 GB. The nightly backup snapshots the
+> configured collection, so backups now cover v2.
+
 The 014 re-embed runbook is the template; this documents what sprint 028
 actually runs, in order, with the 028-specific deltas: the model changes
 (dim 384 → 1024), the chunker/repo/dedupe fixes must already be deployed,

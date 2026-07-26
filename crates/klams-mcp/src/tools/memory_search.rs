@@ -51,12 +51,17 @@ const MAX_QUERY_LEN: usize = 1024;
 /// confident competitor 0.790). 0.80 sits in that band.
 ///
 /// This is a *calibrated* constant, not a derived one — it is only
-/// honest against the current embedding model. The GPU model upgrade
-/// (#655, sprint 028) changes the score distribution wholesale and MUST
-/// re-derive it from the search-sample log this sprint adds. Until then
-/// the log is what makes the next calibration evidence-based rather
-/// than another guess.
-const LOW_SCORE_THRESHOLD: f32 = 0.80;
+/// honest against the current embedding model.
+///
+/// **Sprint 028 (#655) — recalibrated for Qwen3-Embedding-0.6B.** The
+/// bge-small band above no longer exists: measured live on the rebuilt
+/// corpus, a nonsense query ("purple elephant sourdough trampoline…")
+/// tops out at raw cosine ~0.35, while genuine hits run ~0.55–0.71.
+/// 0.80 would have flagged every search as a miss (the inverse of the
+/// 026 dead-threshold bug); 0.45 sits above the junk floor with margin
+/// and below the observed real-hit range. Re-derive from the
+/// search-sample log if the model changes again.
+const LOW_SCORE_THRESHOLD: f32 = 0.45;
 
 /// Over-fetch multiplier for the knowledge ANN search (sprint 026, #641).
 /// Query-time duplicate collapse discards hits, so fetching exactly
@@ -579,21 +584,19 @@ mod tests {
         assert_eq!(classify_miss(3, Some((0.81, MemoryKind::Knowledge))), None);
     }
 
-    // ---- Sprint 026 (#643): the threshold recalibration. The old 0.5
-    // sat below the floor of the bge-small distribution on this corpus
-    // (~0.75–0.96), so `low_score` could never fire — one miss logged in
-    // two weeks. These pin the new boundary so a future model swap that
-    // shifts the distribution fails here loudly instead of silently
-    // killing the instrument again.
+    // ---- Sprint 026 (#643) introduced these to pin the threshold to
+    // the live model's score distribution, precisely so a model swap
+    // that shifts the distribution fails here loudly. Sprint 028's swap
+    // (bge-small → Qwen3-Embedding-0.6B) did exactly that: these now
+    // pin the Qwen3 numbers measured on the rebuilt corpus (junk floor
+    // ~0.35, genuine hits ~0.55–0.71).
 
     #[test]
     fn a_junk_floor_score_fires_the_miss_log() {
-        // The whole defect: bge-small on this corpus floors around 0.75
-        // even for content-free fragments, so the old 0.5 threshold sat
-        // BELOW the distribution and could never fire. A score at the
-        // junk floor must now register.
+        // Measured live: a nonsense query tops out ~0.35 raw cosine on
+        // Qwen3. A score at the junk floor must register as a miss.
         assert_eq!(
-            classify_miss(5, Some((0.75, MemoryKind::Knowledge))),
+            classify_miss(5, Some((0.35, MemoryKind::Knowledge))),
             Some("low_score"),
             "a threshold that doesn't fire at the junk floor is dead again"
         );
@@ -601,22 +604,21 @@ mod tests {
 
     #[test]
     fn a_strong_match_still_does_not_fire_the_miss_log() {
-        // The overcorrection guard: measured strong matches reach ~0.96.
-        // If those logged as misses the instrument would be just as
-        // useless in the other direction.
-        assert_eq!(classify_miss(5, Some((0.96, MemoryKind::Knowledge))), None);
-        assert_eq!(classify_miss(5, Some((0.85, MemoryKind::Knowledge))), None);
+        // The overcorrection guard: measured genuine hits run
+        // ~0.55–0.71 on Qwen3. If those logged as misses the instrument
+        // would be just as useless in the other direction. (This is the
+        // test that catches a stale threshold after a model swap: 0.80
+        // would flag every one of these.)
+        assert_eq!(classify_miss(5, Some((0.71, MemoryKind::Knowledge))), None);
+        assert_eq!(classify_miss(5, Some((0.55, MemoryKind::Knowledge))), None);
     }
 
     #[test]
-    fn the_628_query_b_retrieval_registers_as_weak() {
-        // #628's Query B surfaced the correct hand-authored gotcha, but
-        // only at raw 0.785 — and only because the query nearly quoted
-        // it. Logging that as weak is intended: "right answer, weak
-        // retrieval" is precisely the signal the lexical-gap decision
-        // (#333) needs to see.
+    fn a_borderline_weak_retrieval_registers_as_weak() {
+        // Just under the boundary: "right answer, weak retrieval" is
+        // precisely the signal the lexical-gap decision (#333) needs.
         assert_eq!(
-            classify_miss(5, Some((0.785, MemoryKind::Knowledge))),
+            classify_miss(5, Some((0.44, MemoryKind::Knowledge))),
             Some("low_score")
         );
     }
