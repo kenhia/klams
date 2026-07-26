@@ -126,6 +126,7 @@ fn router_with_store(store: Arc<MockStore>) -> axum::Router {
                 100,
             )),
             maintenance: klams_types::MaintenanceState::default(),
+            embed_limit: klams_types::EmbedLimit::default(),
         },
         "test-bearer",
     )
@@ -246,6 +247,51 @@ async fn oversized_text_returns_413() {
     .await;
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
     assert_eq!(body["code"], "payload_too_large");
+}
+
+/// Sprint 027 (#420) — the silent-drop regression.
+///
+/// Text between the *old* 8192-character cap and the embedder's real
+/// ~512-token ceiling used to be accepted with `202`. The scanner then
+/// advanced its cursor, the worker's embed call failed with TEI's 413,
+/// and the job was logged and dropped — so the chunk was never stored
+/// and never retried. kai lost ~30k chunks this way in one 2h window.
+///
+/// It must now be refused at the boundary, *before* the 202.
+#[tokio::test]
+async fn text_between_the_old_cap_and_the_token_ceiling_is_rejected_not_accepted() {
+    let store = Arc::new(MockStore::default());
+    let app = router_with_store(store);
+
+    // Comfortably under the retired 8192-char cap, comfortably over what
+    // a 512-token model accepts — precisely the gap that lost data.
+    let gap_text = "a".repeat(4000);
+    assert!(
+        klams_types::EmbedLimit::default().check(&gap_text).is_err(),
+        "test fixture must actually sit in the gap"
+    );
+
+    let (status, body) = post(
+        &app,
+        "/memory/knowledge/index",
+        serde_json::json!({"text": gap_text, "source": "Task"}),
+    )
+    .await;
+
+    assert_eq!(
+        status,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "a chunk the embedder cannot accept must never get a 202"
+    );
+    assert_eq!(body["code"], "payload_too_large");
+    // The caller has to be able to fix this without bisecting for the
+    // limit, which is what #629 and #632 both had to do by hand.
+    let message = body["message"].as_str().unwrap_or_default();
+    assert!(message.contains("4000"), "{message}");
+    assert!(
+        message.contains(&klams_types::EmbedLimit::default().max_chars().to_string()),
+        "{message}"
+    );
 }
 
 #[tokio::test]

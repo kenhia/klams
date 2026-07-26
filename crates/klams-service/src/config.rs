@@ -229,6 +229,39 @@ pub struct EmbeddingsConfig {
     /// require one (e.g. vLLM started with `--api-key`).
     #[serde(default)]
     pub api_key: Option<String>,
+    /// The model's maximum input length in tokens (sprint 027, #420).
+    ///
+    /// This is the number every ingest path gates against, so a text
+    /// that would be refused by the embedder is refused at the boundary
+    /// with an honest error instead of being accepted and dropped later.
+    /// Defaults to bge-small-en-v1.5's 512; sprint 028's longer-context
+    /// model raises it here rather than in code.
+    #[serde(default = "default_max_input_tokens")]
+    pub max_input_tokens: usize,
+    /// How long to keep oversize-write log rows (sprint 027, #656).
+    ///
+    /// That log stores the full rejected payload, so it is capped rather
+    /// than left to the operator the way `search_miss` is. 90 days is
+    /// long enough to answer "how often, by whom, how much" across a
+    /// couple of sprints.
+    #[serde(default = "default_oversize_log_retention_days")]
+    pub oversize_log_retention_days: i32,
+}
+
+fn default_max_input_tokens() -> usize {
+    klams_types::DEFAULT_MAX_INPUT_TOKENS
+}
+
+fn default_oversize_log_retention_days() -> i32 {
+    90
+}
+
+impl EmbeddingsConfig {
+    /// The shared size gate implied by this configuration.
+    #[must_use]
+    pub fn limit(&self) -> klams_types::EmbedLimit {
+        klams_types::EmbedLimit::new(self.max_input_tokens)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

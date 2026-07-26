@@ -35,10 +35,12 @@ impl PostgresStore {
             .max_connections(max_connections)
             .connect(url)
             .await
-            .map_err(|e| StoreError::Backend(format!("connect: {e}")))?;
+            .map_err(|e| StoreError::from_sqlx("connect", &e))?;
         sqlx::migrate!("../../migrations")
             .run(&pool)
             .await
+            // A failed migration is a permanent, operator-visible fault;
+            // it is not sqlx::Error and never worth a retry hint.
             .map_err(|e| StoreError::Backend(format!("migrate: {e}")))?;
         Ok(Self { pool })
     }
@@ -53,7 +55,7 @@ impl PostgresStore {
             .execute(&self.pool)
             .await
             .map(|_| ())
-            .map_err(|e| StoreError::Backend(format!("pg health: {e}")))
+            .map_err(|e| StoreError::from_sqlx("pg health", &e))
     }
 
     pub async fn upsert_fact(&self, req: UpsertFact) -> StoreResult<Fact> {
@@ -85,7 +87,7 @@ impl PostgresStore {
         .bind(req.author_id)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| StoreError::Backend(format!("upsert_fact: {e}")))?;
+        .map_err(|e| StoreError::from_sqlx("upsert_fact", &e))?;
         row_to_fact(&row)
     }
 
@@ -105,7 +107,7 @@ impl PostgresStore {
         .bind(req.author_id)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| StoreError::Backend(format!("append_event: {e}")))?;
+        .map_err(|e| StoreError::from_sqlx("append_event", &e))?;
         row_to_event(&row)
     }
 
@@ -134,7 +136,7 @@ impl PostgresStore {
             .build()
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| StoreError::Backend(format!("list_facts: {e}")))?;
+            .map_err(|e| StoreError::from_sqlx("list_facts", &e))?;
         let mut items = Vec::with_capacity(rows.len());
         for r in &rows {
             items.push(row_to_fact(r)?);
@@ -180,7 +182,7 @@ impl PostgresStore {
             .build()
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| StoreError::Backend(format!("list_events: {e}")))?;
+            .map_err(|e| StoreError::from_sqlx("list_events", &e))?;
         let mut items = Vec::with_capacity(rows.len());
         for r in &rows {
             items.push(row_to_event(r)?);
@@ -217,7 +219,7 @@ impl PostgresStore {
         .bind(limit)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| StoreError::Backend(format!("search_text(facts): {e}")))?;
+        .map_err(|e| StoreError::from_sqlx("search_text(facts)", &e))?;
 
         let mut facts = Vec::with_capacity(fact_rows.len());
         for r in &fact_rows {
@@ -241,7 +243,7 @@ impl PostgresStore {
         .bind(limit)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| StoreError::Backend(format!("search_text(events): {e}")))?;
+        .map_err(|e| StoreError::from_sqlx("search_text(events)", &e))?;
 
         let mut events = Vec::with_capacity(event_rows.len());
         for r in &event_rows {
@@ -257,7 +259,7 @@ impl PostgresStore {
 
 #[allow(clippy::needless_pass_by_value)] // matches signature sqlx::Result expects in map_err
 fn map_decode(e: sqlx::Error) -> StoreError {
-    StoreError::Backend(format!("decode: {e}"))
+    StoreError::from_sqlx("decode", &e)
 }
 
 fn parse_fact_type(s: &str) -> StoreResult<FactType> {
@@ -378,7 +380,7 @@ impl PostgresStore {
             .pool
             .begin()
             .await
-            .map_err(|e| StoreError::Backend(format!("upsert_fact_v2 begin: {e}")))?;
+            .map_err(|e| StoreError::from_sqlx("upsert_fact_v2 begin", &e))?;
 
         // 1) Same (type, payload_hash) idempotent path.
         let existing_same: Option<(Uuid, i32, String)> = sqlx::query_as(
@@ -388,7 +390,7 @@ impl PostgresStore {
         .bind(&hash[..])
         .fetch_optional(&mut *tx)
         .await
-        .map_err(|e| StoreError::Backend(format!("upsert_fact_v2 select-same: {e}")))?;
+        .map_err(|e| StoreError::from_sqlx("upsert_fact_v2 select-same", &e))?;
 
         if let Some((id, version, _source)) = existing_same {
             if let Some(ev) = req.expected_version {
@@ -409,11 +411,11 @@ impl PostgresStore {
             .bind(id)
             .fetch_one(&mut *tx)
             .await
-            .map_err(|e| StoreError::Backend(format!("upsert_fact_v2 touch: {e}")))?;
+            .map_err(|e| StoreError::from_sqlx("upsert_fact_v2 touch", &e))?;
             let fact = row_to_fact(&row)?;
             tx.commit()
                 .await
-                .map_err(|e| StoreError::Backend(format!("upsert_fact_v2 commit: {e}")))?;
+                .map_err(|e| StoreError::from_sqlx("upsert_fact_v2 commit", &e))?;
             return Ok(FactWriteOutcome::Persisted { fact });
         }
 
@@ -425,7 +427,7 @@ impl PostgresStore {
                     .bind(id)
                     .fetch_optional(&mut *tx)
                     .await
-                    .map_err(|e| StoreError::Backend(format!("upsert_fact_v2 select-id: {e}")))?;
+                    .map_err(|e| StoreError::from_sqlx("upsert_fact_v2 select-id", &e))?;
             if let Some((version, source_str)) = existing {
                 let canonical_source = parse_source(&source_str)?;
                 if trust_rank(req.source) < trust_rank(canonical_source) {
@@ -448,13 +450,11 @@ impl PostgresStore {
                     .bind(req.source.as_str())
                     .fetch_one(&mut *tx)
                     .await
-                    .map_err(|e| {
-                        StoreError::Backend(format!("upsert_fact_v2 dissent insert: {e}"))
-                    })?;
+                    .map_err(|e| StoreError::from_sqlx("upsert_fact_v2 dissent insert", &e))?;
                     let dissent_id: Uuid = row.try_get("id").map_err(map_decode)?;
                     tx.commit()
                         .await
-                        .map_err(|e| StoreError::Backend(format!("upsert_fact_v2 commit: {e}")))?;
+                        .map_err(|e| StoreError::from_sqlx("upsert_fact_v2 commit", &e))?;
                     return Ok(FactWriteOutcome::Dissented {
                         dissent_id,
                         fact_id: id,
@@ -487,11 +487,11 @@ impl PostgresStore {
                 .bind(req.source.as_str())
                 .fetch_one(&mut *tx)
                 .await
-                .map_err(|e| StoreError::Backend(format!("upsert_fact_v2 amend: {e}")))?;
+                .map_err(|e| StoreError::from_sqlx("upsert_fact_v2 amend", &e))?;
                 let fact = row_to_fact(&row)?;
                 tx.commit()
                     .await
-                    .map_err(|e| StoreError::Backend(format!("upsert_fact_v2 commit: {e}")))?;
+                    .map_err(|e| StoreError::from_sqlx("upsert_fact_v2 commit", &e))?;
                 return Ok(FactWriteOutcome::Persisted { fact });
             }
         }
@@ -513,11 +513,11 @@ impl PostgresStore {
         .bind(req.author_id)
         .fetch_one(&mut *tx)
         .await
-        .map_err(|e| StoreError::Backend(format!("upsert_fact_v2 insert: {e}")))?;
+        .map_err(|e| StoreError::from_sqlx("upsert_fact_v2 insert", &e))?;
         let fact = row_to_fact(&row)?;
         tx.commit()
             .await
-            .map_err(|e| StoreError::Backend(format!("upsert_fact_v2 commit: {e}")))?;
+            .map_err(|e| StoreError::from_sqlx("upsert_fact_v2 commit", &e))?;
         Ok(FactWriteOutcome::Persisted { fact })
     }
 
@@ -554,7 +554,7 @@ impl PostgresStore {
             .build()
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| StoreError::Backend(format!("list_dissents: {e}")))?;
+            .map_err(|e| StoreError::from_sqlx("list_dissents", &e))?;
         let mut items = Vec::with_capacity(rows.len());
         for r in &rows {
             items.push(row_to_dissent(r)?);
@@ -580,7 +580,7 @@ impl PostgresStore {
             .pool
             .begin()
             .await
-            .map_err(|e| StoreError::Backend(format!("propose begin: {e}")))?;
+            .map_err(|e| StoreError::from_sqlx("propose begin", &e))?;
 
         let fact: Option<(String,)> = sqlx::query_as(
             "SELECT type FROM facts WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
@@ -588,7 +588,7 @@ impl PostgresStore {
         .bind(fact_id)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(|e| StoreError::Backend(format!("propose select fact: {e}")))?;
+        .map_err(|e| StoreError::from_sqlx("propose select fact", &e))?;
         let Some((fact_type,)) = fact else {
             return Ok(None);
         };
@@ -615,12 +615,12 @@ impl PostgresStore {
         .bind(author_id)
         .fetch_one(&mut *tx)
         .await
-        .map_err(|e| StoreError::Backend(format!("propose insert: {e}")))?;
+        .map_err(|e| StoreError::from_sqlx("propose insert", &e))?;
         let dissent_id: Uuid = row.try_get("id").map_err(map_decode)?;
         let submission_count: i32 = row.try_get("submission_count").map_err(map_decode)?;
         tx.commit()
             .await
-            .map_err(|e| StoreError::Backend(format!("propose commit: {e}")))?;
+            .map_err(|e| StoreError::from_sqlx("propose commit", &e))?;
         Ok(Some((dissent_id, submission_count > 1)))
     }
 
@@ -635,7 +635,7 @@ impl PostgresStore {
         .bind(id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| StoreError::Backend(format!("get_dissent: {e}")))?;
+        .map_err(|e| StoreError::from_sqlx("get_dissent", &e))?;
         match row {
             Some(r) => Ok(Some(row_to_dissent(&r)?)),
             None => Ok(None),
@@ -657,7 +657,7 @@ impl PostgresStore {
             .pool
             .begin()
             .await
-            .map_err(|e| StoreError::Backend(format!("promote begin: {e}")))?;
+            .map_err(|e| StoreError::from_sqlx("promote begin", &e))?;
 
         let d_row = sqlx::query(
             "SELECT id, fact_id, proposed_payload, payload_hash, source, status
@@ -666,7 +666,7 @@ impl PostgresStore {
         .bind(dissent_id)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(|e| StoreError::Backend(format!("promote select dissent: {e}")))?;
+        .map_err(|e| StoreError::from_sqlx("promote select dissent", &e))?;
         let d_row =
             d_row.ok_or_else(|| StoreError::Other(format!("dissent {dissent_id} not found")))?;
         let status: String = d_row.try_get("status").map_err(map_decode)?;
@@ -684,7 +684,7 @@ impl PostgresStore {
             .bind(fact_id)
             .fetch_optional(&mut *tx)
             .await
-            .map_err(|e| StoreError::Backend(format!("promote select fact: {e}")))?;
+            .map_err(|e| StoreError::from_sqlx("promote select fact", &e))?;
         let f_row = f_row
             .ok_or_else(|| StoreError::Other(format!("canonical fact {fact_id} not found")))?;
         let current_version: i32 = f_row.try_get("version").map_err(map_decode)?;
@@ -710,7 +710,7 @@ impl PostgresStore {
         .bind(caller_source.as_str())
         .fetch_one(&mut *tx)
         .await
-        .map_err(|e| StoreError::Backend(format!("promote update fact: {e}")))?;
+        .map_err(|e| StoreError::from_sqlx("promote update fact", &e))?;
 
         sqlx::query(
             "UPDATE dissents SET status='promoted', resolved_at=now(),
@@ -721,12 +721,12 @@ impl PostgresStore {
         .bind(caller_source.as_str())
         .execute(&mut *tx)
         .await
-        .map_err(|e| StoreError::Backend(format!("promote update dissent: {e}")))?;
+        .map_err(|e| StoreError::from_sqlx("promote update dissent", &e))?;
 
         let fact = row_to_fact(&row)?;
         tx.commit()
             .await
-            .map_err(|e| StoreError::Backend(format!("promote commit: {e}")))?;
+            .map_err(|e| StoreError::from_sqlx("promote commit", &e))?;
         Ok(fact)
     }
 
@@ -749,7 +749,7 @@ impl PostgresStore {
         .bind(caller_source.as_str())
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| StoreError::Backend(format!("discard_dissent: {e}")))?;
+        .map_err(|e| StoreError::from_sqlx("discard_dissent", &e))?;
         match row {
             Some(r) => row_to_dissent(&r),
             None => Err(StoreError::Gone(format!(
@@ -782,7 +782,7 @@ impl PostgresStore {
         .bind(limit)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| StoreError::Backend(format!("select_decay_batch: {e}")))?;
+        .map_err(|e| StoreError::from_sqlx("select_decay_batch", &e))?;
         let mut out = Vec::with_capacity(rows.len());
         for r in &rows {
             let ft_str: String = r.try_get("type").map_err(map_decode)?;
@@ -813,7 +813,7 @@ impl PostgresStore {
         .bind(&weights[..])
         .execute(&self.pool)
         .await
-        .map_err(|e| StoreError::Backend(format!("apply_decay_batch: {e}")))?;
+        .map_err(|e| StoreError::from_sqlx("apply_decay_batch", &e))?;
         Ok(res.rows_affected())
     }
 
@@ -832,7 +832,7 @@ impl PostgresStore {
         .bind(ids)
         .execute(&self.pool)
         .await
-        .map_err(|e| StoreError::Backend(format!("apply_last_used_bumps: {e}")))?;
+        .map_err(|e| StoreError::from_sqlx("apply_last_used_bumps", &e))?;
         Ok(res.rows_affected())
     }
 }
@@ -889,7 +889,7 @@ impl crate::SummaryStore for PostgresStore {
         .bind(summary.invalidated_at)
         .execute(&self.pool)
         .await
-        .map_err(|e| StoreError::Backend(format!("upsert_event_summary: {e}")))?;
+        .map_err(|e| StoreError::from_sqlx("upsert_event_summary", &e))?;
         Ok(())
     }
 
@@ -911,7 +911,7 @@ impl crate::SummaryStore for PostgresStore {
         .bind(day_bucket)
         .execute(&self.pool)
         .await
-        .map_err(|e| StoreError::Backend(format!("invalidate_event_summaries: {e}")))?;
+        .map_err(|e| StoreError::from_sqlx("invalidate_event_summaries", &e))?;
         Ok(res.rows_affected())
     }
 
@@ -936,7 +936,7 @@ impl crate::SummaryStore for PostgresStore {
         .bind(day_bucket)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| StoreError::Backend(format!("get_event_summary: {e}")))?;
+        .map_err(|e| StoreError::from_sqlx("get_event_summary", &e))?;
         row.as_ref().map(row_to_event_summary).transpose()
     }
 
@@ -966,7 +966,7 @@ impl crate::SummaryStore for PostgresStore {
         .bind(lim)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| StoreError::Backend(format!("list_event_summaries: {e}")))?;
+        .map_err(|e| StoreError::from_sqlx("list_event_summaries", &e))?;
         rows.iter().map(row_to_event_summary).collect()
     }
 }
@@ -1040,7 +1040,7 @@ impl PostgresStore {
         .bind(&extra)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| StoreError::Backend(format!("insert_author: {e}")))?;
+        .map_err(|e| StoreError::from_sqlx("insert_author", &e))?;
         row_to_author(&row)
     }
 
@@ -1055,7 +1055,7 @@ impl PostgresStore {
         .bind(id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| StoreError::Backend(format!("get_author_by_id: {e}")))?;
+        .map_err(|e| StoreError::from_sqlx("get_author_by_id", &e))?;
         row.map(|r| row_to_author(&r)).transpose()
     }
 
@@ -1072,7 +1072,7 @@ impl PostgresStore {
         )
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| StoreError::Backend(format!("list_all_authors: {e}")))?;
+        .map_err(|e| StoreError::from_sqlx("list_all_authors", &e))?;
         rows.iter().map(row_to_author).collect()
     }
 
@@ -1096,7 +1096,7 @@ impl PostgresStore {
         .bind(agent_name)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| StoreError::Backend(format!("get_author_by_agent_name: {e}")))?;
+        .map_err(|e| StoreError::from_sqlx("get_author_by_agent_name", &e))?;
         row.map(|r| row_to_author(&r)).transpose()
     }
 
@@ -1122,7 +1122,7 @@ impl PostgresStore {
         .bind(ids)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| StoreError::Backend(format!("fetch_facts_with_authors: {e}")))?;
+        .map_err(|e| StoreError::from_sqlx("fetch_facts_with_authors", &e))?;
         let mut out = Vec::with_capacity(rows.len());
         for r in &rows {
             let fact = row_to_fact(r)?;
@@ -1151,7 +1151,7 @@ impl PostgresStore {
         .bind(ids)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| StoreError::Backend(format!("fetch_events_with_authors: {e}")))?;
+        .map_err(|e| StoreError::from_sqlx("fetch_events_with_authors", &e))?;
         let mut out = Vec::with_capacity(rows.len());
         for r in &rows {
             let event = row_to_event(r)?;
@@ -1169,7 +1169,7 @@ impl PostgresStore {
             .bind(id)
             .execute(&self.pool)
             .await
-            .map_err(|e| StoreError::Backend(format!("touch_author: {e}")))?;
+            .map_err(|e| StoreError::from_sqlx("touch_author", &e))?;
         Ok(res.rows_affected())
     }
 
@@ -1189,8 +1189,51 @@ impl PostgresStore {
         .bind(&miss.kinds)
         .execute(&self.pool)
         .await
-        .map_err(|e| StoreError::Backend(format!("insert_search_miss: {e}")))?;
+        .map_err(|e| StoreError::from_sqlx("insert_search_miss", &e))?;
         Ok(())
+    }
+
+    /// Append an oversize-write row (sprint 027, #656). Called
+    /// fire-and-forget off the knowledge write path, exactly like
+    /// [`Self::insert_search_miss`] — a failed insert must never change
+    /// the error the caller already earned.
+    pub async fn insert_oversize_write(&self, w: &crate::OversizeWrite) -> StoreResult<()> {
+        sqlx::query(
+            "INSERT INTO oversize_write \
+             (author_id, agent_name, submitted_chars, estimated_tokens, \
+              limit_tokens, max_chars, text) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(w.author_id)
+        .bind(&w.agent_name)
+        .bind(w.submitted_chars)
+        .bind(w.estimated_tokens)
+        .bind(w.limit_tokens)
+        .bind(w.max_chars)
+        .bind(&w.text)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StoreError::from_sqlx("insert_oversize_write", &e))?;
+        Ok(())
+    }
+
+    /// Drop oversize-write rows older than `max_age_days`, returning how
+    /// many went (sprint 027, #656).
+    ///
+    /// This table is the one place klams retains rejected payloads in
+    /// full, so unlike the miss log it does not leave retention purely to
+    /// the operator — an unbounded log of whole documents is a liability
+    /// rather than an instrument.
+    pub async fn prune_oversize_writes(&self, max_age_days: i32) -> StoreResult<u64> {
+        let res = sqlx::query(
+            "DELETE FROM oversize_write \
+             WHERE created_at < now() - make_interval(days => $1)",
+        )
+        .bind(max_age_days)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StoreError::from_sqlx("prune_oversize_writes", &e))?;
+        Ok(res.rows_affected())
     }
 
     /// Append a search-sample row (sprint 026, #643). Called
@@ -1212,7 +1255,7 @@ impl PostgresStore {
         .bind(s.duplicates_collapsed)
         .execute(&self.pool)
         .await
-        .map_err(|e| StoreError::Backend(format!("insert_search_sample: {e}")))?;
+        .map_err(|e| StoreError::from_sqlx("insert_search_sample", &e))?;
         Ok(())
     }
 
@@ -1281,10 +1324,11 @@ impl PostgresStore {
         }
         qb.push(" ORDER BY a.last_seen_at DESC, a.id DESC LIMIT ")
             .push_bind(limit);
-        let rows =
-            qb.build().fetch_all(&self.pool).await.map_err(|e| {
-                StoreError::Backend(format!("list_authors_with_counts_filtered: {e}"))
-            })?;
+        let rows = qb
+            .build()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StoreError::from_sqlx("list_authors_with_counts_filtered", &e))?;
         let mut out = Vec::with_capacity(rows.len());
         for r in &rows {
             out.push(AuthorWithCounts {
@@ -1337,7 +1381,7 @@ impl PostgresStore {
         .bind(id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| StoreError::Backend(format!("get_author_with_counts: {e}")))?;
+        .map_err(|e| StoreError::from_sqlx("get_author_with_counts", &e))?;
         let Some(r) = row else { return Ok(None) };
         Ok(Some(AuthorWithCounts {
             author: row_to_author(&r)?,
@@ -1388,7 +1432,7 @@ impl PostgresStore {
             .build()
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| StoreError::Backend(format!("list_facts_by_author: {e}")))?;
+            .map_err(|e| StoreError::from_sqlx("list_facts_by_author", &e))?;
         let mut out = Vec::with_capacity(rows.len());
         for r in &rows {
             let fact = row_to_fact(r)?;
@@ -1431,7 +1475,7 @@ impl PostgresStore {
             .build()
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| StoreError::Backend(format!("list_events_by_author: {e}")))?;
+            .map_err(|e| StoreError::from_sqlx("list_events_by_author", &e))?;
         let mut out = Vec::with_capacity(rows.len());
         for r in &rows {
             out.push(row_to_event(r)?);
@@ -1501,7 +1545,7 @@ impl PostgresStore {
             .build()
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| StoreError::Backend(format!("list_memories_facts_page: {e}")))?;
+            .map_err(|e| StoreError::from_sqlx("list_memories_facts_page", &e))?;
         let mut out = Vec::with_capacity(rows.len());
         for r in &rows {
             let fact = row_to_fact(r)?;
@@ -1559,7 +1603,7 @@ impl PostgresStore {
             .build()
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| StoreError::Backend(format!("list_memories_events_page: {e}")))?;
+            .map_err(|e| StoreError::from_sqlx("list_memories_events_page", &e))?;
         let mut out = Vec::with_capacity(rows.len());
         for r in &rows {
             let event = row_to_event(r)?;
@@ -1637,7 +1681,7 @@ impl PostgresStore {
             .build()
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| StoreError::Backend(format!("event_search_page: {e}")))?;
+            .map_err(|e| StoreError::from_sqlx("event_search_page", &e))?;
         let mut out = Vec::with_capacity(rows.len());
         for r in &rows {
             let event = row_to_event(r)?;
@@ -1670,7 +1714,7 @@ impl PostgresStore {
             .bind(id)
             .fetch_optional(&self.pool)
             .await
-            .map_err(|e| StoreError::Backend(format!("fact_exists_any: {e}")))?;
+            .map_err(|e| StoreError::from_sqlx("fact_exists_any", &e))?;
         Ok(row.is_some())
     }
 
@@ -1690,7 +1734,7 @@ impl PostgresStore {
         .bind(author_id)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| StoreError::Backend(format!("count_author_rows: {e}")))?;
+        .map_err(|e| StoreError::from_sqlx("count_author_rows", &e))?;
         Ok(row)
     }
 
@@ -1703,7 +1747,7 @@ impl PostgresStore {
             .bind(author_id)
             .execute(&self.pool)
             .await
-            .map_err(|e| StoreError::Backend(format!("delete_author: {e}")))?;
+            .map_err(|e| StoreError::from_sqlx("delete_author", &e))?;
         Ok(res.rows_affected() == 1)
     }
 
@@ -1719,20 +1763,20 @@ impl PostgresStore {
             .pool
             .begin()
             .await
-            .map_err(|e| StoreError::Backend(format!("merge_author_rows begin: {e}")))?;
+            .map_err(|e| StoreError::from_sqlx("merge_author_rows begin", &e))?;
         let facts = sqlx::query("UPDATE facts SET author_id = $2 WHERE author_id = $1")
             .bind(from)
             .bind(into)
             .execute(&mut *tx)
             .await
-            .map_err(|e| StoreError::Backend(format!("merge facts: {e}")))?
+            .map_err(|e| StoreError::from_sqlx("merge facts", &e))?
             .rows_affected();
         let events = sqlx::query("UPDATE events SET author_id = $2 WHERE author_id = $1")
             .bind(from)
             .bind(into)
             .execute(&mut *tx)
             .await
-            .map_err(|e| StoreError::Backend(format!("merge events: {e}")))?
+            .map_err(|e| StoreError::from_sqlx("merge events", &e))?
             .rows_affected();
         let deletes = sqlx::query(
             "UPDATE facts SET deleted_by_author_id = $2 WHERE deleted_by_author_id = $1",
@@ -1741,16 +1785,16 @@ impl PostgresStore {
         .bind(into)
         .execute(&mut *tx)
         .await
-        .map_err(|e| StoreError::Backend(format!("merge soft-deletes: {e}")))?
+        .map_err(|e| StoreError::from_sqlx("merge soft-deletes", &e))?
         .rows_affected();
         sqlx::query("DELETE FROM authors WHERE id = $1")
             .bind(from)
             .execute(&mut *tx)
             .await
-            .map_err(|e| StoreError::Backend(format!("merge drop source author: {e}")))?;
+            .map_err(|e| StoreError::from_sqlx("merge drop source author", &e))?;
         tx.commit()
             .await
-            .map_err(|e| StoreError::Backend(format!("merge_author_rows commit: {e}")))?;
+            .map_err(|e| StoreError::from_sqlx("merge_author_rows commit", &e))?;
         Ok((facts, events, deletes))
     }
 
@@ -1763,7 +1807,7 @@ impl PostgresStore {
             .bind(id)
             .fetch_optional(&self.pool)
             .await
-            .map_err(|e| StoreError::Backend(format!("fact_owner: {e}")))?;
+            .map_err(|e| StoreError::from_sqlx("fact_owner", &e))?;
         Ok(row)
     }
 
@@ -1773,7 +1817,7 @@ impl PostgresStore {
             .bind(id)
             .fetch_optional(&self.pool)
             .await
-            .map_err(|e| StoreError::Backend(format!("event_exists: {e}")))?;
+            .map_err(|e| StoreError::from_sqlx("event_exists", &e))?;
         Ok(row.is_some())
     }
 
@@ -1790,7 +1834,7 @@ impl PostgresStore {
         .bind(by_author_id)
         .execute(&self.pool)
         .await
-        .map_err(|e| StoreError::Backend(format!("soft_delete_fact: {e}")))?;
+        .map_err(|e| StoreError::from_sqlx("soft_delete_fact", &e))?;
         Ok(res.rows_affected() == 1)
     }
 
@@ -1806,7 +1850,7 @@ impl PostgresStore {
         .bind(id)
         .execute(&self.pool)
         .await
-        .map_err(|e| StoreError::Backend(format!("restore_fact: {e}")))?;
+        .map_err(|e| StoreError::from_sqlx("restore_fact", &e))?;
         Ok(res.rows_affected() == 1)
     }
 
@@ -1816,7 +1860,7 @@ impl PostgresStore {
             .bind(id)
             .execute(&self.pool)
             .await
-            .map_err(|e| StoreError::Backend(format!("hard_delete_fact: {e}")))?;
+            .map_err(|e| StoreError::from_sqlx("hard_delete_fact", &e))?;
         Ok(res.rows_affected() == 1)
     }
 
@@ -1836,7 +1880,7 @@ impl PostgresStore {
         .bind(limit)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| StoreError::Backend(format!("list_deleted_facts: {e}")))?;
+        .map_err(|e| StoreError::from_sqlx("list_deleted_facts", &e))?;
         let mut out = Vec::with_capacity(rows.len());
         for r in &rows {
             out.push(DeletedFactRow {
@@ -1890,7 +1934,7 @@ impl PostgresStore {
             .build()
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| StoreError::Backend(format!("list_deleted_facts_filtered: {e}")))?;
+            .map_err(|e| StoreError::from_sqlx("list_deleted_facts_filtered", &e))?;
         let mut out = Vec::with_capacity(rows.len());
         for r in &rows {
             let row = DeletedFactRow {

@@ -107,6 +107,10 @@ pub struct McpState {
     /// Cross-source rank-fusion strategy for `memory_search` (sprint 024
     /// #328/#330 — from the `[retrieval] fusion` config).
     pub fusion: klams_types::FusionStrategy,
+    /// Sprint 027 (#420): the embedder's input ceiling. `memory_add` had
+    /// no length check whatsoever before this — an over-budget write went
+    /// straight to TEI and came back as a misleading transient error.
+    pub embed_limit: klams_types::EmbedLimit,
 }
 
 impl std::fmt::Debug for McpState {
@@ -130,7 +134,18 @@ impl McpState {
             // Default RRF(k=60); `klams-service` overrides this from the
             // `[retrieval] fusion` config (sprint 024 #330).
             fusion: klams_types::FusionStrategy::default_rrf(),
+            // Defaults to the deployed model's 512 tokens;
+            // `klams-service` overrides it from `[embeddings]
+            // max_input_tokens` (sprint 027 #420).
+            embed_limit: klams_types::EmbedLimit::default(),
         }
+    }
+
+    /// Override the embedder size gate from config (sprint 027).
+    #[must_use]
+    pub fn with_embed_limit(mut self, limit: klams_types::EmbedLimit) -> Self {
+        self.embed_limit = limit;
+        self
     }
 }
 

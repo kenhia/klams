@@ -20,13 +20,31 @@ const RETRY_MAX_ATTEMPTS: u32 = 12;
 const RETRY_INITIAL_DELAY: Duration = Duration::from_secs(2);
 const RETRY_MAX_DELAY: Duration = Duration::from_secs(60);
 
+/// Outcome of publishing one chunk (sprint 027, #420).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Published {
+    /// Accepted (or deduped) by the service.
+    Ok,
+    /// The service refused this chunk permanently — it exceeds the
+    /// embedding model's token ceiling.
+    ///
+    /// This must **not** fail the whole file. Retrying is guaranteed to
+    /// fail identically, so treating it as a file-level error would leave
+    /// the cursor unadvanced and re-offer the same chunk on every scan,
+    /// forever. Skipping it advances past a chunk we know we cannot
+    /// store — a real loss, but a *counted and logged* one, which is the
+    /// whole point of 027. Before this sprint the same chunk was accepted
+    /// with `202` and dropped at the worker, invisibly.
+    TooLarge,
+}
+
 pub async fn publish_chunk(
     client: &Client,
     host: &str,
     repo: &str,
     source_file: &str,
     chunk: &crate::chunk::Chunk,
-) -> Result<()> {
+) -> Result<Published> {
     let req = IndexKnowledgeRequest {
         text: chunk.text.clone(),
         source: Source::Task,
@@ -46,7 +64,19 @@ pub async fn publish_chunk(
     let mut delay = RETRY_INITIAL_DELAY;
     for attempt in 1..=RETRY_MAX_ATTEMPTS {
         match client.index_knowledge(&req).await {
-            Ok(_) => return Ok(()),
+            Ok(_) => return Ok(Published::Ok),
+            // Sprint 027 (#420): permanent, and not the file's fault.
+            Err(ClientError::Api { status, .. }) if status.as_u16() == 413 => {
+                metrics::incr_skipped("chunk_too_large");
+                tracing::warn!(
+                    path = %source_file,
+                    idx = chunk.index,
+                    chars = chunk.text.chars().count(),
+                    "chunk exceeds the embedder's token ceiling; skipping it \
+                     (permanent — retrying cannot help). This chunk is not in the corpus."
+                );
+                return Ok(Published::TooLarge);
+            }
             Err(ClientError::Api { status, .. }) if status.as_u16() == 503 => {
                 if attempt == RETRY_MAX_ATTEMPTS {
                     anyhow::bail!(

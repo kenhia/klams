@@ -36,6 +36,21 @@ interval_secs = 3600
 # not consume $STATE_DIRECTORY), so set it explicitly.
 state_dir = "/var/lib/klams"
 
+# The embedding model's input ceiling in TOKENS (sprint 027, #420).
+# MUST match the service's `[embeddings] max_input_tokens`. The scanner
+# cannot reach TEI (it speaks only to the klams API), so it splits
+# against a conservative character *estimate* of this ceiling rather
+# than an exact token count. That estimate is imperfect by design: if a
+# chunk still turns out to be over budget, the service answers 413 and
+# the scanner skips that one chunk — counted as `chunk_too_large` and
+# logged — instead of stalling the file's cursor forever.
+#
+# Before 027 an over-budget chunk was published anyway, accepted with
+# 202 (advancing the cursor), then dropped at the worker when the embed
+# failed — kai lost ~30k chunks that way in a single 2h window, silently.
+# Keep this in step with the service when sprint 028 swaps the model.
+max_input_tokens = 512
+
 # Host stamped on every chunk (sprint 023 #407), making retrieval a
 # fully-qualified (host, file). Defaults to the kernel hostname
 # (/proc/sys/kernel/hostname) — leave unset on a normal per-host

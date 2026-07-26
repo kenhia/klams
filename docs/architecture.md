@@ -162,6 +162,12 @@ controller ──POST /v1/knowledge──▶ klams-api ──▶ klams-core
 
 Chunks become searchable within 10 s p95 under MVP load (SC-002).
 
+Since sprint 027 the handler gates `text` against the embedder's token
+ceiling **before** enqueueing, so a chunk the model would refuse gets a
+`413` instead of a `202`. That ordering is the point: the scanner
+advances its cursor on the `202`, and the worker has no reply channel, so
+anything accepted here and rejected later is lost silently (see §2m).
+
 ### 2.3 Read path (unified search)
 
 ```text
@@ -1091,6 +1097,110 @@ ranking work in sprint 029 is a measured change rather than a guess.
   run. Without that distinction a measurement suite can only contain
   queries that already pass — which is exactly how the old four scored
   4/4 while every real failure was happening.
+
+## 2m. Sprint 027 deltas — ingest correctness (#420 / #629 / #656)
+
+### 2m.1 One ceiling, three enforcement points
+
+`klams_types::EmbedLimit` is the single definition of "will the embedder
+accept this text". It lives in `klams-types` because that is the only
+crate the scanner, the API, and MCP all share — the same reason
+`normalize_chunk_text` lives there.
+
+```text
+              [embeddings] max_input_tokens = 512
+                            │
+        ┌───────────────────┼───────────────────┐
+        ▼                   ▼                   ▼
+  scanner chunker     REST /index         MCP memory_add
+  (char estimate:     (exact count        (exact count;
+   cannot reach        before the 202,      this path had
+   TEI; a 413 is       so the cursor        NO cap at all
+   a counted skip,     never advances       before 027)
+   never a stall)      past a lost chunk)
+        └───────────────────┼───────────────────┘
+                            ▼
+                    TeiEmbedder preflight
+                 (provable bound only — a
+                  rejection here is final)
+```
+
+The REST and MCP gates ask the **model's own tokenizer** —
+`Store::check_embed_size` → `Embedder::count_tokens` → TEI's
+`POST /tokenize`, which runs no forward pass and so costs far less than
+the failed embed it replaces.
+
+That is not what this sprint set out to build. The plan called for a
+conservative chars-per-token bound; measuring the live model showed no
+such bound can work. Real content spans **1.03 chars/token**
+(punctuation-dense) to **>39** (base64) — a 32× spread — so a divisor
+safe for the former splits ordinary prose chunks in half, while one that
+leaves prose alone under-counts the former threefold. The character
+estimate (`klams_types::EmbedLimit`) therefore survives only where the
+tokenizer is unreachable: the scanner, which talks solely to the klams
+API. Its documentation carries the measurement table and states that it
+is an approximation.
+
+`tiktoken` is deliberately unused despite already being a workspace
+dependency: `cl100k_base` is OpenAI's BPE vocabulary while bge-family
+models use WordPiece, so it would be confidently wrong rather than
+honestly approximate.
+
+One subtlety worth preserving: the embedder's own preflight uses
+`EmbedLimit::certainly_exceeds`, a *provable* bound (WordPiece never
+merges across whitespace, so *n* words ⇒ ≥ *n* tokens) rather than the
+estimate. A rejection there is final, and refusing on an estimate would
+discard token-efficient content the model accepts — a new source of lost
+writes in the sprint meant to end them.
+
+### 2m.2 The silent-loss triangle, closed
+
+Three independent gaps combined into invisible data loss (review F-3.2):
+
+1. REST accepted ≤8192 characters, ~4× the model's real capacity.
+2. The worker embeds with **no reply channel** for knowledge; on failure
+   it logged and dropped the job without incrementing `writes_failed`,
+   because that counter was only ever touched by HTTP handlers.
+3. The scanner had already advanced its cursor on the `202`, so nothing
+   ever retried.
+
+All three are now closed: the size gate makes (1) impossible, the worker
+increments `writes_failed{type,reason}` and logs the loss explicitly at
+(2), and rejecting before the `202` means (3) cannot arise.
+
+`/healthz` is deliberately unchanged. TEI's `/health` returns 200
+whenever the model is loaded — input rejections never touch it — so
+health was never going to catch this. The dropped-write counter is the
+right instrument, not a health check.
+
+### 2m.3 The transient/permanent axis
+
+`StoreError` gained a classification (`Transience`) because the
+information needed to answer "should the caller retry?" was being
+destroyed at the HTTP boundary and could not be recovered downstream.
+The embedder retry loops retried *every* non-2xx three times and
+discarded the response body — including TEI's `inputs must have less
+than 512 tokens`, the one actionable string it sends.
+
+Now: 4xx fails immediately with the body captured, 5xx/connect/timeout
+retry, and Postgres failures are classified by SQLSTATE
+(`08`/`40`/`53`/`57` → transient) via `StoreError::from_sqlx`. The MCP
+layer maps all of it through one function, `errors::from_store_error`,
+which enforces the invariant that makes the contract usable:
+`retry_after_seconds` is present **iff** the error is transient.
+
+### 2m.4 The oversize-write log
+
+`oversize_write` (migration 0012) records refused knowledge writes
+*including the full submitted text*. It mirrors the `search_miss`
+pattern — fire-and-forget, never affecting what the caller sees — with
+one deliberate difference: it is **pruned on a daily timer** rather than
+left to the operator, because it retains whole documents.
+
+Its purpose is evidential. Sprint 028 raises the ceiling to 8k+ tokens,
+which should make oversize rejections rare; this table is what decides
+whether #632's server-side chunking is ever worth building, rather than
+building it on the assumption that it is.
 
 ## 3. Deployment topology on `kubs0`
 

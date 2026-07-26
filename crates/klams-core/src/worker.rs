@@ -1,7 +1,8 @@
 //! Worker pool draining the `MemoryQueue` into a `Store`.
 
+use crate::metrics as m;
 use crate::queue::{WriteJob, WriteReply};
-use klams_store::Store;
+use klams_store::{Store, StoreError};
 use klams_types::MemoryWrite;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
@@ -39,6 +40,40 @@ async fn worker_loop<S: Store>(id: usize, rx: Arc<Mutex<mpsc::Receiver<WriteJob>
     }
 }
 
+/// A single label for why a queued write died, so Grafana can break the
+/// failure counter down by cause (sprint 027, #420).
+fn failure_reason(e: &StoreError) -> &'static str {
+    match e {
+        StoreError::PayloadTooLarge { .. } => "too_large",
+        StoreError::EmbeddingRejected(_) => "embedding_rejected",
+        StoreError::Embedding(_) => "embedding_unavailable",
+        StoreError::BackendUnavailable(_) => "backend_unavailable",
+        StoreError::Conflict(_) | StoreError::VersionConflict { .. } => "conflict",
+        StoreError::Gone(_) => "gone",
+        StoreError::Backend(_) | StoreError::Other(_) => "backend",
+    }
+}
+
+/// Record a queued write that failed with nobody listening.
+///
+/// Sprint 027 (#420): these are the writes that vanish. A job with no
+/// reply channel has already been answered with `202 Accepted`, and the
+/// scanner has already advanced its cursor — so a failure here is
+/// permanent data loss, not a retryable error. It used to be logged and
+/// nothing more: `writes_failed` was only ever touched by HTTP handlers,
+/// so ~30k dropped chunks on kai never moved a single counter and
+/// `/healthz` stayed green throughout.
+fn record_drop(kind: &'static str, e: &StoreError, what: &str) {
+    m::incr_writes_failed(kind, failure_reason(e));
+    error!(
+        error = %e,
+        kind,
+        reason = failure_reason(e),
+        permanent = !e.is_transient(),
+        "{what} — write dropped, no reply channel; this data is lost"
+    );
+}
+
 async fn process<S: Store>(job: WriteJob, store: &S) {
     let WriteJob { write, reply } = job;
     match write {
@@ -47,7 +82,7 @@ async fn process<S: Store>(job: WriteJob, store: &S) {
             if let Some(tx) = reply {
                 let _ = tx.send(WriteReply::Fact(result));
             } else if let Err(e) = result {
-                error!(error = %e, "fact upsert failed (no reply channel)");
+                record_drop("fact", &e, "fact upsert failed");
             }
         }
         MemoryWrite::AppendEvent(req) => {
@@ -55,7 +90,7 @@ async fn process<S: Store>(job: WriteJob, store: &S) {
             if let Some(tx) = reply {
                 let _ = tx.send(WriteReply::Event(result));
             } else if let Err(e) = result {
-                error!(error = %e, "event append failed");
+                record_drop("event", &e, "event append failed");
             }
         }
         MemoryWrite::IndexKnowledge(req) => {
@@ -63,7 +98,7 @@ async fn process<S: Store>(job: WriteJob, store: &S) {
             if let Some(tx) = reply {
                 let _ = tx.send(WriteReply::Knowledge(result));
             } else if let Err(e) = result {
-                error!(error = %e, "knowledge index failed");
+                record_drop("knowledge", &e, "knowledge index failed");
             }
         }
     }

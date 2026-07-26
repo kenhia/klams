@@ -40,6 +40,11 @@ pub fn default_host() -> String {
 /// vanished files. Exposed at the library level so the integration
 /// suite can drive it directly without spawning the binary. `host` is
 /// stamped on every chunk and scopes deletes (sprint 023 #407/#408).
+///
+/// `embed_limit` is the embedder ceiling every published chunk must fit
+/// (sprint 027 #420) — an oversized chunk is split here rather than
+/// accepted by the API with a 202 and then dropped at the worker, which
+/// is how ~30k chunks were lost silently on kai.
 #[allow(clippy::too_many_arguments)]
 pub async fn scan_root(
     client: &Client,
@@ -48,6 +53,7 @@ pub async fn scan_root(
     host: &str,
     cursor_path: &Path,
     root: &Path,
+    embed_limit: klams_types::EmbedLimit,
 ) -> Result<()> {
     use chunk::{chunk, sha256_hex, Lang};
     use cursor::Cursor;
@@ -82,7 +88,7 @@ pub async fn scan_root(
                 continue;
             }
         };
-        let chunks = chunk(&body, Lang::from_path(&abs));
+        let chunks = chunk(&body, Lang::from_path(&abs), embed_limit);
         let file_hash = sha256_hex(&body);
 
         if let Some(prev) = &prev {
@@ -117,11 +123,28 @@ pub async fn scan_root(
         }
 
         let mut publish_failed = false;
+        let mut skipped_too_large = 0usize;
         for c in &chunks {
-            if let Err(e) = publish_chunk(client, host, &repo, &abs, c).await {
-                tracing::warn!(path = %abs, idx = c.index, %e, "publish_chunk failed");
-                publish_failed = true;
+            match publish_chunk(client, host, &repo, &abs, c).await {
+                Ok(publish::Published::Ok) => {}
+                // Sprint 027 (#420): permanent for this chunk. Do NOT set
+                // publish_failed — that would hold the cursor back and
+                // re-offer the same doomed chunk on every scan forever.
+                // The loss is counted and logged inside publish_chunk.
+                Ok(publish::Published::TooLarge) => skipped_too_large += 1,
+                Err(e) => {
+                    tracing::warn!(path = %abs, idx = c.index, %e, "publish_chunk failed");
+                    publish_failed = true;
+                }
             }
+        }
+        if skipped_too_large > 0 {
+            tracing::warn!(
+                path = %abs,
+                skipped = skipped_too_large,
+                total = chunks.len(),
+                "file indexed with chunks missing — they exceed the embedder's ceiling"
+            );
         }
         if publish_failed {
             // Leave the cursor unadvanced so the next scan retries this

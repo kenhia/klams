@@ -1073,3 +1073,118 @@ unpruned. Prune by `created_at` when it gets large.
 stale.** The new embedder has a different score distribution; re-derive
 the threshold from the bucket query above before trusting the miss log
 again.
+
+---
+
+## Sprint 027 — ingest correctness: the 413 family
+
+Nothing in klams knew the embedder's real ceiling. The REST path capped
+knowledge text at 8192 **characters** while the deployed model
+(`BAAI/bge-small-en-v1.5`) accepts 512 **tokens** — roughly 4× apart —
+and MCP `memory_add` had no cap at all. Everything below follows from
+closing that gap.
+
+### The ceiling, and how to check it
+
+```bash
+# What the model actually accepts. auto_truncate MUST stay false: a
+# silently truncated chunk looks complete but is unfindable by its tail.
+curl -s http://127.0.0.1:7070/info | jq '{max_input_length, auto_truncate}'
+```
+
+Set `[embeddings] max_input_tokens` in `/etc/klams/klams.toml` to match,
+and the scanner's `max_input_tokens` in `/etc/klams/scanner.toml` to the
+same value.
+
+**There is no fixed character equivalent, and do not quote one.** The
+ceiling is in tokens, and how many characters that buys depends entirely
+on the content. Measured against the deployed model:
+
+| content | characters accepted at 512 tokens |
+|---|---|
+| punctuation-dense | ~525 |
+| minified JSON, URLs | ~790 |
+| markdown tables | ~1,050 |
+| source code | ~1,490 |
+| English prose | ~1,690 |
+| base64 / hex | >20,000 |
+
+A 32× spread — which is why klams asks the model's own tokenizer
+(TEI's `POST /tokenize`, no forward pass, cheap) rather than estimating
+from character counts. The character estimate survives only in the
+scanner, which talks solely to the klams API and cannot reach TEI.
+
+To check a specific text by hand:
+
+```bash
+curl -s -X POST http://127.0.0.1:7070/tokenize \
+  -H 'Content-Type: application/json' \
+  -d "$(jq -Rn --rawfile t /path/to/text '{inputs:$t}')" | jq 'length'
+```
+
+### What an over-limit write looks like now
+
+```json
+{"isError": true,
+ "content": [{"type": "text",
+   "text": "2500 characters (~836 tokens) exceeds the embedder's 512-token limit; split into pieces of at most 1530 characters"}],
+ "_meta": {"error_code": "PAYLOAD_TOO_LARGE"}}
+```
+
+Note the absence of `retry_after_seconds`. That is now load-bearing:
+**a retry hint is present if and only if retrying the identical call
+could succeed.** Previously this exact failure arrived as
+`EMBEDDING_UNAVAILABLE` + `retry_after_seconds: 5`, and agents reasonably
+concluded the embedder was down and abandoned the write.
+
+The mirror case is fixed too: a transient database failure (pool
+exhaustion) now returns `INTERNAL_ERROR` *with* a retry hint instead of
+looking permanently broken.
+
+### The oversize-write log
+
+Every refused write is recorded with its **full payload**, so "what did
+we lose, how often, and to whom" is answerable:
+
+```bash
+# Who is hitting the ceiling, and how hard?
+just db-psql -c "SELECT agent_name, count(*), max(submitted_chars) AS worst,
+                        round(avg(submitted_chars)) AS avg_chars
+                 FROM oversize_write GROUP BY agent_name ORDER BY count DESC"
+
+# Read what a specific rejection was trying to store.
+just db-psql -c "SELECT created_at, agent_name, submitted_chars, text
+                 FROM oversize_write ORDER BY created_at DESC LIMIT 1"
+
+# Did the agent's hand-split preserve the content, or drop the tail?
+# Cheap heuristic: same author, shortly after, similar content.
+just db-psql -c "SELECT o.created_at, o.agent_name, o.submitted_chars
+                 FROM oversize_write o ORDER BY o.created_at DESC LIMIT 20"
+```
+
+Unlike `search_miss`, this table is **pruned automatically** — it stores
+whole documents, so an unbounded log is a liability rather than an
+instrument. `[embeddings] oversize_log_retention_days` (default 90)
+drives a daily prune.
+
+After the sprint-028 model upgrade this should fall to near zero. That is
+the point: it becomes a rare-event log, and each surviving row is worth
+reading individually. It is also the evidence that decides whether
+#632's server-side chunking is ever actually needed — do not build that
+until this table says it is.
+
+### Dashboard panels
+
+Two new panels on the klams dashboard:
+
+- **Oversize writes refused by agent** — `klams_mcp_oversize_writes_total`.
+- **Dropped queued writes by reason** — `klams_writes_failed_total`, now
+  incremented by the *worker*, not only by HTTP handlers. Any sustained
+  non-zero value here is data loss: the caller already got its 202 and
+  the scanner already advanced its cursor, so nothing will retry it.
+
+That second panel is the one that was missing. `writes_failed` had never
+been touched outside HTTP handlers, so when kai dropped ~30k chunks in a
+two-hour window, no counter moved and `/healthz` stayed green throughout
+(TEI's `/health` answers 200 whenever the model is loaded; input
+rejections never reach it).

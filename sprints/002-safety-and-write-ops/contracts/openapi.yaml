@@ -642,6 +642,14 @@ components:
       type: object
       required: [text, source]
       properties:
+        # Sprint 027 (#420): the real ceiling is the embedding model's
+        # token budget, not a fixed character count, so it moves with the
+        # configured model ([embeddings] max_input_tokens) and cannot be
+        # expressed as a static maxLength. The 8192 below was ~4x the
+        # deployed model's actual capacity; text in that gap was accepted
+        # with 202 and then dropped at the worker. maxLength is kept only
+        # as a coarse outer bound — a 413 carrying the real limit and the
+        # submitted size is returned well before it.
         text:    { type: string, minLength: 1, maxLength: 8192 }
         source:  { $ref: "#/components/schemas/Source" }
         tags:    { type: array, items: { type: string, maxLength: 64 }, maxItems: 32 }
