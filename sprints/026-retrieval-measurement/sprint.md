@@ -218,3 +218,65 @@ proceeds._
   attribution), 3 more (rank re-numbering), 13 in klams-mind (new check
   types), 8 in klams-mind (expect/known_open gating). Suite grew 4 → 21
   queries. `just gate` green (428 tests); docker-gated suite green (119).
+
+## Deployed 2026-07-26
+
+- Version `0.1.26` live on kubs0 (`/healthz` confirms; was `0.1.25`).
+- Rollback target: `0.1.25` via `just rollback` (`.prev` binaries in place).
+- **Migrations applied: `0011_search_sample`** (recorded `success = t` in
+  `_sqlx_migrations`). It only `CREATE TABLE`s a new table, so a binary
+  rollback to 0.1.25 is safe — the old binary simply never writes to it.
+  No restore needed to go back.
+- Config changes required: **none**.
+
+### Verified live (beyond `/healthz`)
+
+**The dedupe, on the identical query before and after** — `memory_search`
+for `"kpidash cross compilation aarch64 toolchain"`, `top_k=10`:
+
+| | 0.1.25 | 0.1.26 |
+|---|---|---|
+| Results returned | 10 | 10 |
+| **Distinct items** | **6** (4 duplicate pairs) | **10** |
+| `content_hash` on the wire | absent | present, all 10 distinct |
+| `copies` | — | 6 survivors name their collapsed twin |
+| `author.id` | absent | present |
+
+The freed slots filled with genuinely new content: ranks 6–9 after the
+deploy are chunks that did not appear anywhere in the before-page. That
+is the "released slots fill with new content" claim, confirmed in
+production rather than in a unit test.
+
+**The instruments.** `search_sample` recorded that same search as
+`caller = claude` (not the old hardcoded `anonymous`), `top_kind =
+knowledge`, `top_raw_score = 0.879` (the raw cosine, not the RRF 0.016),
+and `duplicates_collapsed = 8` — the dedupe's live effect, quantified per
+query.
+
+**The miss log is no longer dead.** Before this deploy `search_miss` held
+exactly **one** row in production, a `zero_hit` from 2026-07-22 — the
+review's central claim, confirmed against live data. A deliberately weak
+query after the deploy logged the first `low_score` row klams has ever
+recorded (`top_score = 0.639`). Under the old 0.5 threshold it would have
+been silently discarded.
+
+**Memory hygiene** (standing caution in the run notes): the review-era
+memory `019f9ae4-687c` told agents to "expect ~5 distinct items per 10
+results and dedupe by text yourself" — actively wrong and wasteful as of
+this deploy. Superseded by `019f9c85-6a0f` (which keeps the still-true
+RRF-score and no-provenance-boost parts, and is itself marked to be
+superseded when #644 lands) and soft-deleted. The 413-ceiling memory
+`019f9ae4-79c0` is untouched — still accurate until #655/#632.
+
+### Not verified
+
+- `just health` / `just verify` could not run: they default to
+  `KLAMS_TOKEN=dev-token` and the real token lives in
+  `/etc/klams/klams.toml`, which is not readable from Ken's account.
+  `/healthz` passed; the write path was instead exercised directly via
+  authenticated MCP (`memory_add` + `memory_delete` above, both
+  succeeded), which covers what SC-001 would have.
+- `just eval` likewise needs a token, so no baseline **report** artifact
+  exists. The before/after above was captured through MCP instead.
+  Provisioning a scoped klams-mind token would make `just eval` usable
+  unattended — worth doing before sprint 029 leans on it.
