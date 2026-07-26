@@ -200,3 +200,43 @@ direction, not speculation:
   `mcp_auth`'s advertised-surface expectations updated for the two new
   Write-tier tools. MCP server `instructions` now teach
   supersede-over-delete.
+
+## Deployed 2026-07-26
+
+- Version `0.1.29` live on kubs0 (`/healthz` confirms; release build from
+  the squash-merged main, 3f0a466 / PR #31).
+- Rollback target: `0.1.28` via `just rollback` (`.prev` binaries in
+  place). Migrations applied: **none** (0012 remains the latest), so a
+  binary rollback is clean.
+- **Official eval baseline against live 0.1.29: 19/21 (90%), 0
+  regressions** (was 18/21 on 0.1.28) — captured in klams-mind
+  `evals/baselines/homelab-retrieval.md` (085d598; suite updates in
+  e9b53eb). The two known-open are curated-vs-curated rank-1
+  inversions, tracked to sprint 030 (korg:686).
+- Verified live, beyond `/healthz`:
+  - `memory_supersede` exercised in production for the sprint's own
+    mandated memory hygiene: the 0.1.28 search-behavior note
+    (`019f9d5a-539d…`, which said "supersede when 029's weighting
+    lands") was replaced in one call by a 0.1.29 note
+    (`019f9fba-f1bc…`, declared `volatile`, `supersedes` pointer
+    intact). The old record no longer surfaces; the replacement does.
+  - **Three-tier weighting observed working live**: the new
+    hand-authored note ranks 0 with raw 0.660 over a klams-mind
+    extract at raw 0.684 (2.0 vs 1.5 tier weights) — the exact
+    behavior the sprint exists to produce.
+  - The MCP server `instructions` advertise the supersede-over-delete
+    guidance; the run-notes' standing "klams gotcha" search shows no
+    stale hand-authored gotchas surfacing.
+  - Units settled (`klams-service`, `klams-monitor` active; journal
+    clean); scanner timer picks up the 0.1.29 binary on its next fire.
+- Config changes required: **none** (`/etc/klams/klams.toml` untouched;
+  no new config keys this sprint).
+- Follow-ups handed to sprint 030 / curation: consolidate the two
+  sibling deferred-MCP gotchas (`019f95dc-df08` + `019f9a36-e558`) and
+  re-merge the split rpidash3 record via `memory_supersede`, then
+  retarget the eval's two known-open checks; korg:686's reranker is the
+  general fix for intra-curated ordering. Also noted during eval
+  tuning: the corpus holds scanned Claude-session transcripts stored as
+  `AgentProposal`+`machine` — worth a look at whether they should be
+  re-sourced as `Task` (cosmetic post-029; the machine gate already
+  excludes them from curated treatment).
