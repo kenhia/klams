@@ -21,9 +21,9 @@ use klams_types::{
     AcceptedId, ApiError as WireError, AppendEventRequest, AuthorMemoriesPage, AuthorPage,
     ContextBundle, ContextRequest, Dissent, DissentPage, DissentSubmittedResponse, EventPage, Fact,
     FactPage, FactWriteOutcome, HealthSnapshot, IndexKnowledgeRequest, IndexKnowledgeResponse,
-    KnowledgeItem, ListAuthorMemoriesParams, ListAuthorsParams, ListDissentsParams,
-    ListEventsParams, ListFactsParams, ListMemoriesParams, MemoriesPage, PublicAuthor,
-    SearchRequest, SearchResults, SearchType, Source, UpsertFactRequest,
+    KnowledgeDeleteResponse, KnowledgeItem, ListAuthorMemoriesParams, ListAuthorsParams,
+    ListDissentsParams, ListEventsParams, ListFactsParams, ListMemoriesParams, MemoriesPage,
+    PublicAuthor, SearchRequest, SearchResults, SearchType, Source, UpsertFactRequest,
 };
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use reqwest::StatusCode;
@@ -334,6 +334,30 @@ impl Client {
 
     pub async fn get_knowledge(&self, id: uuid::Uuid) -> ClientResult<KnowledgeItem> {
         self.get_json(&format!("/memory/knowledge/{id}")).await
+    }
+
+    /// `POST /memory/knowledge/delete?source_file=..&machine=..` —
+    /// remove the (`machine`, `source_file`) copy from every point carrying
+    /// it; a point is deleted only when its last copy goes (sprint 028
+    /// #642). `machine` is required by the API (sprint 025 #637).
+    pub async fn delete_knowledge_by_source_file(
+        &self,
+        source_file: &str,
+        machine: Option<&str>,
+    ) -> ClientResult<KnowledgeDeleteResponse> {
+        let url = self.url("/memory/knowledge/delete")?;
+        let mut query: Vec<(&str, &str)> = vec![("source_file", source_file)];
+        if let Some(m) = machine {
+            query.push(("machine", m));
+        }
+        let resp = self
+            .http
+            .post(url)
+            .query(&query)
+            .header(AUTHORIZATION, format!("Bearer {}", self.bearer))
+            .send()
+            .await?;
+        Self::decode(resp).await
     }
 
     /// `GET /memory/facts/{id}` — single fact lookup including `dissent_count`.

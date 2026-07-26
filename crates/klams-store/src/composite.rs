@@ -66,6 +66,31 @@ impl Store for CompositeStore {
     }
 
     async fn index_knowledge(&self, req: IndexKnowledge) -> StoreResult<KnowledgeItem> {
+        // Sprint 028 (#642): re-probe before embedding. The handler's
+        // probe ran at enqueue time, so two queued jobs with the same
+        // content (two files, or two hosts, in one scan window) would
+        // both insert — with content-only identity that race is the
+        // common case, not the corner. A hit here attaches the copy and
+        // skips the embed entirely.
+        if let Some(existing) = self
+            .qdrant
+            .find_knowledge_by_content_hash(&req.content_hash)
+            .await?
+        {
+            if req.machine.is_some() || req.file.is_some() {
+                self.qdrant
+                    .attach_copy(
+                        existing,
+                        req.machine.as_deref(),
+                        req.file.as_deref(),
+                        req.repo.as_deref(),
+                    )
+                    .await?;
+            }
+            if let Some(item) = self.qdrant.get_knowledge(existing).await? {
+                return Ok(item);
+            }
+        }
         let embedding = self.embedder.embed(&req.text).await?;
         self.qdrant.index_knowledge(req, embedding).await
     }
@@ -102,15 +127,18 @@ impl Store for CompositeStore {
         Ok((facts, events))
     }
 
-    async fn find_knowledge_by_content_hash(
+    async fn find_knowledge_by_content_hash(&self, hash: &str) -> StoreResult<Option<Uuid>> {
+        self.qdrant.find_knowledge_by_content_hash(hash).await
+    }
+
+    async fn attach_knowledge_copy(
         &self,
-        hash: &str,
-        source_file: Option<&str>,
+        id: Uuid,
         machine: Option<&str>,
-    ) -> StoreResult<Option<Uuid>> {
-        self.qdrant
-            .find_knowledge_by_content_hash(hash, source_file, machine)
-            .await
+        file: Option<&str>,
+        repo: Option<&str>,
+    ) -> StoreResult<bool> {
+        self.qdrant.attach_copy(id, machine, file, repo).await
     }
 
     async fn get_knowledge(&self, id: Uuid) -> StoreResult<Option<KnowledgeItem>> {

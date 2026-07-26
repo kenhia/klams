@@ -105,6 +105,13 @@ pub struct KnowledgeItem {
     pub repo: Option<String>,
     pub file: Option<String>,
     pub machine: Option<String>,
+    /// Every host holding a copy of this content (sprint 028 #642).
+    /// Scanner content is stored once per content hash; this lists the
+    /// hosts whose scans found it. Agent memories and pre-028 points
+    /// have none. `machine`/`file`/`repo` above stay the *canonical*
+    /// copy (the first writer, re-promoted if that copy is deleted).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub machines: Vec<String>,
     /// Heading breadcrumb the chunker prepended (scanner v2, sprint 022).
     /// Sprint 026 (#641): written to the Qdrant payload since 022 but
     /// never read back, so no read path could project it. Now it is.

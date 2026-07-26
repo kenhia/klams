@@ -62,12 +62,7 @@ impl Store for RecordingStore {
         Ok((vec![], vec![]))
     }
 
-    async fn find_knowledge_by_content_hash(
-        &self,
-        _hash: &str,
-        _source_file: Option<&str>,
-        _machine: Option<&str>,
-    ) -> StoreResult<Option<Uuid>> {
+    async fn find_knowledge_by_content_hash(&self, _hash: &str) -> StoreResult<Option<Uuid>> {
         Ok(None)
     }
 

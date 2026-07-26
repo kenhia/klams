@@ -32,6 +32,12 @@ const KEYWORD_INDEX_FIELDS: &[&str] = &[
     "repo",
     "machine",
     "file",
+    // Sprint 028 (#642): one point per content hash. `machines`/`files`
+    // are list payloads over every copy of the content (a keyword index
+    // over a list matches any element); the singular `machine`/`file`
+    // above remain the canonical copy.
+    "machines",
+    "files",
     // Sprint 009 (kwi #32 followup, T048): enable fast filtered
     // count/scroll by author so `/v1/authors` can include
     // `counts.knowledge` without a full payload scan.
@@ -51,6 +57,15 @@ pub struct QdrantStore {
     client: Arc<Qdrant>,
     collection: String,
     vector_dim: u64,
+    /// Serializes copy bookkeeping (sprint 028 #642). Attach and
+    /// per-host delete are read-modify-write on the `copies` payload;
+    /// Qdrant has no transactions, so concurrent bookkeeping from the
+    /// handler, the workers, and two scanners could drop an entry — and
+    /// a dropped entry means a later delete-for-the-other-host removes
+    /// the point while a host still has the file. These ops are rare
+    /// (dedupe hits and deletes only), so one process-wide mutex costs
+    /// nothing.
+    bookkeeping: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl std::fmt::Debug for QdrantStore {
@@ -59,7 +74,7 @@ impl std::fmt::Debug for QdrantStore {
             .field("client", &"<qdrant_client>")
             .field("collection", &self.collection)
             .field("vector_dim", &self.vector_dim)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -118,6 +133,7 @@ impl QdrantStore {
             client: Arc::new(client),
             collection: collection.to_string(),
             vector_dim,
+            bookkeeping: Arc::new(tokio::sync::Mutex::new(())),
         })
     }
 
@@ -157,6 +173,7 @@ impl QdrantStore {
             repo: req.repo.clone(),
             file: req.file.clone(),
             machine: req.machine.clone(),
+            machines: req.machine.iter().cloned().collect(),
             heading_path: req.heading_path.clone(),
             language: req.language.clone(),
             chunk_index: req.chunk_index,
@@ -169,6 +186,18 @@ impl QdrantStore {
         };
         let mut payload = item_to_payload(&item);
         payload.insert("author_id".into(), Value::from(req.author_id.to_string()));
+        // Sprint 028 (#642): scanner content starts its copy bookkeeping
+        // with itself as the only — and canonical — copy. Agent memories
+        // (no machine and no file) carry none.
+        if req.machine.is_some() || req.file.is_some() {
+            let copies = vec![CopyEntry {
+                machine: req.machine.clone(),
+                file: req.file.clone(),
+                repo: req.repo.clone(),
+            }];
+            let (copy_payload, _cleared) = copies_payload(&copies);
+            payload.extend(copy_payload);
+        }
         // Sprint 022 (#322) — chunk structure metadata in the payload so
         // neighbour expansion, section-heading retrieval, and the graph
         // layer have structure to query. Written when present; absent
@@ -337,24 +366,19 @@ impl QdrantStore {
         Ok(out)
     }
 
-    pub async fn find_knowledge_by_content_hash(
-        &self,
-        hash: &str,
-        source_file: Option<&str>,
-        machine: Option<&str>,
-    ) -> StoreResult<Option<Uuid>> {
-        // Scope dedupe to the same source file (sprint 022 #324) and
-        // host (sprint 023 #408): an identical chunk in two files — or
-        // the same path on two hosts — must be distinct points, so
-        // deleting one can't drop a chunk still live in the other.
-        let mut conds = vec![Condition::matches("content_hash", hash.to_string())];
-        if let Some(f) = source_file {
-            conds.push(Condition::matches("file", f.to_string()));
-        }
-        if let Some(m) = machine {
-            conds.push(Condition::matches("machine", m.to_string()));
-        }
-        let filter = Filter::must(conds);
+    pub async fn find_knowledge_by_content_hash(&self, hash: &str) -> StoreResult<Option<Uuid>> {
+        // Content-only (sprint 028 #642): identical content is one point
+        // wherever it appears; the sprint 022/023 file/host scoping moved
+        // into the `copies` payload bookkeeping. Live points only — a
+        // scanner chunk deduping onto a soft-deleted memory would make
+        // live content unsearchable.
+        let filter = Filter {
+            must: vec![
+                Condition::matches("content_hash", hash.to_string()),
+                Condition::is_empty("deleted_at"),
+            ],
+            ..Default::default()
+        };
         let resp = self
             .client
             .scroll(
@@ -374,6 +398,87 @@ impl QdrantStore {
                 PointIdOptions::Uuid(s) => Uuid::parse_str(&s).ok(),
                 PointIdOptions::Num(_) => None,
             }))
+    }
+
+    /// Record that (`machine`, `file`) also holds the content of point
+    /// `id` (sprint 028 #642): appends a copy entry and refreshes the
+    /// derived `machines`/`files` lists. Returns `true` when the copy
+    /// was newly attached, `false` when it was already recorded or the
+    /// point no longer exists.
+    pub async fn attach_copy(
+        &self,
+        id: Uuid,
+        machine: Option<&str>,
+        file: Option<&str>,
+        repo: Option<&str>,
+    ) -> StoreResult<bool> {
+        let _guard = self.bookkeeping.lock().await;
+        let resp = self
+            .client
+            .get_points(
+                qdrant_client::qdrant::GetPointsBuilder::new(
+                    self.collection.clone(),
+                    vec![PointId {
+                        point_id_options: Some(PointIdOptions::Uuid(id.to_string())),
+                    }],
+                )
+                .with_payload(true)
+                .with_vectors(false),
+            )
+            .await
+            .map_err(|e| StoreError::Backend(format!("qdrant attach_copy get: {e}")))?;
+        let Some(point) = resp.result.into_iter().next() else {
+            return Ok(false);
+        };
+        let mut copies = parse_copies(&point.payload);
+        let new = CopyEntry {
+            machine: machine.map(str::to_owned),
+            file: file.map(str::to_owned),
+            repo: repo.map(str::to_owned),
+        };
+        if copies
+            .iter()
+            .any(|c| c.machine == new.machine && c.file == new.file)
+        {
+            return Ok(false);
+        }
+        copies.push(new);
+        self.write_copies(id, &copies).await?;
+        Ok(true)
+    }
+
+    /// Write the copy set for `id`: the `copies` list, the derived
+    /// `machines`/`files` lists, and the canonical singular
+    /// `machine`/`file`/`repo` promoted from the first copy.
+    async fn write_copies(&self, id: Uuid, copies: &[CopyEntry]) -> StoreResult<()> {
+        let selector = PointsSelectorOneOf::Points(PointsIdsList {
+            ids: vec![PointId {
+                point_id_options: Some(PointIdOptions::Uuid(id.to_string())),
+            }],
+        });
+        let (payload, cleared) = copies_payload(copies);
+        self.client
+            .set_payload(
+                SetPayloadPointsBuilder::new(self.collection.clone(), payload)
+                    .points_selector(selector.clone())
+                    .wait(true),
+            )
+            .await
+            .map_err(|e| StoreError::Backend(format!("qdrant write_copies set: {e}")))?;
+        if !cleared.is_empty() {
+            self.client
+                .delete_payload(
+                    qdrant_client::qdrant::DeletePayloadPointsBuilder::new(
+                        self.collection.clone(),
+                        cleared,
+                    )
+                    .points_selector(selector)
+                    .wait(true),
+                )
+                .await
+                .map_err(|e| StoreError::Backend(format!("qdrant write_copies clear: {e}")))?;
+        }
+        Ok(())
     }
 
     pub async fn get_knowledge(&self, id: Uuid) -> StoreResult<Option<KnowledgeItem>> {
@@ -406,25 +511,110 @@ impl QdrantStore {
             .map_err(|e| StoreError::Backend(format!("qdrant health: {e}")))
     }
 
-    /// Sprint 003 T010b: delete all knowledge points whose payload
-    /// `source_file` matches `source_file`. Returns the count of
-    /// deleted points via a `scroll`-then-`delete` round trip
-    /// (Qdrant's `delete` RPC does not report a count).
+    /// Remove the (`machine`, `source_file`) copy from every knowledge
+    /// point that carries it (sprint 028 #642). A point is deleted only
+    /// when its last copy goes; otherwise its `copies` bookkeeping is
+    /// rewritten and the canonical fields re-promoted. Points written
+    /// before 028 carry no `copies` list — their singular
+    /// `machine`/`file` is treated as their only copy, so they hard-
+    /// delete exactly as before. Returns the number of copies removed
+    /// (= points affected).
+    ///
+    /// `machine: None` is the legacy unscoped path (pre-025 semantics,
+    /// unreachable from the API): every point whose `file` matches is
+    /// hard-deleted outright.
     pub async fn delete_by_source_file(
         &self,
         source_file: &str,
         machine: Option<&str>,
     ) -> StoreResult<u64> {
-        // Sprint 023 (#408): scope the delete to the host when given, so
-        // one host's re-index can't delete another host's chunk for the
-        // same path.
-        let mut conds = vec![Condition::matches("file", source_file.to_string())];
-        if let Some(m) = machine {
-            conds.push(Condition::matches("machine", m.to_string()));
-        }
-        let filter = Filter::must(conds);
+        let Some(host) = machine else {
+            return self
+                .hard_delete_by_filter(Filter::must(vec![Condition::matches(
+                    "file",
+                    source_file.to_string(),
+                )]))
+                .await;
+        };
 
-        // Count first (paged scroll, ids only).
+        let _guard = self.bookkeeping.lock().await;
+        // Two candidate shapes: post-028 points index every copy in the
+        // `machines`/`files` lists; pre-028 points only have the
+        // singular fields. Either filter can over-match (a point may
+        // list the host and the file via *different* copies), so the
+        // authoritative check is on the parsed copies below.
+        let filters = [
+            Filter::must(vec![
+                Condition::matches("machines", host.to_string()),
+                Condition::matches("files", source_file.to_string()),
+            ]),
+            Filter::must(vec![
+                Condition::matches("machine", host.to_string()),
+                Condition::matches("file", source_file.to_string()),
+            ]),
+        ];
+        let mut candidates: Vec<(Uuid, Vec<CopyEntry>)> = Vec::new();
+        let mut seen_ids = std::collections::HashSet::new();
+        for filter in filters {
+            let mut offset: Option<PointId> = None;
+            loop {
+                let mut builder = ScrollPointsBuilder::new(self.collection.clone())
+                    .filter(filter.clone())
+                    .limit(256)
+                    .with_payload(true)
+                    .with_vectors(false);
+                if let Some(o) = offset.clone() {
+                    builder = builder.offset(o);
+                }
+                let page = self
+                    .client
+                    .scroll(builder)
+                    .await
+                    .map_err(|e| StoreError::Backend(format!("qdrant scroll: {e}")))?;
+                for p in &page.result {
+                    let Some(PointIdOptions::Uuid(s)) =
+                        p.id.as_ref().and_then(|i| i.point_id_options.as_ref())
+                    else {
+                        continue;
+                    };
+                    let Ok(id) = Uuid::parse_str(s) else { continue };
+                    if seen_ids.insert(id) {
+                        candidates.push((id, parse_copies(&p.payload)));
+                    }
+                }
+                if page.next_page_offset.is_none() {
+                    break;
+                }
+                offset = page.next_page_offset;
+            }
+        }
+
+        let mut removed: u64 = 0;
+        for (id, copies) in candidates {
+            let remaining: Vec<CopyEntry> = copies
+                .iter()
+                .filter(|c| {
+                    !(c.machine.as_deref() == Some(host) && c.file.as_deref() == Some(source_file))
+                })
+                .cloned()
+                .collect();
+            if remaining.len() == copies.len() {
+                continue; // matched the filter via distinct copies; not this (host, file)
+            }
+            if remaining.is_empty() {
+                self.hard_delete_point(id).await?;
+            } else {
+                self.write_copies(id, &remaining).await?;
+            }
+            removed += 1;
+        }
+        Ok(removed)
+    }
+
+    /// Hard-delete every point matching `filter`, returning the count
+    /// via a scroll-then-delete round trip (Qdrant's delete RPC reports
+    /// no count).
+    async fn hard_delete_by_filter(&self, filter: Filter) -> StoreResult<u64> {
         let mut deleted: u64 = 0;
         let mut offset: Option<PointId> = None;
         loop {
@@ -447,11 +637,9 @@ impl QdrantStore {
             }
             offset = page.next_page_offset;
         }
-
         if deleted == 0 {
             return Ok(0);
         }
-
         self.client
             .delete_points(
                 DeletePointsBuilder::new(self.collection.clone())
@@ -462,6 +650,120 @@ impl QdrantStore {
             .map_err(|e| StoreError::Backend(format!("qdrant delete: {e}")))?;
         Ok(deleted)
     }
+}
+
+/// One recorded location of a point's content (sprint 028 #642).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CopyEntry {
+    machine: Option<String>,
+    file: Option<String>,
+    repo: Option<String>,
+}
+
+fn copy_to_value(c: &CopyEntry) -> Value {
+    let mut fields = HashMap::new();
+    if let Some(m) = &c.machine {
+        fields.insert("machine".to_string(), Value::from(m.clone()));
+    }
+    if let Some(f) = &c.file {
+        fields.insert("file".to_string(), Value::from(f.clone()));
+    }
+    if let Some(r) = &c.repo {
+        fields.insert("repo".to_string(), Value::from(r.clone()));
+    }
+    Value {
+        kind: Some(ValueKind::StructValue(qdrant_client::qdrant::Struct {
+            fields,
+        })),
+    }
+}
+
+fn value_to_copy(v: &Value) -> Option<CopyEntry> {
+    let Some(ValueKind::StructValue(s)) = &v.kind else {
+        return None;
+    };
+    let get = |k: &str| s.fields.get(k).and_then(|v| v.as_str().cloned());
+    Some(CopyEntry {
+        machine: get("machine"),
+        file: get("file"),
+        repo: get("repo"),
+    })
+}
+
+/// Parse a point's copy set. A point written before 028 has no `copies`
+/// key — its singular `machine`/`file`/`repo` is its only copy. A point
+/// with neither (an agent memory) has none.
+fn parse_copies(payload: &HashMap<String, Value>) -> Vec<CopyEntry> {
+    if let Some(Value {
+        kind: Some(ValueKind::ListValue(lv)),
+    }) = payload.get("copies")
+    {
+        return lv.values.iter().filter_map(value_to_copy).collect();
+    }
+    let single = CopyEntry {
+        machine: payload.get("machine").and_then(|v| v.as_str().cloned()),
+        file: payload.get("file").and_then(|v| v.as_str().cloned()),
+        repo: payload.get("repo").and_then(|v| v.as_str().cloned()),
+    };
+    if single.machine.is_some() || single.file.is_some() {
+        vec![single]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Payload for a copy set: the `copies` list, derived unique
+/// `machines`/`files` lists, and the canonical singular
+/// `machine`/`file`/`repo` promoted from the first copy. Returns the
+/// payload to set plus the singular keys that must be *cleared* because
+/// the promoted copy has no value for them (`set_payload` merges; it
+/// cannot remove).
+fn copies_payload(copies: &[CopyEntry]) -> (HashMap<String, Value>, Vec<String>) {
+    let mut p = HashMap::new();
+    let mut cleared = Vec::new();
+    p.insert(
+        "copies".to_string(),
+        Value {
+            kind: Some(ValueKind::ListValue(ListValue {
+                values: copies.iter().map(copy_to_value).collect(),
+            })),
+        },
+    );
+    let mut machines: Vec<String> = Vec::new();
+    let mut files: Vec<String> = Vec::new();
+    for c in copies {
+        if let Some(m) = &c.machine {
+            if !machines.contains(m) {
+                machines.push(m.clone());
+            }
+        }
+        if let Some(f) = &c.file {
+            if !files.contains(f) {
+                files.push(f.clone());
+            }
+        }
+    }
+    let str_list = |xs: &[String]| Value {
+        kind: Some(ValueKind::ListValue(ListValue {
+            values: xs.iter().map(|x| Value::from(x.clone())).collect(),
+        })),
+    };
+    p.insert("machines".to_string(), str_list(&machines));
+    p.insert("files".to_string(), str_list(&files));
+    let canonical = copies.first();
+    for (key, val) in [
+        ("machine", canonical.and_then(|c| c.machine.clone())),
+        ("file", canonical.and_then(|c| c.file.clone())),
+        ("repo", canonical.and_then(|c| c.repo.clone())),
+    ] {
+        match val {
+            Some(v) => {
+                p.insert(key.to_string(), Value::from(v));
+            }
+            None => cleared.push(key.to_string()),
+        }
+    }
+    (p, cleared)
 }
 
 fn item_to_payload(item: &KnowledgeItem) -> HashMap<String, Value> {
@@ -554,6 +856,20 @@ fn payload_to_item(payload: &HashMap<String, Value>) -> Option<KnowledgeItem> {
         repo: payload.get("repo").and_then(|v| v.as_str().cloned()),
         file: payload.get("file").and_then(|v| v.as_str().cloned()),
         machine: payload.get("machine").and_then(|v| v.as_str().cloned()),
+        // Sprint 028 (#642): every host holding a copy. Pre-028 points
+        // and agent memories have no list — empty on the way out.
+        machines: payload
+            .get("machines")
+            .and_then(|v| match &v.kind {
+                Some(ValueKind::ListValue(lv)) => Some(
+                    lv.values
+                        .iter()
+                        .filter_map(|x| x.as_str().cloned())
+                        .collect(),
+                ),
+                _ => None,
+            })
+            .unwrap_or_default(),
         // Sprint 026 (#641): these three have been written to the
         // payload since sprint 022 but were never read back, so no read
         // path could project them. Optional on the way out — points
@@ -1300,5 +1616,104 @@ mod tests {
         let mut payload = digest_to_payload(&sample_digest());
         payload.remove("kind");
         assert!(payload_to_digest(&payload).is_none());
+    }
+
+    // -----------------------------------------------------------------
+    // Sprint 028 (#642) — copy bookkeeping helpers. One point per
+    // content hash; per-(host, file) identity lives in `copies`.
+
+    fn copy(machine: &str, file: &str, repo: &str) -> CopyEntry {
+        CopyEntry {
+            machine: Some(machine.into()),
+            file: Some(file.into()),
+            repo: Some(repo.into()),
+        }
+    }
+
+    #[test]
+    fn copies_round_trip_through_payload() {
+        let copies = vec![
+            copy("kubs0", "/src/a.md", "klams"),
+            copy("kai", "/src/a.md", "klams"),
+        ];
+        let (payload, cleared) = copies_payload(&copies);
+        assert!(cleared.is_empty());
+        assert_eq!(parse_copies(&payload), copies);
+    }
+
+    #[test]
+    fn machines_and_files_lists_are_unique_and_ordered() {
+        let copies = vec![
+            copy("kubs0", "/src/a.md", "klams"),
+            copy("kai", "/src/a.md", "klams"),
+            copy("kubs0", "/src/b.md", "klams"),
+        ];
+        let (payload, _) = copies_payload(&copies);
+        let as_strs = |key: &str| -> Vec<String> {
+            match &payload.get(key).unwrap().kind {
+                Some(ValueKind::ListValue(lv)) => lv
+                    .values
+                    .iter()
+                    .filter_map(|v| v.as_str().cloned())
+                    .collect(),
+                _ => panic!("{key} not a list"),
+            }
+        };
+        assert_eq!(as_strs("machines"), vec!["kubs0", "kai"]);
+        assert_eq!(as_strs("files"), vec!["/src/a.md", "/src/b.md"]);
+    }
+
+    #[test]
+    fn canonical_singulars_promote_from_the_first_copy() {
+        let copies = vec![
+            copy("kai", "/x/b.rs", "krag"),
+            copy("kubs0", "/x/a.rs", "klams"),
+        ];
+        let (payload, cleared) = copies_payload(&copies);
+        assert_eq!(
+            payload.get("machine").and_then(|v| v.as_str().cloned()),
+            Some("kai".to_string())
+        );
+        assert_eq!(
+            payload.get("file").and_then(|v| v.as_str().cloned()),
+            Some("/x/b.rs".to_string())
+        );
+        assert_eq!(
+            payload.get("repo").and_then(|v| v.as_str().cloned()),
+            Some("krag".to_string())
+        );
+        assert!(cleared.is_empty());
+    }
+
+    #[test]
+    fn empty_copy_set_clears_the_singular_fields() {
+        // The last copy went away but the point survives only when
+        // copies remain — still, the helper must say which singular keys
+        // to clear rather than leave stale canonical fields behind.
+        let (payload, cleared) = copies_payload(&[]);
+        assert!(!payload.contains_key("machine"));
+        assert_eq!(cleared, vec!["machine", "file", "repo"]);
+    }
+
+    #[test]
+    fn pre_028_point_synthesizes_its_singular_fields_as_one_copy() {
+        // Legacy points (one per host+file) have no `copies` list; their
+        // singular fields are their only copy, so removing it deletes
+        // the point exactly as the old semantics did.
+        let mut payload = HashMap::new();
+        payload.insert("machine".to_string(), Value::from("kai"));
+        payload.insert("file".to_string(), Value::from("/src/x.rs"));
+        payload.insert("repo".to_string(), Value::from("krag"));
+        assert_eq!(
+            parse_copies(&payload),
+            vec![copy("kai", "/src/x.rs", "krag")]
+        );
+    }
+
+    #[test]
+    fn agent_memory_without_location_has_no_copies() {
+        let mut payload = HashMap::new();
+        payload.insert("text".to_string(), Value::from("a durable gotcha"));
+        assert!(parse_copies(&payload).is_empty());
     }
 }
