@@ -115,8 +115,18 @@ api = "tei"
 #
 # Leave `auto_truncate` OFF at the TEI container. A silently truncated
 # chunk looks complete but is unfindable by its tail; a visible rejection
-# is strictly better.
+# is strictly better. NOTE: TEI ≥1.8 flipped the default to ON — the
+# compose command passes an explicit `--auto-truncate false`.
 max_input_tokens = 512
+
+# Prefix prepended to QUERY text before embedding — never to stored
+# documents (sprint 028 #655). Modern retrieval models are asymmetric:
+#   snowflake-arctic-embed-*  →  "query: "
+#   Qwen3-Embedding-*         →  "Instruct: Given a web search query,
+#                                 retrieve relevant passages that answer
+#                                 the query\nQuery: "
+# Leave empty (default) for symmetric models (bge-m3, bge-small).
+# query_prefix = "query: "
 
 # Retention for the oversize-write log (sprint 027, #656), which records
 # refused knowledge writes INCLUDING the full submitted text so "what did

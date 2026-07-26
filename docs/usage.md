@@ -916,7 +916,10 @@ sudo systemctl stop klams-scanner.timer klams-scanner.service
 # the content-hash short-circuit.
 # kubs0 has no sqlite3 CLI — drive the cursor edit through python3.
 sudo -u klams python3 -c "import sqlite3; d=sqlite3.connect('/var/lib/klams/scanner.sqlite'); d.execute(\"UPDATE file_cursor SET mtime_ns=0, content_hash='reindex'\"); d.commit()"
-just scanner-once                           # delete-then-reindex per file
+# NOT `just scanner-once` — that runs cargo as YOUR user against your
+# own state dir, not the /var/lib/klams cursor edited above (sprint 028
+# docs fix). Drive the deployed unit instead:
+sudo systemctl start klams-scanner.service  # delete-then-reindex per file
 sudo systemctl start klams-scanner.timer
 ```
 
@@ -972,9 +975,11 @@ The scanner now chunks by file type (`Lang::from_path`):
 Chunk metadata (`chunk_index`, `language`, `heading_path`, `symbols`)
 travels from the scanner through `POST /memory/knowledge/index` into the
 Qdrant point payload for future neighbour-expansion and the graph layer.
-Text normalization preserves newlines and indentation end-to-end, and
-content-hash dedupe is scoped per source file so identical chunks in two
-files stay distinct points.
+Text normalization preserves newlines and indentation end-to-end.
+Content-hash dedupe is **content-only** since sprint 028 (#642):
+identical content anywhere is one point whose `copies`/`machines`
+payload records every (host, file) holding it, and deleting one
+location removes only that copy — the point falls with its last copy.
 
 ### Full re-index (operator step)
 
@@ -990,7 +995,7 @@ scanner-v2 chunks on top of the old ones (duplicates).
 sudo systemctl stop klams-scanner.timer klams-scanner.service
 # kubs0 has no sqlite3 CLI — drive the cursor edit through python3.
 sudo -u klams python3 -c "import sqlite3; d=sqlite3.connect('/var/lib/klams/scanner.sqlite'); d.execute(\"UPDATE file_cursor SET mtime_ns=0, content_hash='reindex'\"); d.commit()"
-just scanner-once                           # delete-then-reindex, scanner v2
+sudo systemctl start klams-scanner.service  # delete-then-reindex, scanner v2 (not `just scanner-once` — wrong user/state dir)
 sudo systemctl start klams-scanner.timer
 ```
 
