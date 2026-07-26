@@ -106,6 +106,11 @@ Key behaviors (current as of sprint 018):
   tools — omitted, the write is attributed to your token's
   `agent_name`. Call `register_author` only to write under a separate
   per-session identity.
+- **Deleting (sprint 025).** Omit `author_id` on `memory_delete` too;
+  it acts as your bound author. You can delete what you wrote. Deleting
+  **another author's** memory needs the `manage` scope — passing their
+  `author_id`, or a freshly registered one, does not work and never
+  did what it appeared to. See [auth.md](auth.md).
 - `memory_add` uses a **flat input schema** (`kind: "fact" |
   "knowledge"` discriminates; facts need `fact_type` + `payload`,
   knowledge needs `text`). No top-level `oneOf`, so Anthropic-bound

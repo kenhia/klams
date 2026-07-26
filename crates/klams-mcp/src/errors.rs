@@ -21,6 +21,9 @@ pub const EMBEDDING_UNAVAILABLE: &str = "EMBEDDING_UNAVAILABLE";
 pub const NOT_FOUND: &str = "NOT_FOUND";
 pub const NOT_SOFT_DELETED: &str = "NOT_SOFT_DELETED";
 pub const EVENTS_NOT_DELETABLE: &str = "EVENTS_NOT_DELETABLE";
+/// Sprint 025 (#636) — author removal refused because the row still
+/// owns memories. Merge it into another author first.
+pub const AUTHOR_HAS_MEMORIES: &str = "AUTHOR_HAS_MEMORIES";
 pub const INSUFFICIENT_SCOPE: &str = "INSUFFICIENT_SCOPE";
 pub const MAINTENANCE_WINDOW_ACTIVE: &str = "MAINTENANCE_WINDOW_ACTIVE";
 pub const INTERNAL_ERROR: &str = "INTERNAL_ERROR";

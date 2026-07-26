@@ -32,7 +32,7 @@ async fn memory_append_event_smoke() {
     let author = register(
         &state,
         RegisterAuthorInput {
-            agent_name: "GHCP-test-event".into(),
+            agent_name: "ghcp-test-event".into(),
             model: None,
             session_title: None,
             repo: None,
@@ -61,7 +61,7 @@ async fn memory_append_event_smoke() {
     .await
     .expect("memory_append_event");
     assert_eq!(mem.kind(), MemoryKind::Event);
-    assert_eq!(mem.author.agent_name, "GHCP-test-event");
+    assert_eq!(mem.author.agent_name, "ghcp-test-event");
     match mem.content {
         PublicMemoryContent::Event {
             category,

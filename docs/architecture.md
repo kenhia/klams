@@ -588,10 +588,20 @@ seeded `SYSTEM_AUTHOR_ID` (`00000000-0000-7000-8000-000000000001`);
 Qdrant points carry `author_id` in payload. Schema reference:
 [sprints/007-mcp-server/data-model.md §1–§4](../sprints/007-mcp-server/data-model.md).
 
-Authors are registered via the `register_author` MCP tool. The
-returned UUID is the caller's identity for every subsequent
-authenticated call; the server bumps `last_seen_at` on each touch
-(FR-005). There is **no delete path** for authors in v1.
+Authors are registered via the `register_author` MCP tool, though
+since sprint 018 a caller rarely needs it: the author bound to the
+bearer token (`agent_name` in `[[auth.tokens]]`) attributes writes
+automatically. The server bumps `last_seen_at` on each touch
+(FR-005).
+
+Sprint 025 (#636) gave the registry the verbs it had been missing —
+it could only ever *create*. `register_author` now dedupes on
+`agent_name` (it minted a fresh UUIDv7 per call, which is how the
+store reached 8 `klams-mind` and 6 `kyac` rows), and the
+`memory_admin_{list,remove,merge}_author*` tools cover inspection,
+block-if-owned removal, and transactional merge. Removal refuses
+while an author owns facts, events, knowledge points, or recorded
+soft-deletes; reassigning is `merge`'s job and is explicit.
 
 ### 2e.2 Public projection (`PublicMemory`)
 
@@ -629,21 +639,40 @@ raw embedding vectors, and the internal `source` trust tier
 
 ### 2e.3 Scope-gated tool surface
 
-Every MCP tool is gated by a `Scope` (`Read | Write | Admin`)
-checked from the bearer token's `TokenGrant`. The legacy single
-`bearer_token` field is materialized at load time into one grant
-with all scopes set; the new `[[auth.tokens]]` array (see
+Every MCP tool is gated by a `Scope` checked from the bearer token's
+`TokenGrant`. Sprint 025 added a fourth tier, `Manage`, for
+cross-author curation. The legacy single `bearer_token` field is
+materialized at load time into one grant with all four scopes; the
+`[[auth.tokens]]` array (see
 [data-model.md §5](../sprints/007-mcp-server/data-model.md#5-configuration-extension-klams-typesauthconfig))
-issues per-purpose tokens (read-only viewport, read+write GHCP,
-admin for `ken-admin`). Insufficient-scope calls return a
+issues per-purpose tokens. Insufficient-scope calls return a
 deterministic `permission_denied` error; scope failures are counted
 by `klams_mcp_scope_denied_total{scope,tool}`.
 
+**Scopes are flat, not hierarchical** — `Scope::satisfies` is exact
+equality, so `Write` does not imply `Read` and `Admin` does not imply
+`Manage`. Every grant lists what it needs. This is deliberate:
+granting a broad-sounding scope can never silently confer a
+capability that was not intended.
+
 | Tool family | Scope |
 |-------------|-------|
-| `register_author`, `memory_search`, `memory_related`, `memory_context` | `Read` |
-| `memory_add`, `memory_event`, `memory_delete` (own writes), `dissent_propose` (sprint 015) | `Write` |
-| `memory_admin_*` (restore, hard_delete, list_deleted) | `Admin` |
+| `memory_search`, `memory_related`, `event_search` | `Read` |
+| `memory_add`, `memory_append_event`, `memory_delete`, `dissent_propose`, `register_author` | `Write` |
+| `memory_admin_*` (restore, hard_delete, list_deleted, list/remove/merge authors) | `Admin` |
+
+`Manage` gates behaviour rather than whole tools: `memory_delete`
+requires it to delete a memory authored by *somebody else*
+(self-management needs only `Write`), and on the REST surface it
+gates dissent promote/discard. `register_author` moved `Read` →
+`Write` in sprint 025 — minting identities was a read-scope operation
+until then.
+
+Sprint 025 also layered `require_scope` onto **every** protected REST
+route. Before that it was installed on exactly one (`/v1/memories`),
+so the `scopes` list in `[[auth.tokens]]` was decorative on that
+surface: any valid bearer could index knowledge, bulk-delete it, and
+resolve dissents. Full model: [auth.md](auth.md).
 
 ### 2e.4 Soft-delete representation
 

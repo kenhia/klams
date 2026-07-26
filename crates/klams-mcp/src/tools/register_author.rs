@@ -70,6 +70,31 @@ pub async fn run(
     if let Err(e) = args.validate() {
         return Err(map_validation_error(&e));
     }
+    // Sprint 025 (#636): dedupe on `agent_name`. Every call used to mint
+    // a fresh UUIDv7 row — `insert_author` upserts on `id` conflict, and
+    // there is no uniqueness on `agent_name` — so a store with 8
+    // `klams-mind` and 6 `kyac` rows was the steady state, and an
+    // `agent_name` in a response mapped to no single identity. Returning
+    // the existing row makes registration idempotent per name.
+    let existing = state
+        .store
+        .postgres
+        .get_author_by_agent_name(&args.agent_name)
+        .await
+        .map_err(|e| {
+            envelope(
+                crate::errors::INTERNAL_ERROR,
+                format!("get_author_by_agent_name: {e}"),
+            )
+        })?;
+    if let Some(record) = existing {
+        let _ = state
+            .store
+            .postgres
+            .touch_author_last_seen_at(record.id)
+            .await;
+        return Ok(record.into());
+    }
     match state.store.postgres.insert_author(args, None).await {
         Ok(record) => Ok(record.into()),
         Err(e) => Err(envelope(
@@ -82,7 +107,9 @@ pub async fn run(
 fn map_validation_error(e: &RegisterAuthorError) -> ErrorEnvelope {
     use crate::errors as ec;
     match e {
-        RegisterAuthorError::EmptyAgentName | RegisterAuthorError::AgentNameTooLong => {
+        RegisterAuthorError::EmptyAgentName
+        | RegisterAuthorError::AgentNameTooLong
+        | RegisterAuthorError::AgentNameInvalid { .. } => {
             envelope(ec::INVALID_AGENT_NAME, e.to_string())
         }
         RegisterAuthorError::RepoEmpty => envelope(ec::INVALID_REPO_PATH, e.to_string()),

@@ -179,6 +179,36 @@ The script is **idempotent** and:
 5. `systemctl daemon-reload` then `enable --now` the service, timer,
    and monitor units.
 
+### Upgrading an already-running install: `just restart` is required
+
+`enable --now` in step 5 is a **no-op for a unit that is already
+running**, so on an upgrade the new binary lands in `/usr/local/bin`
+while the old process keeps serving. Follow the install with:
+
+```sh
+just restart                  # klams-service + klams-monitor
+```
+
+Then confirm the version actually moved — this is what the
+sprint-numbered PATCH version on `/healthz` is for:
+
+```sh
+curl -s http://127.0.0.1:7777/healthz | jq .version
+```
+
+If it still reports the previous version, the restart did not take.
+The scanner needs nothing: it is timer-driven and picks up the new
+binary on its next fire.
+
+A restart also **applies pending migrations** — `PostgresStore::connect`
+runs them as a side effect. `just rollback` swaps binaries only and
+cannot undo one; crossing a migration boundary backwards needs
+`just restore-from <date>`.
+
+The whole procedure, with preflight and verification, is packaged as
+the repo-local `deploy-kubs0` skill (`.claude/skills/deploy-kubs0/`),
+which `/sprint-ship` invokes automatically via `.sprint-deploy`.
+
 Required preconditions (the script aborts loudly if any are
 missing):
 
@@ -382,12 +412,27 @@ carries `admin` scope (FR-020).
 
 ### Per-token scope tips
 
-- One read-only token for the viewport so a UI compromise cannot
-  mutate state.
+Scopes are **flat** — `write` does not imply `read`, `admin` does not
+imply `write`. List every scope a token needs. Full model:
+[auth.md](auth.md).
+
+- **The viewport needs `["read", "write", "manage"]`.** It is a curation
+  surface, not a display: it edits and deletes facts and it is where a
+  human resolves dissents. Earlier revisions of this page recommended a
+  read-only viewport token "so a UI compromise cannot mutate state" —
+  that was only nominally true, because until sprint 025 nothing
+  enforced scopes on those routes, so the read-only token could mutate
+  everything anyway. Now the enforcement is real, and a `["read"]`
+  viewport token gets 403 on its own curation features. Withholding
+  `admin` is what limits the blast radius: no hard deletes, no restores,
+  no author lifecycle.
 - One read+write token per agent that produces memories (typically
-  one per editor).
+  one per editor). Add `manage` only for agents you want curating other
+  authors' records.
 - One admin token, used only from your own shell, for restores and
   hard deletes.
+- Give every token an `agent_name`. Ownership on `memory_delete` is
+  decided by the bound author, so a token without one cannot delete.
 
 ## Sprint 008 — Observability profile (Prometheus + Grafana)
 
@@ -530,6 +575,12 @@ resolved author, and MCP write tools (`memory_add`,
 `memory_append_event`, `dissent_propose`) fall back to it when the
 caller omits `author_id` (sprint 018, WI #62).
 
+Since sprint 025 the binding is also an **authorization** input, not
+just an attribution one: `memory_delete` acts as the bound author and
+refuses to delete another author's memory unless the token carries the
+`manage` scope. A token with no `agent_name` cannot delete at all. See
+[auth.md](auth.md) for the full model.
+
 ```toml
 [[auth.tokens]]
 token = "ghcp-write-XXXXXXXXXXXXXXXX"
@@ -537,8 +588,8 @@ scopes = ["read", "write"]
 agent_name = "ghcp"            # ← NEW; lowercase, digits, '-' or '_'
 
 [[auth.tokens]]
-token = "viewport-read-XXXXXXXXXXXXXXXX"
-scopes = ["read"]
+token = "viewport-XXXXXXXXXXXXXXXX"
+scopes = ["read", "write", "manage"]   # curation UI; see scope tips above
 agent_name = "viewport"
 
 [[auth.tokens]]

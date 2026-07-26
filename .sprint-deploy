@@ -1,0 +1,4 @@
+# Declares that this repo deploys as part of /sprint-ship (Phase 7).
+# One skill name per line; sprint-ship invokes each in order after the merge
+# and local cleanup, so the deploy is built from the merged main.
+deploy-kubs0

@@ -602,7 +602,15 @@ Since sprint 018 the write tools' `author_id` argument is optional:
 when omitted, the write is attributed to the author bound to the
 caller's bearer token (`agent_name` in `[[auth.tokens]]`, or the
 seeded `system` author for unbound/legacy tokens). Passing an
-explicit `author_id` still works and always wins. Session teardown
+explicit `author_id` still works and always wins.
+
+**Exception since sprint 025 — `memory_delete`.** There `author_id` is
+optional too, but an explicit value may only *confirm* your bound
+author; naming a different one is refused. Deletes always act as your
+own identity. Deleting a memory you wrote needs `write`; deleting
+another author's needs `manage`. Full model: [auth.md](auth.md).
+
+Session teardown
 also answers 204 (not 202) so mcp python-sdk clients no longer log
 `Session termination failed: 202` on close.
 
@@ -618,18 +626,26 @@ materializes into one grant with all three scopes) and adds an
 # bearer_token = "..."
 
 [[auth.tokens]]
-token = "viewport-readonly-XXXXXXXXXXXX"
-scopes = ["read"]
+token = "viewport-XXXXXXXXXXXXXXXXXXXX"
+scopes = ["read", "write", "manage"]   # it edits facts + resolves dissents
 label = "viewport"
+agent_name = "viewport"
 
 [[auth.tokens]]
 token = "ghcp-write-XXXXXXXXXXXXXXXX"
-scopes = ["read", "write"]
+scopes = ["read", "write", "manage"]
 label = "ghcp"
+agent_name = "ghcp"
+
+[[auth.tokens]]
+token = "scanner-XXXXXXXXXXXXXXXXXXXX"
+scopes = ["read", "write"]             # retracts only its own chunks
+label = "scanner"
+agent_name = "klams-scanner"
 
 [[auth.tokens]]
 token = "ken-admin-XXXXXXXXXXXXXXXXXX"
-scopes = ["read", "write", "admin"]
+scopes = ["read", "write", "manage", "admin"]
 label = "ken-admin"
 ```
 
@@ -640,12 +656,20 @@ Validation rules (enforced at load):
 - Every token must be ≥ 16 characters (loose entropy floor — real
   entropy is the operator's responsibility).
 - Every grant's `scopes` array must be non-empty.
+- Scopes are **flat**: `write` does not imply `read`, `admin` does not
+  imply `write`. List each one explicitly.
 
 The `label` is surfaced in logs and metrics (`klams_mcp_calls_total{token_label}`)
 so a noisy or rogue client is easy to identify without leaking the
-raw token. Recommended layout: one read-only token for the viewport
-so a UI compromise cannot mutate state, one read+write token per
-agent, and a single admin token used only from your own shell.
+raw token.
+
+Recommended layout: `read`+`write`+`manage` for the viewport and for
+interactive agents that curate the corpus; `read`+`write` for daemons
+that only write their own records (scanner, kmon — they can still
+retract their *own* chunks); and a single all-scopes admin token used
+only from your own shell. Give every grant an `agent_name`, since
+`memory_delete` decides ownership by the bound author. Full model:
+[auth.md](auth.md).
 
 ### Soft-delete safety model
 

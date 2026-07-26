@@ -113,12 +113,17 @@ pub struct AuthState {
 
 impl AuthState {
     /// Legacy single-token constructor. Materializes one grant carrying
-    /// **all** scopes (`Read | Write | Admin`) — preserves pre-sprint-007
-    /// behaviour for callers that have not yet migrated to scoped tokens.
+    /// **all** scopes — preserves pre-sprint-007 behaviour for callers
+    /// that have not yet migrated to scoped tokens.
+    ///
+    /// Sprint 025: `Manage` is included. Scopes are flat, so omitting it
+    /// here would have *removed* capability from the one token some
+    /// deployments have — this grant is the "everything" token by
+    /// construction, and must stay that way across the upgrade.
     pub fn new(bearer_token: impl Into<String>) -> Self {
         let grant = TokenGrant::new(
             bearer_token,
-            vec![Scope::Read, Scope::Write, Scope::Admin],
+            vec![Scope::Read, Scope::Write, Scope::Manage, Scope::Admin],
             Some("legacy".into()),
         );
         Self::with_grants(vec![grant])

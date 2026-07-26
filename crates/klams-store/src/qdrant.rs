@@ -965,6 +965,67 @@ impl QdrantStore {
         Ok(resp.result.map_or(0, |r| r.count))
     }
 
+    /// Sprint 025 (#636) — count knowledge points authored by
+    /// `author_id` in **any** state, soft-deleted included. Removing an
+    /// author must be blocked by a soft-deleted point just as much as a
+    /// live one: the point still carries the attribution, and dropping
+    /// the author row would orphan it.
+    pub async fn count_knowledge_by_author_any(&self, author_id: uuid::Uuid) -> StoreResult<u64> {
+        let filter = Filter {
+            must: vec![Condition::matches("author_id", author_id.to_string())],
+            ..Default::default()
+        };
+        let resp = self
+            .client
+            .count(
+                CountPointsBuilder::new(self.collection.clone())
+                    .filter(filter)
+                    .exact(true),
+            )
+            .await
+            .map_err(|e| StoreError::Backend(format!("qdrant count_by_author_any: {e}")))?;
+        Ok(resp.result.map_or(0, |r| r.count))
+    }
+
+    /// Sprint 025 (#636) — repoint every knowledge point authored by
+    /// `from` at `into`, for the merge path. Qdrant has no
+    /// transactions, so this is the step the merge runs **first**: if it
+    /// fails, nothing in Postgres has changed and the merge is simply
+    /// re-runnable.
+    ///
+    /// Returns the number of points repointed.
+    pub async fn reassign_knowledge_author(
+        &self,
+        from: uuid::Uuid,
+        into: uuid::Uuid,
+    ) -> StoreResult<u64> {
+        let moved = self.count_knowledge_by_author_any(from).await?;
+        if moved == 0 {
+            return Ok(0);
+        }
+        let filter = Filter {
+            must: vec![Condition::matches("author_id", from.to_string())],
+            ..Default::default()
+        };
+        let mut payload = std::collections::HashMap::new();
+        payload.insert(
+            "author_id".to_string(),
+            qdrant_client::qdrant::Value::from(into.to_string()),
+        );
+        self.client
+            .set_payload(
+                qdrant_client::qdrant::SetPayloadPointsBuilder::new(
+                    self.collection.clone(),
+                    payload,
+                )
+                .points_selector(filter)
+                .wait(true),
+            )
+            .await
+            .map_err(|e| StoreError::Backend(format!("qdrant reassign_knowledge_author: {e}")))?;
+        Ok(moved)
+    }
+
     /// Scroll the collection for knowledge points authored by
     /// `author_id`. `state` selects live vs soft-deleted vs all.
     /// Returns up to `limit` items plus the next scroll offset.

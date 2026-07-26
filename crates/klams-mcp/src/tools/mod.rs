@@ -7,6 +7,7 @@
 pub mod dissent_propose;
 pub mod event_search;
 pub mod memory_add;
+pub mod memory_admin_authors;
 pub mod memory_admin_hard_delete;
 pub mod memory_admin_list_deleted;
 pub mod memory_admin_restore;
@@ -33,11 +34,25 @@ use std::sync::Arc;
 #[must_use]
 pub fn required_scope(tool: &str) -> Option<Scope> {
     Some(match tool {
-        "register_author" | "memory_search" | "memory_related" | "event_search" => Scope::Read,
-        "memory_add" | "memory_append_event" | "memory_delete" | "dissent_propose" => Scope::Write,
-        "memory_admin_restore" | "memory_admin_hard_delete" | "memory_admin_list_deleted" => {
-            Scope::Admin
-        }
+        "memory_search" | "memory_related" | "event_search" => Scope::Read,
+        // Sprint 025 (#633): `register_author` moved Read -> Write. It
+        // mints identities, which was a read-scope operation until now —
+        // a read-only token could manufacture authors at will.
+        "register_author"
+        | "memory_add"
+        | "memory_append_event"
+        | "memory_delete"
+        | "dissent_propose" => Scope::Write,
+        // Sprint 025 (#636): the author lifecycle verbs rewrite
+        // attribution across the whole store — a stronger capability
+        // than the cross-author curation `manage` grants, so they sit
+        // with the other admin tools.
+        "memory_admin_restore"
+        | "memory_admin_hard_delete"
+        | "memory_admin_list_deleted"
+        | "memory_admin_list_authors"
+        | "memory_admin_remove_author"
+        | "memory_admin_merge_authors" => Scope::Admin,
         _ => return None,
     })
 }
@@ -230,6 +245,27 @@ impl ServerHandler for ToolRegistry {
             }
         }
         let args_value = arguments.map_or(serde_json::Value::Null, serde_json::Value::Object);
+        // Sprint 025: the deserialize-then-run-then-envelope shape is
+        // identical for every tool that needs nothing but `state` and
+        // its args. New arms use this; the older ones are left as they
+        // were rather than churned in a security sprint.
+        macro_rules! dispatch {
+            ($run:path, $label:literal) => {{
+                let args = match serde_json::from_value(args_value) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        return Ok(envelope_result(&crate::errors::envelope(
+                            crate::errors::SCHEMA_VALIDATION_FAILED,
+                            format!("invalid {} arguments: {e}", $label),
+                        )))
+                    }
+                };
+                match $run(&self.state, args).await {
+                    Ok(out) => Ok(json_result(&out)),
+                    Err(env) => Ok(envelope_result(&env)),
+                }
+            }};
+        }
         match name {
             "register_author" => {
                 let args = match serde_json::from_value(args_value) {
@@ -347,7 +383,14 @@ impl ServerHandler for ToolRegistry {
                         )))
                     }
                 };
-                match memory_delete::run(&self.state, args).await {
+                // Sprint 025 (#633): the delete acts as the bearer-bound
+                // author and consults the caller's scopes for the
+                // cross-author `manage` tier.
+                let delete_caller = caller.as_ref().map(|a| memory_delete::DeleteCaller {
+                    author_id: a.author_id,
+                    scopes: caller_scopes(&context).map_or_else(Vec::new, |s| s.as_ref().clone()),
+                });
+                match memory_delete::run(&self.state, args, delete_caller.as_ref()).await {
                     Ok(out) => Ok(json_result(&out)),
                     Err(env) => Ok(envelope_result(&env)),
                 }
@@ -397,6 +440,15 @@ impl ServerHandler for ToolRegistry {
                     Err(env) => Ok(envelope_result(&env)),
                 }
             }
+            "memory_admin_list_authors" => {
+                dispatch!(memory_admin_authors::list, "memory_admin_list_authors")
+            }
+            "memory_admin_remove_author" => {
+                dispatch!(memory_admin_authors::remove, "memory_admin_remove_author")
+            }
+            "memory_admin_merge_authors" => {
+                dispatch!(memory_admin_authors::merge, "memory_admin_merge_authors")
+            }
             _ => Err(McpError::invalid_params(
                 format!("unknown tool: {name}"),
                 None,
@@ -438,7 +490,7 @@ pub fn all_tool_descriptors() -> Vec<Tool> {
         ),
         tool_descriptor::<memory_delete::MemoryDeleteArgs>(
             "memory_delete",
-            "Soft-delete a fact or knowledge memory by id (FR-014). Idempotent. Events are append-only.",
+            "Soft-delete a fact or knowledge memory by id (FR-014). Idempotent. Events are append-only. Omit author_id — the delete acts as the author bound to your bearer token. You may delete memories you wrote; deleting another author's memory requires the `manage` scope.",
         ),
         tool_descriptor::<dissent_propose::DissentProposeArgs>(
             "dissent_propose",
@@ -455,6 +507,18 @@ pub fn all_tool_descriptors() -> Vec<Tool> {
         tool_descriptor::<memory_admin_list_deleted::MemoryAdminListDeletedArgs>(
             "memory_admin_list_deleted",
             "Admin: paginate soft-deleted facts and knowledge for rogue-agent recovery (FR-013).",
+        ),
+        tool_descriptor::<memory_admin_authors::ListAuthorsArgs>(
+            "memory_admin_list_authors",
+            "Admin: list authors with the counts that decide whether one is safe to remove (facts, events, knowledge, recorded soft-deletes), plus the agent_names held by more than one row. Set only_empty to see just the removable ones.",
+        ),
+        tool_descriptor::<memory_admin_authors::RemoveAuthorArgs>(
+            "memory_admin_remove_author",
+            "Admin: remove an author row. Refused with AUTHOR_HAS_MEMORIES while it still owns anything — merge it first. Never reassigns silently.",
+        ),
+        tool_descriptor::<memory_admin_authors::MergeAuthorsArgs>(
+            "memory_admin_merge_authors",
+            "Admin: reassign every fact, event, knowledge point and soft-delete attribution from one author to another, then remove the source. Use to collapse duplicate agent_name rows.",
         ),
     ]
 }

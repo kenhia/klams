@@ -12,13 +12,23 @@ use common::TestServer;
 use klams_mcp::tools::{
     dissent_propose::{run as dissent_propose, DissentProposeArgs},
     memory_add::{run as memory_add, FactTypeArg, MemoryAddArgs},
-    memory_delete::{run as memory_delete, MemoryDeleteArgs},
+    memory_delete::{run as memory_delete, DeleteCaller, MemoryDeleteArgs},
     register_author::{run as register, RegisterAuthorInput},
     McpState,
 };
 use klams_types::{DissentStatus, MaintenanceState, Source};
 use std::sync::Arc;
 use uuid::Uuid;
+
+/// Sprint 025 (#633): these tests delete memories they authored
+/// themselves, so a plain write-scoped caller bound to that author is
+/// the right identity — no `manage` needed.
+fn owner_caller(author_id: Uuid) -> DeleteCaller {
+    DeleteCaller {
+        author_id,
+        scopes: vec![klams_types::Scope::Read, klams_types::Scope::Write],
+    }
+}
 
 fn mcp_state_from(server: &TestServer) -> McpState {
     McpState::new(
@@ -173,9 +183,10 @@ async fn propose_rejects_missing_and_deleted_facts() {
     memory_delete(
         &state,
         MemoryDeleteArgs {
-            author_id: author,
+            author_id: None,
             id: fact_id,
         },
+        Some(&owner_caller(author)),
     )
     .await
     .expect("memory_delete");

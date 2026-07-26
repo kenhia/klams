@@ -158,6 +158,10 @@ async fn tools_list_admin_sees_everything() {
         "memory_admin_restore",
         "memory_admin_hard_delete",
         "memory_admin_list_deleted",
+        // Sprint 025 (#636) — author lifecycle verbs.
+        "memory_admin_list_authors",
+        "memory_admin_remove_author",
+        "memory_admin_merge_authors",
     ];
     for name in expected {
         assert!(
@@ -175,13 +179,15 @@ async fn tools_list_read_only_sees_only_read_tools() {
     let tools = list_tools_with(server.addr, &server.read_token).await;
     let mut sorted = tools.clone();
     sorted.sort();
+    // Sprint 025 (#633): `register_author` left this list. Minting an
+    // identity is a Write operation — a read-only token could otherwise
+    // manufacture authors, which was half of the delete backdoor.
     assert_eq!(
         sorted,
         vec![
             "event_search".to_string(),
             "memory_related".to_string(),
             "memory_search".to_string(),
-            "register_author".to_string(),
         ],
         "read-only surface drift: {tools:?}"
     );

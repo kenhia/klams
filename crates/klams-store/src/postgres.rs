@@ -1059,6 +1059,23 @@ impl PostgresStore {
         row.map(|r| row_to_author(&r)).transpose()
     }
 
+    /// Sprint 025 (#636) — every author row, oldest first. Unpaginated
+    /// on purpose: the registry is small (44 rows at the time of
+    /// writing) and the lifecycle tools need the whole set to spot
+    /// duplicate `agent_name`s.
+    pub async fn list_all_authors(&self) -> StoreResult<Vec<AuthorRecord>> {
+        let rows = sqlx::query(
+            r"SELECT id, agent_name, model, session_title, repo,
+                     client_app, client_version, extra,
+                     created_at, last_seen_at
+              FROM authors ORDER BY created_at, id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StoreError::Backend(format!("list_all_authors: {e}")))?;
+        rows.iter().map(row_to_author).collect()
+    }
+
     /// Sprint 009 — look up an author by `agent_name`. If multiple
     /// rows share the name (legacy data), returns the most recently
     /// touched one. Used by the REST bearer-binding resolver at
@@ -1632,6 +1649,99 @@ impl PostgresStore {
             .await
             .map_err(|e| StoreError::Backend(format!("fact_exists_any: {e}")))?;
         Ok(row.is_some())
+    }
+
+    /// Sprint 025 (#636) — how many Postgres rows attribute to
+    /// `author_id`: `(facts, events, soft_deletes_authored)`. Facts and
+    /// events count in **any** state; `soft_deletes_authored` counts
+    /// rows this author deleted (someone else's memory included), which
+    /// blocks removal too — dropping the row would erase the audit
+    /// trail the delete recorded.
+    pub async fn count_author_rows(&self, author_id: Uuid) -> StoreResult<(i64, i64, i64)> {
+        let row = sqlx::query_as::<_, (i64, i64, i64)>(
+            r"SELECT
+                (SELECT count(*) FROM facts  WHERE author_id = $1),
+                (SELECT count(*) FROM events WHERE author_id = $1),
+                (SELECT count(*) FROM facts  WHERE deleted_by_author_id = $1)",
+        )
+        .bind(author_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| StoreError::Backend(format!("count_author_rows: {e}")))?;
+        Ok(row)
+    }
+
+    /// Sprint 025 (#636) — delete an author row outright. Callers must
+    /// have established that it owns nothing (see
+    /// [`Self::count_author_rows`] and the Qdrant-side count); this is
+    /// the unguarded primitive. Returns `false` if no such row existed.
+    pub async fn delete_author(&self, author_id: Uuid) -> StoreResult<bool> {
+        let res = sqlx::query("DELETE FROM authors WHERE id = $1")
+            .bind(author_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StoreError::Backend(format!("delete_author: {e}")))?;
+        Ok(res.rows_affected() == 1)
+    }
+
+    /// Sprint 025 (#636) — repoint every Postgres row attributing to
+    /// `from` at `into`, in one transaction, and drop the `from` row.
+    /// Returns `(facts, events, soft_deletes)` moved.
+    ///
+    /// The Qdrant half of a merge has no transaction to join, so the
+    /// caller runs it first: a failure there leaves this untouched and
+    /// the whole merge re-runnable.
+    pub async fn merge_author_rows(&self, from: Uuid, into: Uuid) -> StoreResult<(u64, u64, u64)> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StoreError::Backend(format!("merge_author_rows begin: {e}")))?;
+        let facts = sqlx::query("UPDATE facts SET author_id = $2 WHERE author_id = $1")
+            .bind(from)
+            .bind(into)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| StoreError::Backend(format!("merge facts: {e}")))?
+            .rows_affected();
+        let events = sqlx::query("UPDATE events SET author_id = $2 WHERE author_id = $1")
+            .bind(from)
+            .bind(into)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| StoreError::Backend(format!("merge events: {e}")))?
+            .rows_affected();
+        let deletes = sqlx::query(
+            "UPDATE facts SET deleted_by_author_id = $2 WHERE deleted_by_author_id = $1",
+        )
+        .bind(from)
+        .bind(into)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StoreError::Backend(format!("merge soft-deletes: {e}")))?
+        .rows_affected();
+        sqlx::query("DELETE FROM authors WHERE id = $1")
+            .bind(from)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| StoreError::Backend(format!("merge drop source author: {e}")))?;
+        tx.commit()
+            .await
+            .map_err(|e| StoreError::Backend(format!("merge_author_rows commit: {e}")))?;
+        Ok((facts, events, deletes))
+    }
+
+    /// Sprint 025 (#633) — the `author_id` that owns fact `id`, if the
+    /// row exists at all (soft-deleted or not). `Ok(None)` means no such
+    /// fact; it does **not** mean "unowned", since `facts.author_id` is
+    /// NOT NULL. Used by `memory_delete` to enforce ownership.
+    pub async fn fact_owner(&self, id: Uuid) -> StoreResult<Option<Uuid>> {
+        let row = sqlx::query_scalar::<_, Uuid>("SELECT author_id FROM facts WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StoreError::Backend(format!("fact_owner: {e}")))?;
+        Ok(row)
     }
 
     /// Returns `true` if an event row with `id` exists.

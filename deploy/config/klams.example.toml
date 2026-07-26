@@ -19,23 +19,48 @@ bearer_token = "changeme-rendered-by-provision-script"
 # one grant with all scopes). For per-purpose tokens, uncomment
 # and fill in the `[[auth.tokens]]` blocks below. Every token MUST
 # be ≥ 16 characters; `scopes` MUST be non-empty.
-# See docs/usage.md "Sprint 007 — MCP server" for the recommended
-# split (one read-only token for the viewport, one read+write per
-# agent, a single admin token used only from your own shell).
 #
-# [[auth.tokens]]
-# token  = "viewport-readonly-XXXXXXXXXXXX"
-# scopes = ["read"]
-# label  = "viewport"
+# SCOPES ARE FLAT, NOT HIERARCHICAL: "write" does not imply "read",
+# and "admin" does not imply "write". List every scope a token needs.
 #
+#   read    queries and every GET
+#   write   creating memories, and managing the ones THIS identity wrote
+#   manage  curating ANOTHER author's memories (cross-author delete,
+#           resolving dissents) — sprint 025
+#   admin   restore / hard-delete / list-deleted / author lifecycle
+#
+# Full model: docs/auth.md.
+#
+# The viewport is a CURATION surface, not a display: it edits and
+# deletes facts and it is where a human resolves dissents. It needs
+# `manage`. Withholding `admin` is what bounds it — no hard deletes,
+# no restores, no author lifecycle.
 # [[auth.tokens]]
-# token  = "ghcp-write-XXXXXXXXXXXXXXXX"
-# scopes = ["read", "write"]
-# label  = "ghcp"
+# token      = "viewport-XXXXXXXXXXXXXXXXXXXX"
+# scopes     = ["read", "write", "manage"]
+# label      = "viewport"
+# agent_name = "viewport"
+#
+# Agents that curate the corpus get `manage`; daemons that only write
+# their own records (scanner, kmon) deliberately do not — they can
+# still retract their OWN chunks with `write` alone.
+# [[auth.tokens]]
+# token      = "ghcp-write-XXXXXXXXXXXXXXXX"
+# scopes     = ["read", "write", "manage"]
+# label      = "ghcp"
+# agent_name = "ghcp"
+#
+# `agent_name` is what makes a token an identity: memory_delete
+# decides ownership by it, so a token without one cannot delete.
+# [[auth.tokens]]
+# token      = "scanner-XXXXXXXXXXXXXXXXXXXX"
+# scopes     = ["read", "write"]
+# label      = "scanner"
+# agent_name = "klams-scanner"
 #
 # [[auth.tokens]]
 # token  = "ken-admin-XXXXXXXXXXXXXXXXXX"
-# scopes = ["read", "write", "admin"]
+# scopes = ["read", "write", "manage", "admin"]
 # label  = "ken-admin"
 #
 # Sprint 015 — the klams-mind companion gets its own read+write grant.
