@@ -109,3 +109,31 @@ re-embed measured at ~5–7 minutes (vs a multi-hour CPU slog).
   rows cleared; the 3,494 points fall with the reset wipe.
 - Backup path verified live (`/gratch/klams-backup`, NFS mounted,
   snapshots current) — #647's drift is docs-only.
+- **Corpus rebuild executed as a collection swap, not a wipe** (see
+  reset-runbook.md): fresh pre-wipe backup taken (`qdrant-2026-07-26`),
+  scanners stopped on both hosts, 99 AgentProposal points exported and
+  replayed into `knowledge_items_v2` (dim 1024) with original
+  ids/payloads/soft-delete state intact, config flipped, cursors reset,
+  full re-scan through the 0.1.28 chunker. Old 384-dim collection
+  retained untouched as instant rollback — **Ken/breather sprint: drop
+  `knowledge_items` (v1) once v2 has proven out.**
+- kubs0 re-scan: 221,327 → **126,480 points** (≈ the unique-content
+  count; obsidian gone; real repo names verified live, including
+  nested-vendored repos like `lvgl` inside kpidash). Zero
+  `chunk_too_large`; 105 transient `queue_full` rejections left those
+  files cursor-unadvanced for the next hourly cycle — the honest-error
+  machinery from 027 doing its job.
+- Re-running the 027 calibration test against live Qwen3 found a real
+  taxonomy bug: **TEI 1.9 answers over-limit inputs with 422**, not
+  1.7's 413 — without a new `classify` arm that misfiled as
+  `EMBEDDING_REJECTED` and lost the split-and-retry contract. Fixed +
+  pinned with mock tests; the calibration test itself was rewritten to
+  probe dim/ceiling from `/info` and scale its 8 shapes to straddle the
+  live ceiling (the 027 version pinned 384/512 and asserted nothing
+  against a 32k model).
+- `LOW_SCORE_THRESHOLD` recalibrated 0.80 → 0.45 (Qwen3 junk floor
+  ~0.35, genuine hits ~0.55–0.71; at 0.80 every search would have
+  logged as a miss — the inverse of the 026 dead-threshold bug).
+- Superseded the two review-era memories (413-ceiling → 32k note;
+  0.1.26 search-behavior → 0.1.28 note) and added a kubs0 GPU/CDI
+  gotcha memory.

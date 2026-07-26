@@ -80,6 +80,9 @@ max_connections = 8
 # gRPC endpoint. Loopback because Qdrant is bound to 127.0.0.1:6334
 # by the Compose stack.
 grpc_url = "http://127.0.0.1:6334"
+# kubs0 runs "knowledge_items_v2" since sprint 028 (the Qwen3/1024-dim
+# rebuild); the original "knowledge_items" was retained as the rollback
+# target until it is dropped.
 collection = "knowledge_items"
 
 [embeddings]
