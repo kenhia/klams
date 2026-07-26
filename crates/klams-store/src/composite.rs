@@ -22,6 +22,13 @@ pub struct CompositeStore {
     /// `klams-core::DecayTask` drains the receiver. Reads that
     /// produce facts call `try_send` (drop-on-full).
     bump_tx: Option<mpsc::Sender<Uuid>>,
+    /// Prepended to query text before embedding (sprint 028 #655).
+    /// Modern retrieval models are asymmetric: arctic-embed wants
+    /// `"query: "`, Qwen3-Embedding an instruct line — on queries ONLY,
+    /// never on stored documents. Empty (the default) embeds queries
+    /// verbatim, which is correct for symmetric models like bge-m3 and
+    /// the old bge-small.
+    query_prefix: String,
 }
 
 impl CompositeStore {
@@ -31,7 +38,15 @@ impl CompositeStore {
             qdrant,
             embedder,
             bump_tx: None,
+            query_prefix: String::new(),
         }
+    }
+
+    /// Set the query-side embedding prefix (sprint 028 #655).
+    #[must_use]
+    pub fn with_query_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.query_prefix = prefix.into();
+        self
     }
 
     /// Wire a `LastUsedBumper` sender into the store so read paths
@@ -157,7 +172,15 @@ impl Store for CompositeStore {
 
     async fn embed_query(&self, query: &str) -> StoreResult<Vec<f32>> {
         let start = std::time::Instant::now();
-        let out = self.embedder.embed(query).await;
+        // Sprint 028 (#655): queries — and only queries — carry the
+        // model's retrieval prefix. Documents embed verbatim.
+        let out = if self.query_prefix.is_empty() {
+            self.embedder.embed(query).await
+        } else {
+            self.embedder
+                .embed(&format!("{}{query}", self.query_prefix))
+                .await
+        };
         metrics::histogram!("klams_embedding_latency_seconds")
             .record(start.elapsed().as_secs_f64());
         out

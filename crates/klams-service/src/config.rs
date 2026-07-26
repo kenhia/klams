@@ -246,6 +246,13 @@ pub struct EmbeddingsConfig {
     /// couple of sprints.
     #[serde(default = "default_oversize_log_retention_days")]
     pub oversize_log_retention_days: i32,
+    /// Prefix prepended to *query* text before embedding — never to
+    /// stored documents (sprint 028 #655). Modern retrieval models are
+    /// asymmetric: snowflake-arctic-embed wants `"query: "`, the
+    /// Qwen3-Embedding family an instruct line. Leave empty for
+    /// symmetric models (bge-m3, bge-small).
+    #[serde(default)]
+    pub query_prefix: String,
 }
 
 fn default_max_input_tokens() -> usize {
