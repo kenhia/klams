@@ -173,11 +173,7 @@ pub async fn run(
             let results = rows
                 .into_iter()
                 .map(|(r, a)| {
-                    let author = PublicAuthorRef {
-                        agent_name: a.agent_name,
-                        model: a.model,
-                        repo: a.repo,
-                    };
+                    let author = PublicAuthorRef::from_record(&a);
                     let deleter = r
                         .deleted_by_author_id
                         .and_then(|d| deleters.get(&d).cloned())
@@ -273,12 +269,7 @@ async fn list_knowledge(
                 .unwrap_or_else(unknown_author_ref);
             let mem = PublicMemory {
                 id: item.id,
-                content: PublicMemoryContent::Knowledge {
-                    text: item.text.clone(),
-                    source_path: item.file.clone(),
-                    repo: item.repo.clone(),
-                    host: item.machine.clone(),
-                },
+                content: PublicMemoryContent::knowledge_from(&item),
                 tags: item.tags.clone(),
                 author,
                 created_at: offset_to_chrono(item.created_at),
@@ -312,23 +303,12 @@ async fn fetch_authors(state: &McpState, ids: &[Uuid]) -> HashMap<Uuid, PublicAu
             continue;
         }
         if let Ok(Some(a)) = state.store.postgres.get_author_by_id(*id).await {
-            out.insert(
-                *id,
-                PublicAuthorRef {
-                    agent_name: a.agent_name,
-                    model: a.model,
-                    repo: a.repo,
-                },
-            );
+            out.insert(*id, PublicAuthorRef::from_record(&a));
         }
     }
     out
 }
 
 fn unknown_author_ref() -> PublicAuthorRef {
-    PublicAuthorRef {
-        agent_name: "unknown".into(),
-        model: None,
-        repo: None,
-    }
+    PublicAuthorRef::unknown()
 }

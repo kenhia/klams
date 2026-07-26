@@ -221,11 +221,7 @@ pub async fn run(state: &McpState, args: MemoryAddArgs) -> Result<PublicMemory, 
         .touch_author_last_seen_at(author.id)
         .await;
 
-    let author_ref = PublicAuthorRef {
-        agent_name: author.agent_name.clone(),
-        model: author.model.clone(),
-        repo: author.repo.clone(),
-    };
+    let author_ref = PublicAuthorRef::from_record(&author);
 
     match content {
         MemoryAddContent::Fact { fact_type, payload } => {

@@ -1193,6 +1193,29 @@ impl PostgresStore {
         Ok(())
     }
 
+    /// Append a search-sample row (sprint 026, #643). Called
+    /// fire-and-forget off the MCP search path, exactly like
+    /// [`Self::insert_search_miss`] — a failed insert must never affect a
+    /// live search.
+    pub async fn insert_search_sample(&self, s: &crate::SearchSample) -> StoreResult<()> {
+        sqlx::query(
+            "INSERT INTO search_sample \
+             (query, caller, top_raw_score, top_kind, hit_count, kinds, duplicates_collapsed) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(&s.query)
+        .bind(&s.caller)
+        .bind(s.top_raw_score)
+        .bind(&s.top_kind)
+        .bind(s.hit_count)
+        .bind(&s.kinds)
+        .bind(s.duplicates_collapsed)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StoreError::Backend(format!("insert_search_sample: {e}")))?;
+        Ok(())
+    }
+
     /// List authors with per-author live-fact and live-event counts.
     /// Soft-deleted facts are excluded from `fact_count`; events have no
     /// soft-delete state.

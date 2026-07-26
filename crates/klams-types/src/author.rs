@@ -45,11 +45,44 @@ pub struct RegisterAuthorArgs {
 /// Compact reference to an author included in every public memory projection.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PublicAuthorRef {
+    /// Sprint 026 (#641): the author's UUID, so a caller can reason
+    /// about ownership — "is this mine to delete or supersede?" —
+    /// without a `register_author` round-trip to learn its own id
+    /// (asked for in #631/#636). `None` only when the author could not
+    /// be resolved, which is also when `agent_name` reads `"unknown"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<Uuid>,
     pub agent_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
+}
+
+impl PublicAuthorRef {
+    /// Project a registry row to its public reference (sprint 026,
+    /// #641). Previously hand-rolled at each call site, which is how the
+    /// author id came to be dropped on every read path.
+    #[must_use]
+    pub fn from_record(a: &AuthorRecord) -> Self {
+        Self {
+            id: Some(a.id),
+            agent_name: a.agent_name.clone(),
+            model: a.model.clone(),
+            repo: a.repo.clone(),
+        }
+    }
+
+    /// Placeholder for a hit whose author row could not be resolved.
+    #[must_use]
+    pub fn unknown() -> Self {
+        Self {
+            id: None,
+            agent_name: "unknown".into(),
+            model: None,
+            repo: None,
+        }
+    }
 }
 
 /// Validation errors for `RegisterAuthorArgs` (matches `data-model.md` §1).

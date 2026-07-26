@@ -63,7 +63,7 @@ pub use error::ApiError;
 pub use hash::canonical_json_hash;
 pub use health::{HealthSnapshot, HealthStatus, QueueStatus, SubsystemStatus};
 pub use maintenance::{MaintenanceSnapshot, MaintenanceState, RunningSnapshot};
-pub use memory::{MemoryKind, PublicMemory, PublicMemoryContent, ScoredMemory};
+pub use memory::{KnowledgeCopy, MemoryKind, PublicMemory, PublicMemoryContent, ScoredMemory};
 pub use pipeline::{AppendEvent, IndexKnowledge, MemoryWrite, UpsertFact};
 pub use requests::{
     AppendEventRequest, IndexKnowledgeRequest, ListAuthorMemoriesParams, ListAuthorsParams,

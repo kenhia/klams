@@ -2,6 +2,7 @@
 
 pub mod context;
 pub mod decay;
+pub mod dedupe;
 pub mod hybrid;
 pub mod metrics;
 pub mod policy;

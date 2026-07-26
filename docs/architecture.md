@@ -997,6 +997,101 @@ eval harness. No storage or schema change.
   the contract change is recorded in that repo at
   `sprints/planning/001-cross-project-note.md`.
 
+## 2k. Sprint 026 deltas — query-time dedupe + projection additions
+
+Sprint 026 ([sprints/026-retrieval-measurement/](../sprints/026-retrieval-measurement/sprint.md),
+WI #641) collapses duplicate content at query time and widens the
+knowledge projection. No storage or schema change, no migration.
+
+* **Why**: sprint 023 deliberately made *ingest* dedupe host-scoped
+  (`find_knowledge_by_content_hash(hash, file, machine)`) so that
+  per-host delete works. `kai` and `kubs0` scan a synced `~/src`, so
+  nearly every chunk is stored twice. Measured on the live corpus:
+  221,982 points, 124,034 unique `content_hash`, 36,121 hashes on both
+  hosts — and a 10-result page was reliably 5 duplicate pairs.
+* **Query-time collapse** (`klams_core::dedupe::collapse_duplicates`)
+  groups knowledge hits by `content_hash` and keeps the best-ranked
+  copy. It runs **before** rank fusion, so freed ranks compact and the
+  released slots fill with new content instead of leaving holes. The
+  fetch over-fetches (MCP ×2, the hybrid adapter's existing ×3) so a
+  page stays full after collapse.
+  - Keys on **content only** — host/file/repo never keep two copies
+    apart. Duplicate storage was never the problem; duplicate top-k
+    slots were.
+  - The survivor carries `copies: [{id, host, file}]` for every
+    duplicate it absorbed, so nothing becomes unreachable.
+  - **Top-k scope**: a copy outside the fetch window is not hunted down.
+  - Applied on all three read paths: MCP `memory_search`, REST
+    `/memory/search`, and `/memory/context` (the latter two share the
+    `StoreHybridAdapter` seam). Facts and events carry no
+    `content_hash` and are never collapsed. Distinct from the
+    `ContextBuilder`'s cross-section dedupe (repo+file), which is
+    unchanged.
+* **Projection additions** on knowledge results:
+  `content_hash` (the collapse key, and the eval's no-duplicates
+  assertion), `heading_path` / `language` / `chunk_index`, and
+  `author.id` (ownership reasoning for delete/supersede without a
+  `register_author` round-trip).
+* **`KnowledgeItem` gained `heading_path` / `language` / `chunk_index`.**
+  Sprint 022 wrote these to the Qdrant payload but `payload_to_item`
+  never read them back, so no read path could project them. The
+  knowledge→public mapping now lives in one place
+  (`PublicMemoryContent::knowledge_from`), as does the author mapping
+  (`PublicAuthorRef::from_record`); both were previously hand-rolled at
+  four call sites, which is how the fields came to be dropped.
+* **Incidental fix**: `matches_filters` reads `host` from the retrieval
+  payload, but the vector payload never carried a `host` key — so a
+  host-filtered knowledge query silently dropped every row. The payload
+  now carries it.
+
+## 2l. Sprint 026 deltas — retrieval measurement (#643)
+
+The other half of sprint 026: make retrieval quality *measurable*, so the
+ranking work in sprint 029 is a measured change rather than a guess.
+
+* **The miss log was a dead instrument.** `LOW_SCORE_THRESHOLD` was 0.5,
+  but bge-small cosine on this corpus sits ~0.75–0.96 **even for junk** (a
+  content-free fragment measured 0.956) — the threshold sat below the
+  floor of the distribution, so `low_score` could never fire. Two weeks of
+  production recorded **one** miss, and that one was a `zero_hit` from an
+  emptied filter. Recalibrated to **0.80**, inside the observed
+  weak/strong boundary (~0.78–0.82, from #628's paired queries). This is a
+  *calibrated* constant, honest only against the current embedding model —
+  the #655 GPU model swap (sprint 028) changes the distribution wholesale
+  and must re-derive it.
+* **New: the search-sample log** (`search_sample`, migration 0011).
+  Records **every** search — query, caller, top **raw** (pre-fusion) score,
+  that hit's kind, hit count, kinds queried, and how many duplicates the
+  #641 collapse removed. klams previously had no record of what agents ask
+  it, which is why every eval query to date was invented rather than
+  observed, and why the threshold above could only be calibrated from a
+  handful of data points. Written fire-and-forget, exactly like
+  `search_miss`; retention is an operator prune concern.
+  - `top_raw_score` is deliberately the pre-fusion score: post-024 `score`
+    is pure RRF and carries no magnitude, so a distribution over fused
+    scores would say nothing about match quality.
+* **Caller attribution fixed.** `record_search` was hardcoded to
+  `"anonymous"` since sprint 020, so the per-agent search counter had
+  exactly one label value — while the caller's agent name sat unused in
+  the argument list. The miss log, the sample log, and the metric now
+  share one `caller_label` helper so they cannot disagree.
+* **`source_rank` is re-numbered after duplicate collapse.** Collapse
+  removes entries, so survivors kept holed pre-collapse ranks (a caller
+  asking for 20 could see ranks 0 and 25) — leaking the over-fetch
+  multiplier as a gap. Ranks are now contiguous over the list the caller
+  actually receives, restoring the sprint-017 invariant.
+* **The eval suite is the gate** (`just eval`). The suite and runner live
+  in klams-mind (`evals/suites/homelab-retrieval.toml`); the recipe lives
+  here because klams is what regresses. It grew from 4 queries to 21, with
+  three new check types — `no_duplicates` (#641's invariant),
+  `min_body_chars` (the junk ceiling, breadcrumb stripped), and
+  `memory_id` with `max_rank` (curated-beats-bulk; presence alone would
+  have passed while #628 was live). Queries carry `expect`: `pass` is the
+  regression bar, `known_open` is a tracked failure that does not fail the
+  run. Without that distinction a measurement suite can only contain
+  queries that already pass — which is exactly how the old four scored
+  4/4 while every real failure was happening.
+
 ## 3. Deployment topology on `kubs0`
 
 ```text

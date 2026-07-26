@@ -120,6 +120,33 @@ pub struct SearchMiss {
     pub kinds: String,
 }
 
+/// A record of one search, hit or miss (sprint 026, #643).
+///
+/// The miss log ([`SearchMiss`]) only records *failures*, and until this
+/// sprint its threshold was mis-calibrated badly enough to record almost
+/// nothing — so klams had no record of what agents ask it. This is that
+/// record: it is what future eval queries get mined from, and what the
+/// next miss-log threshold gets calibrated against (the current one came
+/// from a handful of data points in #628).
+///
+/// `top_raw_score` is deliberately the **pre-fusion** per-source score
+/// (Qdrant cosine / Postgres `ts_rank`), not the fused RRF value — RRF
+/// discards magnitude, so a distribution over fused scores would say
+/// nothing about match quality. `top_kind` is stored alongside because
+/// the raw scales are not comparable across kinds.
+#[derive(Debug, Clone)]
+pub struct SearchSample {
+    pub query: String,
+    pub caller: String,
+    pub top_raw_score: Option<f32>,
+    pub top_kind: Option<String>,
+    pub hit_count: i32,
+    pub kinds: String,
+    /// How many duplicate hits query-time collapse (#641) removed from
+    /// this search — the dedupe's live effect, per query.
+    pub duplicates_collapsed: i32,
+}
+
 /// Single trait the worker pool uses for all persistence.
 #[async_trait]
 pub trait Store: Send + Sync + 'static {

@@ -106,10 +106,6 @@ pub async fn run(
         mcp_metrics::KIND_EVENT,
     );
 
-    let author_ref = PublicAuthorRef {
-        agent_name: author.agent_name,
-        model: author.model,
-        repo: author.repo,
-    };
+    let author_ref = PublicAuthorRef::from_record(&author);
     Ok(projection::project_event(&event, author_ref))
 }
