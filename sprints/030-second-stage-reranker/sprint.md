@@ -117,3 +117,44 @@ reranker, gated behind ~1–2k labeled pairs from the search_sample log.
     21-query run: **median ~34 ms, p99 ~43 ms** — inside the
     50–150 ms budget.
   - Gate green; full docker-gated suite green locally.
+
+## Deployed 2026-07-26
+
+- Version `0.1.30` live on kubs0 (`/healthz` confirms; release build
+  from the squash-merged main, fcd05f5 / PR #32).
+- Rollback targets: binaries `0.1.29` via `just rollback` (`.prev` in
+  place); the STAGE independently via removing `[retrieval]` from
+  `/etc/klams/klams.toml` (backup at `klams.toml.bak-030`) or just
+  stopping `klams-reranker` (best-effort stage degrades to the 0.1.29
+  order, `klams_rerank_skipped_total` counts it).
+- Migrations applied: **none** (0012 remains latest) — binary rollback
+  is clean.
+- New container: `klams-reranker` (TEI `89-1.9`, bge-reranker-v2-m3,
+  port 7071, GPU via CDI; ~2.9 GB VRAM total with the embedder).
+- **Official eval baseline against live 0.1.30: 21/21 (100%), 0
+  regressions** (was 19/21 on 0.1.29) — captured in klams-mind
+  `evals/baselines/homelab-retrieval.md` (ea7cb46), with both
+  formerly-known-open queries promoted to `expect = "pass"`. Rerank
+  stage median 32 ms in production (`op="rerank"` histogram).
+- Verified live, beyond `/healthz`: journal shows "second-stage
+  reranker enabled" (url + window); the two acceptance probes rank 0
+  through the full MCP path; units settled (`klams-service`,
+  `klams-monitor` active, journal clean); scanner picks up 0.1.30 on
+  its next timer fire.
+- Config changes made on hosts (documented, no tokens touched):
+  `/etc/klams/klams.toml` gained `[retrieval] reranker_url`
+  (validated with `--validate-config` before restart);
+  `/ai/klams/config/compose.env` gained `RERANKER_MODEL_ID`.
+- Found in passing, NOT this sprint's regressions: (1)
+  `scripts/verify-mvp.sh` SC-001 is bit-rotted — it sends
+  `source: "verify-mvp.sh"` where the API has long required the
+  `Source` enum, so `just health`/`just verify` fail 422 regardless of
+  deploy; breather-sprint candidate. (2) the shared test-stack
+  collection `knowledge_items_test` accumulates seeds across weeks and
+  eventually breaks `phase4_hybrid_retrieval`'s semantic-overlap
+  assertion — dropped once here; a per-run drop (or moving the suite
+  to `spawn_isolated`) is the durable fix.
+- Follow-up for Ken / breather: drop the old 384-dim
+  `knowledge_items` collection once v2 keeps proving out (028
+  follow-up, still open); swap `RERANKER_MODEL_ID` to Qwen3-Reranker
+  when TEI merges support (PRs #886/#730/#835).
