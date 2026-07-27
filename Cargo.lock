@@ -1815,6 +1815,7 @@ dependencies = [
 name = "klams-mcp"
 version = "0.1.31"
 dependencies = [
+ "async-trait",
  "axum",
  "chrono",
  "klams-core",

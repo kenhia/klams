@@ -827,6 +827,14 @@ mod tests {
     // Per the review: "this exact test would have caught the bug
     // pre-merge." A 413 is permanent; retrying it three times is pure
     // latency and produced the ~90k wasted TEI round-trips behind #420.
+    //
+    // Sprint 031 (#646) asked for a hermetic `embed_does_not_retry_4xx`
+    // to sit beside the 5xx one. It is already here and has been since
+    // 027 — `does_not_retry_other_4xx` (generic 400 → EmbeddingRejected)
+    // and `openai_does_not_retry_413` / `tei_does_not_retry_413` (the
+    // one 4xx that means "split and retry"), each pinned to exactly ONE
+    // request. The WI text predates them; writing a third near-identical
+    // copy would have been the duplication this sprint is removing.
 
     #[tokio::test]
     async fn tei_does_not_retry_413() {
