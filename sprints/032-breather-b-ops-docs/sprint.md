@@ -370,3 +370,68 @@ exactly, as required.
 (Operator note: `just eval` needs `KLAMS_TOKEN`; it defaults to empty
 and fails with "retrieval failed / check klams and KLAMS_TOKEN". The
 klams-mind `.env` holds a working scoped token.)
+
+## #334 — what was upgraded, and what was deliberately not
+
+### Done
+
+| Thing | From | To |
+|---|---|---|
+| `axum` | 0.7 | 0.8 |
+| `axum-prometheus` | 0.7 | 0.8 (lockstep) |
+| `thiserror` | 1 | 2 |
+| `metrics` | 0.23 | 0.24 |
+| `metrics-exporter-prometheus` | 0.15 | 0.16 (**forced**, see below) |
+| `qdrant-client` | 1.12 | 1.18 |
+| Qdrant API | `search_points` | `query_points` (2 call sites) |
+| `rust-toolchain.toml` | `channel = "stable"` | `channel = "1.96.0"` |
+
+Two things worth recording because neither was in the WI:
+
+**The axum 0.8 path-syntax break does not fail the build.** `cargo
+check` passed clean; the router panics at *runtime* on `/:id`. Six
+routes needed `/{id}`. A build-green upgrade that panics on first
+request is the argument for running the tests, not just compiling.
+
+**The metrics bump silently emptied `/metrics`.** `axum-prometheus`
+0.8 pulls `metrics-exporter-prometheus` 0.16 (facade `metrics` 0.24),
+while our three crates pinned exporter `0.15` (facade 0.23). Two
+`metrics` versions coexisted, so two *separate process-global
+registries* existed: `klams_core::metrics` recorded into one, the
+installed recorder rendered the other, and exposition came back empty.
+`retrieval_metric.rs` caught it. Had it not, the first symptom would
+have been every Grafana panel going No Data after deploy. The fix is
+aligning the exporter to 0.16 so there is exactly one `metrics` in the
+lock file — which is now the invariant worth remembering: **the
+exporter version and the `metrics` facade version are one decision, not
+two.**
+
+`rust-toolchain.toml` already existed, so the WI's "pin toolchain" read
+as done — but it said `channel = "stable"`, which pins nothing. Now a
+concrete `1.96.0`. (`rust-version = "1.83"` in Cargo.toml is the MSRV
+floor, a different knob, left alone.)
+
+### Deliberately not done
+
+**Container image refreshes.** The WI asks for a Prometheus/Grafana
+refresh. Neither container runs on kubs0 — `docker ps` shows only
+postgres, qdrant, tei and reranker; Grafana lives on kubsdb, provisioned
+out of ansible-k. So a tag bump here is a text edit to something this
+host cannot start, cannot scrape, and cannot render. Bumping a
+production tag with no way to verify it is worse than leaving it and
+saying so. It needs doing where the containers actually run.
+
+**TEI image tag (`89-1.9`).** Unchanged, per the standing caution: it
+serves *both* the Qwen3 embedder and bge-reranker-v2-m3, so a tag change
+is a model-serving change twice over and carries the same eval gate as a
+model swap. Not something to fold into the tail of a debt sprint.
+
+**Qwen3-Reranker check (the 030 ride-along).** Requires the TEI bump
+above plus an eval bake-off to be worth anything. Deferred with it.
+
+**Qdrant image (`v1.18.0`).** The client is now on 1.18, matching the
+server, so the version skew that motivated part of this item is gone.
+A *server* bump is a storage-format change against a live 180k-point
+collection; #684's v1 drop (done this sprint) was the prerequisite, so
+it is now unblocked — but it deserves its own change with a backup and
+an eval run, not the last hour of this one.

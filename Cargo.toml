@@ -50,17 +50,17 @@ serde_json = "1"
 toml = "0.8"
 
 # http
-axum = { version = "0.7", features = ["macros"] }
+axum = { version = "0.8", features = ["macros"] }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["trace", "request-id", "util"] }
 hyper = "1"
 hyper-util = { version = "0.1", features = ["tokio", "server", "server-graceful", "service", "http1"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
-axum-prometheus = "0.7"
+axum-prometheus = "0.8"
 
 # storage
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "time", "chrono", "json", "macros", "migrate"] }
-qdrant-client = "1.12"
+qdrant-client = "1.18"
 
 # kpidash dashboard sink (klams-monitor, optional `kpidash` feature)
 redis = { version = "0.27", default-features = false, features = ["tokio-comp"] }
@@ -68,7 +68,7 @@ redis = { version = "0.27", default-features = false, features = ["tokio-comp"] 
 # observability
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
-metrics = "0.23"
+metrics = "0.24"
 
 # crypto / dedupe
 sha2 = "0.10"
@@ -79,7 +79,7 @@ uuid = { version = "1", features = ["v4", "v7", "serde"] }
 time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
 
 # errors
-thiserror = "1"
+thiserror = "2"
 anyhow = "1"
 
 # config

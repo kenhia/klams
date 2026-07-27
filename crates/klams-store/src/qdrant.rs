@@ -5,8 +5,8 @@ use klams_types::{IndexKnowledge, KnowledgeItem, Source};
 use qdrant_client::qdrant::{
     point_id::PointIdOptions, points_selector::PointsSelectorOneOf, value::Kind as ValueKind,
     Condition, CountPointsBuilder, CreateCollectionBuilder, DeletePointsBuilder, Distance,
-    FieldType, Filter, ListValue, PointId, PointStruct, PointsIdsList, ScrollPointsBuilder,
-    SearchPointsBuilder, SetPayloadPointsBuilder, UpsertPointsBuilder, Value, VectorParamsBuilder,
+    FieldType, Filter, ListValue, PointId, PointStruct, PointsIdsList, QueryPointsBuilder,
+    ScrollPointsBuilder, SetPayloadPointsBuilder, UpsertPointsBuilder, Value, VectorParamsBuilder,
 };
 use qdrant_client::Qdrant;
 use std::collections::HashMap;
@@ -272,10 +272,17 @@ impl QdrantStore {
             must: vec![Condition::is_empty("deleted_at")],
             ..Default::default()
         };
+        // Sprint 032 (#334): the universal `query_points` API replaces the
+        // legacy `search_points`. Same semantics for a plain dense ANN
+        // query, and it is the entry point Qdrant's server-side hybrid /
+        // prefetch features hang off, so the migration is also the door
+        // to #333 if lexical search is ever done in-engine.
         let resp = self
             .client
-            .search_points(
-                SearchPointsBuilder::new(self.collection.clone(), query_vector, u64::from(top_k))
+            .query(
+                QueryPointsBuilder::new(self.collection.clone())
+                    .query(query_vector)
+                    .limit(u64::from(top_k))
                     .with_payload(true)
                     .filter(filter),
             )
@@ -321,8 +328,10 @@ impl QdrantStore {
         };
         let resp = self
             .client
-            .search_points(
-                SearchPointsBuilder::new(self.collection.clone(), query_vector, u64::from(top_k))
+            .query(
+                QueryPointsBuilder::new(self.collection.clone())
+                    .query(query_vector)
+                    .limit(u64::from(top_k))
                     .with_payload(true)
                     .filter(filter),
             )

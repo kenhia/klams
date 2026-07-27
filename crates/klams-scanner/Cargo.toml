@@ -33,7 +33,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 anyhow = { workspace = true }
 time = { workspace = true }
 metrics = { workspace = true }
-metrics-exporter-prometheus = "0.15"
+metrics-exporter-prometheus = "0.16"
 shellexpand = "3"
 
 [dev-dependencies]

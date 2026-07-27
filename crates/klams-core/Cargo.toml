@@ -28,4 +28,4 @@ reqwest = { workspace = true }
 
 [dev-dependencies]
 wiremock = { workspace = true }
-metrics-exporter-prometheus = "0.15"
+metrics-exporter-prometheus = "0.16"
