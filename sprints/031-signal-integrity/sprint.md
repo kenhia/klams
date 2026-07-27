@@ -435,3 +435,47 @@ version, and suite hash, then move the WI to `done`.
   `knowledge_items_test` collection. That is fine for presence
   assertions and is documented in the harness, but a future sprint may
   want to isolate everything.
+
+## Deployed 2026-07-27
+
+- Version `0.1.31` live on kubs0 — `/healthz` reports `0.1.31`, status `Ok`,
+  postgres / qdrant / embeddings all `Ok`. Preflight had `0.1.30` live, so the
+  version genuinely moved (the PATCH-is-the-sprint-number check).
+- Rollback target: `0.1.30` via `just rollback` — `.prev` binaries in place for
+  all three units.
+- **Migrations applied: none.** 031 adds no migration files, so rollback is a
+  clean binary swap with no restore-from-dump needed.
+- Config changes required: **none**. `/etc/klams/klams.toml` untouched; the
+  reranker stage from 030 came back up (`second-stage reranker enabled`,
+  `http://127.0.0.1:7071`, window 50).
+
+**Verified live, beyond `/healthz`:**
+
+- `just health` → 2 passed / 0 failed, and `just verify` → **7 passed / 0
+  failed / 3 skipped**. This is the first time either has passed against a
+  deployed build — #682's whole point.
+- **The MCP validator is live.** `memory_add` of an `EnvFact` with key
+  `lowercase-was-accepted-before-031` is now refused with
+  `payload.key (shape): key must match ^[A-Z][A-Z0-9_]*$`. That exact payload
+  was storable before this deploy.
+- **The dedupe probe is live.** The same knowledge text written twice — the
+  second time with trailing whitespace — returned the *same* point id, so
+  normalization and content-hash dedupe are both in effect. Before 031 that
+  produced a twin. Smoke memory retracted afterwards.
+- **The dissent divert is live** — the headline property, and the one that had
+  no mechanism behind it until this sprint. A Controller-sourced fact amended
+  by an agent over MCP came back with `write_path: "dissent"`, a `dissent_id`,
+  and `payload.value` still `operator-set` (the canonical value, NOT what the
+  agent submitted).
+- Units settled: all three `active`, `NRestarts=0`, no ERROR/WARN in the
+  journal since restart.
+- **Eval re-run against the deployed binary: 21/21, 0 regressions, 0
+  known-open**, stamped `klams version: 0.1.31`. Retrieval-neutral, as the
+  sprint required. (The report's own version stamp is #676's feature earning
+  its keep on day one — it proves *which binary* the run measured.)
+
+**One artifact left behind for Ken:** the smoke test above created dissent
+`019fa143-7319-74e2-9ae5-9435040707d1` against a now-retracted fact. Discarding
+it needs the `manage` scope, which the token I had does not carry, so it is
+still `pending`. Harmless — its parent fact is soft-deleted — but it will show
+up in a dissent listing until discarded.
