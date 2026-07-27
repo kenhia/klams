@@ -21,6 +21,7 @@ use crate::{
     tools::memory_delete::{authorize_curation, DeleteCaller},
     tools::McpState,
 };
+use klams_store::Store;
 use klams_types::{PublicAuthorRef, PublicMemory, Source};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -51,8 +52,8 @@ pub struct MemoryUpdateArgs {
 /// superseded/deleted), `NOT_AGENT_AUTHORED`, `INSUFFICIENT_SCOPE`,
 /// `PAYLOAD_TOO_LARGE`, `EMBEDDING_UNAVAILABLE`, or `INTERNAL_ERROR`.
 #[allow(clippy::too_many_lines)]
-pub async fn run(
-    state: &McpState,
+pub async fn run<S: Store>(
+    state: &McpState<S>,
     args: MemoryUpdateArgs,
     caller: Option<&DeleteCaller>,
 ) -> Result<PublicMemory, ErrorEnvelope> {
@@ -89,7 +90,6 @@ pub async fn run(
 
     let mut item = state
         .store
-        .qdrant
         .get_knowledge(args.id)
         .await
         .map_err(|e| errors::from_store_error("get_knowledge", &e))?
@@ -105,7 +105,6 @@ pub async fn run(
         })?;
     if state
         .store
-        .qdrant
         .point_is_soft_deleted(args.id)
         .await
         .ok()
@@ -134,7 +133,6 @@ pub async fn run(
     // point — resolve both.
     let owner = state
         .store
-        .qdrant
         .knowledge_authors_by_ids(&[args.id])
         .await
         .map_err(|e| errors::from_store_error("knowledge_authors_by_ids", &e))?
@@ -147,7 +145,6 @@ pub async fn run(
     // last-seen-touched; the projection shows the record's author.
     let caller_author = state
         .store
-        .postgres
         .get_author_by_id(caller.author_id)
         .await
         .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("get_author_by_id: {e}")))?
@@ -159,7 +156,6 @@ pub async fn run(
         })?;
     let _ = state
         .store
-        .postgres
         .touch_author_last_seen_at(caller_author.id)
         .await;
 
@@ -188,14 +184,12 @@ pub async fn run(
         .await?;
         state
             .store
-            .embedder
-            .embed(&item.text)
+            .embed_document(&item.text)
             .await
             .map_err(|e| errors::from_store_error("embedding", &e))?
     } else {
         state
             .store
-            .qdrant
             .get_point_vector(item.id)
             .await
             .map_err(|e| errors::from_store_error("get_point_vector", &e))?
@@ -209,7 +203,6 @@ pub async fn run(
 
     state
         .store
-        .qdrant
         .upsert_knowledge_item(&item, owner_id, embedding)
         .await
         .map_err(|e| errors::from_store_error("qdrant", &e))?;
@@ -222,7 +215,7 @@ pub async fn run(
 
     // Project with the *record's* author, fetched fresh; fall back to
     // the unknown ref if the row vanished (legacy points).
-    let author_ref = match state.store.postgres.get_author_by_id(owner_id).await {
+    let author_ref = match state.store.get_author_by_id(owner_id).await {
         Ok(Some(a)) => PublicAuthorRef::from_record(&a),
         _ => PublicAuthorRef::unknown(),
     };

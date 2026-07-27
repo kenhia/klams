@@ -158,6 +158,29 @@ impl TokenGrantConfig {
     }
 }
 
+/// Scope set of the caller, resolved from the presented bearer token.
+///
+/// Stamped onto request extensions by the REST auth middleware and read
+/// back by both surfaces — REST route guards directly, MCP tools via the
+/// `http::request::Parts` that rmcp copies into the tool context.
+///
+/// Sprint 031 (#645): this and [`AuthenticatedAuthor`] used to live in
+/// `klams-api`, which made `klams-mcp` depend on the REST crate for two
+/// plain data types and nothing else — an inverted dependency that also
+/// meant the MCP server could not be built or tested without the REST
+/// layer. They are pure data, so they belong at the bottom with
+/// [`Scope`].
+#[derive(Clone, Debug)]
+pub struct AuthenticatedScopes(pub std::sync::Arc<Vec<Scope>>);
+
+/// Author bound to the request's bearer token (sprint 009). Write paths
+/// stamp `author_id` from this when the caller omits one.
+#[derive(Clone, Debug)]
+pub struct AuthenticatedAuthor {
+    pub author_id: uuid::Uuid,
+    pub agent_name: std::sync::Arc<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

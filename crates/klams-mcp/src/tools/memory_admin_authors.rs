@@ -19,6 +19,7 @@ use crate::{
     errors::{self, envelope, ErrorEnvelope},
     tools::McpState,
 };
+use klams_store::Store;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -58,13 +59,12 @@ pub struct ListAuthorsOutput {
 ///
 /// # Errors
 /// `INTERNAL_ERROR` if either store cannot be queried.
-pub async fn list(
-    state: &McpState,
+pub async fn list<S: Store>(
+    state: &McpState<S>,
     args: ListAuthorsArgs,
 ) -> Result<ListAuthorsOutput, ErrorEnvelope> {
     let rows = state
         .store
-        .postgres
         .list_all_authors()
         .await
         .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("list_all_authors: {e}")))?;
@@ -101,19 +101,17 @@ pub async fn list(
     })
 }
 
-async fn summarize(
-    state: &McpState,
+async fn summarize<S: Store>(
+    state: &McpState<S>,
     a: &klams_types::AuthorRecord,
 ) -> Result<AuthorSummary, ErrorEnvelope> {
     let (facts, events, soft_deletes_authored) = state
         .store
-        .postgres
         .count_author_rows(a.id)
         .await
         .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("count_author_rows: {e}")))?;
     let knowledge = state
         .store
-        .qdrant
         .count_knowledge_by_author_any(a.id)
         .await
         .map_err(|e| {
@@ -154,8 +152,8 @@ pub struct RemoveAuthorOutput {
 /// `NOT_FOUND` for an unknown id, `INSUFFICIENT_SCOPE`-adjacent
 /// `AUTHOR_HAS_MEMORIES` when the author still owns something, or
 /// `INTERNAL_ERROR`.
-pub async fn remove(
-    state: &McpState,
+pub async fn remove<S: Store>(
+    state: &McpState<S>,
     args: RemoveAuthorArgs,
 ) -> Result<RemoveAuthorOutput, ErrorEnvelope> {
     let author = load_author(state, args.author_id).await?;
@@ -177,7 +175,6 @@ pub async fn remove(
     }
     let removed = state
         .store
-        .postgres
         .delete_author(author.id)
         .await
         .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("delete_author: {e}")))?;
@@ -221,8 +218,8 @@ pub struct MergeAuthorsOutput {
 /// # Errors
 /// `NOT_FOUND` for either unknown id, `INVALID_KIND` when both ids are
 /// the same, or `INTERNAL_ERROR`.
-pub async fn merge(
-    state: &McpState,
+pub async fn merge<S: Store>(
+    state: &McpState<S>,
     args: MergeAuthorsArgs,
 ) -> Result<MergeAuthorsOutput, ErrorEnvelope> {
     if args.from_author_id == args.into_author_id {
@@ -238,7 +235,6 @@ pub async fn merge(
 
     let knowledge_moved = state
         .store
-        .qdrant
         .reassign_knowledge_author(from.id, args.into_author_id)
         .await
         .map_err(|e| {
@@ -249,7 +245,6 @@ pub async fn merge(
         })?;
     let (facts_moved, events_moved, soft_deletes_moved) = state
         .store
-        .postgres
         .merge_author_rows(from.id, args.into_author_id)
         .await
         .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("merge_author_rows: {e}")))?;
@@ -265,13 +260,12 @@ pub async fn merge(
     })
 }
 
-async fn load_author(
-    state: &McpState,
+async fn load_author<S: Store>(
+    state: &McpState<S>,
     id: Uuid,
 ) -> Result<klams_types::AuthorRecord, ErrorEnvelope> {
     state
         .store
-        .postgres
         .get_author_by_id(id)
         .await
         .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("get_author_by_id: {e}")))?

@@ -57,6 +57,17 @@ async fn http_get(server: &TestServer, path: &str) -> (reqwest::StatusCode, Valu
     (status, body)
 }
 
+/// A unique `EnvFact` key in the shape the validator requires
+/// (`^[A-Z][A-Z0-9_]*$`).
+///
+/// Sprint 031 (#645): these seeds used to be `phase7-list-<uuid>`, which
+/// REST has always rejected and MCP accepted, because the MCP write path
+/// ran no validation at all. With both surfaces on one
+/// `ValidatorRegistry` the old spelling fails — correctly.
+fn env_key(prefix: &str, uniq: Uuid) -> String {
+    format!("{prefix}_{}", uniq.simple().to_string().to_uppercase())
+}
+
 #[ignore = "requires docker compose stack"]
 #[tokio::test]
 async fn authors_list_returns_registered_author_with_counts() {
@@ -71,7 +82,7 @@ async fn authors_list_returns_registered_author_with_counts() {
         MemoryAddArgs::fact(
             author,
             FactTypeArg::EnvFact,
-            serde_json::json!({"key": format!("phase7-list-{uniq}"), "value": "x"}),
+            serde_json::json!({"key": env_key("PHASE7_LIST", uniq), "value": "x"}),
         ),
     )
     .await
@@ -137,7 +148,7 @@ async fn authors_memories_lists_facts_and_events() {
         MemoryAddArgs::fact(
             author,
             FactTypeArg::EnvFact,
-            serde_json::json!({"key": format!("phase7-mem-{uniq}"), "value": "y"}),
+            serde_json::json!({"key": env_key("PHASE7_MEM", uniq), "value": "y"}),
         ),
     )
     .await

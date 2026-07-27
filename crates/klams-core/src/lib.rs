@@ -4,6 +4,7 @@ pub mod context;
 pub mod decay;
 pub mod dedupe;
 pub mod hybrid;
+pub mod knowledge_write;
 pub mod metrics;
 pub mod policy;
 pub mod provenance;
@@ -14,6 +15,7 @@ pub mod validate;
 pub mod worker;
 
 pub use decay::{DecayConfig, DecayTask, LastUsedBumper};
+pub use knowledge_write::{prepare as prepare_knowledge, PreparedKnowledge};
 pub use policy::{PolicyEntry, PolicyTable};
 pub use queue::{EnqueueOutcome, MemoryQueue, QueueFull, WriteJob, WriteReply};
 pub use validate::ValidatorRegistry;

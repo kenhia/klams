@@ -13,6 +13,7 @@ use crate::{
     maintenance, metrics as mcp_metrics,
     tools::McpState,
 };
+use klams_store::Store;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -64,8 +65,8 @@ pub struct DissentProposeOutput {
 /// `SCHEMA_VALIDATION_FAILED` (empty/oversized reason, non-object
 /// payload), `NOT_FOUND` (fact missing or soft-deleted), or
 /// `INTERNAL_ERROR`.
-pub async fn run(
-    state: &McpState,
+pub async fn run<S: Store>(
+    state: &McpState<S>,
     args: DissentProposeArgs,
 ) -> Result<DissentProposeOutput, ErrorEnvelope> {
     if let Some(env) = maintenance::check(&state.maintenance) {
@@ -89,7 +90,6 @@ pub async fn run(
     }
     let author = state
         .store
-        .postgres
         .get_author_by_id(args.author_id)
         .await
         .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("get_author_by_id: {e}")))?
@@ -99,15 +99,10 @@ pub async fn run(
                 format!("author_id {} not found", args.author_id),
             )
         })?;
-    let _ = state
-        .store
-        .postgres
-        .touch_author_last_seen_at(author.id)
-        .await;
+    let _ = state.store.touch_author_last_seen_at(author.id).await;
 
     let outcome = state
         .store
-        .postgres
         .propose_dissent(
             args.fact_id,
             &args.proposed_payload,

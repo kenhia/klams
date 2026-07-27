@@ -40,17 +40,10 @@ pub struct SeedReport {
     pub events: usize,
 }
 
-/// Wipe `facts`, `events`, and `summaries` so a test starts from a
-/// known-empty Postgres state. Reads `TEST_DATABASE_URL` (same
-/// default as the harness). Knowledge in the shared Qdrant test
-/// collection is left in place — tests that care about knowledge
-/// counts should query by repo/file filters seeded for that test.
-pub async fn truncate_pg() {
-    let url = std::env::var("TEST_DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://klams:klams_test@127.0.0.1:55432/klams".into());
-    let pool = sqlx::PgPool::connect(&url).await.expect("pg connect");
-    sqlx::query("TRUNCATE facts, events, summaries CASCADE")
-        .execute(&pool)
-        .await
-        .expect("truncate");
-}
+// Sprint 031 (#679): `truncate_pg()` lived here and wiped `facts`,
+// `events`, and `summaries` in the shared database so a test could
+// start from empty. It is gone. Wiping shared state is not isolation —
+// it is a race with every other test running at the time, which is
+// exactly why the ignored suite needed `--test-threads=1`. A test that
+// wants an empty Postgres now calls `TestServer::spawn_isolated()` and
+// gets its own migrated schema.

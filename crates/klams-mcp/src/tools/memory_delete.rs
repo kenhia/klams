@@ -18,6 +18,7 @@ use crate::{
     tools::McpState,
 };
 use chrono::Utc;
+use klams_store::Store;
 use klams_types::Scope;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -122,8 +123,8 @@ pub struct MemoryDeleteOutput {
 /// `MISSING_AUTHOR_ID`, `UNKNOWN_AUTHOR_ID`, `INSUFFICIENT_SCOPE`
 /// (sprint 025 — not the owner and no `manage` scope), `NOT_FOUND`,
 /// `EVENTS_NOT_DELETABLE`, or `INTERNAL_ERROR`.
-pub async fn run(
-    state: &McpState,
+pub async fn run<S: Store>(
+    state: &McpState<S>,
     args: MemoryDeleteArgs,
     caller: Option<&DeleteCaller>,
 ) -> Result<MemoryDeleteOutput, ErrorEnvelope> {
@@ -133,7 +134,6 @@ pub async fn run(
     let caller = acting_author(caller, args.author_id)?;
     let author = state
         .store
-        .postgres
         .get_author_by_id(caller.author_id)
         .await
         .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("get_author_by_id: {e}")))?
@@ -143,16 +143,11 @@ pub async fn run(
                 format!("author_id {} not found", caller.author_id),
             )
         })?;
-    let _ = state
-        .store
-        .postgres
-        .touch_author_last_seen_at(author.id)
-        .await;
+    let _ = state.store.touch_author_last_seen_at(author.id).await;
 
     // Events first: append-only.
     if state
         .store
-        .postgres
         .event_exists(args.id)
         .await
         .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("event_exists: {e}")))?
@@ -178,8 +173,8 @@ pub async fn run(
 
 /// Soft-delete `id` if it is a fact. `Ok(None)` means "not a fact" —
 /// the caller falls through to the knowledge store.
-async fn delete_fact(
-    state: &McpState,
+async fn delete_fact<S: Store>(
+    state: &McpState<S>,
     id: Uuid,
     caller: &DeleteCaller,
     author: &klams_types::AuthorRecord,
@@ -188,7 +183,6 @@ async fn delete_fact(
     // NOT NULL, so `Some(_)` means the row is there.
     let Some(owner) = state
         .store
-        .postgres
         .fact_owner(id)
         .await
         .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("fact_owner: {e}")))?
@@ -200,7 +194,6 @@ async fn delete_fact(
     // that as a success per FR-014 idempotency.
     let _ = state
         .store
-        .postgres
         .soft_delete_fact(id, author.id)
         .await
         .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("soft_delete_fact: {e}")))?;
@@ -209,15 +202,14 @@ async fn delete_fact(
 
 /// Soft-delete `id` if it is a knowledge point. `Ok(None)` means "no
 /// such point".
-async fn delete_knowledge(
-    state: &McpState,
+async fn delete_knowledge<S: Store>(
+    state: &McpState<S>,
     id: Uuid,
     caller: &DeleteCaller,
     author: &klams_types::AuthorRecord,
 ) -> Result<Option<MemoryDeleteOutput>, ErrorEnvelope> {
     if !state
         .store
-        .qdrant
         .point_exists_any(id)
         .await
         .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("point_exists_any: {e}")))?
@@ -226,7 +218,6 @@ async fn delete_knowledge(
     }
     let owner = state
         .store
-        .qdrant
         .knowledge_authors_by_ids(&[id])
         .await
         .map_err(|e| {
@@ -240,7 +231,6 @@ async fn delete_knowledge(
     authorize_curation(caller, owner, "deleting it")?;
     state
         .store
-        .qdrant
         .soft_delete_payload(id, author.id, time::OffsetDateTime::now_utc())
         .await
         .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("soft_delete_payload: {e}")))?;

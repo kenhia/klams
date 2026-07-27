@@ -76,7 +76,7 @@ async fn propose_creates_pending_dissent_with_provenance() {
     let server = TestServer::spawn_isolated().await;
     let state = mcp_state_from(&server);
     let author = make_author(&state, "klams-mind-test").await;
-    let fact_id = seed_fact(&state, author, "sprint015-propose", "old-value").await;
+    let fact_id = seed_fact(&state, author, "SPRINT015_PROPOSE", "old-value").await;
     let contradicting = Uuid::now_v7();
 
     let out = dissent_propose(
@@ -85,7 +85,7 @@ async fn propose_creates_pending_dissent_with_provenance() {
             author_id: author,
             fact_id,
             proposed_payload: serde_json::json!({
-                "key": "sprint015-propose", "value": "corrected-value"
+                "key": "SPRINT015_PROPOSE", "value": "corrected-value"
             }),
             reason: "value contradicts a newer memory".into(),
             contradicting_memory_id: Some(contradicting),
@@ -122,7 +122,7 @@ async fn propose_creates_pending_dissent_with_provenance() {
             author_id: author,
             fact_id,
             proposed_payload: serde_json::json!({
-                "key": "sprint015-propose", "value": "corrected-value"
+                "key": "SPRINT015_PROPOSE", "value": "corrected-value"
             }),
             reason: "different wording, same correction".into(),
             contradicting_memory_id: None,
@@ -154,6 +154,8 @@ async fn propose_creates_pending_dissent_with_provenance() {
         .await
         .expect("discard_dissent");
     assert_eq!(discarded.status, DissentStatus::Discarded);
+
+    server.cleanup().await;
 }
 
 #[ignore = "requires docker compose stack"]
@@ -169,7 +171,7 @@ async fn propose_rejects_missing_and_deleted_facts() {
         DissentProposeArgs {
             author_id: author,
             fact_id: Uuid::now_v7(),
-            proposed_payload: serde_json::json!({ "key": "x", "value": "y" }),
+            proposed_payload: serde_json::json!({ "key": "X", "value": "y" }),
             reason: "n/a".into(),
             contradicting_memory_id: None,
         },
@@ -179,7 +181,7 @@ async fn propose_rejects_missing_and_deleted_facts() {
     assert_eq!(err.meta.error_code, "NOT_FOUND", "{err:?}");
 
     // Soft-deleted fact → NOT_FOUND.
-    let fact_id = seed_fact(&state, author, "sprint015-deleted", "v").await;
+    let fact_id = seed_fact(&state, author, "SPRINT015_DELETED", "v").await;
     memory_delete(
         &state,
         MemoryDeleteArgs {
@@ -195,7 +197,7 @@ async fn propose_rejects_missing_and_deleted_facts() {
         DissentProposeArgs {
             author_id: author,
             fact_id,
-            proposed_payload: serde_json::json!({ "key": "sprint015-deleted", "value": "w" }),
+            proposed_payload: serde_json::json!({ "key": "SPRINT015_DELETED", "value": "w" }),
             reason: "n/a".into(),
             contradicting_memory_id: None,
         },
@@ -203,6 +205,8 @@ async fn propose_rejects_missing_and_deleted_facts() {
     .await
     .expect_err("soft-deleted fact must error");
     assert_eq!(err.meta.error_code, "NOT_FOUND", "{err:?}");
+
+    server.cleanup().await;
 }
 
 #[ignore = "requires docker compose stack"]
@@ -211,7 +215,7 @@ async fn propose_validates_reason_and_payload() {
     let server = TestServer::spawn_isolated().await;
     let state = mcp_state_from(&server);
     let author = make_author(&state, "klams-mind-test-val").await;
-    let fact_id = seed_fact(&state, author, "sprint015-validate", "v").await;
+    let fact_id = seed_fact(&state, author, "SPRINT015_VALIDATE", "v").await;
 
     // Empty reason.
     let err = dissent_propose(
@@ -219,7 +223,7 @@ async fn propose_validates_reason_and_payload() {
         DissentProposeArgs {
             author_id: author,
             fact_id,
-            proposed_payload: serde_json::json!({ "key": "sprint015-validate", "value": "w" }),
+            proposed_payload: serde_json::json!({ "key": "SPRINT015_VALIDATE", "value": "w" }),
             reason: "   ".into(),
             contradicting_memory_id: None,
         },
@@ -242,4 +246,6 @@ async fn propose_validates_reason_and_payload() {
     .await
     .expect_err("non-object payload must error");
     assert_eq!(err.meta.error_code, "SCHEMA_VALIDATION_FAILED", "{err:?}");
+
+    server.cleanup().await;
 }

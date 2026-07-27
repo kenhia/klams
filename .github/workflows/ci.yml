@@ -27,8 +27,14 @@ jobs:
         with:
           shared-key: service
 
-      - name: Free up disk space for test stack (main branch only)
-        if: github.ref == 'refs/heads/main'
+      # Sprint 031 (#646): the integration stack runs on EVERY branch,
+      # not just main. It was main-only, so every integration failure
+      # was discovered after merge — by which point the change is in
+      # `main` and the bisect starts. The disk pressure that motivated
+      # the main-only guard is real (the stack plus cargo artifacts is
+      # tight on a ubuntu-latest runner), so the prune below now runs
+      # always rather than being dropped.
+      - name: Free up disk space for test stack
         run: |
           echo "=== Disk space before cleanup ==="
           df -h /
@@ -45,18 +51,17 @@ jobs:
           echo "=== Docker disk usage ==="
           docker system df || true
 
-      - name: Bring up test stack (main branch only for integration tests)
-        if: github.ref == 'refs/heads/main'
+      - name: Bring up test stack
         run: docker compose -f tests/docker-compose.test.yml up -d
 
       - name: Wait for test stack
-        if: github.ref == 'refs/heads/main'
-        # Probe published ports from the host. We do NOT rely on
-        # `docker compose ps`'s health column because the qdrant image
-        # ships without `curl`, so its in-container healthcheck never
-        # reports `healthy` even when the service is fine (same gotcha
-        # documented in .scratch/user-tests.md). pg_isready and curl
-        # are preinstalled on ubuntu-latest runners.
+        # Probe published ports from the host rather than reading
+        # `docker compose ps`'s health column. Sprint 031 (#672) fixed
+        # the qdrant healthcheck (it shelled out to a curl the image
+        # does not ship, so it was permanently "unhealthy"), but the
+        # host probe stays: it also covers TEI's multi-minute model
+        # load, which no container healthcheck timeout wants to span.
+        # pg_isready and curl are preinstalled on ubuntu-latest.
         run: |
           set -e
           echo -n "postgres: "
@@ -98,8 +103,7 @@ jobs:
           cargo clippy --workspace --all-targets -- -D warnings
           cargo test --workspace
 
-      - name: cargo test --ignored (integration, main branch only)
-        if: github.ref == 'refs/heads/main'
+      - name: cargo test --ignored (integration)
         env:
           TEST_DATABASE_URL: postgres://klams:klams_test@127.0.0.1:55432/klams
           TEST_QDRANT_URL: http://127.0.0.1:56334
@@ -110,10 +114,19 @@ jobs:
           # panicking on an unset var (sprint 022 — main-CI fix).
           TEST_OPENAI_EMBED_URL: http://127.0.0.1:57070/v1
           TEST_OPENAI_EMBED_MODEL: BAAI/bge-small-en-v1.5
-        run: cargo test --workspace -- --ignored --test-threads=1 --skip search_p95_under_500ms_at_mvp_corpus
+        # Sprint 031 (#679): `--test-threads=1` is gone. The shared-table
+        # race that required it is fixed — isolated tests now migrate
+        # into their own Postgres schema instead of TRUNCATEing the
+        # shared one. Serial execution would roughly triple this step's
+        # wall clock, which matters now that it runs on every PR.
+        #
+        # The perf test keeps its `--skip` here and runs in its own job
+        # below; it takes ~5 minutes and is a latency measurement, not a
+        # correctness check (#646).
+        run: cargo test --workspace -- --ignored --skip search_p95_under_500ms_at_mvp_corpus
 
-      - name: Tear down test stack (main branch only)
-        if: always() && github.ref == 'refs/heads/main'
+      - name: Tear down test stack
+        if: always()
         run: docker compose -f tests/docker-compose.test.yml down -v
 
       - name: Clean up docker images and dangling layers
@@ -125,6 +138,74 @@ jobs:
           docker system prune -f --volumes --all || true
           echo "=== Docker disk after cleanup ==="
           docker system df || true
+
+  perf:
+    name: perf (search p95 at MVP corpus)
+    # Sprint 031 (#646): the SC-003 latency budget used to be `--skip`ped
+    # even on main, which is the same lie as a test that never runs — it
+    # read as covered and was not.
+    #
+    # It was NOT deleted, because it works: measured locally it seeds the
+    # 10k/50k/10k corpus and asserts p95 < 500 ms in ~5 minutes, and it
+    # passes. What it is not is a per-PR gate — five minutes on every push
+    # to measure a number that moves with runner weather is a bad trade,
+    # and a p95 measured on shared CI hardware is noisy enough that a
+    # failure needs a human to read it rather than a red X.
+    #
+    # So: main only, its own job so it cannot slow or flake the branch
+    # gate, and non-blocking. If it starts failing consistently, that is
+    # a signal worth a work item, not an emergency.
+    if: github.ref == 'refs/heads/main'
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: service
+
+      - name: Free up disk space
+        run: |
+          docker system prune -f --volumes || true
+          docker image prune -f --all || true
+          df -h /
+
+      - name: Bring up test stack
+        run: docker compose -f tests/docker-compose.test.yml up -d
+
+      - name: Wait for test stack
+        run: |
+          set -e
+          for _ in $(seq 1 60); do
+            pg_isready -h 127.0.0.1 -p 55432 -U klams >/dev/null 2>&1 && break
+            sleep 1
+          done
+          for _ in $(seq 1 120); do
+            curl -fsS http://127.0.0.1:57070/health >/dev/null 2>&1 && break
+            sleep 1
+          done
+          pg_isready -h 127.0.0.1 -p 55432 -U klams >/dev/null || { echo "postgres unreachable"; exit 1; }
+          curl -fsS http://127.0.0.1:56333/readyz >/dev/null || { echo "qdrant unreachable"; exit 1; }
+          curl -fsS http://127.0.0.1:57070/health >/dev/null || { echo "tei unreachable"; exit 1; }
+
+      - name: search_p95_under_500ms_at_mvp_corpus
+        env:
+          TEST_DATABASE_URL: postgres://klams:klams_test@127.0.0.1:55432/klams
+          TEST_QDRANT_URL: http://127.0.0.1:56334
+          TEST_TEI_URL: http://127.0.0.1:57070
+        run: |
+          cargo test --release -p klams-service --test perf_smoke -- \
+            --ignored --nocapture search_p95_under_500ms_at_mvp_corpus
+
+      - name: Tear down test stack
+        if: always()
+        run: docker compose -f tests/docker-compose.test.yml down -v
 
   viewport:
     name: viewport (svelte + tauri checks)

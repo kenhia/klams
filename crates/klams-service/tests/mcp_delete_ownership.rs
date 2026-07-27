@@ -46,7 +46,7 @@ async fn write_scoped_caller_cannot_delete_another_authors_memory() {
     let owner = McpSession::handshake(server.addr, &server.author_token).await;
     let intruder = McpSession::handshake(server.addr, &server.other_write_token).await;
 
-    let id = seed_fact(&owner, "s025-cross-author").await;
+    let id = seed_fact(&owner, "S025_CROSS_AUTHOR").await;
     let out = intruder
         .call_tool("memory_delete", serde_json::json!({ "id": id }))
         .await;
@@ -68,7 +68,7 @@ async fn register_author_backdoor_is_closed() {
     let owner = McpSession::handshake(server.addr, &server.author_token).await;
     let intruder = McpSession::handshake(server.addr, &server.other_write_token).await;
 
-    let id = seed_fact(&owner, "s025-backdoor").await;
+    let id = seed_fact(&owner, "S025_BACKDOOR").await;
 
     // Mint a fresh identity, exactly as the original session did.
     let minted = intruder
@@ -103,7 +103,7 @@ async fn author_may_delete_its_own_memory_without_author_id() {
     let server = TestServer::spawn_isolated().await;
     let owner = McpSession::handshake(server.addr, &server.author_token).await;
 
-    let id = seed_fact(&owner, "s025-self-manage").await;
+    let id = seed_fact(&owner, "S025_SELF_MANAGE").await;
     let out = owner
         .call_tool("memory_delete", serde_json::json!({ "id": id }))
         .await;
@@ -130,7 +130,7 @@ async fn manage_scoped_caller_may_curate_across_authors() {
     let owner = McpSession::handshake(server.addr, &server.author_token).await;
     let curator = McpSession::handshake(server.addr, &server.manage_token).await;
 
-    let id = seed_fact(&owner, "s025-curate").await;
+    let id = seed_fact(&owner, "S025_CURATE").await;
     let out = curator
         .call_tool("memory_delete", serde_json::json!({ "id": id }))
         .await;
@@ -153,7 +153,7 @@ async fn manage_scoped_caller_still_cannot_impersonate() {
     let owner = McpSession::handshake(server.addr, &server.author_token).await;
     let curator = McpSession::handshake(server.addr, &server.manage_token).await;
 
-    let id = seed_fact(&owner, "s025-no-impersonation").await;
+    let id = seed_fact(&owner, "S025_NO_IMPERSONATION").await;
     let out = curator
         .call_tool(
             "memory_delete",

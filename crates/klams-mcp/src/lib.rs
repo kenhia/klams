@@ -5,7 +5,7 @@
 //! returns an [`axum::Router`] ready to nest under `/mcp`.
 //!
 //! Module map (see `sprints/007-mcp-server/`):
-//! - [`auth_bridge`] — translates `klams_api` bearer scopes into
+//! - [`auth_bridge`] — translates bearer scopes into
 //!   per-tool gating decisions.
 //! - [`errors`] — canonical MCP error codes & envelope helpers.
 //! - [`maintenance`] — `MAINTENANCE_WINDOW_ACTIVE` short-circuit.

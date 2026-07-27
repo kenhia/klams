@@ -9,6 +9,7 @@ use crate::{
     maintenance, metrics as mcp_metrics, projection,
     tools::McpState,
 };
+use klams_store::Store;
 use klams_types::{AppendEvent, PublicAuthorRef, PublicMemory, Source};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -41,8 +42,8 @@ pub struct MemoryAppendEventArgs {
 /// Returns an [`ErrorEnvelope`] for `MAINTENANCE_WINDOW_ACTIVE`,
 /// `MISSING_AUTHOR_ID`, `UNKNOWN_AUTHOR_ID`, `INVALID_CATEGORY`,
 /// `SCHEMA_VALIDATION_FAILED`, or `INTERNAL_ERROR`.
-pub async fn run(
-    state: &McpState,
+pub async fn run<S: Store>(
+    state: &McpState<S>,
     args: MemoryAppendEventArgs,
 ) -> Result<PublicMemory, ErrorEnvelope> {
     if let Some(env) = maintenance::check(&state.maintenance) {
@@ -67,7 +68,6 @@ pub async fn run(
 
     let author = state
         .store
-        .postgres
         .get_author_by_id(args.author_id)
         .await
         .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("get_author_by_id: {e}")))?
@@ -79,11 +79,7 @@ pub async fn run(
         })?;
 
     // FR-005: touch last_seen_at on every authenticated reference.
-    let _ = state
-        .store
-        .postgres
-        .touch_author_last_seen_at(author.id)
-        .await;
+    let _ = state.store.touch_author_last_seen_at(author.id).await;
 
     let req = AppendEvent {
         id: Uuid::now_v7(),
@@ -95,7 +91,6 @@ pub async fn run(
     };
     let event = state
         .store
-        .postgres
         .append_event(req)
         .await
         .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("append_event: {e}")))?;

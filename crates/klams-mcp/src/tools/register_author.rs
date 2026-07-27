@@ -2,6 +2,7 @@
 
 use crate::errors::{envelope, ErrorEnvelope};
 use crate::tools::McpState;
+use klams_store::Store;
 use klams_types::{AuthorRecord, RegisterAuthorArgs, RegisterAuthorError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -62,8 +63,8 @@ impl From<AuthorRecord> for RegisterAuthorOutput {
 /// # Errors
 /// Returns an [`ErrorEnvelope`] for `INVALID_AGENT_NAME`,
 /// `INVALID_REPO_PATH`, `EXTRA_TOO_LARGE`, or `INTERNAL_ERROR`.
-pub async fn run(
-    state: &McpState,
+pub async fn run<S: Store>(
+    state: &McpState<S>,
     input: RegisterAuthorInput,
 ) -> Result<RegisterAuthorOutput, ErrorEnvelope> {
     let args: RegisterAuthorArgs = input.into();
@@ -78,7 +79,6 @@ pub async fn run(
     // the existing row makes registration idempotent per name.
     let existing = state
         .store
-        .postgres
         .get_author_by_agent_name(&args.agent_name)
         .await
         .map_err(|e| {
@@ -88,14 +88,10 @@ pub async fn run(
             )
         })?;
     if let Some(record) = existing {
-        let _ = state
-            .store
-            .postgres
-            .touch_author_last_seen_at(record.id)
-            .await;
+        let _ = state.store.touch_author_last_seen_at(record.id).await;
         return Ok(record.into());
     }
-    match state.store.postgres.insert_author(args, None).await {
+    match state.store.insert_author(args, None).await {
         Ok(record) => Ok(record.into()),
         Err(e) => Err(envelope(
             crate::errors::INTERNAL_ERROR,

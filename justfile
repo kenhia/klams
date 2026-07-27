@@ -13,8 +13,12 @@ default:
 
 # Service URL + bearer token used by `verify` and `health`. Override
 # in the environment when pointing at a non-local stack.
+#
+# KLAMS_TOKEN has no default on purpose (sprint 031, #682). It used to
+# fall back to `dev-token`, so forgetting to set it produced a 401 that
+# read like an auth regression instead of "you didn't set the variable".
 klams_url     := env_var_or_default('KLAMS_URL',   'http://127.0.0.1:7777')
-klams_token   := env_var_or_default('KLAMS_TOKEN', 'dev-token')
+klams_token   := env_var_or_default('KLAMS_TOKEN', '')
 compose_file  := 'deploy/docker-compose.yml'
 
 # klams-mind checkout — it owns the retrieval eval suite + runner (the
@@ -96,9 +100,34 @@ gate-viewport:
 # spans the service and the viewport.
 gate-all: gate gate-viewport
 
+# Sprint 031 (#679/#687/#646) — the docker-gated integration suite,
+# which `gate` deliberately excludes. Until 031 there was no recipe for
+# this at all: the only place it ran was a main-branch-only CI step, so
+# "how do I run the ignored tests" had no answer you could `just`.
+#
+# Sweeps the test stack first (see scripts/reset-test-stack.sh — a
+# long-lived stack accumulates seeds until ranking assertions starve),
+# then runs at DEFAULT parallelism. The `--test-threads=1` this used to
+# need is gone with the shared-table race (#679); if you find yourself
+# reaching for it again, something regressed — fix that instead.
+#
+# Requires `docker compose -f tests/docker-compose.test.yml up -d`.
+test-integration *ARGS:
+    ./scripts/reset-test-stack.sh
+    TEST_DATABASE_URL=postgres://klams:klams_test@127.0.0.1:55432/klams \
+    TEST_QDRANT_URL=http://127.0.0.1:56334 \
+    TEST_TEI_URL=http://127.0.0.1:57070 \
+    TEST_OPENAI_EMBED_URL=http://127.0.0.1:57070/v1 \
+    TEST_OPENAI_EMBED_MODEL=BAAI/bge-small-en-v1.5 \
+        cargo test --workspace -- --ignored {{ARGS}}
+
 # Quick liveness probe + light verification round-trip.
+#
+# The `@` on token-carrying recipes is not cosmetic: without it `just`
+# echoes the expanded command line, printing the bearer token to the
+# terminal (and to any CI log) on every run.
 health:
-    KLAMS_URL={{klams_url}} KLAMS_TOKEN={{klams_token}} \
+    @KLAMS_URL={{klams_url}} KLAMS_TOKEN={{klams_token}} \
         bash scripts/verify-mvp.sh --light
 
 # sprint 007 — apply pending SQL migrations against the configured
@@ -127,20 +156,20 @@ db-psql *ARGS:
 # it is a pre-deploy check rather than a per-commit one. Run it before
 # and after a deploy that touches retrieval.
 eval:
-    KLAMS_TOKEN={{klams_token}} KLAMS_URL={{klams_url}} \
+    @KLAMS_TOKEN={{klams_token}} KLAMS_URL={{klams_url}} \
         uv run --project {{klams_mind}} klams-mind eval run \
         {{klams_mind}}/evals/suites/homelab-retrieval.toml
 
 # Same, writing the markdown report somewhere durable — use this to
 # capture a before/after around a retrieval change or the corpus reset.
 eval-report OUT:
-    KLAMS_TOKEN={{klams_token}} KLAMS_URL={{klams_url}} \
+    @KLAMS_TOKEN={{klams_token}} KLAMS_URL={{klams_url}} \
         uv run --project {{klams_mind}} klams-mind eval run \
         {{klams_mind}}/evals/suites/homelab-retrieval.toml --out {{OUT}}
 
 # Full SC-001..SC-009 functional smoke (slower than `health`).
 verify:
-    KLAMS_URL={{klams_url}} KLAMS_TOKEN={{klams_token}} \
+    @KLAMS_URL={{klams_url}} KLAMS_TOKEN={{klams_token}} \
         bash scripts/verify-mvp.sh
 
 # Cross-compile the viewport for Windows (requires cargo-xwin).
@@ -170,11 +199,11 @@ restart:
     sudo systemctl restart klams-service klams-monitor
 
 scanner-once:
-    KLAMS_URL={{klams_url}} KLAMS_TOKEN={{klams_token}} \
+    @KLAMS_URL={{klams_url}} KLAMS_TOKEN={{klams_token}} \
         cargo run --release --bin klams-scanner -- --once
 
 monitor-once:
-    KLAMS_URL={{klams_url}} KLAMS_TOKEN={{klams_token}} \
+    @KLAMS_URL={{klams_url}} KLAMS_TOKEN={{klams_token}} \
         cargo run --release --bin klams-monitor -- --once
 
 # sprint 006 — maintenance + backup operator surface.

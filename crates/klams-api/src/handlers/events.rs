@@ -5,7 +5,6 @@
 //! awaiting persistence. Failures during the worker stage increment a
 //! metric (defined in US5) and are logged.
 
-use crate::auth::AuthenticatedAuthor;
 use crate::router::ApiState;
 use crate::ApiError;
 use axum::{
@@ -19,8 +18,8 @@ use base64::Engine as _;
 use klams_core::{metrics as m, WriteJob};
 use klams_store::{EventQuery, Store};
 use klams_types::{
-    AppendEvent, AppendEventRequest, EventPage, EventWriteResponse, ListEventsParams, MemoryWrite,
-    WritePath,
+    AppendEvent, AppendEventRequest, AuthenticatedAuthor, EventPage, EventWriteResponse,
+    ListEventsParams, MemoryWrite, WritePath,
 };
 use time::OffsetDateTime;
 use uuid::Uuid;

@@ -1,15 +1,20 @@
 //! Composite store wiring Postgres + Qdrant + a configured embedder.
 
 use crate::embeddings::Embedder;
+use crate::postgres::DeletedFactRow;
 use crate::postgres::PostgresStore;
 use crate::qdrant::QdrantStore;
-use crate::{DissentQuery, EventQuery, FactQuery, Store, StoreError, StoreResult, TextHit};
+use crate::{
+    DissentQuery, EventQuery, FactQuery, OversizeWrite, SearchMiss, SearchSample, Store,
+    StoreError, StoreResult, TextHit,
+};
 use async_trait::async_trait;
 use klams_types::{
     AppendEvent, Dissent, Event, Fact, FactWriteOutcome, IndexKnowledge, KnowledgeItem, Source,
     UpsertFact,
 };
 use std::sync::Arc;
+use time::OffsetDateTime;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -322,6 +327,231 @@ impl Store for CompositeStore {
 
     async fn touch_author_last_seen_at(&self, id: Uuid) -> StoreResult<u64> {
         self.postgres.touch_author_last_seen_at(id).await
+    }
+
+    // Sprint 031 (#645): delegate the MCP surface to the concrete
+    // backends. These are the calls the tools used to make directly
+    // through the public `.postgres` / `.qdrant` / `.embedder` fields.
+
+    async fn get_author_by_id(&self, id: Uuid) -> StoreResult<Option<klams_types::AuthorRecord>> {
+        self.postgres.get_author_by_id(id).await
+    }
+
+    async fn get_author_by_agent_name(
+        &self,
+        agent_name: &str,
+    ) -> StoreResult<Option<klams_types::AuthorRecord>> {
+        self.postgres.get_author_by_agent_name(agent_name).await
+    }
+
+    async fn insert_author(
+        &self,
+        args: klams_types::RegisterAuthorArgs,
+        explicit_id: Option<Uuid>,
+    ) -> StoreResult<klams_types::AuthorRecord> {
+        self.postgres.insert_author(args, explicit_id).await
+    }
+
+    async fn event_exists(&self, id: Uuid) -> StoreResult<bool> {
+        self.postgres.event_exists(id).await
+    }
+
+    async fn soft_delete_fact(&self, id: Uuid, by_author_id: Uuid) -> StoreResult<bool> {
+        self.postgres.soft_delete_fact(id, by_author_id).await
+    }
+
+    async fn restore_fact(&self, id: Uuid) -> StoreResult<bool> {
+        self.postgres.restore_fact(id).await
+    }
+
+    async fn hard_delete_fact(&self, id: Uuid) -> StoreResult<bool> {
+        self.postgres.hard_delete_fact(id).await
+    }
+
+    async fn fact_owner(&self, id: Uuid) -> StoreResult<Option<Uuid>> {
+        self.postgres.fact_owner(id).await
+    }
+
+    async fn fact_exists_any(&self, id: Uuid) -> StoreResult<bool> {
+        self.postgres.fact_exists_any(id).await
+    }
+
+    async fn propose_dissent(
+        &self,
+        fact_id: Uuid,
+        proposed_payload: &serde_json::Value,
+        author_id: Uuid,
+        reason: &str,
+        contradicting_memory_id: Option<Uuid>,
+    ) -> StoreResult<Option<(Uuid, bool)>> {
+        self.postgres
+            .propose_dissent(
+                fact_id,
+                proposed_payload,
+                author_id,
+                reason,
+                contradicting_memory_id,
+            )
+            .await
+    }
+
+    async fn list_deleted_facts_filtered(
+        &self,
+        limit: u32,
+        since: Option<OffsetDateTime>,
+        author_id: Option<Uuid>,
+        cursor: Option<(OffsetDateTime, Uuid)>,
+    ) -> StoreResult<Vec<(DeletedFactRow, klams_types::AuthorRecord)>> {
+        self.postgres
+            .list_deleted_facts_filtered(limit, since, author_id, cursor)
+            .await
+    }
+
+    async fn list_all_authors(&self) -> StoreResult<Vec<klams_types::AuthorRecord>> {
+        self.postgres.list_all_authors().await
+    }
+
+    async fn merge_author_rows(&self, from: Uuid, into: Uuid) -> StoreResult<(u64, u64, u64)> {
+        self.postgres.merge_author_rows(from, into).await
+    }
+
+    async fn delete_author(&self, author_id: Uuid) -> StoreResult<bool> {
+        self.postgres.delete_author(author_id).await
+    }
+
+    async fn count_author_rows(&self, author_id: Uuid) -> StoreResult<(i64, i64, i64)> {
+        self.postgres.count_author_rows(author_id).await
+    }
+
+    async fn fetch_facts_with_authors(
+        &self,
+        ids: &[Uuid],
+    ) -> StoreResult<Vec<(Fact, klams_types::AuthorRecord)>> {
+        self.postgres.fetch_facts_with_authors(ids).await
+    }
+
+    async fn fetch_events_with_authors(
+        &self,
+        ids: &[Uuid],
+    ) -> StoreResult<Vec<(Event, klams_types::AuthorRecord)>> {
+        self.postgres.fetch_events_with_authors(ids).await
+    }
+
+    async fn insert_search_miss(&self, miss: &SearchMiss) -> StoreResult<()> {
+        self.postgres.insert_search_miss(miss).await
+    }
+
+    async fn insert_search_sample(&self, sample: &SearchSample) -> StoreResult<()> {
+        self.postgres.insert_search_sample(sample).await
+    }
+
+    async fn insert_oversize_write(&self, write: &OversizeWrite) -> StoreResult<()> {
+        self.postgres.insert_oversize_write(write).await
+    }
+
+    async fn point_is_soft_deleted(&self, id: Uuid) -> StoreResult<Option<bool>> {
+        self.qdrant.point_is_soft_deleted(id).await
+    }
+
+    async fn knowledge_authors_by_ids(
+        &self,
+        ids: &[Uuid],
+    ) -> StoreResult<std::collections::HashMap<Uuid, Uuid>> {
+        self.qdrant.knowledge_authors_by_ids(ids).await
+    }
+
+    async fn index_knowledge_with_embedding(
+        &self,
+        req: IndexKnowledge,
+        embedding: Vec<f32>,
+    ) -> StoreResult<KnowledgeItem> {
+        self.qdrant.index_knowledge(req, embedding).await
+    }
+
+    async fn upsert_knowledge_item(
+        &self,
+        item: &KnowledgeItem,
+        author_id: Uuid,
+        embedding: Vec<f32>,
+    ) -> StoreResult<()> {
+        self.qdrant
+            .upsert_knowledge_item(item, author_id, embedding)
+            .await
+    }
+
+    async fn soft_delete_payload(
+        &self,
+        id: Uuid,
+        by_author_id: Uuid,
+        when: OffsetDateTime,
+    ) -> StoreResult<()> {
+        self.qdrant
+            .soft_delete_payload(id, by_author_id, when)
+            .await
+    }
+
+    async fn search_knowledge_curated(
+        &self,
+        query_vector: Vec<f32>,
+        top_k: u32,
+    ) -> StoreResult<Vec<(KnowledgeItem, f32)>> {
+        self.qdrant
+            .search_knowledge_curated(query_vector, top_k)
+            .await
+    }
+
+    async fn restore_payload(&self, id: Uuid) -> StoreResult<()> {
+        self.qdrant.restore_payload(id).await
+    }
+
+    async fn reassign_knowledge_author(&self, from: Uuid, into: Uuid) -> StoreResult<u64> {
+        self.qdrant.reassign_knowledge_author(from, into).await
+    }
+
+    async fn point_exists_any(&self, id: Uuid) -> StoreResult<bool> {
+        self.qdrant.point_exists_any(id).await
+    }
+
+    async fn mark_superseded(
+        &self,
+        old_id: Uuid,
+        new_id: Uuid,
+        by_author_id: Uuid,
+        when: OffsetDateTime,
+    ) -> StoreResult<()> {
+        self.qdrant
+            .mark_superseded(old_id, new_id, by_author_id, when)
+            .await
+    }
+
+    async fn list_deleted_knowledge(
+        &self,
+        limit: u32,
+        author_id: Option<Uuid>,
+        offset: Option<Uuid>,
+    ) -> StoreResult<(
+        Vec<(KnowledgeItem, OffsetDateTime, Option<Uuid>, Option<Uuid>)>,
+        Option<Uuid>,
+    )> {
+        self.qdrant
+            .list_deleted_knowledge(limit, author_id, offset)
+            .await
+    }
+
+    async fn hard_delete_point(&self, id: Uuid) -> StoreResult<()> {
+        self.qdrant.hard_delete_point(id).await
+    }
+
+    async fn get_point_vector(&self, id: Uuid) -> StoreResult<Option<Vec<f32>>> {
+        self.qdrant.get_point_vector(id).await
+    }
+
+    async fn count_knowledge_by_author_any(&self, author_id: Uuid) -> StoreResult<u64> {
+        self.qdrant.count_knowledge_by_author_any(author_id).await
+    }
+
+    async fn embed_document(&self, text: &str) -> StoreResult<Vec<f32>> {
+        self.embedder.embed(text).await
     }
 }
 

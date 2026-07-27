@@ -186,16 +186,38 @@ common task is a one-liner that matches what CI runs.
 | `build`           | `cargo build -p klams-service --release`. |
 | `run`             | `cargo run -p klams-service`, logs to stderr. |
 | `test`            | `cargo test --workspace`. |
-| `gate`            | Constitution pre-commit gate; identical to CI. |
+| `gate`            | Constitution pre-commit gate: fmt + clippy + the hermetic tests. |
+| `test-integration`| The docker-gated suite `gate` excludes. Sweeps the test stack (`scripts/reset-test-stack.sh`), then runs `cargo test --workspace -- --ignored` at default parallelism. Needs `docker compose -f tests/docker-compose.test.yml up -d`. |
 | `health`          | `/healthz` curl + `scripts/verify-mvp.sh --light`. |
 | `verify`          | Full `scripts/verify-mvp.sh` (SC-001..SC-009). |
 | `viewport-build`  | `cargo xwin` Windows cross-build of the viewport. |
 | `viewport-build-linux` | Native Linux build of the viewport (also runs in WSL Ubuntu). |
 | `viewport-run-linux`   | Build + launch the Linux viewport with `--debug`. |
 
-`KLAMS_URL` and `KLAMS_TOKEN` are read from the environment (with
-local-dev defaults) so the same `just health` and `just verify`
-work against a local stack or a remote `kubs0`.
+`KLAMS_URL` and `KLAMS_TOKEN` are read from the environment, so the
+same `just health` and `just verify` work against a local stack or a
+remote `kubs0`.
+
+**`KLAMS_TOKEN` has no default** (sprint 031). It used to fall back to
+`dev-token`, so forgetting to export it produced a `401` that read like
+an auth regression rather than a missing variable. Unset, the recipes
+now stop with `FATAL: KLAMS_TOKEN must be set`.
+
+### `gate` vs CI (sprint 031)
+
+`gate` mirrors what CI runs on a **pull request** minus the integration
+step. As of sprint 031 the docker-compose stack comes up on every
+branch, so CI runs the `--ignored` suite too — `gate` passing no longer
+means CI will. Run `just test-integration` before pushing anything that
+touches the store, the MCP tools, or the write paths.
+
+Two things CI runs that `gate` does not:
+
+- the integration suite (above), on every branch;
+- `search_p95_under_500ms_at_mvp_corpus`, in its own **main-only,
+  non-blocking** job. It seeds the 10k/50k/10k corpus and takes ~5
+  minutes, and a p95 measured on shared CI hardware is noisy enough to
+  need a human reading it rather than a red X.
 
 > **WSL note**: The Linux viewport runs unchanged under WSL Ubuntu via
 > WSLg. Install the webkit2gtk runtime first:

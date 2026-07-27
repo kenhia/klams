@@ -19,6 +19,13 @@
 set -u
 set -o pipefail
 
+# Feed greps from a herestring, never `echo ... | grep -q`. With
+# `pipefail` set, `grep -q` exiting on its first match can hand `echo`
+# a SIGPIPE, and the pipeline then reports 141 even though the match
+# succeeded. Measured at ~1 spurious failure in 30 against /metrics
+# (sprint 031, #682) — a smoke gate that fails 3% of the time for no
+# reason teaches you to re-run it rather than read it.
+
 LIGHT=0
 for arg in "$@"; do
   case "$arg" in
@@ -35,7 +42,8 @@ URL="${KLAMS_URL:-http://127.0.0.1:7777}"
 TOKEN="${KLAMS_TOKEN:-}"
 
 if [[ -z "$TOKEN" ]]; then
-  echo "FATAL: KLAMS_TOKEN must be set" >&2
+  echo "FATAL: KLAMS_TOKEN must be set — every check past /healthz is authenticated." >&2
+  echo "  e.g. KLAMS_TOKEN=<token> just health" >&2
   exit 2
 fi
 
@@ -81,7 +89,9 @@ curl_api() {
   cat /tmp/verify-mvp.body 2>/dev/null || true
 }
 
-echo "klams MVP verification against $URL${LIGHT:+ (light mode)}"
+# `${LIGHT:+...}` tested for non-EMPTY, and LIGHT is `0` in full runs —
+# so every run announced itself as light mode. Test the value.
+echo "klams MVP verification against $URL$( ((LIGHT)) && echo ' (light mode)' )"
 echo
 
 # ---------------------------------------------------------------------- /healthz
@@ -97,10 +107,24 @@ fi
 # ---------------------------------------------------------------------- SC-001
 # A controller can record a new user fact and find it again via unified
 # search in under 2 seconds.
+#
+# Sprint 031 (#682): this posted the MVP-era flat shape
+# `{key, value, subject, source:"verify-mvp.sh"}` until 031, which the
+# service has rejected since the typed-fact schema landed in sprint 003.
+# `source` is a `Source` enum (User|Controller|Task|AgentProposal), and
+# the request carries `type` + `payload`, not flat fields — so SC-001
+# failed 422 on every build for ~28 sprints, taking `just health` and
+# `just verify` down with it. A gate that always fails trains whoever is
+# shipping to ignore red, which is exactly when a real regression slips
+# through; 027's deploy had to smoke-test itself by hand.
+#
+# `EnvFact.payload.key` is validated against ^[A-Z][A-Z0-9_]*$, hence
+# the shouty marker. `expected_version: 0` asserts "this is a new fact",
+# which the PID suffix keeps true across repeat runs.
 ts=$(date +%s%N)
-fact_key="verify-mvp-$$"
+fact_key="VERIFY_MVP_$$"
 body=$(cat <<JSON
-{"key":"$fact_key","value":"smoke-test-marker $$","subject":"verify-mvp","source":"verify-mvp.sh"}
+{"type":"EnvFact","payload":{"key":"$fact_key","value":"smoke-test-marker $$"},"source":"Controller","expected_version":0}
 JSON
 )
 status_body=$(curl_api POST /memory/facts "$body")
@@ -114,7 +138,7 @@ JSON
   out=$(curl_api POST /memory/search "$search_body")
   scode=$(echo "$out" | head -1)
   elapsed_ms=$(( ( $(date +%s%N) - ts ) / 1000000 ))
-  if [[ "$scode" =~ ^2 ]] && echo "$out" | tail -n +2 | grep -q "$fact_key"; then
+  if [[ "$scode" =~ ^2 ]] && grep -q "$fact_key" <<<"$(tail -n +2 <<<"$out")"; then
     if (( elapsed_ms < 2000 )); then
       record SC-001 pass "fact round-trip ${elapsed_ms}ms"
     else
@@ -124,7 +148,10 @@ JSON
     record SC-001 fail "search did not return marker (status=$scode)"
   fi
 else
-  record SC-001 fail "fact write failed (status=$code)"
+  # Carry the response body, not just the status. #682 sat undiagnosed
+  # partly because "status=422" says nothing about *which* field the
+  # service rejected — and the service does return that detail.
+  record SC-001 fail "fact write failed (status=$code): $(echo "$status_body" | tail -n +2 | head -c 300)"
 fi
 
 # ---------------------------------------------------------------------- SC-002
@@ -152,10 +179,14 @@ if (( LIGHT )); then
   exit 0
 fi
 
-chunk_id="verify-mvp-knowledge-$$"
+# Sprint 031 (#682): stale in the same way SC-001 was. This posted a
+# batch envelope `{"items":[{source, title, text, tags}]}`, but
+# `/memory/knowledge/index` takes ONE `IndexKnowledgeRequest` — no
+# `items` wrapper, no `title`, and `source` is the same `Source` enum
+# the fact path uses. 422 on every build.
 ts=$(date +%s%N)
 kbody=$(cat <<JSON
-{"items":[{"source":"verify-mvp.sh","title":"$chunk_id","text":"klams verification chunk unique-token-$$","tags":["verify-mvp"]}]}
+{"text":"klams verification chunk unique-token-$$","source":"Controller","tags":["verify-mvp"]}
 JSON
 )
 kresp=$(curl_api POST /memory/knowledge/index "$kbody")
@@ -165,7 +196,7 @@ if [[ "$kcode" =~ ^2 ]]; then
   for i in 1 2 3 4 5 6 7 8 9 10; do
     sleep 1
     out=$(curl_api POST /memory/search "{\"query\":\"unique-token-$$\",\"types\":[\"knowledge\"],\"top_k\":5}")
-    if echo "$out" | tail -n +2 | grep -q "unique-token-$$"; then
+    if grep -q "unique-token-$$" <<<"$(tail -n +2 <<<"$out")"; then
       found="$i"
       break
     fi
@@ -177,7 +208,7 @@ if [[ "$kcode" =~ ^2 ]]; then
     record SC-002 fail "knowledge not searchable after 10s polls"
   fi
 else
-  record SC-002 fail "knowledge index failed (status=$kcode)"
+  record SC-002 fail "knowledge index failed (status=$kcode): $(echo "$kresp" | tail -n +2 | head -c 300)"
 fi
 
 # ---------------------------------------------------------------------- SC-003
@@ -194,7 +225,7 @@ record SC-004 skip "restart-survival covered by integration tests"
 bad=$(curl_api POST /memory/facts '{"not_a_real_field":1}')
 bcode=$(echo "$bad" | head -1)
 bbody=$(echo "$bad" | tail -n +2)
-if [[ "$bcode" == "400" || "$bcode" == "422" ]] && echo "$bbody" | grep -qiE 'key|value|missing|required|field'; then
+if [[ "$bcode" == "400" || "$bcode" == "422" ]] && grep -qiE 'key|value|missing|required|field' <<<"$bbody"; then
   record SC-005 pass "validation error names offending field (status=$bcode)"
 else
   record SC-005 fail "expected 400/422 with field detail, got status=$bcode body=$bbody"
@@ -221,7 +252,7 @@ fi
 # /healthz reports non-200 within 5s of dep loss — destructive, manual.
 hresp=$(curl -sS -o /tmp/verify-mvp.health -w '%{http_code}' "$URL/healthz")
 hbody=$(cat /tmp/verify-mvp.health 2>/dev/null || true)
-if [[ "$hresp" =~ ^2 ]] && echo "$hbody" | grep -qiE 'postgres|qdrant|ok|healthy'; then
+if [[ "$hresp" =~ ^2 ]] && grep -qiE 'postgres|qdrant|ok|healthy' <<<"$hbody"; then
   record SC-008 pass "/healthz reachable and reports per-dependency state"
 else
   record SC-008 fail "/healthz status=$hresp body=$hbody"
@@ -231,7 +262,7 @@ fi
 # /metrics scrapes and includes klams_queue_depth (or equivalent).
 mresp=$(curl -sS -o /tmp/verify-mvp.metrics -w '%{http_code}' "$URL/metrics")
 mbody=$(cat /tmp/verify-mvp.metrics 2>/dev/null || true)
-if [[ "$mresp" =~ ^2 ]] && echo "$mbody" | grep -qE '^# (TYPE|HELP) '; then
+if [[ "$mresp" =~ ^2 ]] && grep -qE '^# (TYPE|HELP) ' <<<"$mbody"; then
   record SC-009 pass "/metrics exposes Prometheus exposition format"
 else
   record SC-009 fail "/metrics status=$mresp"

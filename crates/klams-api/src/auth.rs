@@ -21,7 +21,7 @@ use axum::{
     middleware::Next,
     response::Response,
 };
-use klams_types::Scope;
+use klams_types::{AuthenticatedAuthor, AuthenticatedScopes, Scope};
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
@@ -85,20 +85,11 @@ impl std::fmt::Debug for TokenGrant {
     }
 }
 
-/// Set of scopes attached to the currently authenticated request.
-/// Inserted into request extensions by [`require_bearer`]; read by
-/// [`require_scope`] when gating individual routes.
-#[derive(Clone, Debug)]
-pub struct AuthenticatedScopes(pub Arc<Vec<Scope>>);
-
-/// Sprint 009 — author bound to the request's bearer token. Inserted
-/// into request extensions by [`require_bearer`]; consumed by REST
-/// write handlers to stamp `author_id` on enqueued jobs.
-#[derive(Clone, Debug)]
-pub struct AuthenticatedAuthor {
-    pub author_id: Uuid,
-    pub agent_name: Arc<String>,
-}
+// `AuthenticatedScopes` and `AuthenticatedAuthor` moved down to
+// `klams-types` in sprint 031 (#645). They are the request-extension
+// types both surfaces read, and keeping them here forced `klams-mcp` to
+// depend on the REST crate for two structs and nothing else. Imported
+// above; `require_bearer` still stamps them.
 
 /// Sprint 018 (WI #61) — the grant table sits behind an `RwLock` so
 /// `[[auth.tokens]]` edits can be hot-reloaded (SIGHUP) without a

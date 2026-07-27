@@ -40,8 +40,14 @@ services:
       - "127.0.0.1:56334:6334"
     volumes:
       - klams-test-qdrant:/qdrant/storage
+    # The qdrant image ships no HTTP client (no curl/wget/nc/python3), so
+    # the obvious `curl /readyz` probe can never pass and the container
+    # reports "unhealthy" forever (#672). It does ship bash, so speak
+    # HTTP over /dev/tcp instead. Keep the SINGLE quotes: in a YAML
+    # double-quoted scalar the \r\n would be converted to real control
+    # characters before printf ever sees them.
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:6333/readyz || exit 1"]
+      test: ["CMD", "bash", "-c", 'exec 3<>/dev/tcp/127.0.0.1/6333; printf "GET /readyz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3; grep -q "200 OK" <&3']
       interval: 2s
       timeout: 3s
       retries: 30

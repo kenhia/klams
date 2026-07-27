@@ -10,6 +10,7 @@ use crate::{
     tools::McpState,
 };
 use chrono::Utc;
+use klams_store::Store;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -32,13 +33,12 @@ pub struct MemoryAdminHardDeleteOutput {
 /// # Errors
 /// Returns an [`ErrorEnvelope`] for `NOT_FOUND`, `EVENTS_NOT_DELETABLE`,
 /// or `INTERNAL_ERROR`.
-pub async fn run(
-    state: &McpState,
+pub async fn run<S: Store>(
+    state: &McpState<S>,
     args: MemoryAdminHardDeleteArgs,
 ) -> Result<MemoryAdminHardDeleteOutput, ErrorEnvelope> {
     if state
         .store
-        .postgres
         .event_exists(args.id)
         .await
         .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("event_exists: {e}")))?
@@ -51,7 +51,6 @@ pub async fn run(
 
     if state
         .store
-        .postgres
         .hard_delete_fact(args.id)
         .await
         .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("hard_delete_fact: {e}")))?
@@ -65,14 +64,12 @@ pub async fn run(
 
     if state
         .store
-        .qdrant
         .point_exists_any(args.id)
         .await
         .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("point_exists_any: {e}")))?
     {
         state
             .store
-            .qdrant
             .hard_delete_point(args.id)
             .await
             .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("hard_delete_point: {e}")))?;
