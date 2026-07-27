@@ -50,8 +50,7 @@ at cross-component boundaries.
 
 ### Code standards gate
 
-Every commit must pass the gate — `just gate` runs exactly what CI
-runs:
+Every commit must pass the gate — `just gate`:
 
 ```bash
 cargo fmt --check
@@ -61,6 +60,23 @@ cargo test
 
 This applies to existing code touched in passing, not just new code —
 no broken windows.
+
+**`just gate` is no longer everything CI runs** (sprint 031, #646).
+The docker-compose integration stack used to come up on `main` only, so
+every integration failure was discovered *after* merge; it now runs on
+every branch. Before pushing anything that touches the store, the MCP
+tools, or the write paths, also run:
+
+```bash
+docker compose -f tests/docker-compose.test.yml up -d   # once
+just test-integration
+```
+
+That recipe sweeps accumulated test state first (a long-lived stack
+otherwise drifts until ranking assertions starve) and runs at default
+parallelism — the `--test-threads=1` this suite used to need is gone
+with the shared-table race behind it (#679). If you find yourself
+reaching for it again, something regressed; fix that instead.
 
 ### Documentation is part of done
 

@@ -118,6 +118,31 @@ Key behaviors (current as of sprint 018):
 - Writes land as `AgentProposal`; disagree with an existing canonical
   fact via `dissent_propose` rather than overwriting.
 
+### Sprint 031 — MCP writes enforce the same policy as REST
+
+Until 031 the MCP write path ran none of the checks the REST surface
+ran. Three things changed, and all three are visible to a calling agent:
+
+- **Fact payloads are validated.** `memory_add` now runs the same
+  `ValidatorRegistry` REST has always run, so a payload that used to be
+  accepted may now come back `SCHEMA_VALIDATION_FAILED`. The message
+  names the offending field and rule (e.g.
+  `payload.key (shape): key must match ^[A-Z][A-Z0-9_]*$`) — fix the
+  payload from what it tells you rather than retrying unchanged.
+- **`memory_add` takes an optional `amends`.** Pass the id of a fact you
+  believe is now wrong and your payload replaces it. This is where the
+  trust policy bites: if that fact came from a more-trusted source than
+  an agent proposal, yours does **not** overwrite it. The call still
+  succeeds, but the response carries `write_path: "dissent"` and a
+  `dissent_id`, and the returned memory is the **canonical** record —
+  what the store holds, not what you sent. Read that field before
+  concluding your correction landed. Omit `amends` to add a new fact.
+- **Identical knowledge dedupes.** Writing text that already exists
+  (after whitespace normalization) returns the existing memory instead
+  of creating a twin. Its `author` is whoever wrote it first, which may
+  not be you. `similar_existing` still nudges you about *near*
+  duplicates, where superseding is the right move.
+
 ### Instruction blurb — add this to the agent's instructions
 
 Copy this (verbatim or trimmed) into the instructions file the agent

@@ -278,12 +278,149 @@ version, and suite hash, then move the WI to `done`.
 
 ## Log
 
-_Decisions, surprises, and outcomes get appended here as the work
-proceeds._
-
 - **2026-07-26** — Branch cut from `main` @ `59423ce` (0.1.30 deployed,
   eval 21/21). Version bumped to 0.1.31. Proposal korg:689 marked
   `active`. Pre-work survey found two deltas from the WI text, both
   recorded above: #645's reach-through count is 76 across 13 files (not
   42 across 10), and #646's "13 ignored MCP test files" are empty stubs
   rather than written-but-skipped tests.
+
+- **#672 / #687 / #679 — the test stack.** Landed first, as planned. The
+  qdrant `/dev/tcp` healthcheck went in as the WI specified and the
+  container reports `healthy` within ~12s.
+
+  The deeper work was #679. The WI offered "own schema/database" or
+  "serialize this file"; **per-schema isolation** is what shipped —
+  `spawn_isolated` migrates into `klams_test_<uuid>` and truncates
+  nothing, and `seed::truncate_pg()` is gone. That immediately hit a
+  **deadlock**: `sqlx::migrate!` takes a database-wide
+  `pg_advisory_lock` while migration 0003 runs `CREATE INDEX
+  CONCURRENTLY`, and CIC waits on the virtual transactions of everyone
+  blocked on that lock. Real cycle, and Postgres kills it. Fix: poll
+  `pg_try_advisory_lock` rather than blocking on `pg_advisory_lock`, so
+  a waiter never holds a long virtual transaction.
+
+  For #687 the sprint doc left the option open; **both** shipped.
+  Ranking-asserting suites (`phase4_hybrid_retrieval`,
+  `phase4_context_bundle`) moved to `spawn_isolated`, and
+  `scripts/reset-test-stack.sh` is the cheap floor — it found **107
+  orphaned `klams_test_*` collections** and 1500 accumulated points in
+  `knowledge_items_test`.
+
+  Three bugs surfaced that were not in any WI:
+
+  1. `QdrantStore::connect` is check-then-create. Latent since 007 and
+     invisible only because the shared test collection always
+     pre-existed; the moment the sweep started dropping it, concurrent
+     connects raced and the loser failed. Equally reachable in
+     production — service, scanner and monitor all call `connect`.
+  2. Restoring a snapshot leaves qdrant 1.18 unable to snapshot that
+     collection again (`Failed to get_snapshot_creator`). One restore
+     run poisoned every later one on a long-lived stack, surfacing two
+     steps downstream as `ArtifactMissing { kind: Qdrant }`.
+     `ensure_collection` now drops and recreates.
+  3. Whole-database `pg_restore` cannot be isolated by schema, so the
+     restore tests serialize behind `common::whole_database_guard` —
+     #679's sanctioned fallback for tests that genuinely cannot be
+     isolated. They fail 3-for-3 in parallel and pass 3-for-3 serially.
+
+  **Result:** `just test-integration` green on repeated full runs at
+  default parallelism, zero orphaned schemas or collections after.
+
+- **#682 — the smoke gate.** SC-001 fixed as the WI described. SC-002
+  was stale in the same way and was **not** in the WI: it posted a batch
+  envelope `{"items":[…]}` with a `title`, where the route takes one
+  `IndexKnowledgeRequest`. Three more things found while making it pass:
+
+  - SC-009 failed ~1 run in 30. `echo "$body" | grep -q` under
+    `pipefail` reports 141 when grep exits on its first match and echo
+    takes a SIGPIPE. All five such greps now read from a herestring.
+    Measured: 1 spurious failure in 30 before, 0 in 3 full runs after.
+  - Every run printed "(light mode)" — `${LIGHT:+…}` tests for
+    non-empty and `LIGHT` is `0` in full runs.
+  - `just` echoed the expanded command line for token-carrying recipes,
+    printing the **bearer token** to the terminal and any CI log. Those
+    recipes are now `@`-prefixed.
+
+  **Result:** `just health` passes; `just verify` is 7/0/3 on three
+  consecutive runs against live 0.1.30.
+
+- **#645 — the keystone.** `McpState<S: Store>` shipped as specified;
+  ~35 operations joined `trait Store` with defaulted impls, delegated
+  from `CompositeStore`. A self-verifying grep test guards it (it
+  asserts the detector still detects, because a detector that quietly
+  stops detecting reports "clean" forever).
+
+  **The WI's fix was not sufficient on its own, and this is the sprint's
+  main design finding.** Switching `memory_add` from `upsert_fact` to
+  `upsert_fact_v2` does *not* by itself make a contradiction land as a
+  dissent: the trust divert only fires for a write that TARGETS an
+  existing fact via `explicit_id`, and `memory_add` had no way to
+  express that. So the tool gains an optional **`amends`** field (the
+  MCP spelling of REST's `explicit_id`), and the response gains
+  `write_path` / `dissent_id` with `memory` reporting what the store
+  *holds* rather than what was sent. Without that field the acceptance
+  would have been unmeetable while looking met — the WI's own trap.
+
+  Knowledge writes moved onto a shared `klams_core::knowledge_write`
+  (normalize → bound tags → hash the *normalized* text) plus the dedupe
+  probe MCP never had. One regression caught by the contract tests: the
+  REST knowledge route answers validation with **400**, not the 422 the
+  fact route uses, and the first cut of the shared path silently
+  re-mapped it. Status preserved; the rule is shared, the status is not.
+
+  Fallout in the test tree, all of it legitimate: a batch of fixtures
+  seeded `EnvFact` keys that never matched `^[A-Z][A-Z0-9_]*$` and only
+  landed because nothing checked. And `memory_add_nudges_on_a_near_
+  duplicate` had to be rewritten — byte-identical text now dedupes
+  instead of producing a twin to nudge about, which is what the nudge
+  was asking the writer to do.
+
+  **Safety net, as planned:** `mcp_auth` (6) and `mcp_lifecycle_verbs`
+  (7) run before and after, both green.
+
+- **#646 — CI and the hollow tests.** All four `main`-only guards
+  removed; the stack comes up on every branch, `--test-threads=1` is
+  gone, and the disk prune that motivated the guard now runs always.
+
+  The 13 stub files were replaced by **33 hermetic tests** over a new
+  in-memory `Store` (`crates/klams-mcp/tests/support`), including a real
+  end-to-end SC-008 rogue-agent drill — a scenario that, despite the
+  stub's claim of being "composed from the per-tool flows", had never
+  run anywhere as a scenario. Ranking is deliberately not asserted
+  against the mock; faking it would produce tests that pass while
+  retrieval breaks, which is the failure mode this sprint exists to
+  remove. klams-mcp is now 91 tests, 0 ignored.
+
+  **Decision reversed from the plan:** the sprint doc recommended
+  deleting the skipped perf test. It was kept. Measured, it seeds the
+  corpus and asserts p95 < 500 ms in ~5 minutes and it *passes* — it is
+  not theatre, it is just slow. It now has its own main-only,
+  non-blocking job.
+
+  **Not done, and why:** #646 asked for a hermetic
+  `embed_does_not_retry_4xx`. It already exists and has since 027
+  (`does_not_retry_other_4xx` plus two 413 tests, each pinned to exactly
+  one request). The WI text predates them; a third near-identical copy
+  would have been the duplication this sprint is removing. Recorded in
+  the source beside them.
+
+- **#676 (klams-mind)** — verified only, nothing rebuilt. A fresh
+  `just eval-report` carries run date, klams version and suite hash.
+  Moved to `done` with the evidence in a comment.
+
+- **Eval gate** — `21/21, 0 regressions, 0 known-open` against live
+  0.1.30, matching the 0.1.30 baseline exactly. Retrieval-neutral as
+  intended.
+
+## Follow-ups filed rather than fixed
+
+- The nine near-identical `MockStore` impls in `klams-api/tests/` were
+  left alone. They are per-test fixtures (PanicStore, NullStore,
+  HealthyStore…), each stubbing what its own test needs, not nine
+  copies of one thing — consolidating them is a separate cleanup and
+  was not required by #646.
+- `spawn()`-based tests still share the `public` schema and the
+  `knowledge_items_test` collection. That is fine for presence
+  assertions and is documented in the harness, but a future sprint may
+  want to isolate everything.
