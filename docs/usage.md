@@ -192,7 +192,7 @@ common task is a one-liner that matches what CI runs.
 | `run`             | `cargo run -p klams-service`, logs to stderr. |
 | `test`            | `cargo test --workspace`. |
 | `gate`            | Constitution pre-commit gate: fmt + clippy + the hermetic tests. |
-| `test-integration`| The docker-gated suite `gate` excludes. Sweeps the test stack (`scripts/reset-test-stack.sh`), then runs `cargo test --workspace -- --ignored` at default parallelism. Needs `docker compose -f tests/docker-compose.test.yml up -d`. |
+| `test-integration`| The docker-gated suite `gate` excludes. Sweeps the test stack (`scripts/reset-test-stack.sh`), then runs `cargo test --workspace -- --ignored` at default parallelism. Needs `docker compose -f tests/docker-compose.test.yml up -d`; run `... down` when finished — a long-lived test stack shadows the production containers and accumulates seeds (#647). |
 | `health`          | `/healthz` curl + `scripts/verify-mvp.sh --light`. |
 | `verify`          | Full `scripts/verify-mvp.sh` (SC-001..SC-009). |
 | `viewport-build`  | `cargo xwin` Windows cross-build of the viewport. |
