@@ -518,10 +518,13 @@ prompt to change), browse to **Dashboards → klams**, and confirm the
 three **MCP author activity** panels render. The panel-vs-series
 contract test
 [`crates/klams-service/tests/grafana_dashboard_json.rs`](../crates/klams-service/tests/grafana_dashboard_json.rs)
-keeps the dashboard JSON in lock-step with the
-[ansible-k klams-grafana.md handoff doc](https://github.com/kenhia/ansible-k/blob/main/specs/klams-integration/klams-grafana.md);
-every series referenced by a panel must appear in that handoff
-table or the workspace gate fails.
+keeps the dashboard JSON in lock-step with the series contract at
+[`deploy/grafana/SERIES.md`](../deploy/grafana/SERIES.md). Sprint 032
+(#680) moved that contract here from the inert ansible-k repo, where
+the test read it from a sibling checkout and self-skipped when absent —
+so it was a silent no-op on CI. It now checks both directions
+unconditionally: a panel may not query an undocumented series, and code
+may not declare one.
 
 ### Tear the profile down
 
