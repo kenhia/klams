@@ -7,6 +7,18 @@ info:
     sprint; it supersedes
     [001-initial-mvp/contracts/openapi.yaml](../../001-initial-mvp/contracts/openapi.yaml).
 
+    STATUS (sprint 032, #681): this remains the most recent
+    hand-written OpenAPI document in the repo, and contract tests still
+    cite it — but it is a sprint-era SNAPSHOT, not generated from the
+    code, and the surface has moved on (sprint 005's `/memory/context`,
+    025's authorization model, and later retrieval work are not here).
+    Treat `docs/usage.md` + `docs/architecture.md` as authoritative
+    where the two disagree. It is kept in place rather than relocated
+    because sprints 001-012 keep their original spec-kit layout by
+    convention (AGENTS.md); what was wrong with it was that it did not
+    PARSE, which `crates/klams-service/tests/yaml_contracts_parse.rs`
+    now prevents.
+
     Deltas vs 0.1.0:
 
     - `POST /memory/facts` may now return `202 Dissented` when the
@@ -269,7 +281,7 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "503":
-          description: Knowledge search unavailable (Qdrant degraded). Fact/event-only fallback returned with `degraded: true`.
+          description: "Knowledge search unavailable (Qdrant degraded). Fact/event-only fallback returned with `degraded: true`."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SearchResults" }

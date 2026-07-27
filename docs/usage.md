@@ -2,8 +2,14 @@
 
 This document covers the runtime behaviour of `klams-service`:
 authentication, health/metrics endpoints, exit codes, and the
-recommended systemd deployment. For HTTP request/response shapes
-see [sprints/001-initial-mvp/contracts/openapi.yaml](../sprints/001-initial-mvp/contracts/openapi.yaml).
+recommended systemd deployment. For HTTP request/response shapes see
+[sprints/002-safety-and-write-ops/contracts/openapi.yaml](../sprints/002-safety-and-write-ops/contracts/openapi.yaml)
+— sprint 032 (#681) repointed this, it named the 001 spec that 002's own
+header declares superseded. Read it as the last hand-written snapshot
+of the wire shapes, not as a generated live contract: routes added from
+sprint 005 on (`/memory/context`, the retrieval and authorization
+surfaces) are documented here and in `docs/architecture.md` rather than
+there.
 
 ## Authentication
 

@@ -203,7 +203,7 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "503":
-          description: Knowledge search unavailable (Qdrant degraded). Fact/event-only fallback returned with `degraded: true`.
+          description: "Knowledge search unavailable (Qdrant degraded). Fact/event-only fallback returned with `degraded: true`."
           content:
             application/json:
               schema:
