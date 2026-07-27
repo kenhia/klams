@@ -81,7 +81,7 @@ pub use responses::{
 };
 pub use retrieval::{FusionStrategy, HybridQueryPlan, RetrievalSource, WeightedNorm};
 pub use search::{SearchHit, SearchType};
-pub use summary::{DigestCluster, EventSummary, KnowledgeDigest, SummaryMechanism};
+pub use summary::{EventSummary, SummaryMechanism};
 pub use text::normalize_chunk_text;
 pub use validation::{ErrorDetail, ValidationError, ValidationResult};
 pub use window::{validate_window, WindowError};

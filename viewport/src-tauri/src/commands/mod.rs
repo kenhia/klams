@@ -44,10 +44,6 @@ impl From<ClientError> for ViewportError {
                 message: t.to_string(),
             },
             ClientError::Decode(m) => ViewportError::Deserialization { message: m },
-            ClientError::NotImplemented(m) => ViewportError::Server {
-                status: 501,
-                message: m.into(),
-            },
             ClientError::Api { status, body } => {
                 if status.as_u16() == 401 {
                     ViewportError::Unauthorized

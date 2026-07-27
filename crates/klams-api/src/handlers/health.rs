@@ -102,6 +102,12 @@ async fn probe_tei<S: Store>(store: &S) -> SubsystemStatus {
     v
 }
 
+/// Sprint 032 (#335): the `Degraded` arm below is currently
+/// unreachable — `probe_pg`/`probe_qdrant`/`probe_tei` only ever build
+/// `ok()` or `down()`. It is kept deliberately rather than deleted: it
+/// is the correct aggregation rule, and dropping it would mean a probe
+/// that later grows a partial-failure state silently aggregates to
+/// `Ok`. Two lines of correct branch beat a latent wrong answer.
 fn aggregate(parts: &[&SubsystemStatus]) -> HealthStatus {
     if parts.iter().any(|s| s.state == HealthStatus::Down) {
         HealthStatus::Down
@@ -150,14 +156,4 @@ pub async fn healthz<S: Store>(
 pub struct HealthzParams {
     #[serde(default)]
     pub contract: Option<String>,
-}
-
-#[cfg(test)]
-#[allow(dead_code)] // used by integration tests under cfg(test) in adjacent files
-pub(crate) fn clear_cache_for_tests() {
-    for c in [&PG_CACHE, &QDRANT_CACHE, &TEI_CACHE] {
-        if let Ok(mut g) = c.lock() {
-            g.last = None;
-        }
-    }
 }

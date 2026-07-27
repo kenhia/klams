@@ -1,6 +1,13 @@
-//! Summarization records: `EventSummary` (Postgres) and `KnowledgeDigest` (Qdrant).
+//! Summarization records: `EventSummary` (Postgres).
 //!
 //! Sprint 005 (Phase 4) — see sprints/005-advanced-retrieval/data-model.md §3–§4.
+//!
+//! Sprint 032 (#335) removed `KnowledgeDigest` / `DigestCluster` and the
+//! Qdrant `kind = "digest"` machinery behind them. T038 promised to wire
+//! it; nothing ever did, and both live collections held zero digest
+//! points. `SummaryMechanism::Llm` is kept so summaries written while
+//! the (never-generating) LLM relabel existed still deserialize —
+//! nothing produces it now.
 
 use serde::{Deserialize, Serialize};
 use time::{Date, OffsetDateTime};
@@ -34,29 +41,6 @@ pub struct EventSummary {
     pub source_ids: Vec<Uuid>,
     pub summary_text: String,
     pub mechanism: SummaryMechanism,
-    #[serde(with = "time::serde::rfc3339")]
-    pub generated_at: OffsetDateTime,
-    #[serde(default, with = "time::serde::rfc3339::option")]
-    pub invalidated_at: Option<OffsetDateTime>,
-}
-
-/// Cluster definition for a knowledge digest. Stored in the
-/// Qdrant payload alongside the embedded summary text.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DigestCluster {
-    pub repo: String,
-    pub file_prefix: String,
-}
-
-/// Logical view of a `kind=digest` Qdrant point.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KnowledgeDigest {
-    pub id: Uuid,
-    pub text: String,
-    pub mechanism: SummaryMechanism,
-    pub source_ids: Vec<Uuid>,
-    pub source_count: u32,
-    pub cluster: DigestCluster,
     #[serde(with = "time::serde::rfc3339")]
     pub generated_at: OffsetDateTime,
     #[serde(default, with = "time::serde::rfc3339::option")]

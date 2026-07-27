@@ -434,12 +434,13 @@ Retry-After: 5` (FR-011).
 * Clusters by `(host, category, day_bucket)` and emits an
   extractive headline ("3x compile, 2x test, 1x lint") via
   `summarize::extractive::event_headline()`.
-* Probes the configured OpenAI-compat chat endpoint
-  (`GET {llm_url}/models`); on success, marks the summary mechanism
-  `Llm` (the LLM call itself is wired through
-  `OpenAiChatClient::generate()` — sprint 014, previously
-  Ollama-native); on failure, records `Extractive` and the digest
-  still ships.
+* Records `mechanism = Extractive` on every summary. (Through sprint
+  031 the task first probed an OpenAI-compat chat endpoint and, on a
+  successful probe, relabelled the same extractive output as `Llm`. No
+  code path ever sent a completion request. Sprint 032 removed the
+  probe, the client, and the `[summarization]` LLM keys;
+  `SummaryMechanism::Llm` survives in klams-types only so summaries
+  written before then still deserialize.)
 * Upserts active summaries via `SummaryStore::upsert_event_summary`
   into the new `summaries` table (migration `0004_summaries.sql`).
 
@@ -934,12 +935,13 @@ a build choice. No schema changes; no new storage.
   optional bearer key). Selected via `[embeddings] api = "tei" | "openai"`;
   for `openai` the `url` must include the version segment (TEI's own
   `/v1` route, vLLM, and Ollama `/v1` all work).
-* **Chat client** ([crates/klams-core/src/summarize/llm.rs](../crates/klams-core/src/summarize/llm.rs))
-  — `OpenAiChatClient` (`GET {llm_url}/models` probe,
-  `POST {llm_url}/chat/completions`) replaces the Ollama-native
-  client. Config: `[summarization] llm_url` / `llm_model` /
-  `llm_api_key`; the legacy `ollama_url` / `ollama_model` keys parse
-  as serde aliases, but the URL value must now include `/v1`.
+* **Chat client** — `OpenAiChatClient` (`GET {llm_url}/models` probe,
+  `POST {llm_url}/chat/completions`) replaced the Ollama-native client
+  here. **Removed in sprint 032** (#647/#335) together with
+  `crates/klams-core/src/summarize/llm.rs` and the `[summarization]`
+  `llm_*` / `ollama_*` keys: the `chat/completions` half never had a
+  production caller, so the only live effect was the probe, against an
+  Ollama instance that was deployed on no host. See §2c.3.
 * **Embedding topology decision** — embeddings stay local to `kubs0`
   (TEI container, GPU-capable); the OpenAI-compat path exists so a
   future switch to vLLM/kvllm is a URL change. `vector_dim` remains

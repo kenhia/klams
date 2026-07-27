@@ -1,18 +1,27 @@
-//! Background summarization task: event clusters + stale knowledge clusters.
+//! Background summarization task: event clusters.
 //!
-//! Sprint 005 (Phase 4) — T036. The task wakes on a fixed interval,
-//! probes the configured OpenAI-compat chat endpoint (if
-//! `llm_fallback = true`), then writes one
-//! `EventSummary` per detected `(host, category, day_bucket)`
-//! cluster. Cycles never lap — a `tokio::sync::Mutex<()>` guards
-//! the run loop.
+//! Sprint 005 (Phase 4) — T036. The task wakes on a fixed interval and
+//! writes one `EventSummary` per detected `(host, category, day_bucket)`
+//! cluster. Cycles never lap — a `tokio::sync::Mutex<()>` guards the run
+//! loop.
 //!
-//! For Phase 4 we only emit event summaries; knowledge digests
-//! follow when the Qdrant `kind = "digest"` payload is wired up
-//! (T038 — tracked for follow-up).
+//! Sprint 032 (#647/#335) removed the LLM path. It was never a
+//! summarization path: `OpenAiChatClient::chat` had no production
+//! caller, and the only thing the "fallback" did was `GET
+//! {llm_url}/models` and, if that answered, relabel the *extractive*
+//! summary as `mechanism = Llm`. The default endpoint was Ollama on
+//! 127.0.0.1:11434, which is deployed in no compose file and no unit,
+//! so on kubs0 the probe failed every cycle forever and logged a
+//! warning about falling back to a mechanism that was already the only
+//! one. 263 lines of client, one undeployed dependency, and a metric
+//! label that meant "this host happens to run Ollama" — all to produce
+//! byte-identical summaries. `SummaryMechanism::Llm` stays in
+//! klams-types so historical rows still deserialize; nothing writes it.
+//!
+//! Knowledge digests (T038) were removed in the same pass — the Qdrant
+//! `kind = "digest"` payload they were promised on was never wired.
 
 pub mod extractive;
-pub mod llm;
 
 use crate::metrics as m;
 use extractive::{event_headline, EventCluster};
@@ -30,12 +39,7 @@ use uuid::Uuid;
 pub struct SummarizationConfig {
     pub enabled: bool,
     pub event_cluster_min: u32,
-    pub llm_fallback: bool,
     pub task_interval: Duration,
-    /// OpenAI-compat base including `/v1` (sprint 014).
-    pub llm_url: String,
-    pub llm_model: String,
-    pub llm_api_key: Option<String>,
 }
 
 /// Cluster key emitted by a source-supplied iterator of `EventRecord`s.
@@ -175,25 +179,6 @@ impl SummarizationTask {
         };
         let start = Instant::now();
 
-        // Optional chat-endpoint probe (kept for D-010); the result
-        // only affects the `mechanism` label below.
-        let llm_ok = if self.cfg.llm_fallback {
-            let client = llm::OpenAiChatClient::new(
-                &self.cfg.llm_url,
-                &self.cfg.llm_model,
-                self.cfg.llm_api_key.clone(),
-            );
-            match client.probe().await {
-                Ok(()) => true,
-                Err(e) => {
-                    warn!(error = %e, "chat endpoint probe failed; falling back to extractive");
-                    false
-                }
-            }
-        } else {
-            false
-        };
-
         // Window: last 7 days. The data-model bucket is per-day.
         let cutoff = OffsetDateTime::now_utc() - time::Duration::days(7);
         let records = self
@@ -203,12 +188,9 @@ impl SummarizationTask {
             .map_err(|e| e.to_string())?;
         let summaries = cluster_events(&records);
         let mut written = 0u64;
-        for mut s in summaries {
+        for s in summaries {
             if s.source_count < self.cfg.event_cluster_min {
                 continue;
-            }
-            if llm_ok {
-                s.mechanism = SummaryMechanism::Llm;
             }
             self.summaries
                 .upsert_event_summary(&s)

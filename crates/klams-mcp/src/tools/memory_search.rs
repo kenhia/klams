@@ -159,8 +159,10 @@ pub async fn run<S: Store>(
     if want_knowledge {
         // Sprint 024 (#329): route the retrieval sources through the
         // `Store` trait rather than reaching into `.embedder` / `.qdrant`
-        // / `.postgres`, so a third source (025 lexical) is added at the
-        // trait + fusion seam, not wired into this tool concretely.
+        // / `.postgres`, so a third source is added at the trait +
+        // fusion seam, not wired into this tool concretely. (Sprint 032:
+        // that third source was named "025 lexical" here; 025 became the
+        // authorization sprint and lexical search is still open as #333.)
         // Sprint 027 (#629): classify rather than assuming transience.
         // A query long enough to exceed the model's ceiling is a
         // permanent `PAYLOAD_TOO_LARGE`, not an outage.

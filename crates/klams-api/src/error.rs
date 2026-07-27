@@ -48,8 +48,6 @@ pub enum ApiError {
     Gone { what: String },
     #[error("internal server error (request {request_id})")]
     Internal { request_id: String },
-    #[error("not implemented: {what}")]
-    NotImplemented { what: String },
     /// Sprint 008 — `GET /v1/memories` window size exceeds the
     /// configured `[api.memories_max_window_days]` (default 30).
     #[error("window too large: max {max_days} days")]
@@ -105,7 +103,6 @@ impl ApiError {
             ApiError::NotFound { .. } => StatusCode::NOT_FOUND,
             ApiError::Gone { .. } => StatusCode::GONE,
             ApiError::Internal { .. } => StatusCode::INTERNAL_SERVER_ERROR,
-            ApiError::NotImplemented { .. } => StatusCode::NOT_IMPLEMENTED,
             ApiError::WindowTooLarge { .. } | ApiError::InvalidWindow { .. } => {
                 StatusCode::BAD_REQUEST
             }
@@ -221,15 +218,6 @@ impl ApiError {
                 message: "internal server error".into(),
                 field: None,
                 request_id: Some(request_id.clone()),
-                details: None,
-                current_version: None,
-                window_max_days: None,
-            },
-            ApiError::NotImplemented { what } => WireApiError {
-                code: "not_implemented".into(),
-                message: format!("{what} is not implemented yet"),
-                field: None,
-                request_id: None,
                 details: None,
                 current_version: None,
                 window_max_days: None,

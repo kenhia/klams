@@ -12,6 +12,13 @@ pub const DURATION_SECONDS: &str = "klams_backup_duration_seconds";
 pub const RUNS_TOTAL: &str = "klams_backup_runs_total";
 pub const HOOK_INVOCATIONS_TOTAL: &str = "klams_backup_hook_invocations_total";
 pub const MAINTENANCE_ACTIVE: &str = "klams_maintenance_mode_active";
+/// Sprint 032 (#647). Sprint 020 fixed a backup outage that had run
+/// silently since 2026-05-31: `ProtectSystem=strict` made `backup_dir`
+/// read-only, so every nightly run died on the lockfile with EROFS. The
+/// fix was a `ReadWritePaths=` line in one unit file — i.e. exactly the
+/// kind of hand-maintained state that drifts. This gauge makes the
+/// precondition observable at boot instead of at 07:00 UTC.
+pub const DIR_WRITABLE: &str = "klams_backup_dir_writable";
 
 /// Register descriptions with the global recorder. Safe to call
 /// repeatedly.
@@ -36,6 +43,15 @@ pub fn describe() {
         MAINTENANCE_ACTIVE,
         "1 while a backup is in flight, 0 otherwise (sprint 006 FR-007)"
     );
+    describe_gauge!(
+        DIR_WRITABLE,
+        "1 if [backup].backup_dir was writable at startup, 0 if not (sprint 032 #647)"
+    );
+}
+
+/// Record the startup writability probe.
+pub fn set_dir_writable(writable: bool) {
+    gauge!(DIR_WRITABLE).set(f64::from(u8::from(writable)));
 }
 
 /// Mirror `MaintenanceState::active` onto the gauge.
@@ -93,5 +109,7 @@ mod tests {
         observe_duration("qdrant", 4.2);
         incr_hook_invocations("started", true);
         incr_hook_invocations("finished", false);
+        set_dir_writable(true);
+        set_dir_writable(false);
     }
 }

@@ -6,8 +6,3 @@ pub mod state;
 
 #[cfg(feature = "kpidash")]
 pub mod kpidash;
-
-#[must_use]
-pub fn banner() -> &'static str {
-    "klams-monitor ready"
-}

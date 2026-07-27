@@ -20,12 +20,6 @@ pub enum ConfigError {
         "retrieval fusion strategy `{value}` is not recognized (expected \"rrf\" or \"weighted\")"
     )]
     RetrievalFusionUnknown { value: String },
-    #[error("summarization.llm_url `{value}` is not a valid URL: {source}")]
-    SummarizationLlmUrlInvalid {
-        value: String,
-        #[source]
-        source: url::ParseError,
-    },
     #[error("service.limits.{key} out of range: got {value}, allowed {min}..={max}")]
     InvalidLimit {
         key: &'static str,
@@ -391,28 +385,20 @@ impl Default for TokensConfig {
     }
 }
 
+/// Sprint 032 (#647/#335) removed `llm_fallback` / `llm_url` /
+/// `llm_model` / `llm_api_key` (the LLM path they configured never
+/// generated anything — see `klams_core::summarize`) and
+/// `knowledge_stale_days` / `knowledge_cluster_min` (parsed and
+/// documented since sprint 005, never read by any code path). Configs
+/// still carrying them keep parsing: this struct does not
+/// `deny_unknown_fields`, so a stale key is ignored rather than
+/// refusing to boot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SummarizationConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default = "default_event_cluster_min")]
     pub event_cluster_min: u32,
-    #[serde(default = "default_knowledge_stale_days")]
-    pub knowledge_stale_days: u32,
-    #[serde(default = "default_knowledge_cluster_min")]
-    pub knowledge_cluster_min: u32,
-    #[serde(default = "default_true")]
-    pub llm_fallback: bool,
-    /// OpenAI-compat base *including* `/v1` (sprint 014 — was the
-    /// Ollama-native base). The old `ollama_url` key still parses via
-    /// alias, but its value must gain the `/v1` suffix at deploy time.
-    #[serde(default = "default_llm_url", alias = "ollama_url")]
-    pub llm_url: String,
-    #[serde(default = "default_llm_model", alias = "ollama_model")]
-    pub llm_model: String,
-    /// Optional bearer key for endpoints that require one.
-    #[serde(default)]
-    pub llm_api_key: Option<String>,
     #[serde(default = "default_summarization_interval")]
     pub task_interval_seconds: u64,
 }
@@ -423,19 +409,6 @@ fn default_true() -> bool {
 fn default_event_cluster_min() -> u32 {
     50
 }
-fn default_knowledge_stale_days() -> u32 {
-    90
-}
-fn default_knowledge_cluster_min() -> u32 {
-    20
-}
-fn default_llm_url() -> String {
-    // Ollama's OpenAI-compatible route on kubs0.
-    "http://127.0.0.1:11434/v1".into()
-}
-fn default_llm_model() -> String {
-    "phi3:medium".into()
-}
 fn default_summarization_interval() -> u64 {
     3600
 }
@@ -445,12 +418,6 @@ impl Default for SummarizationConfig {
         Self {
             enabled: true,
             event_cluster_min: default_event_cluster_min(),
-            knowledge_stale_days: default_knowledge_stale_days(),
-            knowledge_cluster_min: default_knowledge_cluster_min(),
-            llm_fallback: true,
-            llm_url: default_llm_url(),
-            llm_model: default_llm_model(),
-            llm_api_key: None,
             task_interval_seconds: default_summarization_interval(),
         }
     }
@@ -576,10 +543,7 @@ mod tests {
         assert_eq!(cfg.retrieval.rrf_k, 60);
         assert_eq!(cfg.tokens.mode, "tiktoken");
         assert!(cfg.summarization.enabled);
-        assert_eq!(cfg.summarization.llm_model, "phi3:medium");
-        // Sprint 014: the shipped example speaks OpenAI-compat for the
-        // chat endpoint and defaults the embedder to TEI-native.
-        assert!(cfg.summarization.llm_url.ends_with("/v1"));
+        assert_eq!(cfg.summarization.event_cluster_min, 50);
         assert_eq!(cfg.embeddings.api, EmbeddingsApi::Tei);
     }
 
@@ -621,7 +585,6 @@ mod tests {
             .expect("parse");
         assert_eq!(cfg.embeddings.api, EmbeddingsApi::Tei);
         assert!(cfg.embeddings.api_key.is_none());
-        assert_eq!(cfg.summarization.llm_url, "http://127.0.0.1:11434/v1");
 
         // api = "openai" with a key.
         let toml = format!(
@@ -641,7 +604,11 @@ mod tests {
         assert_eq!(cfg.embeddings.api, EmbeddingsApi::Openai);
         assert_eq!(cfg.embeddings.api_key.as_deref(), Some("sk-test"));
 
-        // Legacy [summarization] keys parse via alias.
+        // Sprint 032 (#647/#335): the retired [summarization] LLM and
+        // knowledge-digest keys must not break a config that still
+        // carries them. This is the upgrade-safety property — an
+        // operator who has not yet trimmed /etc/klams/klams.toml (or
+        // who rolls back to an older one) still boots.
         let toml = format!(
             r#"{base}
             [embeddings]
@@ -649,16 +616,22 @@ mod tests {
             model_id = "m"
             vector_dim = 384
             [summarization]
+            event_cluster_min = 25
             ollama_url = "http://kubs0:11434/v1"
             ollama_model = "llama3.2:latest"
+            llm_url = "http://kubs0:11434/v1"
+            llm_model = "llama3.2:latest"
+            llm_fallback = true
+            knowledge_stale_days = 90
+            knowledge_cluster_min = 20
         "#
         );
         let cfg: Config = Figment::new()
             .merge(Toml::string(&toml))
             .extract()
-            .expect("parse");
-        assert_eq!(cfg.summarization.llm_url, "http://kubs0:11434/v1");
-        assert_eq!(cfg.summarization.llm_model, "llama3.2:latest");
+            .expect("retired [summarization] keys must be ignored, not fatal");
+        assert!(cfg.summarization.enabled);
+        assert_eq!(cfg.summarization.event_cluster_min, 25);
     }
 
     /// T012(a): a config with no `[decay]` block loads defaults.

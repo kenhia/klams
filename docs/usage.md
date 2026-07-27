@@ -393,26 +393,30 @@ apply a new `[decay]` block.
 
 ```toml
 [summarization]
-enabled              = true
-task_interval        = "60s"   # also accepts "5m", "1h"
-event_cluster_min    = 3       # only summarize ≥ N events
-llm_fallback         = true    # try the chat LLM; on failure use extractive
-llm_url              = "http://kubs0:11434/v1"   # OpenAI-compat base incl. /v1
-llm_model            = "phi3:medium"
+enabled               = true
+task_interval_seconds = 3600   # integer seconds; a string like "60s" fails to boot
+event_cluster_min     = 50     # only summarize ≥ N events per (host, category, day)
 ```
 
-Sprint 014: the chat endpoint speaks the OpenAI-compatible dialect
-(`GET {llm_url}/models` probe, `POST {llm_url}/chat/completions`), so
-`llm_url` works with Ollama's `/v1` route, vLLM, or kvllm on kai; set
-`llm_api_key` if the endpoint requires a bearer key. The legacy
-`ollama_url` / `ollama_model` keys still parse as aliases — but note
-the URL must now include the `/v1` segment.
+Summaries are **extractive only**. Sprint 032 removed the LLM keys
+(`llm_fallback`, `llm_url`, `llm_model`, `llm_api_key`, and the
+`ollama_url` / `ollama_model` aliases) along with the chat client
+behind them: the "fallback" never generated text — it probed
+`{llm_url}/models` and, if the probe answered, relabelled the
+extractive summary as `mechanism = "llm"`. Its default endpoint
+(Ollama on `127.0.0.1:11434`) is deployed in no compose file and no
+unit, so on kubs0 that probe failed every cycle for the life of the
+feature. `knowledge_stale_days` and `knowledge_cluster_min` went the
+same way — parsed and documented since sprint 005, never read.
 
-When the chat endpoint is unreachable, the task records `mechanism = "extractive"`
-and `klams_summarization_runs_total{mechanism="extractive"}` increments;
-the events section in `/memory/context` keeps shipping headlines
-("3x compile, 2x test"). Watch `klams_summarization_lag_seconds` for
-the wall-clock age of the most recent successful cycle.
+A config still carrying any of those keys keeps booting; unknown keys
+in `[summarization]` are ignored, not fatal.
+
+The task records `mechanism = "extractive"` and increments
+`klams_summarization_runs_total{mechanism="extractive"}`; the events
+section in `/memory/context` ships headlines ("3x compile, 2x test").
+Watch `klams_summarization_lag_seconds` for the wall-clock duration of
+the most recent cycle.
 
 ### Viewport: Context Preview pane
 
@@ -444,7 +448,7 @@ Disabled by default — set `enabled = true` to opt in:
 ```toml
 [backup]
 enabled              = true
-backup_dir           = "/ai/klams/backups"         # written atomically: .partial -> rename
+backup_dir           = "/gratch/klams-backup"         # written atomically: .partial -> rename
 window_start_utc     = "07:00"                     # HH:MM UTC; no DST drift
 daily_count          = 14                          # newest N distinct dates per kind
 weekly_count         = 4                           # newest N Sundays per kind
@@ -457,7 +461,7 @@ Validate the config without starting the service:
 
 ```bash
 just backup-validate-config
-# OK: [backup] enabled=true backup_dir=/ai/klams/backups window_start_utc=07:00 ...
+# OK: [backup] enabled=true backup_dir=/gratch/klams-backup window_start_utc=07:00 ...
 ```
 
 ### `just` recipe additions
@@ -534,8 +538,8 @@ identifiers exposed via environment variables (`KLAMS_BACKUP_RUN_ID`,
   "ended_at":   "2026-05-22T07:08:00Z",
   "duration_ms": 480000,
   "artifacts": [
-    {"kind": "postgres", "path": "/ai/klams/backups/postgres-2026-05-22.dump",     "bytes": 12345678},
-    {"kind": "qdrant",   "path": "/ai/klams/backups/qdrant-2026-05-22.snapshot",   "bytes": 9876543}
+    {"kind": "postgres", "path": "/gratch/klams-backup/postgres-2026-05-22.dump",     "bytes": 12345678},
+    {"kind": "qdrant",   "path": "/gratch/klams-backup/qdrant-2026-05-22.snapshot",   "bytes": 9876543}
   ],
   "ok": true,
   "error": null
@@ -566,9 +570,9 @@ against the most recent (or explicitly-dated) pair in
 ```bash
 just backup-verify              # today UTC
 just backup-verify 2026-05-24   # explicit date
-# ==> postgres: /ai/klams/backups/postgres-2026-05-24.dump
+# ==> postgres: /gratch/klams-backup/postgres-2026-05-24.dump
 #   bytes=21168 toc_entries=43 OK
-# ==> qdrant:   /ai/klams/backups/qdrant-2026-05-24.snapshot
+# ==> qdrant:   /gratch/klams-backup/qdrant-2026-05-24.snapshot
 #   bytes=712192 tar_members=18 OK
 # ==> backup-verify: OK
 ```
