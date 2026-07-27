@@ -91,7 +91,19 @@ impl QdrantStore {
             .await
             .map_err(|e| StoreError::Backend(format!("qdrant exists: {e}")))?;
         if !exists {
-            client
+            // `collection_exists` + `create_collection` is check-then-act,
+            // so two processes connecting at the same moment both see
+            // "absent" and both create — the loser gets `Collection ...
+            // already exists!`. Losing that race is not a failure: the
+            // collection is there, which is all the caller wanted.
+            //
+            // Sprint 031: latent since 007 and only ever fired in tests
+            // (the shared test collection always pre-existed, until
+            // #687's sweep started dropping it). It is equally reachable
+            // in production — klams-service, klams-scanner and
+            // klams-monitor all call `connect`, and a fresh Qdrant plus
+            // a simultaneous start is the same race.
+            if let Err(e) = client
                 .create_collection(
                     CreateCollectionBuilder::new(collection)
                         .vectors_config(
@@ -100,7 +112,12 @@ impl QdrantStore {
                         .on_disk_payload(true),
                 )
                 .await
-                .map_err(|e| StoreError::Backend(format!("qdrant create: {e}")))?;
+            {
+                let msg = e.to_string();
+                if !msg.contains("already exists") {
+                    return Err(StoreError::Backend(format!("qdrant create: {msg}")));
+                }
+            }
         }
         for field in KEYWORD_INDEX_FIELDS {
             let _ = client

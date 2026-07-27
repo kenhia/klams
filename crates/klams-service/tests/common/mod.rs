@@ -13,22 +13,29 @@
 //! Tests that depend on this harness should be marked `#[ignore]`
 //! by default and run explicitly via `cargo test -- --ignored`.
 //!
-//! # Run the ignored suite with `--test-threads=1`
+//! # Isolation (sprint 031, #679)
 //!
-//! [`TestServer::spawn_isolated`] TRUNCATEs the shared Postgres tables,
-//! which wipes rows belonging to any **concurrently running** test built
-//! on the non-truncating [`TestServer::spawn`]. Run the suite in
-//! parallel and you get failures that vanish on re-run serially — most
-//! visibly in `phase4_summarization_pipeline`, whose bundles lose their
-//! events mid-test.
+//! [`TestServer::spawn_isolated`] gives a test its **own Postgres
+//! schema** (`klams_test_{uuid}`, migrated from empty) and its own
+//! Qdrant collection of the same name. Nothing it writes is visible to
+//! another test, and nothing another test writes is visible to it.
 //!
-//! CI already does the right thing (`--ignored --test-threads=1`), so
-//! this is a local-run footgun rather than a live problem. Properly
-//! fixing it means giving each isolated test its own schema instead of
-//! sharing one database — deliberately out of scope for sprint 025,
-//! which only removed the `authors` half of the same hazard (that half
-//! had to go, because it broke tests that were *not* running in
-//! parallel with a truncating one).
+//! Until sprint 031 the same method instead `TRUNCATE`d the shared
+//! tables, which wiped rows belonging to any *concurrently running*
+//! test — so the ignored suite only passed under `--test-threads=1`,
+//! and `phase4_summarization_pipeline` lost its events mid-test. The
+//! suite now passes at default parallelism; keep it that way.
+//!
+//! Call [`TestServer::cleanup`] when a test finishes to drop both the
+//! schema and the collection. Skipping it (or panicking before it) is
+//! not fatal — `just test-integration` sweeps orphans before each run —
+//! but it leaves detritus on a long-lived stack.
+//!
+//! [`TestServer::spawn`] still shares one Postgres database and the
+//! `knowledge_items_test` collection. That is fine for tests that
+//! assert on *presence*; any test asserting on ranking or ordering
+//! must use `spawn_isolated`, because a shared corpus accumulates
+//! seeds until the ranking under test is drowned out (#687).
 
 #![allow(dead_code)]
 
@@ -109,6 +116,60 @@ pub struct TestServer {
     /// `spawn_isolated` this is `klams_test_{uuid}`; for the shared
     /// helpers it is `knowledge_items_test`.
     qdrant_collection: String,
+    /// Sprint 031 (#679) — the dedicated Postgres schema an isolated
+    /// server migrated into, dropped by `cleanup()`. `None` for
+    /// `spawn()`, which shares the default schema.
+    pg_schema: Option<String>,
+    /// Base (unscoped) Postgres URL, retained so `cleanup()` can drop
+    /// the schema on a connection that is not inside it.
+    pg_url: String,
+}
+
+/// Advisory-lock key serializing per-test schema creation + migration.
+/// Arbitrary but stable; shared by every test process on this database.
+const MIGRATE_LOCK_KEY: i64 = 0x6b6c_616d_0031; // "klam" + sprint 031
+
+/// Take the migration lock, returning the connection that holds it.
+///
+/// Isolated spawns cannot migrate concurrently. `sqlx::migrate!` takes
+/// its own `pg_advisory_lock` keyed on the *database*, so every
+/// per-schema migrator contends for one lock — and migration 0003 runs
+/// `CREATE INDEX CONCURRENTLY`, which waits for every concurrent
+/// virtual transaction in the database, including the ones belonging to
+/// migrators blocked on that lock. That is a real cycle, and Postgres
+/// kills it: `migrate: ... deadlock detected`.
+///
+/// Poll `pg_try_advisory_lock` instead of blocking on
+/// `pg_advisory_lock`: a *blocked* waiter holds a virtual transaction
+/// for as long as it waits, which is exactly what `CONCURRENTLY` snags
+/// on. Each poll is a sub-millisecond transaction that CIC can wait out.
+async fn lock_for_migration(pg_url: &str) -> sqlx::PgConnection {
+    use sqlx::Connection as _;
+    let mut conn = sqlx::PgConnection::connect(pg_url)
+        .await
+        .expect("postgres connect (migration lock)");
+    loop {
+        let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
+            .bind(MIGRATE_LOCK_KEY)
+            .fetch_one(&mut conn)
+            .await
+            .expect("try migration advisory lock");
+        if acquired {
+            return conn;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+/// Point a connection URL's `search_path` at `schema`, libpq-style.
+/// Every table the migrations create, and every query the store runs,
+/// then resolves inside that schema alone — `public` is deliberately
+/// NOT on the path, because the migrations are full of
+/// `CREATE TABLE IF NOT EXISTS` and would silently no-op against the
+/// shared tables if they could see them.
+fn schema_scoped_url(base: &str, schema: &str) -> String {
+    let sep = if base.contains('?') { '&' } else { '?' };
+    format!("{base}{sep}options=-c%20search_path%3D{schema}")
 }
 
 impl std::fmt::Debug for TestServer {
@@ -142,44 +203,59 @@ impl TestServer {
     }
 
     /// Sprint 009 T039 (FR-021 / SC-008) — per-test isolation.
-    /// Creates an ephemeral Qdrant collection `klams_test_{uuid}`
-    /// (dropped via [`Self::cleanup`]) and TRUNCATEs the shared
-    /// Postgres test tables so concurrent tests cannot observe
-    /// each other's facts/events/summaries/dissents/authors.
-    /// Seeded `system` + `lost-author` authors are preserved.
+    ///
+    /// Sprint 031 (#679): isolation is now real rather than
+    /// destructive. The server gets an ephemeral Qdrant collection
+    /// **and** a dedicated Postgres schema, both named
+    /// `klams_test_{uuid}` and both dropped by [`Self::cleanup`]. The
+    /// schema is migrated from empty, so the seeded `system` and
+    /// `lost-author` authors are present exactly as in production.
+    /// Nothing is `TRUNCATE`-d, so a concurrently running test cannot
+    /// have its rows pulled out from under it.
     pub async fn spawn_isolated() -> Self {
-        let collection = format!("klams_test_{}", Uuid::new_v4().simple());
-        Self::spawn_inner(false, collection, true).await
+        Self::spawn_inner(false, Self::isolated_name(), true).await
+    }
+
+    /// [`Self::spawn_isolated`] with a `SummaryStore` wired into
+    /// `ContextBuilder` (sprint 031 — what
+    /// `phase4_summarization_pipeline` needs to stop racing).
+    pub async fn spawn_isolated_with_summary_store() -> Self {
+        Self::spawn_inner(true, Self::isolated_name(), true).await
     }
 
     /// Sprint 030 (#685): isolated server with the second-stage
     /// reranker wired to `reranker_url` (which may be dead — the
     /// best-effort skip path is itself under test).
     pub async fn spawn_isolated_with_reranker(reranker_url: &str) -> Self {
-        let collection = format!("klams_test_{}", Uuid::new_v4().simple());
-        Self::spawn_inner_with_reranker(false, collection, true, Some(reranker_url.to_string()))
-            .await
+        Self::spawn_inner_with_reranker(
+            false,
+            Self::isolated_name(),
+            true,
+            Some(reranker_url.to_string()),
+        )
+        .await
+    }
+
+    /// One name for both per-test resources, so an orphaned Qdrant
+    /// collection and an orphaned Postgres schema are recognisably the
+    /// same run.
+    fn isolated_name() -> String {
+        format!("klams_test_{}", Uuid::new_v4().simple())
     }
 
     async fn spawn_inner(
         with_summary_store: bool,
         qdrant_collection: String,
-        truncate_postgres: bool,
+        isolate: bool,
     ) -> Self {
-        Self::spawn_inner_with_reranker(
-            with_summary_store,
-            qdrant_collection,
-            truncate_postgres,
-            None,
-        )
-        .await
+        Self::spawn_inner_with_reranker(with_summary_store, qdrant_collection, isolate, None).await
     }
 
     #[allow(clippy::too_many_lines)]
     async fn spawn_inner_with_reranker(
         with_summary_store: bool,
         qdrant_collection: String,
-        truncate_postgres: bool,
+        isolate: bool,
         reranker_url: Option<String>,
     ) -> Self {
         let pg_url = std::env::var("TEST_DATABASE_URL")
@@ -192,30 +268,35 @@ impl TestServer {
         let read_token = "test-token-read-only".to_string();
         let write_token = "test-token-write".to_string();
 
-        let postgres = PostgresStore::connect(&pg_url, 4)
-            .await
-            .expect("postgres connect");
-        if truncate_postgres {
-            // Wipe per-test mutable state.
-            //
-            // Sprint 025: the companion `DELETE FROM authors WHERE
-            // agent_name NOT IN ('system','lost-author')` was removed.
-            // It deleted rows belonging to *other* tests running
-            // concurrently, so a second test could have its author
-            // pulled out from under it between `register_author` and
-            // its first write — surfacing as a `facts_author_id_fkey`
-            // violation. The race was always there; it only became
-            // likely once this sprint added more `spawn_isolated`
-            // tests. Nothing depends on a clean `authors` table: the
-            // v1 listing test filters by `agent_name` and matches on
-            // id, and every test picks a unique name.
-            sqlx::query(
-                "TRUNCATE TABLE facts, events, summaries, dissents RESTART IDENTITY CASCADE",
-            )
-            .execute(postgres.pool())
-            .await
-            .expect("truncate postgres");
-        }
+        // Sprint 031 (#679): an isolated server migrates into its own
+        // schema instead of TRUNCATEing the shared one. Create the
+        // schema on a throwaway connection first — `PostgresStore::
+        // connect` runs the migrations, and they need somewhere to
+        // land.
+        //
+        // What this replaces: a `TRUNCATE facts, events, summaries,
+        // dissents` that wiped rows belonging to whatever else was
+        // running. (Sprint 025 had already removed the `authors` half
+        // of the same hazard for the same reason.) Both halves are now
+        // gone for good — there is nothing shared left to wipe.
+        let pg_schema = isolate.then(|| qdrant_collection.clone());
+        let postgres = if let Some(schema) = &pg_schema {
+            let mut lock = lock_for_migration(&pg_url).await;
+            sqlx::query(&format!("CREATE SCHEMA IF NOT EXISTS {schema}"))
+                .execute(&mut lock)
+                .await
+                .expect("create per-test schema");
+            let store = PostgresStore::connect(&schema_scoped_url(&pg_url, schema), 4).await;
+            let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
+                .bind(MIGRATE_LOCK_KEY)
+                .execute(&mut lock)
+                .await;
+            store.expect("postgres connect (isolated schema)")
+        } else {
+            PostgresStore::connect(&pg_url, 4)
+                .await
+                .expect("postgres connect")
+        };
         let qdrant = QdrantStore::connect(&qdrant_url, &qdrant_collection, 384)
             .await
             .expect("qdrant connect");
@@ -350,13 +431,27 @@ impl TestServer {
             store,
             qdrant_url,
             qdrant_collection,
+            pg_schema,
+            pg_url,
         }
     }
 
-    /// Sprint 009 T039 — drop the per-test Qdrant collection.
-    /// Safe to call on a `spawn()`-built server too; it will skip
-    /// the shared `knowledge_items_test` collection.
+    /// Sprint 009 T039 — drop this server's per-test resources: the
+    /// Qdrant collection and (sprint 031) the Postgres schema.
+    /// Safe to call on a `spawn()`-built server too; it will skip the
+    /// shared `knowledge_items_test` collection and has no schema to
+    /// drop.
     pub async fn cleanup(self) {
+        if let Some(schema) = &self.pg_schema {
+            // Drop from outside the schema — a pool bound to it would
+            // be pulling the rug out from under its own search_path.
+            if let Ok(admin) = sqlx::PgPool::connect(&self.pg_url).await {
+                let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS {schema} CASCADE"))
+                    .execute(&admin)
+                    .await;
+                admin.close().await;
+            }
+        }
         if self.qdrant_collection == "knowledge_items_test" {
             return;
         }

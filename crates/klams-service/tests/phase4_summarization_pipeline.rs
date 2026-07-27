@@ -11,6 +11,14 @@
 //!  (c) invalidation fallback — after a summary is written and
 //!      `invalidate_event_summaries` is called, the next
 //!      `/memory/context` call returns raw events again.
+//!
+//! Sprint 031 (#679): every test here spawns **isolated** — its own
+//! Postgres schema, its own Qdrant collection. Before that they shared
+//! one database and each began by `TRUNCATE`-ing it, so running the
+//! ignored suite in parallel let one test wipe another's fixtures
+//! mid-run; all three passed only under `--test-threads=1`. The dense
+//! 500-event fixture made them the loudest victims, not the only ones.
+//! Do not reintroduce a shared-table wipe here.
 
 #![allow(clippy::too_many_lines)]
 
@@ -49,8 +57,7 @@ fn dense_scale() -> fixture::FixtureScale {
 #[tokio::test]
 #[ignore = "requires live test stack"]
 async fn extractive_pipeline_writes_summaries_and_substitutes_in_bundle() {
-    seed::truncate_pg().await;
-    let server = TestServer::spawn_with_summary_store(true).await;
+    let server = TestServer::spawn_isolated_with_summary_store().await;
     let fx = fixture::generate(dense_scale());
     let report = seed::load(&server.store, &fx).await;
     eprintln!("seeded: {report:?}");
@@ -89,16 +96,17 @@ async fn extractive_pipeline_writes_summaries_and_substitutes_in_bundle() {
         !bundle.events.is_empty(),
         "events section should still contain items (now summaries)"
     );
+
+    server.cleanup().await;
 }
 
 #[tokio::test]
 #[ignore = "requires live test stack"]
 async fn summarization_disabled_returns_raw_bundle_within_budget() {
-    // `spawn()` does not wire a SummaryStore into ContextBuilder —
-    // equivalent to `[summarization] enabled = false` from the
-    // retrieval path's perspective.
-    seed::truncate_pg().await;
-    let server = TestServer::spawn().await;
+    // `spawn_isolated()` does not wire a SummaryStore into
+    // ContextBuilder — equivalent to `[summarization] enabled = false`
+    // from the retrieval path's perspective.
+    let server = TestServer::spawn_isolated().await;
     let fx = fixture::generate(dense_scale());
     let report = seed::load(&server.store, &fx).await;
     eprintln!("seeded: {report:?}");
@@ -127,13 +135,14 @@ async fn summarization_disabled_returns_raw_bundle_within_budget() {
         "budget must be respected: spent {} > 2000",
         bundle.total_spent
     );
+
+    server.cleanup().await;
 }
 
 #[tokio::test]
 #[ignore = "requires live test stack"]
 async fn invalidated_summaries_fall_back_to_raw_events() {
-    seed::truncate_pg().await;
-    let server = TestServer::spawn_with_summary_store(true).await;
+    let server = TestServer::spawn_isolated_with_summary_store().await;
     let fx = fixture::generate(dense_scale());
     let report = seed::load(&server.store, &fx).await;
     eprintln!("seeded: {report:?}");
@@ -166,12 +175,14 @@ async fn invalidated_summaries_fall_back_to_raw_events() {
 
     // Invalidate every (host, category, day_bucket) cluster directly
     // via Postgres so the next retrieval has no active summaries.
-    let pg_url = std::env::var("TEST_DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://klams:klams_test@127.0.0.1:55432/klams".into());
-    let pool = sqlx::PgPool::connect(&pg_url).await.expect("pg connect");
+    //
+    // Sprint 031: go through the server's own pool. A fresh
+    // `PgPool::connect(TEST_DATABASE_URL)` would land in the default
+    // schema, which is both the wrong `summaries` table (this server's
+    // lives in its per-test schema) and a cross-test write.
     let rows_affected =
         sqlx::query("UPDATE summaries SET invalidated_at = now() WHERE invalidated_at IS NULL")
-            .execute(&pool)
+            .execute(server.store.postgres.pool())
             .await
             .expect("invalidate")
             .rows_affected();
@@ -190,4 +201,6 @@ async fn invalidated_summaries_fall_back_to_raw_events() {
         SectionSource::Raw,
         "after invalidation events section should fall back to raw"
     );
+
+    server.cleanup().await;
 }

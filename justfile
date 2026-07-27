@@ -96,6 +96,27 @@ gate-viewport:
 # spans the service and the viewport.
 gate-all: gate gate-viewport
 
+# Sprint 031 (#679/#687/#646) — the docker-gated integration suite,
+# which `gate` deliberately excludes. Until 031 there was no recipe for
+# this at all: the only place it ran was a main-branch-only CI step, so
+# "how do I run the ignored tests" had no answer you could `just`.
+#
+# Sweeps the test stack first (see scripts/reset-test-stack.sh — a
+# long-lived stack accumulates seeds until ranking assertions starve),
+# then runs at DEFAULT parallelism. The `--test-threads=1` this used to
+# need is gone with the shared-table race (#679); if you find yourself
+# reaching for it again, something regressed — fix that instead.
+#
+# Requires `docker compose -f tests/docker-compose.test.yml up -d`.
+test-integration *ARGS:
+    ./scripts/reset-test-stack.sh
+    TEST_DATABASE_URL=postgres://klams:klams_test@127.0.0.1:55432/klams \
+    TEST_QDRANT_URL=http://127.0.0.1:56334 \
+    TEST_TEI_URL=http://127.0.0.1:57070 \
+    TEST_OPENAI_EMBED_URL=http://127.0.0.1:57070/v1 \
+    TEST_OPENAI_EMBED_MODEL=BAAI/bge-small-en-v1.5 \
+        cargo test --workspace -- --ignored {{ARGS}}
+
 # Quick liveness probe + light verification round-trip.
 health:
     KLAMS_URL={{klams_url}} KLAMS_TOKEN={{klams_token}} \

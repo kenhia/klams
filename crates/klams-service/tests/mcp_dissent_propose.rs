@@ -154,6 +154,8 @@ async fn propose_creates_pending_dissent_with_provenance() {
         .await
         .expect("discard_dissent");
     assert_eq!(discarded.status, DissentStatus::Discarded);
+
+    server.cleanup().await;
 }
 
 #[ignore = "requires docker compose stack"]
@@ -203,6 +205,8 @@ async fn propose_rejects_missing_and_deleted_facts() {
     .await
     .expect_err("soft-deleted fact must error");
     assert_eq!(err.meta.error_code, "NOT_FOUND", "{err:?}");
+
+    server.cleanup().await;
 }
 
 #[ignore = "requires docker compose stack"]
@@ -242,4 +246,6 @@ async fn propose_validates_reason_and_payload() {
     .await
     .expect_err("non-object payload must error");
     assert_eq!(err.meta.error_code, "SCHEMA_VALIDATION_FAILED", "{err:?}");
+
+    server.cleanup().await;
 }
