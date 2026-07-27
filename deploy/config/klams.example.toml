@@ -195,6 +195,17 @@ EnvFact  = 1e-9
 # Fusion strategy for hybrid retrieval. "rrf" (default) is
 # Reciprocal Rank Fusion: score(d) = Σ_s 1 / (k + rank_s(d)).
 # "weighted" uses per-source weights with normalization.
+#
+# SCOPE (sprint 032, #648): `fusion` / `rrf_k` / the [retrieval.weights]
+# table are honoured by MCP `memory_search` and by `/memory/context`.
+# REST `GET /memory/search` does NOT read them — it calls
+# `FusionStrategy::default_rrf()` unconditionally
+# (crates/klams-api/src/handlers/search.rs), so it always fuses with
+# plain RRF at k=60 no matter what is set here. Setting
+# `fusion = "weighted"` therefore changes MCP results and leaves the
+# REST endpoint alone. Documented rather than wired because this sprint
+# is retrieval-neutral by contract; wiring it is a ranking change and
+# needs the eval gate.
 fusion           = "rrf"
 rrf_k            = 60       # used when fusion = "rrf"
 per_source_top_k = 100      # each retrieval source returns top-k before fusion

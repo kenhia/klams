@@ -10,7 +10,7 @@ below; ask Ken only for a bearer token if one hasn't been provided.
 
 | | |
 |---|---|
-| Endpoint | `http://kubs0:7777/mcp` |
+| Endpoint | `https://kubs0.encke-wahoo.ts.net:7777/mcp` (from anywhere on the tailnet)<br>`http://localhost:7777/mcp` (on kubs0 itself) |
 | Transport | MCP Streamable HTTP (rmcp; HTTP+SSE fallback on the same mount) |
 | Auth | `Authorization: Bearer <token>` — required on every request |
 | Server name | `klams-mcp` |
@@ -30,7 +30,7 @@ no restart.
 of any repo. Recommended:
 
 ```bash
-claude mcp add --scope user --transport http klams http://kubs0:7777/mcp \
+claude mcp add --scope user --transport http klams https://kubs0.encke-wahoo.ts.net:7777/mcp \
   --header "Authorization: Bearer <token>"
 ```
 
@@ -43,7 +43,7 @@ environment variable instead of inlining it:
   "mcpServers": {
     "klams": {
       "type": "http",
-      "url": "http://kubs0:7777/mcp",
+      "url": "https://kubs0.encke-wahoo.ts.net:7777/mcp",
       "headers": { "Authorization": "Bearer ${KLAMS_MCP_TOKEN}" }
     }
   }
@@ -74,7 +74,7 @@ nothing secret lands in git:
   "servers": {
     "klams": {
       "type": "http",
-      "url": "http://kubs0:7777/mcp",
+      "url": "https://kubs0.encke-wahoo.ts.net:7777/mcp",
       "headers": { "Authorization": "Bearer ${input:klams-token}" }
     }
   }
@@ -187,3 +187,64 @@ After setup, have the agent run `memory_search` with query
 A `memory_add` (kind `knowledge`) followed by a `memory_search` for
 its text confirms writes, and the new memory should appear in the
 viewport attributed to the token's `agent_name`.
+
+## Error codes — which ones are worth retrying
+
+Every failure comes back as a structured envelope carrying a `code`,
+a human `message`, and — **only when retrying can actually help** —
+`retry_after_seconds`. That invariant is enforced in one place
+(`klams_mcp::errors`, sprint 027 #629), so it is safe to branch on:
+
+> **If `retry_after_seconds` is present, wait that long and retry.
+> If it is absent, retrying will not help — fix the input or escalate.**
+
+| Code | Retryable | What to do |
+|---|---|---|
+| `EMBEDDING_UNAVAILABLE` | **yes** (`retry_after_seconds: 5`) | The embedder is down or flapping. Wait and retry; the write was not stored. |
+| `MAINTENANCE_WINDOW_ACTIVE` | **yes** | A backup is in flight. Wait and retry. |
+| `INTERNAL_ERROR` | **sometimes** | Retry only if `retry_after_seconds` is present (transient backend trouble, e.g. pool exhaustion). Absent = escalate. |
+| `PAYLOAD_TOO_LARGE` | no | The text exceeds the model's token ceiling. The message names the limit — **split the content and write the pieces**. Do not drop it. |
+| `EMBEDDING_REJECTED` | no | The embedder refused the input for a non-size reason. Fix the input. |
+| `EMPTY_QUERY`, `INVALID_TOP_K`, `INVALID_LIMIT`, `INVALID_WINDOW`, `WINDOW_TOO_LARGE`, `INVALID_KIND`, `INVALID_CATEGORY`, `SCHEMA_VALIDATION_FAILED`, `INVALID_AGENT_NAME`, `INVALID_REPO_PATH`, `EXTRA_TOO_LARGE` | no | Your arguments are wrong. The message says how. |
+| `INSUFFICIENT_SCOPE` | no | Your token lacks the scope. Ask Ken; do not retry. |
+| `NOT_FOUND`, `NOT_SOFT_DELETED` | no | The target isn't there (or isn't in the state the verb needs). |
+| `NOT_AGENT_AUTHORED` | no | The target is scanner-ingested derived data. Fix the source file and let the re-scan update the store. |
+| `EVENTS_NOT_DELETABLE` | no | Events are append-only by design. |
+| `MISSING_AUTHOR_ID`, `UNKNOWN_AUTHOR_ID` | no | Omit `author_id` entirely — your token already identifies you. |
+| `AUTHOR_HAS_MEMORIES` | no | Author removal refused; merge into another author first. |
+
+The trap this table exists to close: before sprint 027 an oversize
+payload came back as `EMBEDDING_UNAVAILABLE` **with** a retry hint, so
+agents concluded the service was down, backed off, and silently dropped
+the content instead of splitting it.
+
+## Parameter limits
+
+Exceeding one of these is a permanent error, not an outage.
+
+| Where | Limit |
+|---|---|
+| `memory_search.query` | ≤ 1024 characters (`EMPTY_QUERY` if blank) |
+| `memory_search.top_k` | 1..=50, default 10 |
+| `memory_related.top_k` | 1..=50, default 5 |
+| `event_search` window | ≤ `[api] memories_max_window_days` (default **30** days) |
+| `memory_add` content | the embedding model's token ceiling — currently `max_input_tokens = 32768` (Qwen3-Embedding-0.6B). The service asks TEI's `/tokenize` for an exact count, so there is no character rule of thumb: 512 tokens is ~525 characters of prose but >20,000 of base64. |
+
+## What a search result actually is
+
+`memory_search` returns hits carrying a `score` that is a **Reciprocal
+Rank Fusion score, not a cosine similarity**. Do not threshold it as if
+it were one, and do not compare scores across queries — RRF values are
+small (typically 0.01–0.07) and depend on how many sources returned the
+item, not on how semantically close it is.
+
+Ranking is: dense ANN over Qdrant + a curated stratum + Postgres
+full-text, fused with RRF (sprint 024), then re-ranked by a
+cross-encoder over the fused candidate set (sprint 030). **Rank order
+is meaningful; absolute score is not.**
+
+*(Sprint 032, #648: this section, the two tables above, and the tailnet
+endpoint were all missing or wrong — agents had no way to tell a
+retryable failure from a permanent one, no stated limits, and an
+endpoint that only resolves on the LAN.)*
+

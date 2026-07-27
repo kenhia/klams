@@ -14,8 +14,11 @@ there.
 ## Authentication
 
 All `/memory/*` routes require a bearer token. The token is loaded
-from configuration (`auth.bearer_token` in the service config or
-`KLAMS_AUTH_BEARER_TOKEN` env var) and compared in constant time.
+from configuration (`auth.bearer_token` in the service config or the
+`KLAMS_AUTH__BEARER_TOKEN` env var — **two** underscores between the
+section and the key; the loader is `Env::prefixed("KLAMS_").split("__")`,
+so the single-underscore form these docs used until sprint 032 never
+bound anything) and compared in constant time.
 
 ```text
 Authorization: Bearer <token>
@@ -87,35 +90,31 @@ named klams metrics below.
 
 ## systemd
 
-Suggested unit (`/etc/systemd/system/klams.service`):
-
-```ini
-[Unit]
-Description=klams memory service
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=klams
-Environment=KLAMS_CONFIG=/etc/klams/service.toml
-ExecStart=/usr/local/bin/klams-service
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
+**Do not hand-write a unit.** The shipped one is
+[`deploy/klams-service.service`](../deploy/klams-service.service),
+installed by `just install-systemd`. Sprint 032 (#648) replaced an
+invented "suggested unit" that stood here: it named the service
+`klams.service`, pointed `KLAMS_CONFIG` at a path that does not exist
+(`/etc/klams/service.toml`, real: `/etc/klams/klams.toml`), and omitted
+both `ExecReload` — so `systemctl reload` would not hot-reload
+`[[auth.tokens]]` — and the `ReadWritePaths=` line that
+`ProtectSystem=strict` requires for backups to write at all. Every
+`journalctl` example alongside it used the wrong unit name too, so they
+returned nothing.
 
 Operate with:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now klams.service
-sudo systemctl status klams.service
-journalctl -u klams.service -f      # tail logs
-journalctl -u klams.service --since "1 hour ago"
+sudo systemctl enable --now klams-service.service
+sudo systemctl status klams-service.service
+sudo systemctl reload klams-service.service   # SIGHUP: hot-reload [[auth.tokens]]
+journalctl -u klams-service.service -f        # tail logs
+journalctl -u klams-service.service --since "1 hour ago"
 ```
+
+The scanner and monitor are separate units — `klams-scanner.service` +
+`klams-scanner.timer`, and `klams-monitor.service`.
 
 ## Dissent lifecycle (sprint 002)
 
@@ -357,14 +356,31 @@ backend outage instead surfaces in-band as
 ### Decay-config tuning recipe
 
 Each fact type has its own decay constant λ, applied as
-`decay_weight = exp(-λ · age_seconds)`. Defaults (suitable for a
-new install) live in `klams_types::DecayConfig::default`:
 
-| FactType   | default λ | half-life     |
-|------------|-----------|---------------|
-| `TaskFact` | `1e-6`    | ≈ 8.0 days    |
-| `UserFact` | `1e-9`    | ≈ 22.0 years  |
-| `EnvFact`  | `1e-9`    | ≈ 22.0 years  |
+```text
+decay_weight = 1 / (1 + λ · age_seconds)
+```
+
+The curve is **hyperbolic, not exponential** (`klams_core::decay::score`),
+and it is **recomputed from total age on every sweep**, not multiplied
+into the previous weight. Sprint 032 (#648) corrected both: these docs
+had said `new_w = old_w · exp(-λ · Δt)`, which is wrong about the curve
+*and* implies a compounding recurrence the code does not have. Every
+half-life below was wrong as a consequence.
+
+For a hyperbolic curve the half-life is simply **`1/λ` seconds**.
+Defaults (suitable for a new install) live in
+`klams_types::DecayConfig::default`:
+
+| FactType   | default λ | half-life (`1/λ`) |
+|------------|-----------|-------------------|
+| `TaskFact` | `1e-6`    | ≈ 11.6 days       |
+| `UserFact` | `1e-9`    | ≈ 31.7 years      |
+| `EnvFact`  | `1e-9`    | ≈ 31.7 years      |
+
+Because the tail is hyperbolic it is much fatter than an exponential
+one: a TaskFact at 10× its half-life still carries ~0.09 weight, where
+an exponential would have left ~0.001.
 
 To rebalance recall against staleness, override under `[decay.lambda]`
 in `klams.toml`:
@@ -375,8 +391,8 @@ task_interval_seconds = 60       # decay sweep cadence
 batch_size            = 256
 
 [decay.lambda]
-TaskFact = 2e-6                  # halve the half-life of task chatter (~4d)
-UserFact = 5e-10                 # double the half-life of user facts  (~44y)
+TaskFact = 2e-6                  # halve the half-life of task chatter (~5.8d)
+UserFact = 5e-10                 # double the half-life of user facts  (~63y)
 EnvFact  = 1e-9                  # leave defaults
 ```
 
@@ -386,7 +402,9 @@ EnvFact  = 1e-9                  # leave defaults
   with the offending key in stderr.
 - `task_interval_seconds == 0` or `batch_size == 0` → exit code `2`.
 - On success: one `INFO` line `decay config loaded: task_fact_lambda=…`
-  is emitted and `klams_decay_config_reload_total` increments.
+  is emitted and `klams_decay_config_reloads_total` increments.
+  (Note the plural — sprint 032 (#648) corrected an off-by-an-`s`
+  that made every alert copied from these docs match nothing.)
 
 There is **no** SIGHUP-style hot-reload; restart the service to
 apply a new `[decay]` block.
@@ -708,7 +726,13 @@ Validation rules (enforced at load):
 - Scopes are **flat**: `write` does not imply `read`, `admin` does not
   imply `write`. List each one explicitly.
 
-The `label` is surfaced in logs and metrics (`klams_mcp_calls_total{token_label}`)
+The `label` is surfaced in the startup/SIGHUP log line that binds each
+bearer to its author (`token_label=…`). It is **not** a metric
+dimension: `klams_mcp_calls_total` does not exist, and no series carries
+a `token_label` label — sprint 032 (#648) corrected this claim, and
+#670 had to audit configs by hand rather than query Prometheus as a
+direct consequence. The authoritative series list is
+[deploy/grafana/SERIES.md](../deploy/grafana/SERIES.md).
 so a noisy or rogue client is easy to identify without leaking the
 raw token.
 
@@ -814,7 +838,8 @@ kind?"
 
 `event_search` is the agent-facing counterpart to the Activity
 tab. Read scope. Pure SQL — it never invokes the embedder, so
-counters like `klams_tei_requests_total` must not increment for
+counters like `klams_tei_requests_total` (which does not exist — see
+[SERIES.md](../deploy/grafana/SERIES.md); #648) must not increment for
 a search-only workload (FR-004).
 
 Arguments:
