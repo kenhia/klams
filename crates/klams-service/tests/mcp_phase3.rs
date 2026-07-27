@@ -9,7 +9,7 @@ mod common;
 use common::TestServer;
 use klams_mcp::tools::memory_add::run as memory_add;
 use klams_mcp::tools::{
-    memory_add::{FactTypeArg, MemoryAddArgs, MemoryAddContent},
+    memory_add::{FactTypeArg, MemoryAddArgs},
     register_author::{run as register, RegisterAuthorInput},
     McpState,
 };
@@ -21,7 +21,6 @@ fn mcp_state_from(server: &TestServer) -> McpState {
     McpState::new(
         Arc::clone(&server.store),
         Arc::new(MaintenanceState::default()),
-        Arc::new(vec![]),
         klams_types::ApiConfig::default(),
     )
 }
@@ -34,7 +33,7 @@ async fn register_author_smoke() {
     let out = register(
         &state,
         RegisterAuthorInput {
-            agent_name: "GHCP-test".into(),
+            agent_name: "ghcp-test".into(),
             model: Some("claude-opus-4.7".into()),
             session_title: Some("phase 3 smoke".into()),
             repo: Some("/tmp/x".into()),
@@ -45,7 +44,7 @@ async fn register_author_smoke() {
     )
     .await
     .expect("register_author");
-    assert_eq!(out.agent_name, "GHCP-test");
+    assert_eq!(out.agent_name, "ghcp-test");
     // UUID v7 has variant 0b10 and version 7 (top nibble of bytes[6] = 0x7).
     let bytes = out.author_id.as_bytes();
     assert_eq!(bytes[6] >> 4, 0x7, "expected UUID v7");
@@ -59,7 +58,7 @@ async fn memory_add_fact_smoke() {
     let author = register(
         &state,
         RegisterAuthorInput {
-            agent_name: "GHCP-test-fact".into(),
+            agent_name: "ghcp-test-fact".into(),
             model: None,
             session_title: None,
             repo: None,
@@ -73,20 +72,18 @@ async fn memory_add_fact_smoke() {
 
     let mem = memory_add(
         &state,
-        MemoryAddArgs {
-            author_id: author.author_id,
-            content: MemoryAddContent::Fact {
-                fact_type: FactTypeArg::EnvFact,
-                payload: serde_json::json!({"key": "phase3-smoke", "value": "ok"}),
-            },
-        },
+        MemoryAddArgs::fact(
+            author.author_id,
+            FactTypeArg::EnvFact,
+            serde_json::json!({"key": "PHASE3_SMOKE", "value": "ok"}),
+        ),
     )
     .await
     .expect("memory_add fact");
 
     assert_eq!(mem.kind(), MemoryKind::Fact);
-    assert_eq!(mem.author.agent_name, "GHCP-test-fact");
-    match mem.content {
+    assert_eq!(mem.author.agent_name, "ghcp-test-fact");
+    match &mem.content {
         PublicMemoryContent::Fact { fact_type, .. } => assert_eq!(fact_type, "EnvFact"),
         _ => panic!("expected fact content"),
     }
@@ -94,13 +91,11 @@ async fn memory_add_fact_smoke() {
     // UNKNOWN_AUTHOR_ID path.
     let err = memory_add(
         &state,
-        MemoryAddArgs {
-            author_id: Uuid::now_v7(),
-            content: MemoryAddContent::Fact {
-                fact_type: FactTypeArg::EnvFact,
-                payload: serde_json::json!({"k": 1}),
-            },
-        },
+        MemoryAddArgs::fact(
+            Uuid::now_v7(),
+            FactTypeArg::EnvFact,
+            serde_json::json!({"k": 1}),
+        ),
     )
     .await
     .expect_err("expected UNKNOWN_AUTHOR_ID");
@@ -115,7 +110,7 @@ async fn memory_add_knowledge_smoke() {
     let author = register(
         &state,
         RegisterAuthorInput {
-            agent_name: "GHCP-test-know".into(),
+            agent_name: "ghcp-test-know".into(),
             model: None,
             session_title: None,
             repo: None,
@@ -130,17 +125,14 @@ async fn memory_add_knowledge_smoke() {
     let mem = memory_add(
         &state,
         MemoryAddArgs {
-            author_id: author.author_id,
-            content: MemoryAddContent::Knowledge {
-                text: "klams-mcp phase 3 smoke knowledge point".into(),
-                tags: vec!["phase3".into()],
-                source_path: Some("/tmp/x.md".into()),
-                repo: Some("/tmp/x".into()),
-            },
+            tags: vec!["phase3".into()],
+            source_path: Some("/tmp/x.md".into()),
+            repo: Some("/tmp/x".into()),
+            ..MemoryAddArgs::knowledge(author.author_id, "klams-mcp phase 3 smoke knowledge point")
         },
     )
     .await
     .expect("memory_add knowledge");
     assert_eq!(mem.kind(), MemoryKind::Knowledge);
-    assert_eq!(mem.author.agent_name, "GHCP-test-know");
+    assert_eq!(mem.author.agent_name, "ghcp-test-know");
 }

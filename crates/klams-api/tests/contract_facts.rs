@@ -90,6 +90,7 @@ fn router() -> axum::Router {
                 100,
             )),
             maintenance: klams_types::MaintenanceState::default(),
+            embed_limit: klams_types::EmbedLimit::default(),
         },
         "test-bearer",
     )

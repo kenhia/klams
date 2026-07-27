@@ -20,25 +20,63 @@ const RETRY_MAX_ATTEMPTS: u32 = 12;
 const RETRY_INITIAL_DELAY: Duration = Duration::from_secs(2);
 const RETRY_MAX_DELAY: Duration = Duration::from_secs(60);
 
+/// Outcome of publishing one chunk (sprint 027, #420).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Published {
+    /// Accepted (or deduped) by the service.
+    Ok,
+    /// The service refused this chunk permanently — it exceeds the
+    /// embedding model's token ceiling.
+    ///
+    /// This must **not** fail the whole file. Retrying is guaranteed to
+    /// fail identically, so treating it as a file-level error would leave
+    /// the cursor unadvanced and re-offer the same chunk on every scan,
+    /// forever. Skipping it advances past a chunk we know we cannot
+    /// store — a real loss, but a *counted and logged* one, which is the
+    /// whole point of 027. Before this sprint the same chunk was accepted
+    /// with `202` and dropped at the worker, invisibly.
+    TooLarge,
+}
+
 pub async fn publish_chunk(
     client: &Client,
+    host: &str,
     repo: &str,
     source_file: &str,
-    chunk_text: &str,
-) -> Result<()> {
+    chunk: &crate::chunk::Chunk,
+) -> Result<Published> {
     let req = IndexKnowledgeRequest {
-        text: chunk_text.to_owned(),
+        text: chunk.text.clone(),
         source: Source::Task,
         tags: vec![],
         repo: Some(repo.to_owned()),
         file: Some(source_file.to_owned()),
-        machine: None,
+        // Sprint 023 (#407): stamp the host so retrieval is
+        // fully-qualified as (host, file) and deletes are host-scoped.
+        machine: Some(host.to_owned()),
+        // Sprint 022 (#322) — carry chunk structure to the store payload.
+        chunk_index: Some(chunk.index),
+        language: chunk.language.clone(),
+        heading_path: chunk.heading_path.clone(),
+        symbols: chunk.symbols.clone(),
     };
 
     let mut delay = RETRY_INITIAL_DELAY;
     for attempt in 1..=RETRY_MAX_ATTEMPTS {
         match client.index_knowledge(&req).await {
-            Ok(_) => return Ok(()),
+            Ok(_) => return Ok(Published::Ok),
+            // Sprint 027 (#420): permanent, and not the file's fault.
+            Err(ClientError::Api { status, .. }) if status.as_u16() == 413 => {
+                metrics::incr_skipped("chunk_too_large");
+                tracing::warn!(
+                    path = %source_file,
+                    idx = chunk.index,
+                    chars = chunk.text.chars().count(),
+                    "chunk exceeds the embedder's token ceiling; skipping it \
+                     (permanent — retrying cannot help). This chunk is not in the corpus."
+                );
+                return Ok(Published::TooLarge);
+            }
             Err(ClientError::Api { status, .. }) if status.as_u16() == 503 => {
                 if attempt == RETRY_MAX_ATTEMPTS {
                     anyhow::bail!(
@@ -64,18 +102,25 @@ pub async fn publish_chunk(
     unreachable!("publish_chunk retry loop exhausted without returning")
 }
 
-/// `POST /memory/knowledge/delete?source_file=<abs>` — used at the
-/// end of a walk for every path that has vanished since the last run.
-/// Uses raw `reqwest` because `klams-client` doesn't yet expose a
-/// dedicated helper; piggybacks on the client's base URL + bearer.
-pub async fn publish_delete(base_url: &str, bearer: &str, source_file: &str) -> Result<u64> {
+/// `POST /memory/knowledge/delete?source_file=<abs>&machine=<host>` —
+/// used for vanished files and delete-before-reindex. The `machine`
+/// scope (sprint 023 #408) keeps one host's delete from dropping another
+/// host's chunk for the same path. Uses raw `reqwest` because
+/// `klams-client` doesn't yet expose a dedicated helper; piggybacks on
+/// the client's base URL + bearer.
+pub async fn publish_delete(
+    base_url: &str,
+    bearer: &str,
+    host: &str,
+    source_file: &str,
+) -> Result<u64> {
     let http = reqwest::Client::new();
     let resp = http
         .post(format!(
             "{}/memory/knowledge/delete",
             base_url.trim_end_matches('/')
         ))
-        .query(&[("source_file", source_file)])
+        .query(&[("source_file", source_file), ("machine", host)])
         .header(AUTHORIZATION, format!("Bearer {bearer}"))
         .header(CONTENT_TYPE, "application/json")
         .send()

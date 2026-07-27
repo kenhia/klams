@@ -16,7 +16,11 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+# PATCH segment == sprint number (see AGENTS.md "Sprint workflow"):
+# bumped at the start of every sprint so the version surfaced on
+# /healthz and MCP server_info identifies the deployed sprint at a
+# glance.
+version = "0.1.31"
 edition = "2021"
 rust-version = "1.83"
 license = "MIT"
@@ -84,6 +88,11 @@ figment = { version = "0.10", features = ["toml", "env"] }
 # misc
 async-trait = "0.1"
 base64 = "0.22"
+
+# code-aware chunking (klams-scanner, sprint 022 #323)
+tree-sitter = "0.24"
+tree-sitter-rust = "0.23"
+tree-sitter-python = "0.23"
 unicode-normalization = "0.1"
 tiktoken-rs = "0.11"
 url = "2"

@@ -8,12 +8,12 @@ mod common;
 
 use common::TestServer;
 use klams_mcp::tools::{
-    memory_add::{run as memory_add, FactTypeArg, MemoryAddArgs, MemoryAddContent},
+    memory_add::{run as memory_add, FactTypeArg, MemoryAddArgs},
     memory_admin_hard_delete::{run as admin_hard_delete, MemoryAdminHardDeleteArgs},
     memory_admin_list_deleted::{run as admin_list_deleted, MemoryAdminListDeletedArgs},
     memory_admin_restore::{run as admin_restore, MemoryAdminRestoreArgs},
     memory_append_event::{run as append_event, MemoryAppendEventArgs},
-    memory_delete::{run as memory_delete, MemoryDeleteArgs},
+    memory_delete::{run as memory_delete, DeleteCaller, MemoryDeleteArgs},
     memory_search::{run as memory_search, MemorySearchArgs},
     register_author::{run as register, RegisterAuthorInput},
     McpState,
@@ -22,11 +22,20 @@ use klams_types::MaintenanceState;
 use std::sync::Arc;
 use uuid::Uuid;
 
+/// Sprint 025 (#633): these tests delete memories they authored
+/// themselves, so a plain write-scoped caller bound to that author is
+/// the right identity — no `manage` needed.
+fn owner_caller(author_id: Uuid) -> DeleteCaller {
+    DeleteCaller {
+        author_id,
+        scopes: vec![klams_types::Scope::Read, klams_types::Scope::Write],
+    }
+}
+
 fn mcp_state_from(server: &TestServer) -> McpState {
     McpState::new(
         Arc::clone(&server.store),
         Arc::new(MaintenanceState::default()),
-        Arc::new(vec![]),
         klams_types::ApiConfig::default(),
     )
 }
@@ -54,20 +63,18 @@ async fn make_author(state: &McpState, name: &str) -> Uuid {
 async fn memory_delete_soft_smoke() {
     let server = TestServer::spawn_isolated().await;
     let state = mcp_state_from(&server);
-    let author = make_author(&state, "GHCP-phase6-delete").await;
+    let author = make_author(&state, "ghcp-phase6-delete").await;
 
     let fact = memory_add(
         &state,
-        MemoryAddArgs {
-            author_id: author,
-            content: MemoryAddContent::Fact {
-                fact_type: FactTypeArg::EnvFact,
-                payload: serde_json::json!({
-                    "key": "phase6-soft-delete",
-                    "value": "needle-soft-delete"
-                }),
-            },
-        },
+        MemoryAddArgs::fact(
+            author,
+            FactTypeArg::EnvFact,
+            serde_json::json!({
+                "key": "PHASE6_SOFT_DELETE",
+                "value": "needle-soft-delete"
+            }),
+        ),
     )
     .await
     .expect("memory_add fact");
@@ -76,9 +83,10 @@ async fn memory_delete_soft_smoke() {
     let out = memory_delete(
         &state,
         MemoryDeleteArgs {
-            author_id: author,
+            author_id: None,
             id: fact.id,
         },
+        Some(&owner_caller(author)),
     )
     .await
     .expect("memory_delete first");
@@ -88,9 +96,10 @@ async fn memory_delete_soft_smoke() {
     memory_delete(
         &state,
         MemoryDeleteArgs {
-            author_id: author,
+            author_id: None,
             id: fact.id,
         },
+        Some(&owner_caller(author)),
     )
     .await
     .expect("memory_delete idempotent");
@@ -104,11 +113,12 @@ async fn memory_delete_soft_smoke() {
             tags: None,
             top_k: Some(20),
         },
+        None,
     )
     .await
     .expect("memory_search");
     assert!(
-        hits.iter().all(|m| m.id != fact.id),
+        hits.iter().all(|h| h.memory.id != fact.id),
         "soft-deleted fact still surfaced by search"
     );
 
@@ -127,9 +137,10 @@ async fn memory_delete_soft_smoke() {
     let err = memory_delete(
         &state,
         MemoryDeleteArgs {
-            author_id: author,
+            author_id: None,
             id: ev.id,
         },
+        Some(&owner_caller(author)),
     )
     .await
     .expect_err("expected EVENTS_NOT_DELETABLE");
@@ -139,9 +150,10 @@ async fn memory_delete_soft_smoke() {
     let err = memory_delete(
         &state,
         MemoryDeleteArgs {
-            author_id: author,
+            author_id: None,
             id: Uuid::now_v7(),
         },
+        Some(&owner_caller(author)),
     )
     .await
     .expect_err("expected NOT_FOUND");
@@ -155,20 +167,18 @@ async fn memory_delete_soft_smoke() {
 async fn memory_admin_restore_smoke() {
     let server = TestServer::spawn_isolated().await;
     let state = mcp_state_from(&server);
-    let author = make_author(&state, "GHCP-phase6-restore").await;
+    let author = make_author(&state, "ghcp-phase6-restore").await;
 
     let fact = memory_add(
         &state,
-        MemoryAddArgs {
-            author_id: author,
-            content: MemoryAddContent::Fact {
-                fact_type: FactTypeArg::EnvFact,
-                payload: serde_json::json!({
-                    "key": "phase6-restore",
-                    "value": "needle-restore"
-                }),
-            },
-        },
+        MemoryAddArgs::fact(
+            author,
+            FactTypeArg::EnvFact,
+            serde_json::json!({
+                "key": "PHASE6_RESTORE",
+                "value": "needle-restore"
+            }),
+        ),
     )
     .await
     .expect("memory_add");
@@ -183,9 +193,10 @@ async fn memory_admin_restore_smoke() {
     memory_delete(
         &state,
         MemoryDeleteArgs {
-            author_id: author,
+            author_id: None,
             id: fact.id,
         },
+        Some(&owner_caller(author)),
     )
     .await
     .expect("memory_delete");
@@ -203,11 +214,12 @@ async fn memory_admin_restore_smoke() {
             tags: None,
             top_k: Some(20),
         },
+        None,
     )
     .await
     .expect("memory_search");
     assert!(
-        hits.iter().any(|m| m.id == fact.id),
+        hits.iter().any(|h| h.memory.id == fact.id),
         "restored fact missing from search"
     );
 
@@ -225,20 +237,18 @@ async fn memory_admin_restore_smoke() {
 async fn memory_admin_hard_delete_smoke() {
     let server = TestServer::spawn_isolated().await;
     let state = mcp_state_from(&server);
-    let author = make_author(&state, "GHCP-phase6-hard").await;
+    let author = make_author(&state, "ghcp-phase6-hard").await;
 
     let fact = memory_add(
         &state,
-        MemoryAddArgs {
-            author_id: author,
-            content: MemoryAddContent::Fact {
-                fact_type: FactTypeArg::EnvFact,
-                payload: serde_json::json!({
-                    "key": "phase6-hard",
-                    "value": "needle-hard"
-                }),
-            },
-        },
+        MemoryAddArgs::fact(
+            author,
+            FactTypeArg::EnvFact,
+            serde_json::json!({
+                "key": "PHASE6_HARD",
+                "value": "needle-hard"
+            }),
+        ),
     )
     .await
     .expect("memory_add");
@@ -278,32 +288,31 @@ async fn memory_admin_hard_delete_smoke() {
 async fn memory_admin_list_deleted_smoke() {
     let server = TestServer::spawn_isolated().await;
     let state = mcp_state_from(&server);
-    let author = make_author(&state, "GHCP-phase6-list").await;
+    let author = make_author(&state, "ghcp-phase6-list").await;
 
     // Seed and soft-delete several facts.
     let mut ids = Vec::new();
     for i in 0..3 {
         let f = memory_add(
             &state,
-            MemoryAddArgs {
-                author_id: author,
-                content: MemoryAddContent::Fact {
-                    fact_type: FactTypeArg::EnvFact,
-                    payload: serde_json::json!({
-                        "key": format!("phase6-list-{i}"),
-                        "value": format!("needle-list-{i}")
-                    }),
-                },
-            },
+            MemoryAddArgs::fact(
+                author,
+                FactTypeArg::EnvFact,
+                serde_json::json!({
+                    "key": format!("PHASE6_LIST_{i}"),
+                    "value": format!("needle-list-{i}")
+                }),
+            ),
         )
         .await
         .expect("memory_add");
         memory_delete(
             &state,
             MemoryDeleteArgs {
-                author_id: author,
+                author_id: None,
                 id: f.id,
             },
+            Some(&owner_caller(author)),
         )
         .await
         .expect("memory_delete");
@@ -326,7 +335,7 @@ async fn memory_admin_list_deleted_smoke() {
     assert_eq!(page1.results.len(), 2);
     assert!(page1.next_cursor.is_some());
     for r in &page1.results {
-        assert_eq!(r.deleted_by.agent_name, "GHCP-phase6-list");
+        assert_eq!(r.deleted_by.agent_name, "ghcp-phase6-list");
     }
 
     // Page 2 via cursor.

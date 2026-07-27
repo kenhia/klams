@@ -35,6 +35,20 @@ pub fn record_write(agent_name: &str, model: Option<&str>, kind: &'static str) {
     .increment(1);
 }
 
+/// Bump the oversize-write counter (sprint 027, #656).
+///
+/// Labelled by agent so the dashboard answers "who keeps hitting the
+/// ceiling" without querying the log table. The `oversize_write` rows
+/// carry the detail; this is the cheap, always-on signal that anything
+/// is being refused at all.
+pub fn record_oversize_write(agent_name: &str) {
+    counter!(
+        "klams_mcp_oversize_writes_total",
+        "agent_name" => agent_name.to_string(),
+    )
+    .increment(1);
+}
+
 /// Bump the deletes counter for soft / restored / hard transitions.
 pub fn record_delete(agent_name: &str, model: Option<&str>, mode: &'static str) {
     counter!(

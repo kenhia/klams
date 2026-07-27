@@ -8,7 +8,7 @@ mod common;
 
 use common::TestServer;
 use klams_mcp::tools::{
-    memory_add::{run as memory_add, FactTypeArg, MemoryAddArgs, MemoryAddContent},
+    memory_add::{run as memory_add, FactTypeArg, MemoryAddArgs},
     memory_append_event::{run as append_event, MemoryAppendEventArgs},
     register_author::{run as register, RegisterAuthorInput},
     McpState,
@@ -22,7 +22,6 @@ fn mcp_state_from(server: &TestServer) -> McpState {
     McpState::new(
         Arc::clone(&server.store),
         Arc::new(MaintenanceState::default()),
-        Arc::new(vec![]),
         klams_types::ApiConfig::default(),
     )
 }
@@ -58,24 +57,33 @@ async fn http_get(server: &TestServer, path: &str) -> (reqwest::StatusCode, Valu
     (status, body)
 }
 
+/// A unique `EnvFact` key in the shape the validator requires
+/// (`^[A-Z][A-Z0-9_]*$`).
+///
+/// Sprint 031 (#645): these seeds used to be `phase7-list-<uuid>`, which
+/// REST has always rejected and MCP accepted, because the MCP write path
+/// ran no validation at all. With both surfaces on one
+/// `ValidatorRegistry` the old spelling fails — correctly.
+fn env_key(prefix: &str, uniq: Uuid) -> String {
+    format!("{prefix}_{}", uniq.simple().to_string().to_uppercase())
+}
+
 #[ignore = "requires docker compose stack"]
 #[tokio::test]
 async fn authors_list_returns_registered_author_with_counts() {
     let server = TestServer::spawn().await;
     let state = mcp_state_from(&server);
-    let author = make_author(&state, "GHCP-phase7-list").await;
+    let author = make_author(&state, "ghcp-phase7-list").await;
     let uniq = Uuid::now_v7();
 
     // Write one fact + one event so counts are non-zero.
     memory_add(
         &state,
-        MemoryAddArgs {
-            author_id: author,
-            content: MemoryAddContent::Fact {
-                fact_type: FactTypeArg::EnvFact,
-                payload: serde_json::json!({"key": format!("phase7-list-{uniq}"), "value": "x"}),
-            },
-        },
+        MemoryAddArgs::fact(
+            author,
+            FactTypeArg::EnvFact,
+            serde_json::json!({"key": env_key("PHASE7_LIST", uniq), "value": "x"}),
+        ),
     )
     .await
     .expect("fact");
@@ -92,7 +100,7 @@ async fn authors_list_returns_registered_author_with_counts() {
     .expect("event");
 
     let (status, body) =
-        http_get(&server, "/v1/authors?agent_name=GHCP-phase7-list&limit=50").await;
+        http_get(&server, "/v1/authors?agent_name=ghcp-phase7-list&limit=50").await;
     assert_eq!(status, 200);
     let authors = body["authors"].as_array().expect("authors array");
     let row = authors
@@ -119,11 +127,11 @@ async fn authors_detail_returns_404_for_unknown() {
 async fn authors_detail_returns_author_projection() {
     let server = TestServer::spawn().await;
     let state = mcp_state_from(&server);
-    let author = make_author(&state, "GHCP-phase7-detail").await;
+    let author = make_author(&state, "ghcp-phase7-detail").await;
     let (status, body) = http_get(&server, &format!("/v1/authors/{author}")).await;
     assert_eq!(status, 200);
     assert_eq!(body["id"].as_str(), Some(author.to_string().as_str()));
-    assert_eq!(body["agent_name"].as_str(), Some("GHCP-phase7-detail"));
+    assert_eq!(body["agent_name"].as_str(), Some("ghcp-phase7-detail"));
     assert!(body["counts"].is_object());
 }
 
@@ -132,18 +140,16 @@ async fn authors_detail_returns_author_projection() {
 async fn authors_memories_lists_facts_and_events() {
     let server = TestServer::spawn().await;
     let state = mcp_state_from(&server);
-    let author = make_author(&state, "GHCP-phase7-memories").await;
+    let author = make_author(&state, "ghcp-phase7-memories").await;
     let uniq = Uuid::now_v7();
 
     let fact = memory_add(
         &state,
-        MemoryAddArgs {
-            author_id: author,
-            content: MemoryAddContent::Fact {
-                fact_type: FactTypeArg::EnvFact,
-                payload: serde_json::json!({"key": format!("phase7-mem-{uniq}"), "value": "y"}),
-            },
-        },
+        MemoryAddArgs::fact(
+            author,
+            FactTypeArg::EnvFact,
+            serde_json::json!({"key": env_key("PHASE7_MEM", uniq), "value": "y"}),
+        ),
     )
     .await
     .expect("fact");
@@ -195,7 +201,7 @@ async fn authors_memories_lists_facts_and_events() {
 async fn authors_memories_bad_state_returns_400() {
     let server = TestServer::spawn().await;
     let state = mcp_state_from(&server);
-    let author = make_author(&state, "GHCP-phase7-badstate").await;
+    let author = make_author(&state, "ghcp-phase7-badstate").await;
     let (status, _) = http_get(
         &server,
         &format!("/v1/authors/{author}/memories?state=bogus"),

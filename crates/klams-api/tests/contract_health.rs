@@ -73,6 +73,7 @@ fn router() -> axum::Router {
                 100,
             )),
             maintenance: klams_types::MaintenanceState::default(),
+            embed_limit: klams_types::EmbedLimit::default(),
         },
         "test-token",
     )
@@ -189,6 +190,7 @@ async fn healthz_includes_active_maintenance_block_with_run_id() {
             100,
         )),
         maintenance,
+        embed_limit: klams_types::EmbedLimit::default(),
     };
     let app = build_router(state, "test-token");
 

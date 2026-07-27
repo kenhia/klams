@@ -1,122 +1,133 @@
 # klams — roadmap
 
 **Status:** Active — this is the pointer document: the top entry under
-"Sprint queue" is the next sprint.  
-**Date:** 2026-07-06 (014 moved out — in flight on `014-serving-pivot`)  
-**Related:** [wi259-recommendation.md](wi259-recommendation.md) ·
-[wi259-three-project-review.md](wi259-three-project-review.md) ·
-[plan.md](plan.md) (original phased plan, now historical) ·
-[current-path.md](current-path.md) (2026-06-09 snapshot, partly superseded) ·
-[backlog.md](backlog.md) · companion project: `~/src/ai/klams-mind`
+"Sprint queue" is the next sprint. Sprints may also arrive from korg
+sprint proposals; when they do, move/merge queue entries accordingly.  
+**Date:** 2026-07-10 (fresh start after the crossroads review; sprints
+001–020 shipped; the 021–024 queue and §5 findings are now filed as korg
+klams work items, bundled into sprint proposals — 021 is in flight)  
+**Related:** [2026-07-crossroads.md](2026-07-crossroads.md) (the review
+this queue derives from) · [archive/](archive/) (pre-020 planning,
+historical) · companion projects: `~/src/ai/klams-mind` (memory
+intelligence), korg `homelab-ai` project (cross-repo workstreams)
 
 ## Where we are
 
-Sprints 001–012 delivered every phase (0–6) of the [original plan](plan.md):
-MVP memory, safety/dissents, non-agentic writes, advanced retrieval +
-`/memory/context`, backups/ops, the MCP server, observability, attribution,
-and operationalized ingestion. Sprint 013 retired spec-kit for the lighter
-workflow in [AGENTS.md](../../AGENTS.md).
+Plumbing era complete (001–020): memory model, MCP/REST surfaces,
+ingestion, backups, telemetry — all live on kubs0 and verified in use
+by Claude Code, GHCP, kyac, and klams-mind. The next era is **retrieval
+quality and memory value**: agents are the customers now, and the
+observed weaknesses are chunk quality, exact-identifier recall, and no
+feedback loop from agent use back into tuning.
 
-Standing decisions (from the WI #259 review, 2026-07-05):
+Standing decisions:
 
-- **klams stays.** No greenfield rewrite. klams is the homelab memory store;
-  it does not need to "speak" vLLM/LangChain — it needs to stay a good,
-  stable MCP/REST surface for agents that do.
-- **LLM-smart memory features go to `klams-mind`**, a Python/LangChain
-  companion (separate repo) that consumes klams over MCP/REST. klams-side
-  work for it is API enablement, not intelligence.
-- **ATV-StarterKit migration** (debated in [current-path.md](current-path.md)
-  §3) is **superseded** — sprint 013 chose a homegrown lightweight workflow
-  instead.
-- krag and kris are retired; salvage notes live in
-  [wi259-three-project-review.md](wi259-three-project-review.md) §4.
+- **klams stays Rust; intelligence lives in klams-mind** (WI-259,
+  2026-07-05, archived).
+- **No store migration without eval evidence** (crossroads §2.1; kris
+  precedent). OpenSearch may join as an additional lexical source if
+  the evals demand it — trial, not swap.
+- **Version convention:** workspace PATCH = sprint number (AGENTS.md).
 
-Open bugs: kwi #31 (viewport memory-detail routes 404), #32 (author
-`counts.writes` excludes knowledge). (#33, `bench-clean` `?wait=true`,
-was found already fixed during sprint 014 — close the kwi item.)
+## In flight
+
+### 021 — Corpus hygiene + miss log → [sprints/021-corpus-hygiene/](../021-corpus-hygiene/sprint.md)
+
+Shipped 2026-07-10 (PR #23, `903fffd`; deployed 0.1.21 on kubs0).
+delete-before-reindex, scanner file-type allowlist, miss log
+(`search_miss` + `klams_search_misses_total` + Grafana panel),
+routing-rules agent blurb propagated to kubs0/kai/cleo. korg WIs
+#315–#318 resolved, proposal `korg:337` done. Detail in the sprint doc.
+
+### 022 — Scanner v2: chunks worth retrieving → [sprints/022-scanner-v2/](../022-scanner-v2/sprint.md)
+
+Shipped 2026-07-11 (PR #24, `ee8aa7b`; deployed 0.1.22 on kubs0, full
+corpus re-indexed 48k→73k with heading-path chunks + tree-sitter symbol
+extraction). Language-aware chunker, chunk metadata to payload, per-file
+dedupe, embed_batch, golden tests. Also repaired main CI (red since
+≥018). korg WIs #320–#327 resolved, proposal `korg:338` done.
+
+### 023 — Multi-host scanning + host identity → [sprints/023-multi-host-scanning/](../023-multi-host-scanning/sprint.md)
+
+Shipped 2026-07-13 (PR #25, `5762a8f`; deployed 0.1.23 on kubs0 + a
+per-host scanner provisioned on kai). Host stamped on every chunk;
+delete + dedupe host-aware `(machine, file)`; host in the knowledge
+projection. kai's `/home/ken/src` now in the corpus (`host=kai`); kubs0
+backfilled to `host=kubs0` in place via Qdrant `set_payload` (no
+re-index). korg WIs #407–#411 resolved, proposal `korg:413` done. Remote
+scanners reach klams via the tailscale-serve HTTPS MagicDNS URL. NFS
+central mount-scan captured as klams #406.
+
+### 024 — One ranking: fusion unification + eval enablement → [sprints/024-ranking-unification/](../024-ranking-unification/sprint.md)
+
+Started 2026-07-13 from korg proposal `korg:339` (covers klams WIs
+#328–#332). Make MCP `memory_search` (the real-traffic
+surface) use rank-based fusion instead of raw cross-scale score sort;
+converge the three merge implementations on `hybrid::fuse`; route
+klams-mcp through the Store/adapter seam instead of concrete
+`CompositeStore` internals; wire (or delete) the dead `[retrieval]
+fusion` config; hermetic merge-invariant tests so ranking can't regress
+off-main. This is the 016-deferred work, now due — and the structural
+prerequisite for any third search source. Klams-side surface for
+klams-mind's identifier-heavy eval suite rides along.
 
 ## Sprint queue
 
-### 015 — Companion enablement (klams-mind onboarding) (next)
+### 025 — Decide & do: lexical knowledge search (gated on data)
 
-Give klams-mind what it needs to operate as a first-class, attributable
-agent. Scope is demand-driven by klams-mind sprints 001–004 — implement
-what it actually needs, no speculative surface.
+If the miss log + evals confirm the exact-identifier gap: add a lexical
+source for knowledge behind the now-unified fusion — candidates, cheap
+first: (a) Qdrant full-text payload index (match-based, no BM25
+ranking), (b) Postgres FTS mirror of chunk text, (c) BM25 from the
+already-running OpenSearch instance (which also buys score
+normalization, per-field analyzers, filtered kNN — the kris trade
+study). If the data says the gap isn't real: decommission the idle
+OpenSearch container and close the question. Either way this sprint
+ends the "Qdrant or OpenSearch" ambiguity with evidence.
 
-**Surface map (learned in klams-mind 001 — keep both sprint docs on
-this):** klams has *two* inbound surfaces, split by design since sprint
-007. The **agent surface is MCP-only** (`/mcp`, Streamable HTTP):
-`register_author`, `memory_add`, `memory_search`, `memory_related`,
-`event_search`, etc., all speaking the `PublicMemory` projection that
-strips internals. The **REST surface is the controller/operator API**
-speaking internal shapes with trust semantics: `POST /v1/facts`,
-`/memory/knowledge/index`, `/memory/search`, `/memory/context`,
-`GET /v1/memories` (paged bulk read), dissent promote/discard, author
-routes. There is no REST `memory_add` — that's the projection boundary,
-not a gap. klams-mind therefore uses MCP for agent tools and REST only
-for bulk reads; new agent capability in this sprint lands as MCP tools.
+### 026 — Graph memory spike (timeboxed)
 
-1. Scoped token + `agent_name = klams-mind` grant; registered author.
-   (Mechanism exists — sprint 009 binds token `agent_name` → author on
-   REST too, so both surfaces attribute correctly.)
-2. **External dissent proposal (new MCP tool)**: today dissents only
-   arise from trust-rank conflicts on the *same* fact at write time.
-   klams-mind's semantic contradiction detection needs to file a
-   dissent against an existing fact (proposed correction + reason,
-   optionally citing the contradicting memory). Design the contract in
-   the sprint doc before building; resolution stays human, in the
-   viewport `/dissents` page.
-3. Bulk/paged reads for consolidation passes — REST `GET /v1/memories`
-   may already suffice; verify against klams-mind's consolidation
-   design and extend (filters, kind/window paging) only if it falls
-   short.
-4. Ride-alongs: kwi #31, #32 (both are read-surface bugs klams-mind and
-   the viewport share; note sprint 009 already populated author
-   knowledge counts on the list path — confirm what remains of #32
-   before coding).
+The TokenMaster F1 on-ramp (crossroads §2.2 #2): symbol/edge schema,
+scanner-emitted edges (embed/shell graphify or port its heuristics —
+scanner v2's symbol extraction is the first half), `callers`/
+`callees`/`impact` MCP verbs with token-bounded caps. Outcome is a
+go/no-go on the graph as a first-class klams layer, not a commitment.
 
-Acceptance: klams-mind can search, add, propose a dissent, and page the
-corpus using its own identity; its writes appear under its author in the
-viewport.
+### 027 — Capability index feeder
 
-### 016 — Retrieval quality support
+Crossroads §2.2: ingest structured sources — korg (WIs, reports,
+proposals), kvllm eval results, deployed-service inventory — as
+knowledge with source/kind metadata, so "what can this homelab do /
+where is X tracked" is one `memory_search` away. klams stays the
+index, never the system of record; staleness = re-scan. Can be pulled
+earlier if agent demand shows up in the miss log.
 
-klams-mind sprint 002 ports krag's eval-harness design (TOML query suites;
-`substring` / `source_cited` / `no_hallucination` checks) and runs it
-against `memory_search`. The klams side:
+### Breather (slot between any two of the above) — upgrades
 
-1. Debug/score metadata on search responses (per-source ranks, fusion
-   scores) so eval failures are diagnosable — krag's sprint 015 learned
-   this the hard way.
-2. Whatever the first baseline report flags: candidate items already known
-   are D-004 (DB-side filter pushdown instead of ×3 over-fetch) and a
-   reranking stage; **do not pre-build these** — let the eval numbers
-   pick the work (YAGNI).
+Crossroads §5 #10/#11: axum 0.8 (+ axum-prometheus lockstep), thiserror
+2, metrics 0.24, Qdrant `query_points` (also the door to server-side
+hybrid), Prometheus/Grafana image refresh, pin `rust-toolchain.toml`,
+delete the dead code. All mechanical now, blocking later.
 
-Acceptance: a committed baseline eval report exists (in klams-mind), and
-each klams change in this sprint moves a named metric.
+### Later / unscheduled
 
-### Later / unscheduled (from [backlog.md](backlog.md))
-
-Roughly ordered by current appetite; each graduates via a sprint doc:
-
-- **Lightweight graph memory + TokenMaster spike** — the Option B spike
-  from [current-path.md](current-path.md) §2 never ran; it needs the now-live
-  ingestion data. Outcome informs whether graph memory is pulled forward.
-- **Multi-vector embeddings (text + code)** — natural follow-on once 014's
-  `Embedder` trait and re-embed machinery exist.
-- **Usefulness-signal decay boost** — "this helped" feedback signal;
-  pairs well with klams-mind's consolidation work.
-- **Viewport surfacing** — source / trust-rank / decay-weight columns
-  (deferred from sprint 009 planning until attribution data was solid —
-  it now is).
-- Viewport self-update, code signing; cloud backup sync; memory
-  diff/replay; cross-machine caching; multi-agent coordination memory.
+- **Usefulness signal** (`memory_feedback` + `useful_count` boost in
+  decay) — enablement for klams-mind consolidation (korg #271/#272);
+  pull forward when klams-mind gets there.
+- **Multi-vector embeddings + embedding-model upgrade** — after 022;
+  the 014 re-embed runbook + 022's batch path make it tractable.
+- **Knowledge decay** — decide once usefulness data exists.
+- **Backup-stale alerting** (Grafana alert rules from the ansible-k
+  handoff — 020 made the metrics real).
+- Viewport: source/trust + decay-weight surfacing; self-update; code
+  signing.
+- Cross-machine caching; multi-agent scratchpad; cloud backup sync.
 
 ## How to start the next sprint
 
-Per [AGENTS.md](../../AGENTS.md): take the top queue entry, create branch +
-`sprints/###-<short-stub>/` (next number), write `sprint.md` (goal, scope,
-acceptance — the queue entry above is the seed), build test-first, keep the
-chronicle current, ship behind `just gate`. Move the entry out of this queue
-when its sprint doc exists.
+Per [AGENTS.md](../../AGENTS.md): take the top queue entry, create
+branch + `sprints/###-<short-stub>/` (next number), set the workspace
+version PATCH to the sprint number, write `sprint.md` (goal, scope,
+acceptance — the queue entry above is the seed), build test-first, keep
+the chronicle current, ship behind `just gate`. Move the entry out of
+this queue when its sprint doc exists.

@@ -8,7 +8,6 @@
 //! embed-and-index job (`deduped: false`). Either way the response
 //! is `202 Accepted` per the `OpenAPI` contract.
 
-use crate::auth::AuthenticatedAuthor;
 use crate::router::ApiState;
 use crate::ApiError;
 use axum::{
@@ -19,35 +18,70 @@ use axum::{
 use klams_core::{metrics as m, WriteJob};
 use klams_store::Store;
 use klams_types::{
-    IndexKnowledge, IndexKnowledgeRequest, IndexKnowledgeResponse, KnowledgeDeleteResponse,
-    KnowledgeItem, WritePath,
+    AuthenticatedAuthor, IndexKnowledge, IndexKnowledgeRequest, IndexKnowledgeResponse,
+    KnowledgeDeleteResponse, KnowledgeItem, WritePath,
 };
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
-use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
-/// Maximum normalized-text length accepted by the API, per `OpenAPI`
-/// (`413` is returned for anything longer).
-const MAX_TEXT_LEN: usize = 8192;
-/// Maximum number of tags accepted per request.
-const MAX_TAGS: usize = 32;
-/// Maximum length of any single tag.
-const MAX_TAG_LEN: usize = 64;
+// Sprint 031 (#645): the tag bounds, text normalization and content
+// hashing moved to `klams_core::knowledge_write` so the MCP surface
+// runs the identical policy instead of its own (absent) copy.
 
 pub async fn index<S: Store>(
     State(state): State<ApiState<S>>,
     Extension(author): Extension<AuthenticatedAuthor>,
     Json(req): Json<IndexKnowledgeRequest>,
 ) -> Result<(StatusCode, Json<IndexKnowledgeResponse>), ApiError> {
-    let normalized = normalize_text(&req.text)?;
-    if normalized.len() > MAX_TEXT_LEN {
-        m::incr_writes_failed("knowledge", "too_large");
-        return Err(ApiError::TooLarge);
+    // Sprint 031 (#645): the *rule* is now shared with MCP, the *status*
+    // is not. This route has always answered a bad `text`/`tags` with
+    // 400 `Validation` (the fact route uses 422 `validation_error`), and
+    // unifying the policy must not quietly re-map a status clients
+    // already branch on. Each check produces exactly one detail.
+    let prepared = klams_core::prepare_knowledge(&req.text, &req.tags).map_err(|details| {
+        details.into_iter().next().map_or_else(
+            || ApiError::Validation {
+                field: "text".into(),
+                message: "invalid knowledge write".into(),
+            },
+            |d| ApiError::Validation {
+                field: d.field,
+                message: d.message,
+            },
+        )
+    })?;
+    // Sprint 027 (#420): gate on the embedder's real token budget, not a
+    // hardcoded 8192 characters. The old cap sat ~4x above what the model
+    // accepts, so a chunk in the gap was accepted with 202, the scanner
+    // advanced its cursor, and the worker then dropped the job when the
+    // embed failed — silent corpus loss. Rejecting here happens BEFORE
+    // the 202, so the scanner's cursor never advances past a chunk that
+    // was never stored.
+    //
+    // The check asks the model's own tokenizer, not a character ratio:
+    // measured live, punctuation-dense text hits the 512-token ceiling at
+    // ~525 characters while base64 survives past 20,000, so no single
+    // chars-per-token constant is both safe and usable.
+    if let Err(e) = state
+        .store
+        .check_embed_size(&prepared.text, state.embed_limit)
+        .await
+    {
+        return match e {
+            klams_store::StoreError::PayloadTooLarge { oversize, .. } => {
+                m::incr_writes_failed("knowledge", "too_large");
+                Err(ApiError::TooLarge(oversize))
+            }
+            // The tokenizer was unreachable. Fail the write rather than
+            // guess: a 503 leaves the scanner's cursor unadvanced so the
+            // chunk is retried, which is the recoverable outcome.
+            other => Err(ApiError::Internal {
+                request_id: format!("check_embed_size: {other}"),
+            }),
+        };
     }
-    validate_tags(&req.tags)?;
     let _guard = m::LatencyGuard::with_type(m::WRITE_LATENCY, "knowledge");
-    let content_hash = sha256_hex(&normalized);
+    let content_hash = prepared.content_hash;
 
     // Sprint 010: bump the author's last_seen_at on every authenticated
     // HTTP write (fire-and-forget), mirroring the MCP write path so
@@ -65,6 +99,25 @@ pub async fn index<S: Store>(
             request_id: format!("store-error: {e}"),
         })?
     {
+        // Sprint 028 (#642): content-only identity — the dedupe hit must
+        // still record that THIS (machine, file) holds the content, or a
+        // later delete for the original location would drop a point this
+        // host still relies on. A failed attach is a failed write: 500
+        // leaves the scanner's cursor unadvanced so the chunk retries.
+        if req.machine.is_some() || req.file.is_some() {
+            state
+                .store
+                .attach_knowledge_copy(
+                    existing,
+                    req.machine.as_deref(),
+                    req.file.as_deref(),
+                    req.repo.as_deref(),
+                )
+                .await
+                .map_err(|e| ApiError::Internal {
+                    request_id: format!("store-error: {e}"),
+                })?;
+        }
         m::incr_writes_total("knowledge", req.source, WritePath::Canonical);
         return Ok((
             StatusCode::ACCEPTED,
@@ -79,7 +132,7 @@ pub async fn index<S: Store>(
     let id = Uuid::now_v7();
     let job = WriteJob::index_knowledge(IndexKnowledge {
         id,
-        text: normalized,
+        text: prepared.text,
         content_hash,
         source: req.source,
         tags: req.tags,
@@ -87,6 +140,14 @@ pub async fn index<S: Store>(
         file: req.file,
         machine: req.machine,
         author_id: author.author_id,
+        chunk_index: req.chunk_index,
+        language: req.language,
+        heading_path: req.heading_path,
+        symbols: req.symbols,
+        // Sprint 029: lifecycle fields are MCP-surface verbs; the REST
+        // ingest path (scanner) never declares volatility or supersedes.
+        volatility: None,
+        supersedes: None,
     });
     state.queue.try_enqueue(job).map_err(|_| {
         m::incr_writes_failed("knowledge", "queue_full");
@@ -109,11 +170,21 @@ pub async fn index<S: Store>(
 #[derive(Debug, Deserialize)]
 pub struct DeleteParams {
     pub source_file: String,
+    /// Sprint 023 (#408): scope the delete to a host so one host's
+    /// re-index can't drop another host's chunk for the same path.
+    ///
+    /// Sprint 025 (#637): **required**. It was optional for back-compat,
+    /// and omitting it deleted the path's chunks on *every* host — a
+    /// hand-run cleanup for one machine silently wiped the others. The
+    /// scanner has always sent it; there is no cross-host caller to
+    /// preserve.
+    #[serde(default)]
+    pub machine: Option<String>,
 }
 
-/// `POST /memory/knowledge/delete?source_file=<abs_path>` — remove
-/// every chunk whose payload `source_file` matches. Used by the
-/// scanner's vanished-file cleanup (FR-008).
+/// `POST /memory/knowledge/delete?source_file=<abs_path>&machine=<host>`
+/// — remove every chunk whose payload `source_file` matches, on that
+/// host. Used by the scanner's vanished-file cleanup (FR-008).
 pub async fn delete<S: Store>(
     State(state): State<ApiState<S>>,
     Query(params): Query<DeleteParams>,
@@ -124,9 +195,18 @@ pub async fn delete<S: Store>(
             message: "source_file must be non-empty".into(),
         });
     }
+    let machine = params.machine.as_deref().map(str::trim).unwrap_or_default();
+    if machine.is_empty() {
+        return Err(ApiError::Validation {
+            field: "machine".into(),
+            message: "machine is required — a delete without it would remove \
+                      this source_file's chunks on every host"
+                .into(),
+        });
+    }
     let deleted = state
         .store
-        .delete_knowledge_by_source_file(&params.source_file)
+        .delete_knowledge_by_source_file(&params.source_file, Some(machine))
         .await
         .map_err(|e| ApiError::Internal {
             request_id: format!("store-error: {e}"),
@@ -155,87 +235,4 @@ pub async fn get<S: Store>(
         .ok_or_else(|| ApiError::NotFound {
             resource: "knowledge item".into(),
         })
-}
-
-/// NFC-normalize, trim, and collapse internal whitespace runs to a
-/// single space. Returns Err if the result is empty.
-pub fn normalize_text(input: &str) -> Result<String, ApiError> {
-    let nfc: String = input.nfc().collect();
-    let trimmed = nfc.trim();
-    if trimmed.is_empty() {
-        return Err(ApiError::Validation {
-            field: "text".into(),
-            message: "text must be non-empty after normalization".into(),
-        });
-    }
-    let mut out = String::with_capacity(trimmed.len());
-    let mut prev_ws = false;
-    for c in trimmed.chars() {
-        if c.is_whitespace() {
-            if !prev_ws {
-                out.push(' ');
-                prev_ws = true;
-            }
-        } else {
-            out.push(c);
-            prev_ws = false;
-        }
-    }
-    Ok(out)
-}
-
-fn validate_tags(tags: &[String]) -> Result<(), ApiError> {
-    if tags.len() > MAX_TAGS {
-        return Err(ApiError::Validation {
-            field: "tags".into(),
-            message: format!("at most {MAX_TAGS} tags allowed"),
-        });
-    }
-    for t in tags {
-        if t.is_empty() || t.len() > MAX_TAG_LEN {
-            return Err(ApiError::Validation {
-                field: "tags".into(),
-                message: format!("tags must be non-empty and at most {MAX_TAG_LEN} chars"),
-            });
-        }
-    }
-    Ok(())
-}
-
-fn sha256_hex(s: &str) -> String {
-    let mut h = Sha256::new();
-    h.update(s.as_bytes());
-    let digest = h.finalize();
-    let mut out = String::with_capacity(digest.len() * 2);
-    for b in digest {
-        use std::fmt::Write as _;
-        let _ = write!(&mut out, "{b:02x}");
-    }
-    out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn normalize_collapses_whitespace() {
-        assert_eq!(normalize_text("  hello\nworld  ").unwrap(), "hello world");
-    }
-
-    #[test]
-    fn normalize_empty_rejected() {
-        assert!(matches!(
-            normalize_text("   \n\t"),
-            Err(ApiError::Validation { .. })
-        ));
-    }
-
-    #[test]
-    fn sha256_is_stable() {
-        let a = sha256_hex("hello");
-        let b = sha256_hex("hello");
-        assert_eq!(a, b);
-        assert_eq!(a.len(), 64);
-    }
 }

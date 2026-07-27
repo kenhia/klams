@@ -22,6 +22,7 @@ use crate::{
     tools::McpState,
 };
 use chrono::{DateTime, Utc};
+use klams_store::Store;
 use klams_types::{PublicAuthorRef, PublicMemory, PublicMemoryContent};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -105,8 +106,8 @@ fn offset_to_chrono(ts: time::OffsetDateTime) -> DateTime<Utc> {
 /// Returns an [`ErrorEnvelope`] for `INVALID_LIMIT`,
 /// `SCHEMA_VALIDATION_FAILED`, or `INTERNAL_ERROR`.
 #[allow(clippy::too_many_lines)]
-pub async fn run(
-    state: &McpState,
+pub async fn run<S: Store>(
+    state: &McpState<S>,
     args: MemoryAdminListDeletedArgs,
 ) -> Result<MemoryAdminListDeletedOutput, ErrorEnvelope> {
     let limit = args.limit.unwrap_or(DEFAULT_LIMIT);
@@ -152,7 +153,6 @@ pub async fn run(
         Section::Facts(cursor) if want_facts => {
             let rows = state
                 .store
-                .postgres
                 .list_deleted_facts_filtered(limit, since, args.author_id, cursor)
                 .await
                 .map_err(|e| {
@@ -173,11 +173,7 @@ pub async fn run(
             let results = rows
                 .into_iter()
                 .map(|(r, a)| {
-                    let author = PublicAuthorRef {
-                        agent_name: a.agent_name,
-                        model: a.model,
-                        repo: a.repo,
-                    };
+                    let author = PublicAuthorRef::from_record(&a);
                     let deleter = r
                         .deleted_by_author_id
                         .and_then(|d| deleters.get(&d).cloned())
@@ -235,15 +231,14 @@ pub async fn run(
     }
 }
 
-async fn list_knowledge(
-    state: &McpState,
+async fn list_knowledge<S: Store>(
+    state: &McpState<S>,
     limit: u32,
     author_id: Option<Uuid>,
     offset: Option<Uuid>,
 ) -> Result<MemoryAdminListDeletedOutput, ErrorEnvelope> {
     let (rows, next) = state
         .store
-        .qdrant
         .list_deleted_knowledge(limit, author_id, offset)
         .await
         .map_err(|e| {
@@ -273,11 +268,7 @@ async fn list_knowledge(
                 .unwrap_or_else(unknown_author_ref);
             let mem = PublicMemory {
                 id: item.id,
-                content: PublicMemoryContent::Knowledge {
-                    text: item.text.clone(),
-                    source_path: item.file.clone(),
-                    repo: item.repo.clone(),
-                },
+                content: PublicMemoryContent::knowledge_from(&item),
                 tags: item.tags.clone(),
                 author,
                 created_at: offset_to_chrono(item.created_at),
@@ -304,30 +295,22 @@ fn format_facts_cursor(ts: time::OffsetDateTime, id: Uuid) -> String {
     format!("f:{ts_str}:{id}")
 }
 
-async fn fetch_authors(state: &McpState, ids: &[Uuid]) -> HashMap<Uuid, PublicAuthorRef> {
+async fn fetch_authors<S: Store>(
+    state: &McpState<S>,
+    ids: &[Uuid],
+) -> HashMap<Uuid, PublicAuthorRef> {
     let mut out: HashMap<Uuid, PublicAuthorRef> = HashMap::new();
     for id in ids {
         if out.contains_key(id) {
             continue;
         }
-        if let Ok(Some(a)) = state.store.postgres.get_author_by_id(*id).await {
-            out.insert(
-                *id,
-                PublicAuthorRef {
-                    agent_name: a.agent_name,
-                    model: a.model,
-                    repo: a.repo,
-                },
-            );
+        if let Ok(Some(a)) = state.store.get_author_by_id(*id).await {
+            out.insert(*id, PublicAuthorRef::from_record(&a));
         }
     }
     out
 }
 
 fn unknown_author_ref() -> PublicAuthorRef {
-    PublicAuthorRef {
-        agent_name: "unknown".into(),
-        model: None,
-        repo: None,
-    }
+    PublicAuthorRef::unknown()
 }

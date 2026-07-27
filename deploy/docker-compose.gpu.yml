@@ -2,13 +2,20 @@
 #   docker compose --env-file $KLAMS_ROOT/config/compose.env \
 #     -f deploy/docker-compose.yml -f deploy/docker-compose.gpu.yml \
 #     up -d
-# Set TEI_IMAGE_TAG to a CUDA-enabled tag (e.g. `1.5`) in compose.env.
+# Set TEI_IMAGE_TAG to a CUDA-enabled tag in compose.env — kubs0's
+# 4080 SUPER is compute capability 8.9, so the Ada-specific tag
+# (`89-1.9`) is correct there.
+#
+# Sprint 028 (#655): CDI device syntax. The old
+# `deploy.resources.reservations.devices` form needs the nvidia runtime
+# registered with dockerd; kubs0's Docker 29 + nvidia-container-toolkit
+# 1.19 setup instead exposes the GPU via CDI
+# (`/etc/cdi/nvidia.yaml`, generated with `nvidia-ctk cdi generate`) —
+# regenerate that spec after NVIDIA driver upgrades.
 services:
   tei:
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+    devices:
+      - nvidia.com/gpu=all
+  reranker:
+    devices:
+      - nvidia.com/gpu=all

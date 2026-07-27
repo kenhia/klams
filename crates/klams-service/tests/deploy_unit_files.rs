@@ -1,6 +1,12 @@
 //! sprint-003 T041 — lint every `.service`/`.timer` file under
 //! `deploy/` with `systemd-analyze verify`. Skipped when the binary
 //! is not on `PATH` (CI containers, mac dev boxes, etc.).
+//!
+//! Sprint 031 (#646): the walk RECURSES. It used `read_dir` on
+//! `deploy/` alone, so `deploy/systemd/klams.service` was never linted
+//! — which is how a stale duplicate unit survived there unnoticed long
+//! enough to become its own work item (#647). A lint that silently
+//! skips a subdirectory reports clean and means nothing.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -19,6 +25,24 @@ fn have_systemd_analyze() -> bool {
         .is_ok_and(|o| o.status.success())
 }
 
+/// Gather `.service` / `.timer` files under `dir`, recursively.
+fn collect_units(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            collect_units(&p, out);
+            continue;
+        }
+        let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("");
+        if matches!(ext, "service" | "timer") {
+            out.push(p);
+        }
+    }
+}
+
 #[test]
 fn every_unit_file_passes_systemd_analyze_verify() {
     if !have_systemd_analyze() {
@@ -28,15 +52,13 @@ fn every_unit_file_passes_systemd_analyze_verify() {
 
     let dir = deploy_dir();
     let mut units = Vec::new();
-    for entry in std::fs::read_dir(&dir).expect("read deploy/") {
-        let entry = entry.unwrap();
-        let p = entry.path();
-        let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("");
-        if matches!(ext, "service" | "timer") {
-            units.push(p);
-        }
-    }
+    collect_units(&dir, &mut units);
+    units.sort();
     assert!(!units.is_empty(), "no unit files found under deploy/");
+    eprintln!("linting {} unit file(s):", units.len());
+    for u in &units {
+        eprintln!("  {}", u.display());
+    }
 
     for unit in units {
         // systemd-analyze verify wants the [Install] section to be a

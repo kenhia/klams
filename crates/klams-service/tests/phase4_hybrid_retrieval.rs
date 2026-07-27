@@ -12,6 +12,14 @@
 //!      removed before scoring.
 //!   3. One source returns zero — a filter that no fact/event payload
 //!      can satisfy still produces a bundle with knowledge populated.
+//!
+//! Sprint 031 (#687): these spawn **isolated**. Scenario 1 asserts
+//! that two phrasings of one intent retrieve overlapping ids — a claim
+//! about ranking, and ranking assertions must never share a corpus.
+//! On the shared `knowledge_items_test` collection they didn't: two
+//! weeks of accumulated seeds filled both top-10 pages with stale
+//! near-duplicates and the overlap starved, failing on an unmodified
+//! main during sprint 030's run.
 
 mod common;
 
@@ -22,7 +30,7 @@ use std::collections::HashSet;
 #[tokio::test]
 #[ignore = "requires live test stack (tests/docker-compose.test.yml)"]
 async fn literal_and_paraphrase_share_results() {
-    let server = TestServer::spawn().await;
+    let server = TestServer::spawn_isolated().await;
     let fx = fixture::generate(fixture::FixtureScale::small());
     let _ = seed::load(&server.store, &fx).await;
 
@@ -72,12 +80,14 @@ async fn literal_and_paraphrase_share_results() {
             .map(|i| i.id)
             .collect::<Vec<_>>()
     );
+
+    server.cleanup().await;
 }
 
 #[tokio::test]
 #[ignore = "requires live test stack"]
 async fn filter_pre_pruning_constrains_events() {
-    let server = TestServer::spawn().await;
+    let server = TestServer::spawn_isolated().await;
     let fx = fixture::generate(fixture::FixtureScale::small());
     let _ = seed::load(&server.store, &fx).await;
 
@@ -121,12 +131,14 @@ async fn filter_pre_pruning_constrains_events() {
             "event observed_at {observed} predates since {since}",
         );
     }
+
+    server.cleanup().await;
 }
 
 #[tokio::test]
 #[ignore = "requires live test stack"]
 async fn zero_row_filter_on_one_source_leaves_knowledge() {
-    let server = TestServer::spawn().await;
+    let server = TestServer::spawn_isolated().await;
     let fx = fixture::generate(fixture::FixtureScale::small());
     let _ = seed::load(&server.store, &fx).await;
 
@@ -164,4 +176,6 @@ async fn zero_row_filter_on_one_source_leaves_knowledge() {
             .unwrap_or_default();
         assert_eq!(repo, "docs", "knowledge repo leaked past filter: {item:?}");
     }
+
+    server.cleanup().await;
 }

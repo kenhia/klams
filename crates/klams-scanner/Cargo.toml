@@ -18,6 +18,9 @@ klams-types = { workspace = true }
 klams-client = { workspace = true }
 tokio = { workspace = true }
 clap = { version = "4", features = ["derive", "env"] }
+tree-sitter = { workspace = true }
+tree-sitter-rust = { workspace = true }
+tree-sitter-python = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 serde = { workspace = true }

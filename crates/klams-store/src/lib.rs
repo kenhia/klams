@@ -21,17 +21,61 @@ pub mod embeddings;
 pub mod postgres;
 pub mod qdrant;
 pub mod repair;
+pub mod rerank;
 
 pub use composite::CompositeStore;
 pub use embeddings::{Embedder, OpenAiCompatEmbedder, TeiEmbedder};
 pub use postgres::PostgresStore;
 pub use qdrant::QdrantStore;
+pub use rerank::{RerankHit, TeiReranker};
+
+/// Whether retrying the same operation could plausibly succeed.
+///
+/// Sprint 027 (WI #629, review F-3.1). Before this existed, klams got the
+/// question wrong in *both* directions: a permanent HTTP 413 from the
+/// embedder was retried three times and reported as
+/// `EMBEDDING_UNAVAILABLE` + `retry_after_seconds`, while a transient
+/// Postgres pool exhaustion surfaced as a bare `INTERNAL_ERROR` with no
+/// retry hint at all. The classification has to live on the error itself,
+/// because by the time a caller sees it the evidence is gone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transience {
+    /// The condition is expected to clear on its own: connection
+    /// refused, a 5xx, a timeout, an exhausted pool. Retrying is
+    /// reasonable and `retry_after_seconds` is honest.
+    Transient,
+    /// The condition is a property of the request. Retrying it
+    /// unchanged will fail identically, forever. Never attach a retry
+    /// hint to one of these.
+    Permanent,
+}
 
 #[derive(Debug)]
 pub enum StoreError {
+    /// A backend failed in a way that will not fix itself (bad SQL,
+    /// constraint violation, malformed response).
     Backend(String),
+    /// A backend is momentarily unreachable or over capacity — pool
+    /// exhaustion, connection reset, a 5xx from Qdrant. Distinct from
+    /// [`StoreError::Backend`] purely so callers can offer an honest
+    /// retry hint (sprint 027, the mirror half of #629).
+    BackendUnavailable(String),
     Conflict(String),
+    /// The embedder is unavailable or failed transiently.
     Embedding(String),
+    /// The embedder refused this input and will refuse it again —
+    /// an unsupported content type, a malformed request, any permanent
+    /// 4xx that is not a size problem.
+    EmbeddingRejected(String),
+    /// The input exceeds the embedder's token ceiling, with the numbers
+    /// needed to split it correctly on the first retry rather than by
+    /// bisection (sprint 027, #629/#632).
+    PayloadTooLarge {
+        oversize: klams_types::Oversize,
+        /// Where the rejection came from — the local gate, or the
+        /// embedder's own response body.
+        detail: String,
+    },
     Other(String),
     /// Sprint-002 US2: optimistic-version mismatch on a canonical
     /// fact write or dissent promote. Maps to HTTP 409 with the
@@ -44,12 +88,70 @@ pub enum StoreError {
     Gone(String),
 }
 
+impl StoreError {
+    /// Classify a `sqlx` failure so transient database trouble is
+    /// reported as retryable and everything else is not.
+    ///
+    /// Used at every Postgres call site in place of the old blanket
+    /// `Backend(format!("ctx: {e}"))`, which erased the distinction.
+    pub fn from_sqlx(ctx: &str, e: &sqlx::Error) -> Self {
+        let transient = match e {
+            // The pool could not hand out a connection in time, or the
+            // socket died mid-flight. Both clear on their own.
+            sqlx::Error::PoolTimedOut | sqlx::Error::Io(_) | sqlx::Error::Tls(_) => true,
+            sqlx::Error::Database(db) => db.code().is_some_and(|c| is_transient_sqlstate(&c)),
+            _ => false,
+        };
+        let msg = format!("{ctx}: {e}");
+        if transient {
+            StoreError::BackendUnavailable(msg)
+        } else {
+            StoreError::Backend(msg)
+        }
+    }
+
+    /// Whether retrying this operation unchanged could succeed.
+    pub fn transience(&self) -> Transience {
+        match self {
+            StoreError::BackendUnavailable(_) | StoreError::Embedding(_) => Transience::Transient,
+            StoreError::Backend(_)
+            | StoreError::Conflict(_)
+            | StoreError::EmbeddingRejected(_)
+            | StoreError::PayloadTooLarge { .. }
+            | StoreError::Other(_)
+            | StoreError::VersionConflict { .. }
+            | StoreError::Gone(_) => Transience::Permanent,
+        }
+    }
+
+    /// Convenience predicate for the many call sites that only need to
+    /// decide whether to attach `retry_after_seconds`.
+    pub fn is_transient(&self) -> bool {
+        self.transience() == Transience::Transient
+    }
+}
+
+/// SQLSTATE classes that describe a condition worth retrying.
+///
+/// `08` connection exception, `40` transaction rollback (deadlock and
+/// serialization failure — retrying is the documented remedy), `53`
+/// insufficient resources (out of connections/memory/disk), `57`
+/// operator intervention (admin shutdown, cancelled statement).
+fn is_transient_sqlstate(code: &str) -> bool {
+    matches!(code.get(..2), Some("08" | "40" | "53" | "57"))
+}
+
 impl fmt::Display for StoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             StoreError::Backend(m) => write!(f, "store backend error: {m}"),
+            StoreError::BackendUnavailable(m) => write!(f, "store backend unavailable: {m}"),
             StoreError::Conflict(m) => write!(f, "store conflict: {m}"),
             StoreError::Embedding(m) => write!(f, "embedding error: {m}"),
+            StoreError::EmbeddingRejected(m) => write!(f, "embedding rejected input: {m}"),
+            StoreError::PayloadTooLarge { oversize, detail } => {
+                write!(f, "payload too large: {oversize} [{detail}]")
+            }
             StoreError::Other(m) => write!(f, "store error: {m}"),
             StoreError::VersionConflict { current_version } => {
                 write!(f, "version conflict: current_version={current_version}")
@@ -106,6 +208,88 @@ pub struct TextHit {
     pub payload: serde_json::Value,
 }
 
+/// A `memory_search` that returned nothing useful — the tuning-data
+/// record inserted by the MCP search path (sprint 021, #317). `reason`
+/// is `"zero_hit"` (no results) or `"low_score"` (only a weak top
+/// match); `top_score` is `None` for a zero-hit.
+#[derive(Debug, Clone)]
+pub struct SearchMiss {
+    pub query: String,
+    pub caller: String,
+    pub reason: String,
+    pub top_score: Option<f32>,
+    pub hit_count: i32,
+    pub kinds: String,
+}
+
+/// A knowledge write refused for exceeding the embedder's ceiling
+/// (sprint 027, #656).
+///
+/// Carries the full rejected `text` on purpose: it is the "what did we
+/// lose" corpus. Everything else here is what makes the loss
+/// *interpretable* — who hit it, by how much, and against which ceiling,
+/// since the ceiling itself moves when the model changes.
+#[derive(Debug, Clone)]
+pub struct OversizeWrite {
+    pub author_id: Option<Uuid>,
+    pub agent_name: String,
+    pub submitted_chars: i32,
+    pub estimated_tokens: i32,
+    pub limit_tokens: i32,
+    pub max_chars: i32,
+    pub text: String,
+}
+
+impl OversizeWrite {
+    /// Build a log row from the gate's verdict.
+    #[must_use]
+    pub fn from_oversize(
+        oversize: &klams_types::Oversize,
+        author_id: Option<Uuid>,
+        agent_name: impl Into<String>,
+        text: impl Into<String>,
+    ) -> Self {
+        Self {
+            author_id,
+            agent_name: agent_name.into(),
+            // Sizes are bounded by the request the caller already sent,
+            // so a saturating cast cannot lose anything meaningful.
+            submitted_chars: i32::try_from(oversize.submitted_chars).unwrap_or(i32::MAX),
+            estimated_tokens: i32::try_from(oversize.estimated_tokens).unwrap_or(i32::MAX),
+            limit_tokens: i32::try_from(oversize.limit_tokens).unwrap_or(i32::MAX),
+            max_chars: i32::try_from(oversize.max_chars).unwrap_or(i32::MAX),
+            text: text.into(),
+        }
+    }
+}
+
+/// A record of one search, hit or miss (sprint 026, #643).
+///
+/// The miss log ([`SearchMiss`]) only records *failures*, and until this
+/// sprint its threshold was mis-calibrated badly enough to record almost
+/// nothing — so klams had no record of what agents ask it. This is that
+/// record: it is what future eval queries get mined from, and what the
+/// next miss-log threshold gets calibrated against (the current one came
+/// from a handful of data points in #628).
+///
+/// `top_raw_score` is deliberately the **pre-fusion** per-source score
+/// (Qdrant cosine / Postgres `ts_rank`), not the fused RRF value — RRF
+/// discards magnitude, so a distribution over fused scores would say
+/// nothing about match quality. `top_kind` is stored alongside because
+/// the raw scales are not comparable across kinds.
+#[derive(Debug, Clone)]
+pub struct SearchSample {
+    pub query: String,
+    pub caller: String,
+    pub top_raw_score: Option<f32>,
+    pub top_kind: Option<String>,
+    pub hit_count: i32,
+    pub kinds: String,
+    /// How many duplicate hits query-time collapse (#641) removed from
+    /// this search — the dedupe's live effect, per query.
+    pub duplicates_collapsed: i32,
+}
+
 /// Single trait the worker pool uses for all persistence.
 #[async_trait]
 pub trait Store: Send + Sync + 'static {
@@ -134,13 +318,43 @@ pub trait Store: Send + Sync + 'static {
         query: &str,
         top_k: u32,
     ) -> StoreResult<(Vec<TextHit>, Vec<TextHit>)>;
+    /// Find an existing **live** knowledge point with `hash`.
+    ///
+    /// Content-only since sprint 028 (#642): identical content is ONE
+    /// point wherever it appears; per-file/per-host identity lives in
+    /// the point's copy bookkeeping (see [`Self::attach_knowledge_copy`]).
+    /// Soft-deleted points never match — a scanner chunk deduping onto a
+    /// deleted memory would make live content unsearchable.
     async fn find_knowledge_by_content_hash(&self, hash: &str) -> StoreResult<Option<Uuid>>;
+    /// Record that (`machine`, `file`) also holds the content of point
+    /// `id` (sprint 028 #642). Returns `true` when the copy was newly
+    /// attached, `false` when it was already recorded (or the point is
+    /// gone). Default is a no-op `Ok(false)` — copy bookkeeping is a
+    /// Qdrant concern and mocks don't track it.
+    async fn attach_knowledge_copy(
+        &self,
+        _id: Uuid,
+        _machine: Option<&str>,
+        _file: Option<&str>,
+        _repo: Option<&str>,
+    ) -> StoreResult<bool> {
+        Ok(false)
+    }
     async fn get_knowledge(&self, id: Uuid) -> StoreResult<Option<KnowledgeItem>>;
     /// Sprint 003 T010b: delete every knowledge point whose payload
-    /// `source_file` matches `source_file`. Returns the number of
-    /// points removed. Used by the scanner's vanished-file cleanup
-    /// (FR-008). Default returns `Other` so mocks need not implement.
-    async fn delete_knowledge_by_source_file(&self, _source_file: &str) -> StoreResult<u64> {
+    /// `source_file` matches, scoped to `machine`.
+    ///
+    /// Sprint 028 (#642): with one point per content, this is copy
+    /// bookkeeping, not point deletion — the (`machine`, `file`) copy is
+    /// removed from each matching point and the point itself is deleted
+    /// only when its last copy goes. Returns the number of copies
+    /// removed (= points affected). Default returns `Other` so mocks
+    /// need not implement.
+    async fn delete_knowledge_by_source_file(
+        &self,
+        _source_file: &str,
+        _machine: Option<&str>,
+    ) -> StoreResult<u64> {
         Err(StoreError::Other(
             "delete_knowledge_by_source_file not implemented".into(),
         ))
@@ -149,6 +363,34 @@ pub trait Store: Send + Sync + 'static {
     /// [`search_knowledge`]. Implementations backed by Qdrant + TEI
     /// delegate to the embedder; mock stores can return a zero vector.
     async fn embed_query(&self, query: &str) -> StoreResult<Vec<f32>>;
+
+    /// Check `text` against the embedder's input ceiling, using the
+    /// model's real tokenizer where the backend has one (sprint 027,
+    /// WI #420).
+    ///
+    /// The ingest handler calls this **before** returning `202`, because
+    /// the write is completed asynchronously by a worker that has no
+    /// reply channel: anything accepted here and refused later is lost
+    /// outright, and the scanner has already advanced its cursor past it.
+    ///
+    /// The default implementation uses the character estimate, which is
+    /// what mock stores and tokenizer-less backends get.
+    ///
+    /// # Errors
+    /// Returns [`StoreError::PayloadTooLarge`] when the text exceeds the
+    /// ceiling, carrying the numbers needed to split it correctly.
+    async fn check_embed_size(
+        &self,
+        text: &str,
+        limit: klams_types::EmbedLimit,
+    ) -> StoreResult<()> {
+        limit
+            .check(text)
+            .map_err(|oversize| StoreError::PayloadTooLarge {
+                oversize,
+                detail: "character estimate (no tokenizer available)".into(),
+            })
+    }
 
     // Dissent operations (sprint 002 US2). Default impls return
     // `Other` so mock stores need not implement them; the Postgres
@@ -248,6 +490,257 @@ pub trait Store: Send + Sync + 'static {
     /// test mocks need not implement it.
     async fn touch_author_last_seen_at(&self, _id: Uuid) -> StoreResult<u64> {
         Ok(0)
+    }
+
+    // ---------------------------------------------------------------
+    // Sprint 031 (#645) — the surface `klams-mcp` used to reach through
+    // `CompositeStore`'s concrete `.postgres` / `.qdrant` / `.embedder`
+    // fields to get at. Holding a concrete store is what made the MCP
+    // tools unmockable, which is why 13 of its 17 test files were empty
+    // `#[ignore]`d stubs pointing at klams-service integration tests.
+    //
+    // Every method defaults to an error rather than being required, so
+    // a mock implements only the handful its test exercises — the same
+    // convention the dissent and summary operations above already use.
+    // ---------------------------------------------------------------
+
+    async fn get_author_by_id(&self, _id: Uuid) -> StoreResult<Option<klams_types::AuthorRecord>> {
+        Err(StoreError::Other("get_author_by_id not implemented".into()))
+    }
+
+    async fn get_author_by_agent_name(
+        &self,
+        _agent_name: &str,
+    ) -> StoreResult<Option<klams_types::AuthorRecord>> {
+        Err(StoreError::Other(
+            "get_author_by_agent_name not implemented".into(),
+        ))
+    }
+
+    async fn insert_author(
+        &self,
+        _args: klams_types::RegisterAuthorArgs,
+        _explicit_id: Option<Uuid>,
+    ) -> StoreResult<klams_types::AuthorRecord> {
+        Err(StoreError::Other("insert_author not implemented".into()))
+    }
+
+    async fn event_exists(&self, _id: Uuid) -> StoreResult<bool> {
+        Err(StoreError::Other("event_exists not implemented".into()))
+    }
+
+    async fn soft_delete_fact(&self, _id: Uuid, _by_author_id: Uuid) -> StoreResult<bool> {
+        Err(StoreError::Other("soft_delete_fact not implemented".into()))
+    }
+
+    async fn restore_fact(&self, _id: Uuid) -> StoreResult<bool> {
+        Err(StoreError::Other("restore_fact not implemented".into()))
+    }
+
+    async fn hard_delete_fact(&self, _id: Uuid) -> StoreResult<bool> {
+        Err(StoreError::Other("hard_delete_fact not implemented".into()))
+    }
+
+    async fn fact_owner(&self, _id: Uuid) -> StoreResult<Option<Uuid>> {
+        Err(StoreError::Other("fact_owner not implemented".into()))
+    }
+
+    async fn fact_exists_any(&self, _id: Uuid) -> StoreResult<bool> {
+        Err(StoreError::Other("fact_exists_any not implemented".into()))
+    }
+
+    async fn propose_dissent(
+        &self,
+        _fact_id: Uuid,
+        _proposed_payload: &serde_json::Value,
+        _author_id: Uuid,
+        _reason: &str,
+        _contradicting_memory_id: Option<Uuid>,
+    ) -> StoreResult<Option<(Uuid, bool)>> {
+        Err(StoreError::Other("propose_dissent not implemented".into()))
+    }
+
+    async fn list_deleted_facts_filtered(
+        &self,
+        _limit: u32,
+        _since: Option<OffsetDateTime>,
+        _author_id: Option<Uuid>,
+        _cursor: Option<(OffsetDateTime, Uuid)>,
+    ) -> StoreResult<Vec<(postgres::DeletedFactRow, klams_types::AuthorRecord)>> {
+        Err(StoreError::Other(
+            "list_deleted_facts_filtered not implemented".into(),
+        ))
+    }
+
+    async fn list_all_authors(&self) -> StoreResult<Vec<klams_types::AuthorRecord>> {
+        Err(StoreError::Other("list_all_authors not implemented".into()))
+    }
+
+    async fn merge_author_rows(&self, _from: Uuid, _into: Uuid) -> StoreResult<(u64, u64, u64)> {
+        Err(StoreError::Other(
+            "merge_author_rows not implemented".into(),
+        ))
+    }
+
+    async fn delete_author(&self, _author_id: Uuid) -> StoreResult<bool> {
+        Err(StoreError::Other("delete_author not implemented".into()))
+    }
+
+    async fn count_author_rows(&self, _author_id: Uuid) -> StoreResult<(i64, i64, i64)> {
+        Err(StoreError::Other(
+            "count_author_rows not implemented".into(),
+        ))
+    }
+
+    async fn fetch_facts_with_authors(
+        &self,
+        _ids: &[Uuid],
+    ) -> StoreResult<Vec<(Fact, klams_types::AuthorRecord)>> {
+        Err(StoreError::Other(
+            "fetch_facts_with_authors not implemented".into(),
+        ))
+    }
+
+    async fn fetch_events_with_authors(
+        &self,
+        _ids: &[Uuid],
+    ) -> StoreResult<Vec<(Event, klams_types::AuthorRecord)>> {
+        Err(StoreError::Other(
+            "fetch_events_with_authors not implemented".into(),
+        ))
+    }
+
+    async fn insert_search_miss(&self, _miss: &SearchMiss) -> StoreResult<()> {
+        Err(StoreError::Other(
+            "insert_search_miss not implemented".into(),
+        ))
+    }
+
+    async fn insert_search_sample(&self, _sample: &SearchSample) -> StoreResult<()> {
+        Err(StoreError::Other(
+            "insert_search_sample not implemented".into(),
+        ))
+    }
+
+    async fn insert_oversize_write(&self, _write: &OversizeWrite) -> StoreResult<()> {
+        Err(StoreError::Other(
+            "insert_oversize_write not implemented".into(),
+        ))
+    }
+
+    async fn point_is_soft_deleted(&self, _id: Uuid) -> StoreResult<Option<bool>> {
+        Err(StoreError::Other(
+            "point_is_soft_deleted not implemented".into(),
+        ))
+    }
+
+    async fn knowledge_authors_by_ids(
+        &self,
+        _ids: &[Uuid],
+    ) -> StoreResult<std::collections::HashMap<Uuid, Uuid>> {
+        Err(StoreError::Other(
+            "knowledge_authors_by_ids not implemented".into(),
+        ))
+    }
+
+    async fn index_knowledge_with_embedding(
+        &self,
+        _req: IndexKnowledge,
+        _embedding: Vec<f32>,
+    ) -> StoreResult<KnowledgeItem> {
+        Err(StoreError::Other(
+            "index_knowledge_with_embedding not implemented".into(),
+        ))
+    }
+
+    async fn upsert_knowledge_item(
+        &self,
+        _item: &KnowledgeItem,
+        _author_id: Uuid,
+        _embedding: Vec<f32>,
+    ) -> StoreResult<()> {
+        Err(StoreError::Other(
+            "upsert_knowledge_item not implemented".into(),
+        ))
+    }
+
+    async fn soft_delete_payload(
+        &self,
+        _id: Uuid,
+        _by_author_id: Uuid,
+        _when: OffsetDateTime,
+    ) -> StoreResult<()> {
+        Err(StoreError::Other(
+            "soft_delete_payload not implemented".into(),
+        ))
+    }
+
+    async fn search_knowledge_curated(
+        &self,
+        _query_vector: Vec<f32>,
+        _top_k: u32,
+    ) -> StoreResult<Vec<(KnowledgeItem, f32)>> {
+        Err(StoreError::Other(
+            "search_knowledge_curated not implemented".into(),
+        ))
+    }
+
+    async fn restore_payload(&self, _id: Uuid) -> StoreResult<()> {
+        Err(StoreError::Other("restore_payload not implemented".into()))
+    }
+
+    async fn reassign_knowledge_author(&self, _from: Uuid, _into: Uuid) -> StoreResult<u64> {
+        Err(StoreError::Other(
+            "reassign_knowledge_author not implemented".into(),
+        ))
+    }
+
+    async fn point_exists_any(&self, _id: Uuid) -> StoreResult<bool> {
+        Err(StoreError::Other("point_exists_any not implemented".into()))
+    }
+
+    async fn mark_superseded(
+        &self,
+        _old_id: Uuid,
+        _new_id: Uuid,
+        _by_author_id: Uuid,
+        _when: OffsetDateTime,
+    ) -> StoreResult<()> {
+        Err(StoreError::Other("mark_superseded not implemented".into()))
+    }
+
+    async fn list_deleted_knowledge(
+        &self,
+        _limit: u32,
+        _author_id: Option<Uuid>,
+        _offset: Option<Uuid>,
+    ) -> StoreResult<(
+        Vec<(KnowledgeItem, OffsetDateTime, Option<Uuid>, Option<Uuid>)>,
+        Option<Uuid>,
+    )> {
+        Err(StoreError::Other(
+            "list_deleted_knowledge not implemented".into(),
+        ))
+    }
+
+    async fn hard_delete_point(&self, _id: Uuid) -> StoreResult<()> {
+        Err(StoreError::Other(
+            "hard_delete_point not implemented".into(),
+        ))
+    }
+
+    async fn get_point_vector(&self, _id: Uuid) -> StoreResult<Option<Vec<f32>>> {
+        Err(StoreError::Other("get_point_vector not implemented".into()))
+    }
+
+    async fn count_knowledge_by_author_any(&self, _author_id: Uuid) -> StoreResult<u64> {
+        Err(StoreError::Other(
+            "count_knowledge_by_author_any not implemented".into(),
+        ))
+    }
+
+    async fn embed_document(&self, _text: &str) -> StoreResult<Vec<f32>> {
+        Err(StoreError::Other("embed_document not implemented".into()))
     }
 }
 
@@ -430,6 +923,12 @@ pub struct RankedRow {
     pub source: RetrievalSource,
     pub id: Uuid,
     pub score: f32,
+    /// Per-hit fusion weight (sprint 029, #644): RRF contributes
+    /// `weight / (k + rank + 1)` instead of `1 / (k + rank + 1)`.
+    /// `1.0` is the neutral value; provenance weighting raises it for
+    /// curated hits. Weights scale a hit's *contribution*, never its
+    /// rank within the source list.
+    pub weight: f32,
     pub payload: serde_json::Value,
 }
 

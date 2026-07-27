@@ -11,7 +11,10 @@
 # Unix permissions still apply; grant least-broad read access if the
 # home dir is 0700).
 
-# klams service base URL (loopback; the service binds 127.0.0.1:7777).
+# klams service base URL. On the same host as the service, use loopback
+# (127.0.0.1:7777). On a REMOTE host scanning into the central service
+# (sprint 023 multi-host — e.g. kai), point at the service host:
+#   url = "http://kubs0:7777"
 url = "http://127.0.0.1:7777"
 
 # Scoped scanner bearer. MUST resolve to a registered author so the
@@ -19,8 +22,12 @@ url = "http://127.0.0.1:7777"
 # Treat as a secret — this example carries a placeholder only.
 token = "changeme-scanner-bearer"
 
-# Absolute roots to walk. NOT "~/src" / "~/obsidian".
-roots = ["/home/ken/src", "/home/ken/obsidian"]
+# Absolute roots to walk. NOT "~/src".
+# The Obsidian vault is deliberately absent (sprint 028 #657): stale
+# notes recalled confidently cost more than a miss. Don't reinstate the
+# whole vault; if a subtree earns its way back, add it as a targeted
+# root behind a .klamsignore allowlist.
+roots = ["/home/ken/src"]
 
 # Seconds between cycles when run as a long-lived loop. The deployed
 # unit runs `--once` under klams-scanner.timer, so the timer's cadence
@@ -32,3 +39,26 @@ interval_secs = 3600
 # (scanner-config.md C4). The binary reads this value directly (it does
 # not consume $STATE_DIRECTORY), so set it explicitly.
 state_dir = "/var/lib/klams"
+
+# The embedding model's input ceiling in TOKENS (sprint 027, #420).
+# MUST match the service's `[embeddings] max_input_tokens`. The scanner
+# cannot reach TEI (it speaks only to the klams API), so it splits
+# against a conservative character *estimate* of this ceiling rather
+# than an exact token count. That estimate is imperfect by design: if a
+# chunk still turns out to be over budget, the service answers 413 and
+# the scanner skips that one chunk — counted as `chunk_too_large` and
+# logged — instead of stalling the file's cursor forever.
+#
+# Before 027 an over-budget chunk was published anyway, accepted with
+# 202 (advancing the cursor), then dropped at the worker when the embed
+# failed — kai lost ~30k chunks that way in a single 2h window, silently.
+# Keep this in step with the service when sprint 028 swaps the model.
+max_input_tokens = 512
+
+# Host stamped on every chunk (sprint 023 #407), making retrieval a
+# fully-qualified (host, file). Defaults to the kernel hostname
+# (/proc/sys/kernel/hostname) — leave unset on a normal per-host
+# scanner. Set it explicitly only for the future central mount-scan mode
+# (klams #406), where one process scans several hosts' mounts and the
+# host is derived per subtree.
+# host = "kai"

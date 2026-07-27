@@ -162,6 +162,12 @@ controller ──POST /v1/knowledge──▶ klams-api ──▶ klams-core
 
 Chunks become searchable within 10 s p95 under MVP load (SC-002).
 
+Since sprint 027 the handler gates `text` against the embedder's token
+ceiling **before** enqueueing, so a chunk the model would refuse gets a
+`413` instead of a `202`. That ordering is the point: the scanner
+advances its cursor on the `202`, and the worker has no reply channel, so
+anything accepted here and rejected later is lost silently (see §2m).
+
 ### 2.3 Read path (unified search)
 
 ```text
@@ -280,12 +286,22 @@ boundaries do not change; two new binaries live under `crates/`.
   without reading the TOML (SC-001, SC-005).
 * **Scanner (FR-007..FR-012)** — `klams-scanner` walks `~/src` and
   `~/obsidian` (configurable), honours `.gitignore` + `.klamsignore`,
-  always skips `target/`, `node_modules/`, `.git/`, chunks every file
-  to ≈800 chars with 200-char overlap, and POSTs to
-  `/memory/knowledge/index`. A local SQLite cursor at
+  always skips `target/`, `node_modules/`, `.git/`, and (sprint 021)
+  applies a file-type allowlist so only content worth retrieving —
+  source, docs/prose, config prose — is indexed; lockfiles, JSON
+  fixtures, SVGs, and images are dropped. Chunking is **language-aware**
+  (sprint 022): markdown splits on headings with heading-*path* context
+  (no bare-heading chunks); Rust/Python parse with tree-sitter and split
+  at item boundaries carrying symbol names; everything else splits on
+  blank lines (a `#` comment is never a heading). Chunks carry
+  index/language/heading-path/symbol metadata to the payload, and are
+  POSTed to `/memory/knowledge/index`. A local SQLite cursor at
   `~/.local/state/klams/scanner.sqlite` short-circuits unchanged files
   on `mtime`, then on content hash. Vanished files trigger
-  `/memory/knowledge/delete?source_file=<abs>` (SC-002).
+  `/memory/knowledge/delete?source_file=<abs>` (SC-002); since sprint
+  021 a *changed* file triggers the same delete **before** its new
+  chunks are published, so edits replace rather than accumulate stale
+  points.
 * **Monitor (FR-013..FR-016)** — `klams-monitor` polls `systemctl
   is-active <service>` for a TOML-configured list of units, diffs
   state against the last poll, and POSTs only **edge transitions**
@@ -296,7 +312,12 @@ boundaries do not change; two new binaries live under `crates/`.
   `klams-scanner.timer` fires the scanner hourly via a `Type=oneshot`
   unit; `klams-monitor.service` is `Type=simple` with
   `Restart=on-failure`. All three units use the same hardening profile
-  (`NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`). The
+  (`NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`). Note
+  `ProtectSystem=strict` makes the filesystem read-only for the
+  service: any writable path outside `StateDirectory` needs an
+  explicit `ReadWritePaths=` (the backup dir gained one in sprint 020
+  after the hardened unit silently broke nightly backups for 40
+  days). The
   `install-systemd.sh` helper is idempotent, supports `--dry-run`, and
   rotates the previous binary to `<bin>.prev` so `just rollback`
   works (SC-004).
@@ -444,7 +465,7 @@ See [`viewport.md` §6](../sprints/planning/viewport.md#6-phase-4--context-previ
 
 | Metric | Type | Use |
 |---|---|---|
-| `klams_context_request_latency_seconds` | histogram | `/memory/context` end-to-end |
+| `klams_retrieval_duration_seconds{op, transport}` | summary | search + context latency at every entry point (REST + MCP; sprint 020 replaces the context-only histogram) |
 | `klams_context_section_items_total{section}` | counter | items returned per section |
 | `klams_summarization_runs_total{mechanism}` | counter | `extractive` vs `llm` cycles |
 | `klams_summarization_lag_seconds` | gauge | wall-clock lag of the most recent cycle |
@@ -573,10 +594,20 @@ seeded `SYSTEM_AUTHOR_ID` (`00000000-0000-7000-8000-000000000001`);
 Qdrant points carry `author_id` in payload. Schema reference:
 [sprints/007-mcp-server/data-model.md §1–§4](../sprints/007-mcp-server/data-model.md).
 
-Authors are registered via the `register_author` MCP tool. The
-returned UUID is the caller's identity for every subsequent
-authenticated call; the server bumps `last_seen_at` on each touch
-(FR-005). There is **no delete path** for authors in v1.
+Authors are registered via the `register_author` MCP tool, though
+since sprint 018 a caller rarely needs it: the author bound to the
+bearer token (`agent_name` in `[[auth.tokens]]`) attributes writes
+automatically. The server bumps `last_seen_at` on each touch
+(FR-005).
+
+Sprint 025 (#636) gave the registry the verbs it had been missing —
+it could only ever *create*. `register_author` now dedupes on
+`agent_name` (it minted a fresh UUIDv7 per call, which is how the
+store reached 8 `klams-mind` and 6 `kyac` rows), and the
+`memory_admin_{list,remove,merge}_author*` tools cover inspection,
+block-if-owned removal, and transactional merge. Removal refuses
+while an author owns facts, events, knowledge points, or recorded
+soft-deletes; reassigning is `merge`'s job and is explicit.
 
 ### 2e.2 Public projection (`PublicMemory`)
 
@@ -614,21 +645,40 @@ raw embedding vectors, and the internal `source` trust tier
 
 ### 2e.3 Scope-gated tool surface
 
-Every MCP tool is gated by a `Scope` (`Read | Write | Admin`)
-checked from the bearer token's `TokenGrant`. The legacy single
-`bearer_token` field is materialized at load time into one grant
-with all scopes set; the new `[[auth.tokens]]` array (see
+Every MCP tool is gated by a `Scope` checked from the bearer token's
+`TokenGrant`. Sprint 025 added a fourth tier, `Manage`, for
+cross-author curation. The legacy single `bearer_token` field is
+materialized at load time into one grant with all four scopes; the
+`[[auth.tokens]]` array (see
 [data-model.md §5](../sprints/007-mcp-server/data-model.md#5-configuration-extension-klams-typesauthconfig))
-issues per-purpose tokens (read-only viewport, read+write GHCP,
-admin for `ken-admin`). Insufficient-scope calls return a
+issues per-purpose tokens. Insufficient-scope calls return a
 deterministic `permission_denied` error; scope failures are counted
 by `klams_mcp_scope_denied_total{scope,tool}`.
 
+**Scopes are flat, not hierarchical** — `Scope::satisfies` is exact
+equality, so `Write` does not imply `Read` and `Admin` does not imply
+`Manage`. Every grant lists what it needs. This is deliberate:
+granting a broad-sounding scope can never silently confer a
+capability that was not intended.
+
 | Tool family | Scope |
 |-------------|-------|
-| `register_author`, `memory_search`, `memory_related`, `memory_context` | `Read` |
-| `memory_add`, `memory_event`, `memory_delete` (own writes) | `Write` |
-| `memory_admin_*` (restore, hard_delete, list_deleted) | `Admin` |
+| `memory_search`, `memory_related`, `event_search` | `Read` |
+| `memory_add`, `memory_append_event`, `memory_delete`, `dissent_propose`, `register_author` | `Write` |
+| `memory_admin_*` (restore, hard_delete, list_deleted, list/remove/merge authors) | `Admin` |
+
+`Manage` gates behaviour rather than whole tools: `memory_delete`
+requires it to delete a memory authored by *somebody else*
+(self-management needs only `Write`), and on the REST surface it
+gates dissent promote/discard. `register_author` moved `Read` →
+`Write` in sprint 025 — minting identities was a read-scope operation
+until then.
+
+Sprint 025 also layered `require_scope` onto **every** protected REST
+route. Before that it was installed on exactly one (`/v1/memories`),
+so the `scopes` list in `[[auth.tokens]]` was decorative on that
+surface: any valid bearer could index knowledge, bulk-delete it, and
+resolve dissents. Full model: [auth.md](auth.md).
 
 ### 2e.4 Soft-delete representation
 
@@ -897,6 +947,441 @@ a build choice. No schema changes; no new storage.
   per-embed `expected_dim` check); changing the embedding model is a
   deliberate re-embed event — procedure in
   [sprints/014-serving-pivot/re-embed-runbook.md](../sprints/014-serving-pivot/re-embed-runbook.md).
+
+## 2i. Sprint 015 deltas — companion enablement
+
+Sprint 015 ([sprints/015-companion-enablement/](../sprints/015-companion-enablement/sprint.md))
+onboards `klams-mind` (the Python/LangChain companion at
+`~/src/ai/klams-mind`) as a first-class, attributable agent.
+
+* **`dissent_propose` MCP tool** (`Write` scope) — file a dissent
+  directly against a live canonical fact: proposed correction +
+  required `reason`, optional `contradicting_memory_id`. This is the
+  external path for *semantic* contradiction detection; the write-path
+  trigger (§2.1) still handles same-fact trust conflicts. Proposals
+  land as `Source::AgentProposal`, reuse the pending
+  `(fact_id, payload_hash)` dedupe, and resolve only through the
+  viewport `/dissents` promote/discard flow. Migration
+  `0009_dissent_proposals.sql` adds nullable `reason` /
+  `contradicting_memory_id` / `author_id` provenance columns;
+  write-path dissents leave them NULL.
+* **Viewport detail routes** (kwi #31) — `/facts/{id}`, `/events/{id}`,
+  `/knowledge/{id}` pages now exist (the `hrefFor()` links from the
+  Activity/Authors views previously 404'd); a vitest route-existence
+  guard prevents future dangling links. Fact details link to their
+  pending dissents.
+* **Token grant** — the example config gains a commented
+  `klams-mind` read+write `[[auth.tokens]]` block with
+  `agent_name = "klams-mind"`.
+* **Surface split (binding)** — the agent surface is MCP-only
+  (`PublicMemory` projection); REST is the controller/operator surface.
+  klams-mind uses REST only for `GET /v1/memories` bulk reads and
+  `/healthz`.
+
+## 2j. Sprint 016 deltas — retrieval diagnostics
+
+Sprint 016 ([sprints/016-retrieval-diagnostics/](../sprints/016-retrieval-diagnostics/sprint.md))
+makes `memory_search` results diagnosable for klams-mind's retrieval
+eval harness. No storage or schema change.
+
+* **`memory_search` now returns `klams_types::ScoredMemory` envelopes**
+  (`{ score, source_rank, memory }`) instead of bare `PublicMemory`.
+  The tool previously computed a per-hit relevance score and discarded
+  it; now it surfaces `score` and `source_rank` (the hit's 0-based rank
+  within its own source's result list, before cross-source fusion — the
+  global rank is the array index). The wrapped `memory` is unchanged;
+  its `kind` doubles as the source discriminator, so there is no
+  separate `source_kind`. Distinct from the REST `/memory/search`
+  `SearchHit` (a flattened preview/payload shape), which is untouched.
+* **Known limitation — cross-kind score scale.** The merged sort mixes
+  Qdrant cosine similarity (knowledge, ~0..1) with Postgres `ts_rank`
+  (facts/events, unbounded, typically ≪1), biasing the order toward
+  knowledge. Sprint 016 *exposes* this via `score` + `memory.kind`
+  rather than correcting it (roadmap item-2 / YAGNI — no failing eval
+  metric demands a fusion fix yet). Compare scores only within a kind.
+* **Consumer**: klams-mind's client + eval runner update in lockstep;
+  the contract change is recorded in that repo at
+  `sprints/planning/001-cross-project-note.md`.
+
+## 2k. Sprint 026 deltas — query-time dedupe + projection additions
+
+Sprint 026 ([sprints/026-retrieval-measurement/](../sprints/026-retrieval-measurement/sprint.md),
+WI #641) collapses duplicate content at query time and widens the
+knowledge projection. No storage or schema change, no migration.
+
+* **Why**: sprint 023 deliberately made *ingest* dedupe host-scoped
+  (`find_knowledge_by_content_hash(hash, file, machine)`) so that
+  per-host delete works. `kai` and `kubs0` scan a synced `~/src`, so
+  nearly every chunk is stored twice. Measured on the live corpus:
+  221,982 points, 124,034 unique `content_hash`, 36,121 hashes on both
+  hosts — and a 10-result page was reliably 5 duplicate pairs.
+* **Query-time collapse** (`klams_core::dedupe::collapse_duplicates`)
+  groups knowledge hits by `content_hash` and keeps the best-ranked
+  copy. It runs **before** rank fusion, so freed ranks compact and the
+  released slots fill with new content instead of leaving holes. The
+  fetch over-fetches (MCP ×2, the hybrid adapter's existing ×3) so a
+  page stays full after collapse.
+  - Keys on **content only** — host/file/repo never keep two copies
+    apart. Duplicate storage was never the problem; duplicate top-k
+    slots were.
+  - The survivor carries `copies: [{id, host, file}]` for every
+    duplicate it absorbed, so nothing becomes unreachable.
+  - **Top-k scope**: a copy outside the fetch window is not hunted down.
+  - Applied on all three read paths: MCP `memory_search`, REST
+    `/memory/search`, and `/memory/context` (the latter two share the
+    `StoreHybridAdapter` seam). Facts and events carry no
+    `content_hash` and are never collapsed. Distinct from the
+    `ContextBuilder`'s cross-section dedupe (repo+file), which is
+    unchanged.
+* **Projection additions** on knowledge results:
+  `content_hash` (the collapse key, and the eval's no-duplicates
+  assertion), `heading_path` / `language` / `chunk_index`, and
+  `author.id` (ownership reasoning for delete/supersede without a
+  `register_author` round-trip).
+* **`KnowledgeItem` gained `heading_path` / `language` / `chunk_index`.**
+  Sprint 022 wrote these to the Qdrant payload but `payload_to_item`
+  never read them back, so no read path could project them. The
+  knowledge→public mapping now lives in one place
+  (`PublicMemoryContent::knowledge_from`), as does the author mapping
+  (`PublicAuthorRef::from_record`); both were previously hand-rolled at
+  four call sites, which is how the fields came to be dropped.
+* **Incidental fix**: `matches_filters` reads `host` from the retrieval
+  payload, but the vector payload never carried a `host` key — so a
+  host-filtered knowledge query silently dropped every row. The payload
+  now carries it.
+
+## 2l. Sprint 026 deltas — retrieval measurement (#643)
+
+The other half of sprint 026: make retrieval quality *measurable*, so the
+ranking work in sprint 029 is a measured change rather than a guess.
+
+* **The miss log was a dead instrument.** `LOW_SCORE_THRESHOLD` was 0.5,
+  but bge-small cosine on this corpus sits ~0.75–0.96 **even for junk** (a
+  content-free fragment measured 0.956) — the threshold sat below the
+  floor of the distribution, so `low_score` could never fire. Two weeks of
+  production recorded **one** miss, and that one was a `zero_hit` from an
+  emptied filter. Recalibrated to **0.80**, inside the observed
+  weak/strong boundary (~0.78–0.82, from #628's paired queries). This is a
+  *calibrated* constant, honest only against the current embedding model —
+  the #655 GPU model swap (sprint 028) changes the distribution wholesale
+  and must re-derive it.
+* **New: the search-sample log** (`search_sample`, migration 0011).
+  Records **every** search — query, caller, top **raw** (pre-fusion) score,
+  that hit's kind, hit count, kinds queried, and how many duplicates the
+  #641 collapse removed. klams previously had no record of what agents ask
+  it, which is why every eval query to date was invented rather than
+  observed, and why the threshold above could only be calibrated from a
+  handful of data points. Written fire-and-forget, exactly like
+  `search_miss`; retention is an operator prune concern.
+  - `top_raw_score` is deliberately the pre-fusion score: post-024 `score`
+    is pure RRF and carries no magnitude, so a distribution over fused
+    scores would say nothing about match quality.
+* **Caller attribution fixed.** `record_search` was hardcoded to
+  `"anonymous"` since sprint 020, so the per-agent search counter had
+  exactly one label value — while the caller's agent name sat unused in
+  the argument list. The miss log, the sample log, and the metric now
+  share one `caller_label` helper so they cannot disagree.
+* **`source_rank` is re-numbered after duplicate collapse.** Collapse
+  removes entries, so survivors kept holed pre-collapse ranks (a caller
+  asking for 20 could see ranks 0 and 25) — leaking the over-fetch
+  multiplier as a gap. Ranks are now contiguous over the list the caller
+  actually receives, restoring the sprint-017 invariant.
+* **The eval suite is the gate** (`just eval`). The suite and runner live
+  in klams-mind (`evals/suites/homelab-retrieval.toml`); the recipe lives
+  here because klams is what regresses. It grew from 4 queries to 21, with
+  three new check types — `no_duplicates` (#641's invariant),
+  `min_body_chars` (the junk ceiling, breadcrumb stripped), and
+  `memory_id` with `max_rank` (curated-beats-bulk; presence alone would
+  have passed while #628 was live). Queries carry `expect`: `pass` is the
+  regression bar, `known_open` is a tracked failure that does not fail the
+  run. Without that distinction a measurement suite can only contain
+  queries that already pass — which is exactly how the old four scored
+  4/4 while every real failure was happening.
+
+## 2m. Sprint 027 deltas — ingest correctness (#420 / #629 / #656)
+
+### 2m.1 One ceiling, three enforcement points
+
+`klams_types::EmbedLimit` is the single definition of "will the embedder
+accept this text". It lives in `klams-types` because that is the only
+crate the scanner, the API, and MCP all share — the same reason
+`normalize_chunk_text` lives there.
+
+```text
+              [embeddings] max_input_tokens = 512
+                            │
+        ┌───────────────────┼───────────────────┐
+        ▼                   ▼                   ▼
+  scanner chunker     REST /index         MCP memory_add
+  (char estimate:     (exact count        (exact count;
+   cannot reach        before the 202,      this path had
+   TEI; a 413 is       so the cursor        NO cap at all
+   a counted skip,     never advances       before 027)
+   never a stall)      past a lost chunk)
+        └───────────────────┼───────────────────┘
+                            ▼
+                    TeiEmbedder preflight
+                 (provable bound only — a
+                  rejection here is final)
+```
+
+The REST and MCP gates ask the **model's own tokenizer** —
+`Store::check_embed_size` → `Embedder::count_tokens` → TEI's
+`POST /tokenize`, which runs no forward pass and so costs far less than
+the failed embed it replaces.
+
+That is not what this sprint set out to build. The plan called for a
+conservative chars-per-token bound; measuring the live model showed no
+such bound can work. Real content spans **1.03 chars/token**
+(punctuation-dense) to **>39** (base64) — a 32× spread — so a divisor
+safe for the former splits ordinary prose chunks in half, while one that
+leaves prose alone under-counts the former threefold. The character
+estimate (`klams_types::EmbedLimit`) therefore survives only where the
+tokenizer is unreachable: the scanner, which talks solely to the klams
+API. Its documentation carries the measurement table and states that it
+is an approximation.
+
+`tiktoken` is deliberately unused despite already being a workspace
+dependency: `cl100k_base` is OpenAI's BPE vocabulary while bge-family
+models use WordPiece, so it would be confidently wrong rather than
+honestly approximate.
+
+One subtlety worth preserving: the embedder's own preflight uses
+`EmbedLimit::certainly_exceeds`, a *provable* bound (WordPiece never
+merges across whitespace, so *n* words ⇒ ≥ *n* tokens) rather than the
+estimate. A rejection there is final, and refusing on an estimate would
+discard token-efficient content the model accepts — a new source of lost
+writes in the sprint meant to end them.
+
+### 2m.2 The silent-loss triangle, closed
+
+Three independent gaps combined into invisible data loss (review F-3.2):
+
+1. REST accepted ≤8192 characters, ~4× the model's real capacity.
+2. The worker embeds with **no reply channel** for knowledge; on failure
+   it logged and dropped the job without incrementing `writes_failed`,
+   because that counter was only ever touched by HTTP handlers.
+3. The scanner had already advanced its cursor on the `202`, so nothing
+   ever retried.
+
+All three are now closed: the size gate makes (1) impossible, the worker
+increments `writes_failed{type,reason}` and logs the loss explicitly at
+(2), and rejecting before the `202` means (3) cannot arise.
+
+`/healthz` is deliberately unchanged. TEI's `/health` returns 200
+whenever the model is loaded — input rejections never touch it — so
+health was never going to catch this. The dropped-write counter is the
+right instrument, not a health check.
+
+### 2m.3 The transient/permanent axis
+
+`StoreError` gained a classification (`Transience`) because the
+information needed to answer "should the caller retry?" was being
+destroyed at the HTTP boundary and could not be recovered downstream.
+The embedder retry loops retried *every* non-2xx three times and
+discarded the response body — including TEI's `inputs must have less
+than 512 tokens`, the one actionable string it sends.
+
+Now: 4xx fails immediately with the body captured, 5xx/connect/timeout
+retry, and Postgres failures are classified by SQLSTATE
+(`08`/`40`/`53`/`57` → transient) via `StoreError::from_sqlx`. The MCP
+layer maps all of it through one function, `errors::from_store_error`,
+which enforces the invariant that makes the contract usable:
+`retry_after_seconds` is present **iff** the error is transient.
+
+### 2m.4 The oversize-write log
+
+`oversize_write` (migration 0012) records refused knowledge writes
+*including the full submitted text*. It mirrors the `search_miss`
+pattern — fire-and-forget, never affecting what the caller sees — with
+one deliberate difference: it is **pruned on a daily timer** rather than
+left to the operator, because it retains whole documents.
+
+Its purpose is evidential. Sprint 028 raises the ceiling to 8k+ tokens,
+which should make oversize rejections rare; this table is what decides
+whether #632's server-side chunking is ever worth building, rather than
+building it on the assumption that it is.
+
+## 2n. Sprint 028 deltas — corpus quality (#639 / #640 / #642 / #655 / #657)
+
+* **Fence-aware markdown chunker (#639).** `markdown_blocks` tracks
+  fenced-code state (backtick and tilde fences, info strings, CommonMark
+  length/indent rules), so a `# comment` inside a fence is body text,
+  never an ATX heading. Pre-028, such comments closed the open section —
+  emitting content-free `"<breadcrumb>\n\n```bash"` chunks that scored
+  up to 0.956 raw cosine on heading-echo queries — and corrupted the
+  breadcrumb stack for the rest of the file. A markdown-only body floor
+  (`MIN_BODY_CHARS = 40`, breadcrumb excluded) additionally drops tiny
+  sections ("MIT.") whose breadcrumb outweighs their content.
+* **Real repo names (#640).** The scanner derives `repo` per file — the
+  deepest ancestor with a `.git` entry (directory or worktree file),
+  else the first path segment under the scan root — instead of stamping
+  every point with the root's basename (218k of 222k live points said
+  `repo="src"`). The `RetrievalFilters.repo` filter is meaningful for
+  scanner content from the 028 re-scan onward.
+* **Content-only storage dedupe with copy bookkeeping (#642).** ONE
+  Qdrant point per `content_hash` (Ken's #641 ruling extended to
+  storage). The (host, file) identity that sprints 022/023 encoded as
+  point identity became payload bookkeeping: `copies[]`
+  ({machine, file, repo} structs, authoritative), with derived
+  keyword-indexed `machines[]` / `files[]` lists, and the singular
+  `machine`/`file`/`repo` retained as the *canonical* copy (re-promoted
+  when the canonical copy is deleted). Dedupe hits attach the new
+  location; `delete_knowledge_by_source_file` removes one copy and
+  deletes the point only when the last copy goes. Pre-028 points carry
+  no `copies` list — their singular fields synthesize as their only
+  copy, so they behave exactly as before. Bookkeeping is serialized by a
+  process-wide mutex (Qdrant has no transactions; a lost update here
+  could delete a point a host still relies on). The content-hash probe
+  now also excludes soft-deleted points — a scanner chunk deduping onto
+  a deleted memory made live content unsearchable.
+* **GPU embedder (#655).** TEI moved from the CPU image to the CUDA
+  image on kubs0's RTX 4080 SUPER (16 GB, CDI passthrough — see
+  `deploy/docker-compose.gpu.yml`), with an eval-selected long-context
+  model replacing `bge-small-en-v1.5` (384-dim, 512 tokens). The
+  `[embeddings] query_prefix` key supports asymmetric retrieval models
+  (prefix on queries, never on documents). TEI ≥1.8 note: the
+  `--auto-truncate` default flipped to `true`; klams passes an explicit
+  `false` — a silently truncated chunk looks complete but is unfindable
+  by its tail (standing decision).
+* **Obsidian out of the corpus (#657).** The vault root was removed from
+  kubs0's scanner config, its cursor rows cleared, and its points fell
+  with the corpus reset. Rationale and revisit criteria in
+  `docs/setup.md`.
+
+## 2o. Sprint 029 deltas — ranking & lifecycle (#644 / #638 / #628)
+
+### 2o.1 Weighted, deterministic RRF (#644)
+
+Fusion is still RRF (`klams_core::hybrid::fuse`), with two changes:
+
+* **Per-hit weights.** `RankedRow.weight` scales a hit's contribution
+  — `w/(k+rank+1)` instead of `1/(k+rank+1)`; `1.0` is neutral. The
+  weight composes the **provenance tier**
+  (`klams_core::provenance::ProvenanceTier`) with **declared-volatility
+  age demotion**. Three tiers, derived at query time from fields the
+  store already records (`source` + author `agent_name` — deliberately
+  NOT `Source::trust_rank`, which orders scanner above agents):
+  hand-authored (`memory_add` writes; w = 2.0) > machine-extracted
+  (klams-mind session extracts; w = 1.5) > bulk scanner (w = 1.0).
+  Weights scale contribution, never reorder within a source list; a
+  bulk hit that genuinely dominates can still win.
+* **Deterministic ties.** `finalize` breaks equal fused scores by
+  source discriminant then id. Pre-029, equal scores (fact@0 vs
+  knowledge@0 are bit-identical) kept `HashMap` iteration order —
+  identical calls could return different pages.
+
+Volatility (`F-1.4`): an optional write-time declaration
+(`stable`/`volatile`) on `memory_add`/`memory_update`/`memory_supersede`.
+Volatile memories keep full weight for a week, then halve every 30
+days, floored at 0.25 (demoted, never disappeared). Stable and
+undeclared memories never decay — scanner `created_at` is scan time,
+and silently burying stable truths is the worst failure mode. No
+blanket knowledge decay.
+
+### 2o.2 The curated stratum — a 4th fusion source (#644 / #628)
+
+Agent-authored knowledge is ~100 points in a ~180k corpus, so a
+badly-phrased query can miss the curated target in ANY global top-k
+(#628's Query A failure mode). MCP `memory_search` therefore runs a
+second, filtered ANN search (`search_knowledge_curated`:
+`source = AgentProposal` AND no `machine`, live points only —
+index-backed, the stratum is tiny) with the same query vector, and
+feeds the stratum's own rank list into fusion as a 4th RRF source. A
+curated memory deep in the global list gets its stratum rank counted;
+one absent from the global list joins the page. Two guards, both
+measured against the live corpus (2026-07-26):
+
+* **The `machine` gate.** "Curated" is `AgentProposal` *and no
+  machine* (review F-2.4's full definition): the corpus holds
+  file-derived AgentProposal points — scanned Claude session
+  transcripts with `machine` set — that flooded the stratum until the
+  gate landed. A true `memory_add` write never carries a machine.
+* **The query-relative boost threshold**
+  (`provenance::boost_threshold`): stratum membership *and* the tier
+  weight require a raw cosine within `CURATED_COMPETITIVE_FRAC = 0.82`
+  of the query's best raw score (global and curated pooled), floored
+  at `CURATED_STRATUM_RAW_FLOOR = 0.45` (the Qwen3 junk line). A
+  boosted curated hit at any stratum rank outscores every unboosted
+  rank-0 hit, so eligibility — not fusion arithmetic — is where
+  relevance has to hold the line. Without it, topically-adjacent agent
+  memories (raw 0.60) displaced a genuine bulk answer (raw 0.75).
+
+The REST `/memory/search` and `/memory/context` paths share the
+per-hit weighting via `StoreHybridAdapter` (author-blind two-tier
+approximation, same relative gate) but not the stratum — the
+eval-measured, agent-facing path is MCP `memory_search`.
+
+### 2o.3 Knowledge lifecycle verbs (#638)
+
+Agent-written knowledge — the only class that had *no* lifecycle story
+— gets the smallest sufficient verb set (facts amend, events append,
+scanner chunks re-scan; all unchanged):
+
+* **`memory_supersede(id, text, tags?, volatility?)`** — the primary
+  correction verb: writes the replacement (carrying `supersedes`),
+  then stamps the old point with the soft-delete pair plus
+  `superseded_by`. Every existing retrieval filter hides it; the admin
+  surface (`memory_admin_list_deleted`) shows the pointer and
+  `memory_admin_restore` undoes the hiding. Ordered new-first; a
+  mid-flight failure rolls the replacement back (best-effort) and the
+  error says exactly what state the store is in.
+* **`memory_update(id, text?, tags?, volatility?)`** — in-place edit,
+  id stable; text changes re-embed and re-hash. Authorship never
+  changes.
+* **Similar-on-write** — `memory_add` (knowledge) reuses its embedding
+  for a curated-stratum probe and returns `similar_existing`
+  (id, text head, author, raw cosine ≥ 0.85) so the writer supersedes
+  instead of duplicating, at the only moment that check is cheap.
+  Non-blocking and best-effort.
+
+Authorization rides sprint 025's model: both verbs sit at `Write`
+scope, with the shared ownership gate (`authorize_curation` — own it,
+or hold `manage`) that `memory_delete` uses; supersession *is* a
+delete plus a write, so it is deliberately one authorization decision.
+Both verbs refuse non-agent-authored targets with
+`NOT_AGENT_AUTHORED`. Background contradiction detection/consolidation
+stays klams-mind's job (WI-259 division of labor) — klams ships the
+primitives.
+
+## 2p. Sprint 030 deltas — second-stage reranker (#685)
+
+`memory_search` gained an optional cross-encoder stage between
+candidate assembly and rank fusion:
+
+* **Model & serving.** A second TEI container (`reranker` compose
+  service, port 7071, same GPU via CDI) serves
+  `BAAI/bge-reranker-v2-m3` over `POST /rerank`. The WI's candidate,
+  Qwen3-Reranker-0.6B, cannot be served: TEI has no merged Qwen3
+  classifier support (upstream PRs #886/#730/#835 open as of
+  2026-07-26; verified live — the seq-cls conversion is refused with
+  `` `classifier` model type is not supported for Qwen3 ``). Swap the
+  model id in `compose.env` when a TEI release merges it.
+* **Placement.** The stage scores the *knowledge candidates* (global
+  ANN + curated stratum, post dedupe/tag-filter, up to
+  `[retrieval] rerank_window` = 50) and reorders the knowledge
+  within-source rank list plus `curated_order` — the inputs to 029's
+  weighted RRF. Provenance weights therefore apply to the RERANKED
+  order: the cross-encoder fixes semantic order within a tier; the
+  weights still arbitrate across tiers. Facts/events are not
+  submitted (JSON payloads, not prose). `raw_score` stays the cosine.
+* **Contract.** Best-effort: one attempt, 5 s timeout, no retries; on
+  any failure the un-reranked order is served, a warning logged, and
+  `klams_rerank_skipped_total` incremented. Config-gated:
+  `[retrieval] reranker_url` absent = stage off (the rollback switch).
+  Stage latency rides the existing retrieval histogram as
+  `op="rerank"` — measured live: ~34 ms median, ~43 ms p99 per search.
+* **Why.** The 029 leftovers were two curated-vs-curated rank-1
+  inversions — same tier, same author, invisible to per-hit
+  provenance weights. The cross-encoder closes exactly that class:
+  eval went 19/21 → **21/21 (100%), 0 regressions** with the stage on
+  (bake-off on the live corpus, 2026-07-26). The reranker container
+  runs `--auto-truncate` ON — the opposite of the embedder,
+  deliberately: a truncated *scoring* signal degrades gracefully,
+  nothing is stored.
+* **Deferred.** Trained LTR / fine-tuned reranker stays gated behind
+  ~1–2k labeled pairs (search_sample + LLM-judge bootstrap) — see
+  korg #685.
 
 ## 3. Deployment topology on `kubs0`
 

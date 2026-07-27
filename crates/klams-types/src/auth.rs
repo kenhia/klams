@@ -14,6 +14,14 @@ use serde::{Deserialize, Serialize};
 pub enum Scope {
     Read,
     Write,
+    /// Sprint 025 (#633) — cross-author curation: manage a memory whose
+    /// author is somebody else. Self-management (deleting a memory you
+    /// wrote) needs only [`Scope::Write`]; this tier is what a trusted
+    /// agent needs to retract *another* author's stale record so the
+    /// next session isn't misled by it. Deliberately **not** implied by
+    /// [`Scope::Admin`], which keeps its own exclusivity over
+    /// hard-delete / restore / list-deleted.
+    Manage,
     Admin,
 }
 
@@ -21,10 +29,31 @@ impl Scope {
     /// Returns true if a token holding `self` satisfies a route that
     /// requires `needed`. Scopes are independent (not hierarchical) — a
     /// "write" token does not automatically grant "read" unless the
-    /// configured grant explicitly lists both.
+    /// configured grant explicitly lists both. This holds for
+    /// [`Scope::Manage`] too: it is a peer of the other three, so a
+    /// grant that should curate cross-author must list `manage`
+    /// alongside `read`/`write`.
     #[must_use]
     pub fn satisfies(self, needed: Scope) -> bool {
         self == needed
+    }
+
+    /// The scope's wire/TOML spelling — the same lowercase token used in
+    /// `scopes = [...]` and in `scope_insufficient` error messages.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+            Self::Manage => "manage",
+            Self::Admin => "admin",
+        }
+    }
+}
+
+impl std::fmt::Display for Scope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -129,6 +158,29 @@ impl TokenGrantConfig {
     }
 }
 
+/// Scope set of the caller, resolved from the presented bearer token.
+///
+/// Stamped onto request extensions by the REST auth middleware and read
+/// back by both surfaces — REST route guards directly, MCP tools via the
+/// `http::request::Parts` that rmcp copies into the tool context.
+///
+/// Sprint 031 (#645): this and [`AuthenticatedAuthor`] used to live in
+/// `klams-api`, which made `klams-mcp` depend on the REST crate for two
+/// plain data types and nothing else — an inverted dependency that also
+/// meant the MCP server could not be built or tested without the REST
+/// layer. They are pure data, so they belong at the bottom with
+/// [`Scope`].
+#[derive(Clone, Debug)]
+pub struct AuthenticatedScopes(pub std::sync::Arc<Vec<Scope>>);
+
+/// Author bound to the request's bearer token (sprint 009). Write paths
+/// stamp `author_id` from this when the caller omits one.
+#[derive(Clone, Debug)]
+pub struct AuthenticatedAuthor {
+    pub author_id: uuid::Uuid,
+    pub agent_name: std::sync::Arc<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,6 +190,32 @@ mod tests {
         assert!(Scope::Read.satisfies(Scope::Read));
         assert!(!Scope::Write.satisfies(Scope::Read));
         assert!(!Scope::Admin.satisfies(Scope::Write));
+    }
+
+    /// Sprint 025 (#633) — `manage` is a peer of the other three, not a
+    /// super-scope. Granting `admin` must NOT confer cross-author
+    /// curation, and holding `manage` must not confer hard-delete.
+    #[test]
+    fn manage_scope_is_flat_like_the_others() {
+        assert!(Scope::Manage.satisfies(Scope::Manage));
+        assert!(!Scope::Admin.satisfies(Scope::Manage));
+        assert!(!Scope::Manage.satisfies(Scope::Admin));
+        assert!(!Scope::Write.satisfies(Scope::Manage));
+        assert!(!Scope::Manage.satisfies(Scope::Write));
+    }
+
+    #[test]
+    fn manage_scope_round_trips_through_toml_lowercase() {
+        let grant: TokenGrantConfig = toml::from_str(
+            r#"
+            token  = "abcdefghijklmnop"
+            scopes = ["read", "write", "manage"]
+            label  = "claude"
+            "#,
+        )
+        .expect("manage must parse as a scope in [[auth.tokens]]");
+        assert_eq!(grant.scopes, vec![Scope::Read, Scope::Write, Scope::Manage]);
+        grant.validate().unwrap();
     }
 
     #[test]

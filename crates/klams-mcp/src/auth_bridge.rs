@@ -1,9 +1,9 @@
 //! Auth bridge for the MCP server (sprint 007 T018).
 //!
-//! Reuses the same `Arc<Vec<TokenGrant>>` that backs the REST surface
+//! Bridges the bearer-auth middleware that backs the REST surface
 //! in `klams-api::auth`. The MCP server is mounted under the same axum
 //! router stack, so by the time a request reaches a tool handler the
-//! [`klams_api::auth::AuthenticatedScopes`] extension is already set by
+//! [`klams_types::AuthenticatedScopes`] extension is already set by
 //! the shared `require_bearer` middleware.
 //!
 //! [`scopes_from`] is the helper tools use to pull the scope set out of
@@ -11,8 +11,7 @@
 //! given tool.
 
 use axum::extract::Request;
-use klams_api::auth::AuthenticatedScopes;
-use klams_types::Scope;
+use klams_types::{AuthenticatedScopes, Scope};
 use std::sync::Arc;
 
 /// Extract the caller's [`Scope`] set from the request extensions, or

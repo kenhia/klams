@@ -229,6 +229,46 @@ pub struct EmbeddingsConfig {
     /// require one (e.g. vLLM started with `--api-key`).
     #[serde(default)]
     pub api_key: Option<String>,
+    /// The model's maximum input length in tokens (sprint 027, #420).
+    ///
+    /// This is the number every ingest path gates against, so a text
+    /// that would be refused by the embedder is refused at the boundary
+    /// with an honest error instead of being accepted and dropped later.
+    /// Defaults to bge-small-en-v1.5's 512; sprint 028's longer-context
+    /// model raises it here rather than in code.
+    #[serde(default = "default_max_input_tokens")]
+    pub max_input_tokens: usize,
+    /// How long to keep oversize-write log rows (sprint 027, #656).
+    ///
+    /// That log stores the full rejected payload, so it is capped rather
+    /// than left to the operator the way `search_miss` is. 90 days is
+    /// long enough to answer "how often, by whom, how much" across a
+    /// couple of sprints.
+    #[serde(default = "default_oversize_log_retention_days")]
+    pub oversize_log_retention_days: i32,
+    /// Prefix prepended to *query* text before embedding — never to
+    /// stored documents (sprint 028 #655). Modern retrieval models are
+    /// asymmetric: snowflake-arctic-embed wants `"query: "`, the
+    /// Qwen3-Embedding family an instruct line. Leave empty for
+    /// symmetric models (bge-m3, bge-small).
+    #[serde(default)]
+    pub query_prefix: String,
+}
+
+fn default_max_input_tokens() -> usize {
+    klams_types::DEFAULT_MAX_INPUT_TOKENS
+}
+
+fn default_oversize_log_retention_days() -> i32 {
+    90
+}
+
+impl EmbeddingsConfig {
+    /// The shared size gate implied by this configuration.
+    #[must_use]
+    pub fn limit(&self) -> klams_types::EmbedLimit {
+        klams_types::EmbedLimit::new(self.max_input_tokens)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -262,6 +302,15 @@ pub struct RetrievalConfig {
     pub per_source_top_k: u32,
     #[serde(default)]
     pub weights: Option<RetrievalWeights>,
+    /// Second-stage cross-encoder (sprint 030, #685): base URL of the
+    /// `reranker` compose service (e.g. `http://127.0.0.1:7071`).
+    /// Absent = the stage is off — that is the rollback switch.
+    #[serde(default)]
+    pub reranker_url: Option<String>,
+    /// Max candidates submitted per rerank call. Must not exceed the
+    /// reranker's `--max-client-batch-size` (compose serves 64).
+    #[serde(default = "default_rerank_window")]
+    pub rerank_window: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -284,6 +333,9 @@ fn default_per_source_top_k() -> u32 {
 fn default_weighted_norm() -> String {
     "zscore".into()
 }
+fn default_rerank_window() -> u32 {
+    50
+}
 
 impl Default for RetrievalConfig {
     fn default() -> Self {
@@ -292,6 +344,31 @@ impl Default for RetrievalConfig {
             rrf_k: default_rrf_k(),
             per_source_top_k: default_per_source_top_k(),
             weights: None,
+            reranker_url: None,
+            rerank_window: default_rerank_window(),
+        }
+    }
+}
+
+impl RetrievalConfig {
+    /// Map the `[retrieval]` block to a [`klams_types::FusionStrategy`]
+    /// (sprint 024 #330 — the config was parsed but never applied). Used
+    /// for both the `/memory/context` builder and the MCP `memory_search`
+    /// path. Unknown `fusion` strings, or `weighted` without `weights`,
+    /// fall back to RRF so a typo can never silently disable ranking.
+    #[must_use]
+    pub fn fusion_strategy(&self) -> klams_types::FusionStrategy {
+        use klams_types::{FusionStrategy, WeightedNorm};
+        match (self.fusion.as_str(), &self.weights) {
+            ("weighted", Some(w)) => FusionStrategy::Weighted {
+                vector: w.vector,
+                fts: w.fts,
+                normalization: match w.normalization.as_str() {
+                    "minmax" => WeightedNorm::MinMax,
+                    _ => WeightedNorm::ZScore,
+                },
+            },
+            _ => FusionStrategy::Rrf { k: self.rrf_k },
         }
     }
 }
@@ -421,6 +498,47 @@ impl Config {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn fusion_strategy_maps_config_and_falls_back_to_rrf() {
+        use klams_types::{FusionStrategy, WeightedNorm};
+        // Default → RRF at the configured k.
+        let base = RetrievalConfig {
+            rrf_k: 42,
+            ..Default::default()
+        };
+        assert_eq!(base.fusion_strategy(), FusionStrategy::Rrf { k: 42 });
+        // weighted + weights → Weighted with parsed norm.
+        let weighted = RetrievalConfig {
+            fusion: "weighted".into(),
+            weights: Some(RetrievalWeights {
+                vector: 0.7,
+                fts: 0.3,
+                normalization: "minmax".into(),
+            }),
+            ..base.clone()
+        };
+        assert_eq!(
+            weighted.fusion_strategy(),
+            FusionStrategy::Weighted {
+                vector: 0.7,
+                fts: 0.3,
+                normalization: WeightedNorm::MinMax
+            }
+        );
+        // weighted-without-weights, or an unknown string → RRF fallback
+        // (a typo can never silently disable ranking).
+        let no_weights = RetrievalConfig {
+            fusion: "weighted".into(),
+            ..base.clone()
+        };
+        assert_eq!(no_weights.fusion_strategy(), FusionStrategy::Rrf { k: 42 });
+        let bogus = RetrievalConfig {
+            fusion: "bogus".into(),
+            ..base
+        };
+        assert_eq!(bogus.fusion_strategy(), FusionStrategy::Rrf { k: 42 });
+    }
 
     fn example_path() -> PathBuf {
         let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

@@ -53,19 +53,18 @@ pub async fn list<S: Store>(
     let since = parse_rfc3339(params.since.as_deref(), "since")?
         .unwrap_or_else(|| until - Duration::hours(24));
 
-    if since > until {
-        return Err(ApiError::InvalidWindow {
-            message: format!(
-                "window is inverted: since ({}) is after until ({})",
-                since.to_rfc3339(),
-                until.to_rfc3339()
-            ),
-        });
-    }
-
+    // Sprint 031 (#645): shared with the `event_search` MCP tool — see
+    // `klams_types::validate_window`.
     let max_days = state.api.memories_max_window_days;
-    if (until - since) > Duration::days(i64::from(max_days)) {
-        return Err(ApiError::WindowTooLarge { max_days });
+    if let Err(e) = klams_types::validate_window(since, until, max_days) {
+        return Err(match e {
+            klams_types::WindowError::Inverted { .. } => ApiError::InvalidWindow {
+                message: e.message(),
+            },
+            klams_types::WindowError::TooLarge { max_days } => {
+                ApiError::WindowTooLarge { max_days }
+            }
+        });
     }
 
     let kinds = parse_kinds(params.kinds.as_deref())?;

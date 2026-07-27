@@ -54,6 +54,10 @@ async fn scenario_1_mixed_results_with_all_types() {
             repo: None,
             file: None,
             machine: None,
+            chunk_index: None,
+            language: None,
+            heading_path: None,
+            symbols: vec![],
         })
         .await
         .expect("knowledge");
@@ -126,6 +130,10 @@ async fn scenario_2_types_filter_excludes_other_kinds() {
             repo: None,
             file: None,
             machine: None,
+            chunk_index: None,
+            language: None,
+            heading_path: None,
+            symbols: vec![],
         })
         .await
         .expect("knowledge");

@@ -15,9 +15,19 @@ use axum_prometheus::PrometheusMetricLayer;
 use klams_core::context::ContextBuilder;
 use klams_core::{MemoryQueue, ValidatorRegistry};
 use klams_store::Store;
-use klams_types::MaintenanceState;
+use klams_types::{MaintenanceState, Scope};
 use std::sync::Arc;
 use tower_http::trace::TraceLayer;
+
+/// Sprint 025 (#637) — shorthand for the per-route scope gate. Must be
+/// layered *inside* `require_bearer`, which stamps the caller's scope
+/// set onto the request extensions. A macro rather than a function so
+/// axum can infer `FromFnLayer`'s extractor marker at each call site.
+macro_rules! scope {
+    ($needed:expr) => {
+        middleware::from_fn(crate::auth::require_scope($needed))
+    };
+}
 
 /// Shared application state injected into every handler.
 pub struct ApiState<S: Store> {
@@ -35,6 +45,12 @@ pub struct ApiState<S: Store> {
     /// Sprint 006: backup-window flag. Default-constructed in test
     /// fixtures; populated by the backup orchestrator in production.
     pub maintenance: MaintenanceState,
+    /// Sprint 027 (#420): the embedder's input ceiling, so knowledge
+    /// ingest refuses over-budget text at the boundary instead of
+    /// accepting it and losing it at the worker. Defaults to the
+    /// deployed model's 512 tokens; production sets it from
+    /// `[embeddings] max_input_tokens`.
+    pub embed_limit: klams_types::EmbedLimit,
 }
 
 impl<S: Store> Clone for ApiState<S> {
@@ -49,6 +65,7 @@ impl<S: Store> Clone for ApiState<S> {
             validators: Arc::clone(&self.validators),
             context_builder: Arc::clone(&self.context_builder),
             maintenance: self.maintenance.clone(),
+            embed_limit: self.embed_limit,
         }
     }
 }
@@ -80,52 +97,97 @@ pub fn build_router<S: Store>(state: ApiState<S>, bearer_token: impl Into<String
 /// nested `/mcp` router via the same `require_bearer` layer (see
 /// [`klams-mcp` mount in `main.rs`](../../../klams-service/src/main.rs)).
 pub fn build_router_with_auth<S: Store>(state: ApiState<S>, auth_state: AuthState) -> Router {
+    // Sprint 025 (#637): every protected route declares the scope it
+    // needs. Before this sprint `require_scope` was layered on exactly
+    // one route (`/v1/memories`), which made the `scopes` list in
+    // `[[auth.tokens]]` decorative on the REST surface — a read-only
+    // token could index knowledge, bulk-delete it, and resolve
+    // dissents. `route_layer` (not `layer`) so a method mismatch still
+    // returns 405 rather than being masked by a 403.
     let protected = Router::new()
         .route(
             "/memory/facts",
-            post(handlers::facts::upsert::<S>).get(handlers::facts::list::<S>),
+            post(handlers::facts::upsert::<S>)
+                .route_layer(scope!(Scope::Write))
+                .merge(get(handlers::facts::list::<S>).route_layer(scope!(Scope::Read))),
         )
         .route(
             "/memory/events",
-            post(handlers::events::append::<S>).get(handlers::events::list::<S>),
+            post(handlers::events::append::<S>)
+                .route_layer(scope!(Scope::Write))
+                .merge(get(handlers::events::list::<S>).route_layer(scope!(Scope::Read))),
         )
         .route(
             "/memory/knowledge/index",
-            post(handlers::knowledge::index::<S>),
+            post(handlers::knowledge::index::<S>).route_layer(scope!(Scope::Write)),
         )
+        // Delete-by-source-file is the scanner's vanished-file cleanup
+        // (FR-008) — legitimate Write-tier work for a token that owns
+        // the chunks it re-indexes, so it stays Write rather than
+        // Manage. The cross-host blast radius is closed separately by
+        // requiring `machine` (see handlers::knowledge::DeleteParams).
         .route(
             "/memory/knowledge/delete",
-            post(handlers::knowledge::delete::<S>),
+            post(handlers::knowledge::delete::<S>).route_layer(scope!(Scope::Write)),
         )
-        .route("/memory/knowledge/:id", get(handlers::knowledge::get::<S>))
-        .route("/memory/search", post(handlers::search::search::<S>))
-        .route("/memory/context", post(handlers::context::context::<S>))
-        .route("/memory/policy", get(handlers::policy::get_policy))
-        .route("/memory/dissents", get(handlers::dissents::list))
-        .route("/memory/dissents/:id", get(handlers::dissents::get))
+        .route(
+            "/memory/knowledge/:id",
+            get(handlers::knowledge::get::<S>).route_layer(scope!(Scope::Read)),
+        )
+        .route(
+            "/memory/search",
+            post(handlers::search::search::<S>).route_layer(scope!(Scope::Read)),
+        )
+        .route(
+            "/memory/context",
+            post(handlers::context::context::<S>).route_layer(scope!(Scope::Read)),
+        )
+        .route(
+            "/memory/policy",
+            get(handlers::policy::get_policy).route_layer(scope!(Scope::Read)),
+        )
+        .route(
+            "/memory/dissents",
+            get(handlers::dissents::list).route_layer(scope!(Scope::Read)),
+        )
+        .route(
+            "/memory/dissents/:id",
+            get(handlers::dissents::get).route_layer(scope!(Scope::Read)),
+        )
+        // Promote overwrites a live canonical fact and discard resolves
+        // somebody else's proposal: both are cross-author curation, so
+        // they sit at `manage` alongside cross-author delete.
         .route(
             "/memory/dissents/:id/promote",
-            post(handlers::dissents::promote).route_layer(axum::Extension(
-                crate::middleware::maintenance::CriticalWrite,
-            )),
+            post(handlers::dissents::promote)
+                .route_layer(scope!(Scope::Manage))
+                .route_layer(axum::Extension(
+                    crate::middleware::maintenance::CriticalWrite,
+                )),
         )
         .route(
             "/memory/dissents/:id/discard",
-            post(handlers::dissents::discard).route_layer(axum::Extension(
-                crate::middleware::maintenance::CriticalWrite,
-            )),
+            post(handlers::dissents::discard)
+                .route_layer(scope!(Scope::Manage))
+                .route_layer(axum::Extension(
+                    crate::middleware::maintenance::CriticalWrite,
+                )),
         )
-        .route("/v1/authors", get(handlers::authors::list::<S>))
-        .route("/v1/authors/:id", get(handlers::authors::get::<S>))
+        .route(
+            "/v1/authors",
+            get(handlers::authors::list::<S>).route_layer(scope!(Scope::Read)),
+        )
+        .route(
+            "/v1/authors/:id",
+            get(handlers::authors::get::<S>).route_layer(scope!(Scope::Read)),
+        )
         .route(
             "/v1/authors/:id/memories",
-            get(handlers::authors::memories::<S>),
+            get(handlers::authors::memories::<S>).route_layer(scope!(Scope::Read)),
         )
         .route(
             "/v1/memories",
-            get(handlers::memories::list::<S>).route_layer(middleware::from_fn(
-                crate::auth::require_scope(klams_types::Scope::Read),
-            )),
+            get(handlers::memories::list::<S>).route_layer(scope!(Scope::Read)),
         )
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(

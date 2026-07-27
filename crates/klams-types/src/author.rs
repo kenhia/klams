@@ -45,11 +45,44 @@ pub struct RegisterAuthorArgs {
 /// Compact reference to an author included in every public memory projection.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PublicAuthorRef {
+    /// Sprint 026 (#641): the author's UUID, so a caller can reason
+    /// about ownership — "is this mine to delete or supersede?" —
+    /// without a `register_author` round-trip to learn its own id
+    /// (asked for in #631/#636). `None` only when the author could not
+    /// be resolved, which is also when `agent_name` reads `"unknown"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<Uuid>,
     pub agent_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
+}
+
+impl PublicAuthorRef {
+    /// Project a registry row to its public reference (sprint 026,
+    /// #641). Previously hand-rolled at each call site, which is how the
+    /// author id came to be dropped on every read path.
+    #[must_use]
+    pub fn from_record(a: &AuthorRecord) -> Self {
+        Self {
+            id: Some(a.id),
+            agent_name: a.agent_name.clone(),
+            model: a.model.clone(),
+            repo: a.repo.clone(),
+        }
+    }
+
+    /// Placeholder for a hit whose author row could not be resolved.
+    #[must_use]
+    pub fn unknown() -> Self {
+        Self {
+            id: None,
+            agent_name: "unknown".into(),
+            model: None,
+            repo: None,
+        }
+    }
 }
 
 /// Validation errors for `RegisterAuthorArgs` (matches `data-model.md` §1).
@@ -59,13 +92,45 @@ pub enum RegisterAuthorError {
     EmptyAgentName,
     #[error("agent_name exceeds 128 characters")]
     AgentNameTooLong,
-    #[error("repo must be an absolute path (start with '/')")]
-    RepoNotAbsolute,
+    /// Sprint 025 (#636) — `register_author` accepted any charset up to
+    /// 128 chars while `[[auth.tokens]]` requires 2–64 bytes of
+    /// `[a-z0-9_-]`. A name like "Claude Code" registered fine and could
+    /// then never be used as a token binding, which is how the store
+    /// accumulated identities no grant could ever refer to. The rules
+    /// are now the same; the error carries a usable suggestion.
+    #[error("agent_name is invalid ({reason}): must be 2-64 characters of [a-z0-9_-] to match the `agent_name` rule for [[auth.tokens]] grants — try `{suggestion}`")]
+    AgentNameInvalid {
+        reason: crate::AgentNameInvalidReason,
+        suggestion: String,
+    },
+    #[error("repo must be a non-empty absolute path or repo name")]
+    RepoEmpty,
     #[error("extra must serialize to at most 16 KiB")]
     ExtraTooLarge,
 }
 
 const EXTRA_MAX_BYTES: usize = 16 * 1024;
+
+/// Best-effort rewrite of a rejected `agent_name` into a conforming one,
+/// used only to make the validation error actionable — nothing is
+/// renamed implicitly. "GitHub Copilot" -> "github-copilot".
+fn suggest_agent_name(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.trim().chars() {
+        match ch {
+            c if c.is_ascii_alphanumeric() => out.push(c.to_ascii_lowercase()),
+            '_' | '-' => out.push(ch),
+            _ if out.ends_with('-') => {}
+            _ => out.push('-'),
+        }
+    }
+    let trimmed = out.trim_matches('-');
+    let mut s: String = trimmed.chars().take(64).collect();
+    if s.len() < 2 {
+        s = "agent".to_string();
+    }
+    s
+}
 
 impl RegisterAuthorArgs {
     /// Apply field-level validation. Returns the args unchanged on success.
@@ -80,9 +145,21 @@ impl RegisterAuthorArgs {
         if self.agent_name.len() > 128 {
             return Err(RegisterAuthorError::AgentNameTooLong);
         }
+        // Sprint 025 (#636): the same rule token grants use, so every
+        // registered identity is one a `[[auth.tokens]]` grant could
+        // actually bind to.
+        if let Err(reason) = crate::validate_agent_name(&self.agent_name) {
+            return Err(RegisterAuthorError::AgentNameInvalid {
+                reason,
+                suggestion: suggest_agent_name(&self.agent_name),
+            });
+        }
+        // Sprint 018 (WI #62): a bare repo name ("krag") is as valid
+        // as an absolute path — agents often don't know their absolute
+        // working directory. Only reject blank values.
         if let Some(repo) = &self.repo {
-            if !repo.starts_with('/') {
-                return Err(RegisterAuthorError::RepoNotAbsolute);
+            if repo.trim().is_empty() {
+                return Err(RegisterAuthorError::RepoEmpty);
             }
         }
         if !self.extra.is_null() {
@@ -102,7 +179,7 @@ mod tests {
 
     fn args() -> RegisterAuthorArgs {
         RegisterAuthorArgs {
-            agent_name: "GHCP".into(),
+            agent_name: "ghcp".into(),
             model: None,
             session_title: None,
             repo: None,
@@ -128,13 +205,64 @@ mod tests {
     }
 
     #[test]
-    fn rejects_relative_repo() {
+    fn accepts_absolute_repo_path() {
         let mut a = args();
-        a.repo = Some("relative/path".into());
-        assert!(matches!(
-            a.validate(),
-            Err(RegisterAuthorError::RepoNotAbsolute)
-        ));
+        a.repo = Some("/home/ken/src/ai/krag".into());
+        a.validate().unwrap();
+    }
+
+    #[test]
+    fn accepts_bare_repo_name() {
+        // Sprint 018 (WI #62): agents don't always know their absolute
+        // working directory; a short name is enough.
+        let mut a = args();
+        a.repo = Some("krag".into());
+        a.validate().unwrap();
+    }
+
+    #[test]
+    fn rejects_blank_repo() {
+        let mut a = args();
+        a.repo = Some("   ".into());
+        assert!(matches!(a.validate(), Err(RegisterAuthorError::RepoEmpty)));
+    }
+
+    /// Sprint 025 (#636) — the names that produced unbindable author
+    /// rows before the rules were aligned.
+    #[test]
+    fn rejects_agent_names_no_token_grant_could_bind() {
+        for bad in ["GitHub Copilot", "Claude Code", "Alice", "mv cli", "a"] {
+            let mut a = args();
+            a.agent_name = bad.into();
+            assert!(
+                matches!(
+                    a.validate(),
+                    Err(RegisterAuthorError::AgentNameInvalid { .. })
+                ),
+                "expected {bad} to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn rejection_suggests_a_usable_name() {
+        let mut a = args();
+        a.agent_name = "GitHub Copilot".into();
+        let Err(RegisterAuthorError::AgentNameInvalid { suggestion, .. }) = a.validate() else {
+            panic!("expected AgentNameInvalid");
+        };
+        assert_eq!(suggestion, "github-copilot");
+        // The suggestion must itself pass, or it isn't actionable.
+        crate::validate_agent_name(&suggestion).expect("suggestion must be valid");
+    }
+
+    #[test]
+    fn suggestion_is_always_valid_even_for_hostile_input() {
+        for raw in ["!!!", "  ", "A", "@@@ !!! @@@", &"Ω".repeat(200)] {
+            let s = suggest_agent_name(raw);
+            crate::validate_agent_name(&s)
+                .unwrap_or_else(|e| panic!("suggestion {s:?} for {raw:?} invalid: {e:?}"));
+        }
     }
 
     #[test]

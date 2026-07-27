@@ -35,6 +35,9 @@ fn sample_dissent() -> Dissent {
         submission_count: 1,
         resolved_at: None,
         resolved_by_source: None,
+        reason: None,
+        contradicting_memory_id: None,
+        author_id: None,
     }
 }
 
@@ -158,6 +161,7 @@ fn app_with(mode: Mode) -> axum::Router {
                 100,
             )),
             maintenance: klams_types::MaintenanceState::default(),
+            embed_limit: klams_types::EmbedLimit::default(),
         },
         "test-bearer",
     )

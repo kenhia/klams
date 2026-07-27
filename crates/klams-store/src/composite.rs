@@ -1,15 +1,20 @@
 //! Composite store wiring Postgres + Qdrant + a configured embedder.
 
 use crate::embeddings::Embedder;
+use crate::postgres::DeletedFactRow;
 use crate::postgres::PostgresStore;
 use crate::qdrant::QdrantStore;
-use crate::{DissentQuery, EventQuery, FactQuery, Store, StoreError, StoreResult, TextHit};
+use crate::{
+    DissentQuery, EventQuery, FactQuery, OversizeWrite, SearchMiss, SearchSample, Store,
+    StoreError, StoreResult, TextHit,
+};
 use async_trait::async_trait;
 use klams_types::{
     AppendEvent, Dissent, Event, Fact, FactWriteOutcome, IndexKnowledge, KnowledgeItem, Source,
     UpsertFact,
 };
 use std::sync::Arc;
+use time::OffsetDateTime;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -22,6 +27,13 @@ pub struct CompositeStore {
     /// `klams-core::DecayTask` drains the receiver. Reads that
     /// produce facts call `try_send` (drop-on-full).
     bump_tx: Option<mpsc::Sender<Uuid>>,
+    /// Prepended to query text before embedding (sprint 028 #655).
+    /// Modern retrieval models are asymmetric: arctic-embed wants
+    /// `"query: "`, Qwen3-Embedding an instruct line — on queries ONLY,
+    /// never on stored documents. Empty (the default) embeds queries
+    /// verbatim, which is correct for symmetric models like bge-m3 and
+    /// the old bge-small.
+    query_prefix: String,
 }
 
 impl CompositeStore {
@@ -31,7 +43,15 @@ impl CompositeStore {
             qdrant,
             embedder,
             bump_tx: None,
+            query_prefix: String::new(),
         }
+    }
+
+    /// Set the query-side embedding prefix (sprint 028 #655).
+    #[must_use]
+    pub fn with_query_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.query_prefix = prefix.into();
+        self
     }
 
     /// Wire a `LastUsedBumper` sender into the store so read paths
@@ -66,6 +86,31 @@ impl Store for CompositeStore {
     }
 
     async fn index_knowledge(&self, req: IndexKnowledge) -> StoreResult<KnowledgeItem> {
+        // Sprint 028 (#642): re-probe before embedding. The handler's
+        // probe ran at enqueue time, so two queued jobs with the same
+        // content (two files, or two hosts, in one scan window) would
+        // both insert — with content-only identity that race is the
+        // common case, not the corner. A hit here attaches the copy and
+        // skips the embed entirely.
+        if let Some(existing) = self
+            .qdrant
+            .find_knowledge_by_content_hash(&req.content_hash)
+            .await?
+        {
+            if req.machine.is_some() || req.file.is_some() {
+                self.qdrant
+                    .attach_copy(
+                        existing,
+                        req.machine.as_deref(),
+                        req.file.as_deref(),
+                        req.repo.as_deref(),
+                    )
+                    .await?;
+            }
+            if let Some(item) = self.qdrant.get_knowledge(existing).await? {
+                return Ok(item);
+            }
+        }
         let embedding = self.embedder.embed(&req.text).await?;
         self.qdrant.index_knowledge(req, embedding).await
     }
@@ -106,20 +151,67 @@ impl Store for CompositeStore {
         self.qdrant.find_knowledge_by_content_hash(hash).await
     }
 
+    async fn attach_knowledge_copy(
+        &self,
+        id: Uuid,
+        machine: Option<&str>,
+        file: Option<&str>,
+        repo: Option<&str>,
+    ) -> StoreResult<bool> {
+        self.qdrant.attach_copy(id, machine, file, repo).await
+    }
+
     async fn get_knowledge(&self, id: Uuid) -> StoreResult<Option<KnowledgeItem>> {
         self.qdrant.get_knowledge(id).await
     }
 
-    async fn delete_knowledge_by_source_file(&self, source_file: &str) -> StoreResult<u64> {
-        self.qdrant.delete_by_source_file(source_file).await
+    async fn delete_knowledge_by_source_file(
+        &self,
+        source_file: &str,
+        machine: Option<&str>,
+    ) -> StoreResult<u64> {
+        self.qdrant
+            .delete_by_source_file(source_file, machine)
+            .await
     }
 
     async fn embed_query(&self, query: &str) -> StoreResult<Vec<f32>> {
         let start = std::time::Instant::now();
-        let out = self.embedder.embed(query).await;
+        // Sprint 028 (#655): queries — and only queries — carry the
+        // model's retrieval prefix. Documents embed verbatim.
+        let out = if self.query_prefix.is_empty() {
+            self.embedder.embed(query).await
+        } else {
+            self.embedder
+                .embed(&format!("{}{query}", self.query_prefix))
+                .await
+        };
         metrics::histogram!("klams_embedding_latency_seconds")
             .record(start.elapsed().as_secs_f64());
         out
+    }
+
+    /// Sprint 027 (#420): ask the embedder for the *exact* token count
+    /// rather than estimating from character counts. Measured against
+    /// the live model, no character ratio is both safe and useful —
+    /// punctuation-dense text hits the ceiling at ~525 characters while
+    /// base64 survives past 20,000 — so the tokenizer is the only
+    /// honest arbiter, and TEI's `/tokenize` provides it without a model
+    /// forward pass.
+    async fn check_embed_size(
+        &self,
+        text: &str,
+        limit: klams_types::EmbedLimit,
+    ) -> StoreResult<()> {
+        let counts = self.embedder.count_tokens(&[text]).await?;
+        let tokens = counts.first().copied().unwrap_or(0);
+        if tokens <= limit.max_input_tokens() {
+            return Ok(());
+        }
+        Err(StoreError::PayloadTooLarge {
+            oversize: crate::embeddings::oversize_from_exact_count(text, tokens, limit),
+            detail: "exact token count from the embedding model".into(),
+        })
     }
 
     async fn health_postgres(&self) -> StoreResult<()> {
@@ -236,6 +328,231 @@ impl Store for CompositeStore {
     async fn touch_author_last_seen_at(&self, id: Uuid) -> StoreResult<u64> {
         self.postgres.touch_author_last_seen_at(id).await
     }
+
+    // Sprint 031 (#645): delegate the MCP surface to the concrete
+    // backends. These are the calls the tools used to make directly
+    // through the public `.postgres` / `.qdrant` / `.embedder` fields.
+
+    async fn get_author_by_id(&self, id: Uuid) -> StoreResult<Option<klams_types::AuthorRecord>> {
+        self.postgres.get_author_by_id(id).await
+    }
+
+    async fn get_author_by_agent_name(
+        &self,
+        agent_name: &str,
+    ) -> StoreResult<Option<klams_types::AuthorRecord>> {
+        self.postgres.get_author_by_agent_name(agent_name).await
+    }
+
+    async fn insert_author(
+        &self,
+        args: klams_types::RegisterAuthorArgs,
+        explicit_id: Option<Uuid>,
+    ) -> StoreResult<klams_types::AuthorRecord> {
+        self.postgres.insert_author(args, explicit_id).await
+    }
+
+    async fn event_exists(&self, id: Uuid) -> StoreResult<bool> {
+        self.postgres.event_exists(id).await
+    }
+
+    async fn soft_delete_fact(&self, id: Uuid, by_author_id: Uuid) -> StoreResult<bool> {
+        self.postgres.soft_delete_fact(id, by_author_id).await
+    }
+
+    async fn restore_fact(&self, id: Uuid) -> StoreResult<bool> {
+        self.postgres.restore_fact(id).await
+    }
+
+    async fn hard_delete_fact(&self, id: Uuid) -> StoreResult<bool> {
+        self.postgres.hard_delete_fact(id).await
+    }
+
+    async fn fact_owner(&self, id: Uuid) -> StoreResult<Option<Uuid>> {
+        self.postgres.fact_owner(id).await
+    }
+
+    async fn fact_exists_any(&self, id: Uuid) -> StoreResult<bool> {
+        self.postgres.fact_exists_any(id).await
+    }
+
+    async fn propose_dissent(
+        &self,
+        fact_id: Uuid,
+        proposed_payload: &serde_json::Value,
+        author_id: Uuid,
+        reason: &str,
+        contradicting_memory_id: Option<Uuid>,
+    ) -> StoreResult<Option<(Uuid, bool)>> {
+        self.postgres
+            .propose_dissent(
+                fact_id,
+                proposed_payload,
+                author_id,
+                reason,
+                contradicting_memory_id,
+            )
+            .await
+    }
+
+    async fn list_deleted_facts_filtered(
+        &self,
+        limit: u32,
+        since: Option<OffsetDateTime>,
+        author_id: Option<Uuid>,
+        cursor: Option<(OffsetDateTime, Uuid)>,
+    ) -> StoreResult<Vec<(DeletedFactRow, klams_types::AuthorRecord)>> {
+        self.postgres
+            .list_deleted_facts_filtered(limit, since, author_id, cursor)
+            .await
+    }
+
+    async fn list_all_authors(&self) -> StoreResult<Vec<klams_types::AuthorRecord>> {
+        self.postgres.list_all_authors().await
+    }
+
+    async fn merge_author_rows(&self, from: Uuid, into: Uuid) -> StoreResult<(u64, u64, u64)> {
+        self.postgres.merge_author_rows(from, into).await
+    }
+
+    async fn delete_author(&self, author_id: Uuid) -> StoreResult<bool> {
+        self.postgres.delete_author(author_id).await
+    }
+
+    async fn count_author_rows(&self, author_id: Uuid) -> StoreResult<(i64, i64, i64)> {
+        self.postgres.count_author_rows(author_id).await
+    }
+
+    async fn fetch_facts_with_authors(
+        &self,
+        ids: &[Uuid],
+    ) -> StoreResult<Vec<(Fact, klams_types::AuthorRecord)>> {
+        self.postgres.fetch_facts_with_authors(ids).await
+    }
+
+    async fn fetch_events_with_authors(
+        &self,
+        ids: &[Uuid],
+    ) -> StoreResult<Vec<(Event, klams_types::AuthorRecord)>> {
+        self.postgres.fetch_events_with_authors(ids).await
+    }
+
+    async fn insert_search_miss(&self, miss: &SearchMiss) -> StoreResult<()> {
+        self.postgres.insert_search_miss(miss).await
+    }
+
+    async fn insert_search_sample(&self, sample: &SearchSample) -> StoreResult<()> {
+        self.postgres.insert_search_sample(sample).await
+    }
+
+    async fn insert_oversize_write(&self, write: &OversizeWrite) -> StoreResult<()> {
+        self.postgres.insert_oversize_write(write).await
+    }
+
+    async fn point_is_soft_deleted(&self, id: Uuid) -> StoreResult<Option<bool>> {
+        self.qdrant.point_is_soft_deleted(id).await
+    }
+
+    async fn knowledge_authors_by_ids(
+        &self,
+        ids: &[Uuid],
+    ) -> StoreResult<std::collections::HashMap<Uuid, Uuid>> {
+        self.qdrant.knowledge_authors_by_ids(ids).await
+    }
+
+    async fn index_knowledge_with_embedding(
+        &self,
+        req: IndexKnowledge,
+        embedding: Vec<f32>,
+    ) -> StoreResult<KnowledgeItem> {
+        self.qdrant.index_knowledge(req, embedding).await
+    }
+
+    async fn upsert_knowledge_item(
+        &self,
+        item: &KnowledgeItem,
+        author_id: Uuid,
+        embedding: Vec<f32>,
+    ) -> StoreResult<()> {
+        self.qdrant
+            .upsert_knowledge_item(item, author_id, embedding)
+            .await
+    }
+
+    async fn soft_delete_payload(
+        &self,
+        id: Uuid,
+        by_author_id: Uuid,
+        when: OffsetDateTime,
+    ) -> StoreResult<()> {
+        self.qdrant
+            .soft_delete_payload(id, by_author_id, when)
+            .await
+    }
+
+    async fn search_knowledge_curated(
+        &self,
+        query_vector: Vec<f32>,
+        top_k: u32,
+    ) -> StoreResult<Vec<(KnowledgeItem, f32)>> {
+        self.qdrant
+            .search_knowledge_curated(query_vector, top_k)
+            .await
+    }
+
+    async fn restore_payload(&self, id: Uuid) -> StoreResult<()> {
+        self.qdrant.restore_payload(id).await
+    }
+
+    async fn reassign_knowledge_author(&self, from: Uuid, into: Uuid) -> StoreResult<u64> {
+        self.qdrant.reassign_knowledge_author(from, into).await
+    }
+
+    async fn point_exists_any(&self, id: Uuid) -> StoreResult<bool> {
+        self.qdrant.point_exists_any(id).await
+    }
+
+    async fn mark_superseded(
+        &self,
+        old_id: Uuid,
+        new_id: Uuid,
+        by_author_id: Uuid,
+        when: OffsetDateTime,
+    ) -> StoreResult<()> {
+        self.qdrant
+            .mark_superseded(old_id, new_id, by_author_id, when)
+            .await
+    }
+
+    async fn list_deleted_knowledge(
+        &self,
+        limit: u32,
+        author_id: Option<Uuid>,
+        offset: Option<Uuid>,
+    ) -> StoreResult<(
+        Vec<(KnowledgeItem, OffsetDateTime, Option<Uuid>, Option<Uuid>)>,
+        Option<Uuid>,
+    )> {
+        self.qdrant
+            .list_deleted_knowledge(limit, author_id, offset)
+            .await
+    }
+
+    async fn hard_delete_point(&self, id: Uuid) -> StoreResult<()> {
+        self.qdrant.hard_delete_point(id).await
+    }
+
+    async fn get_point_vector(&self, id: Uuid) -> StoreResult<Option<Vec<f32>>> {
+        self.qdrant.get_point_vector(id).await
+    }
+
+    async fn count_knowledge_by_author_any(&self, author_id: Uuid) -> StoreResult<u64> {
+        self.qdrant.count_knowledge_by_author_any(author_id).await
+    }
+
+    async fn embed_document(&self, text: &str) -> StoreResult<Vec<f32>> {
+        self.embedder.embed(text).await
+    }
 }
 
 fn authors_to_public(row: crate::postgres::AuthorWithCounts) -> crate::AuthorWithCountsOut {
@@ -305,11 +622,7 @@ async fn list_author_memories_impl(
         .get_author_by_id(q.author_id)
         .await?
         .ok_or_else(|| StoreError::Other(format!("author {} not found", q.author_id)))?;
-    let author_ref = PublicAuthorRef {
-        agent_name: author.agent_name.clone(),
-        model: author.model.clone(),
-        repo: author.repo.clone(),
-    };
+    let author_ref = PublicAuthorRef::from_record(&author);
 
     let limit = if q.limit == 0 { 50 } else { q.limit };
     let pg_state = match q.state {
@@ -476,11 +789,7 @@ async fn list_author_memories_impl(
                 };
                 let mem = PublicMemory {
                     id: item.id,
-                    content: PublicMemoryContent::Knowledge {
-                        text: item.text.clone(),
-                        source_path: item.file.clone(),
-                        repo: item.repo.clone(),
-                    },
+                    content: PublicMemoryContent::knowledge_from(&item),
                     tags: item.tags.clone(),
                     author: author_ref.clone(),
                     created_at: offset_to_chrono(item.created_at),
@@ -515,14 +824,7 @@ async fn bulk_fetch_authors(
             continue;
         }
         if let Ok(Some(a)) = composite.postgres.get_author_by_id(*id).await {
-            out.insert(
-                *id,
-                klams_types::PublicAuthorRef {
-                    agent_name: a.agent_name,
-                    model: a.model,
-                    repo: a.repo,
-                },
-            );
+            out.insert(*id, klams_types::PublicAuthorRef::from_record(&a));
         }
     }
     out
@@ -586,11 +888,7 @@ fn _dummy_error_ref() -> Option<StoreError> {
 // Sprint 008 — `GET /v1/memories` and `event_search` impls.
 
 fn unknown_author_ref() -> klams_types::PublicAuthorRef {
-    klams_types::PublicAuthorRef {
-        agent_name: "unknown".into(),
-        model: None,
-        repo: None,
-    }
+    klams_types::PublicAuthorRef::unknown()
 }
 
 /// Encode the unified newest-first cursor for `list_memories` (#54): the
@@ -797,11 +1095,7 @@ async fn list_memories_impl(
                 .unwrap_or_else(unknown_author_ref);
             let mem = PublicMemory {
                 id: item.id,
-                content: PublicMemoryContent::Knowledge {
-                    text: item.text.clone(),
-                    source_path: item.file.clone(),
-                    repo: item.repo.clone(),
-                },
+                content: PublicMemoryContent::knowledge_from(&item),
                 tags: item.tags.clone(),
                 author: author_ref,
                 created_at: offset_to_chrono(item.created_at),

@@ -21,6 +21,12 @@ that fits in one PR* — some are an afternoon, some are substantial.
 2. **Write intent before code**: open `sprints/###-<short-stub>/sprint.md`
    stating the goal, scope, and acceptance criteria. A few paragraphs
    is fine; heavyweight spec/plan/tasks ceremony is not required.
+   At the same time, set the **PATCH segment of the workspace version
+   to the sprint number** (`[workspace.package] version` in the root
+   `Cargo.toml`; sprint 018 → `0.1.18`). The version surfaces on
+   `/healthz` and MCP `server_info` — Ken's dashboard reads it, so
+   it's the at-a-glance check that the latest sprint is deployed.
+   MAJOR/MINOR stay hand-managed. (Convention started at 018.)
 3. **Chronicle as you go**: decisions, surprises, contract changes,
    and outcomes get recorded in markdown inside the sprint directory
    (in `sprint.md` or sibling files — contracts, findings, migration
@@ -44,8 +50,7 @@ at cross-component boundaries.
 
 ### Code standards gate
 
-Every commit must pass the gate — `just gate` runs exactly what CI
-runs:
+Every commit must pass the gate — `just gate`:
 
 ```bash
 cargo fmt --check
@@ -55,6 +60,23 @@ cargo test
 
 This applies to existing code touched in passing, not just new code —
 no broken windows.
+
+**`just gate` is no longer everything CI runs** (sprint 031, #646).
+The docker-compose integration stack used to come up on `main` only, so
+every integration failure was discovered *after* merge; it now runs on
+every branch. Before pushing anything that touches the store, the MCP
+tools, or the write paths, also run:
+
+```bash
+docker compose -f tests/docker-compose.test.yml up -d   # once
+just test-integration
+```
+
+That recipe sweeps accumulated test state first (a long-lived stack
+otherwise drifts until ranking assertions starve) and runs at default
+parallelism — the `--test-threads=1` this suite used to need is gone
+with the shared-table race behind it (#679). If you find yourself
+reaching for it again, something regressed; fix that instead.
 
 ### Documentation is part of done
 

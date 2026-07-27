@@ -13,16 +13,22 @@ default:
 
 # Service URL + bearer token used by `verify` and `health`. Override
 # in the environment when pointing at a non-local stack.
+#
+# KLAMS_TOKEN has no default on purpose (sprint 031, #682). It used to
+# fall back to `dev-token`, so forgetting to set it produced a 401 that
+# read like an auth regression instead of "you didn't set the variable".
 klams_url     := env_var_or_default('KLAMS_URL',   'http://127.0.0.1:7777')
-klams_token   := env_var_or_default('KLAMS_TOKEN', 'dev-token')
+klams_token   := env_var_or_default('KLAMS_TOKEN', '')
 compose_file  := 'deploy/docker-compose.yml'
 
-# Windows viewport host (cleo) + deploy target used by viewport-deploy.
-# viewport_source_host is how cleo reaches *this* build machine to
-# pull the exe (see the recipe comment for why it's a pull, not a push).
-viewport_host        := env_var_or_default('VIEWPORT_HOST',        'kenhi@cleo')
-viewport_deploy_dir  := env_var_or_default('VIEWPORT_DEPLOY_DIR',  'c:\tools\bin')
-viewport_source_host := env_var_or_default('VIEWPORT_SOURCE_HOST', 'ken@kubs0')
+# klams-mind checkout — it owns the retrieval eval suite + runner (the
+# TOML and the Python harness live there; the gate lives here, because
+# klams is what regresses). Override if your checkout is elsewhere.
+klams_mind    := env_var_or_default('KLAMS_MIND_DIR', justfile_directory() / '../klams-mind')
+
+# Windows viewport host (cleo) + deploy target used by `viewport-deploy`.
+viewport_host       := env_var_or_default('VIEWPORT_HOST',       'kenhi@cleo')
+viewport_deploy_dir := env_var_or_default('VIEWPORT_DEPLOY_DIR', 'c:\tools\bin')
 
 # Bring the Postgres+Qdrant+TEI stack up in the background.
 compose-up:
@@ -72,7 +78,11 @@ soak *ARGS:
     cargo run --release -p klams-soak -- {{ARGS}}
 
 # Constitution pre-commit gate — fail-fast on fmt, clippy, or tests.
-# CI invokes exactly this recipe (no inline duplication).
+# Mirrors CI's `service` job exactly. NOTE: the root workspace does NOT
+# include the viewport (viewport/src-tauri is its own Cargo workspace),
+# so this recipe does not gate viewport code — use `gate-viewport` for
+# that, or `gate-all` for both. A change to a `klams_types` shape the
+# viewport consumes can pass `gate` and still break CI's viewport job.
 # Note: excludes `--all-features` which gates off `scale-fixture` (an intentionally
 # heavy fixture for multi-minute loads); that feature is checked only in targeted tests.
 gate:
@@ -80,9 +90,48 @@ gate:
     cargo clippy --workspace --all-targets -- -D warnings
     cargo test --workspace
 
+# Mirrors CI's `viewport` job exactly (svelte + tauri). Needs pnpm and
+# the Tauri Linux deps (libwebkit2gtk-4.1-dev etc.); slower than `gate`,
+# so it's separate rather than folded in. Run it whenever a change
+# touches the viewport or a shared type the viewport serializes.
+gate-viewport:
+    cd viewport && pnpm install --frozen-lockfile && pnpm check && pnpm build
+    cd viewport/src-tauri && cargo fmt --all -- --check
+    cd viewport/src-tauri && cargo clippy --all-targets --features custom-protocol -- -D warnings
+    cd viewport/src-tauri && cargo test --features custom-protocol
+
+# The complete gate — both CI jobs. Use before shipping anything that
+# spans the service and the viewport.
+gate-all: gate gate-viewport
+
+# Sprint 031 (#679/#687/#646) — the docker-gated integration suite,
+# which `gate` deliberately excludes. Until 031 there was no recipe for
+# this at all: the only place it ran was a main-branch-only CI step, so
+# "how do I run the ignored tests" had no answer you could `just`.
+#
+# Sweeps the test stack first (see scripts/reset-test-stack.sh — a
+# long-lived stack accumulates seeds until ranking assertions starve),
+# then runs at DEFAULT parallelism. The `--test-threads=1` this used to
+# need is gone with the shared-table race (#679); if you find yourself
+# reaching for it again, something regressed — fix that instead.
+#
+# Requires `docker compose -f tests/docker-compose.test.yml up -d`.
+test-integration *ARGS:
+    ./scripts/reset-test-stack.sh
+    TEST_DATABASE_URL=postgres://klams:klams_test@127.0.0.1:55432/klams \
+    TEST_QDRANT_URL=http://127.0.0.1:56334 \
+    TEST_TEI_URL=http://127.0.0.1:57070 \
+    TEST_OPENAI_EMBED_URL=http://127.0.0.1:57070/v1 \
+    TEST_OPENAI_EMBED_MODEL=BAAI/bge-small-en-v1.5 \
+        cargo test --workspace -- --ignored {{ARGS}}
+
 # Quick liveness probe + light verification round-trip.
+#
+# The `@` on token-carrying recipes is not cosmetic: without it `just`
+# echoes the expanded command line, printing the bearer token to the
+# terminal (and to any CI log) on every run.
 health:
-    KLAMS_URL={{klams_url}} KLAMS_TOKEN={{klams_token}} \
+    @KLAMS_URL={{klams_url}} KLAMS_TOKEN={{klams_token}} \
         bash scripts/verify-mvp.sh --light
 
 # sprint 007 — apply pending SQL migrations against the configured
@@ -98,9 +147,33 @@ db-migrate:
 db-psql *ARGS:
     @docker exec -i klams-postgres psql -U klams -d klams "$@"
 
+# Sprint 026 (#643) — the retrieval regression bar.
+#
+# The suite lives in klams-mind (it owns the TOML and the runner), but the
+# gate belongs here: klams is what regresses. Exits non-zero on a
+# REGRESSION — a query marked `expect = "pass"` that stopped passing.
+# Queries marked `known_open` are failing against tracked work (klams#628
+# curated-beats-bulk, the fence-unaware chunker) and do NOT fail the run;
+# if one starts passing, the report says so and it should be promoted.
+#
+# Not folded into `gate`: it needs a live klams with the real corpus, so
+# it is a pre-deploy check rather than a per-commit one. Run it before
+# and after a deploy that touches retrieval.
+eval:
+    @KLAMS_TOKEN={{klams_token}} KLAMS_URL={{klams_url}} \
+        uv run --project {{klams_mind}} klams-mind eval run \
+        {{klams_mind}}/evals/suites/homelab-retrieval.toml
+
+# Same, writing the markdown report somewhere durable — use this to
+# capture a before/after around a retrieval change or the corpus reset.
+eval-report OUT:
+    @KLAMS_TOKEN={{klams_token}} KLAMS_URL={{klams_url}} \
+        uv run --project {{klams_mind}} klams-mind eval run \
+        {{klams_mind}}/evals/suites/homelab-retrieval.toml --out {{OUT}}
+
 # Full SC-001..SC-009 functional smoke (slower than `health`).
 verify:
-    KLAMS_URL={{klams_url}} KLAMS_TOKEN={{klams_token}} \
+    @KLAMS_URL={{klams_url}} KLAMS_TOKEN={{klams_token}} \
         bash scripts/verify-mvp.sh
 
 # Cross-compile the viewport for Windows (requires cargo-xwin).
@@ -112,32 +185,35 @@ viewport-build:
 
 # Cross-compile the viewport and ship klams-viewport.exe to the
 # Windows host (cleo) at VIEWPORT_DEPLOY_DIR. Override VIEWPORT_HOST /
-# VIEWPORT_DEPLOY_DIR / VIEWPORT_SOURCE_HOST to target a different
-# machine/path. Close a running viewport on the target first —
-# Windows locks the .exe of a running process and the copy will fail.
+# VIEWPORT_DEPLOY_DIR to target a different machine/path.
 #
-# This is a *pull*, not a push: cleo's Win32-OpenSSH has a broken sftp
-# subsystem (sftp-server.exe exits immediately on invocation; root
-# cause not found), which breaks both `scp` and `sftp` *into* cleo.
-# Pulling instead — `ssh cleo "scp {{viewport_source_host}}:... dest"`
-# — has cleo's scp *client* talk to this machine's ordinary Linux
-# sshd, sidestepping the broken code path entirely. Confirmed reliable
-# over 10 consecutive runs (hash-verified each time); completes in a
-# few seconds.
+# History worth keeping: this shipped as a *pull*
+# (`ssh cleo "scp kubs0:... dest"`) because cleo's Win32-OpenSSH 9.5p2
+# had a broken sftp subsystem — `sftp-server.exe` exited immediately on
+# invocation, which killed any `scp`/`sftp` INTO cleo. That is fixed as
+# of 2026-07-27: a plain push now works, 5/5 hash-verified runs at ~2s
+# each, on the same 9.5p2 build. So this is a straight `scp` again, and
+# cleo no longer needs SSH access back to the build host. If pushes
+# ever start failing that way again, the pull is the workaround — see
+# PR #17 for the full diagnostic trail.
+#
+# Close a running viewport on the target first: Windows locks the .exe of a running process.
 viewport-deploy: viewport-build
     #!/usr/bin/env bash
     set -euo pipefail
     exe="viewport/target/x86_64-pc-windows-msvc/release/klams-viewport.exe"
-    exe_abs="$(realpath "$exe")"
     host="{{viewport_host}}"
     dest_dir="$(echo '{{viewport_deploy_dir}}' | tr '\\' '/' | sed 's:/*$::')"
-    dest_final="$dest_dir/klams-viewport.exe"
-    echo "→ pulling $exe onto $host:$dest_final (from {{viewport_source_host}})"
+    dest="$dest_dir/klams-viewport.exe"
+    echo "→ shipping $exe to $host:$dest"
 
-    ssh "$host" "scp {{viewport_source_host}}:$exe_abs $dest_final"
+    scp -q "$exe" "$host:$dest"
 
+    # Verify rather than trust the exit code: a partial write that still
+    # exits 0 would otherwise ship a corrupt binary to a machine with no
+    # other check on it.
     local_hash=$(sha256sum "$exe" | awk '{print $1}')
-    remote_hash=$(ssh "$host" "Get-FileHash '$dest_final' -Algorithm SHA256 | Select-Object -ExpandProperty Hash" | tr 'A-F' 'a-f' | tr -d '\r')
+    remote_hash=$(ssh "$host" "Get-FileHash '$dest' -Algorithm SHA256 | Select-Object -ExpandProperty Hash" | tr 'A-F' 'a-f' | tr -d '\r')
     if [ "$local_hash" != "$remote_hash" ]; then
         echo "✗ hash mismatch (local $local_hash, remote $remote_hash)" >&2
         exit 1
@@ -164,11 +240,11 @@ restart:
     sudo systemctl restart klams-service klams-monitor
 
 scanner-once:
-    KLAMS_URL={{klams_url}} KLAMS_TOKEN={{klams_token}} \
+    @KLAMS_URL={{klams_url}} KLAMS_TOKEN={{klams_token}} \
         cargo run --release --bin klams-scanner -- --once
 
 monitor-once:
-    KLAMS_URL={{klams_url}} KLAMS_TOKEN={{klams_token}} \
+    @KLAMS_URL={{klams_url}} KLAMS_TOKEN={{klams_token}} \
         cargo run --release --bin klams-monitor -- --once
 
 # sprint 006 — maintenance + backup operator surface.

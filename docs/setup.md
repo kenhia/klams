@@ -68,13 +68,27 @@ user-writable directory:
 export KLAMS_ROOT=$HOME/.local/share/klams
 ./scripts/provision-storage-root.sh
 docker compose --env-file $KLAMS_ROOT/config/compose.env \
-  -f deploy/docker-compose.yml up -d postgres qdrant tei
+  -f deploy/docker-compose.yml up -d postgres qdrant tei reranker
 KLAMS_CONFIG=$KLAMS_ROOT/config/klams.toml \
   cargo run --release -p klams-service
 ```
 
 The compose file references `${KLAMS_DATA_ROOT}` for bind mounts, so
 the data volumes follow the override automatically.
+
+## The reranker service (sprint 030)
+
+`reranker` is a second TEI container (same image tag as `tei`, model
+`${RERANKER_MODEL_ID}` — `BAAI/bge-reranker-v2-m3`) serving the
+optional `memory_search` cross-encoder stage on `127.0.0.1:7071`. On
+kubs0 include the GPU override (`deploy/docker-compose.gpu.yml`) so
+both TEI containers share the 4080 SUPER via CDI (~2.9 GB VRAM
+total). The stage activates only when `/etc/klams/klams.toml` sets
+`[retrieval] reranker_url`; removing that key (or stopping the
+container — the stage is best-effort) is the rollback. The model id
+is NOT the Qwen3-Reranker the planning WI named: TEI cannot serve
+that architecture yet (upstream PRs open, 2026-07-26) — swap
+`RERANKER_MODEL_ID` when a TEI release merges support.
 
 ## Developer tooling
 
@@ -179,6 +193,51 @@ The script is **idempotent** and:
 5. `systemctl daemon-reload` then `enable --now` the service, timer,
    and monitor units.
 
+### Upgrading an already-running install: `just restart` is required
+
+`enable --now` in step 5 is a **no-op for a unit that is already
+running**, so on an upgrade the new binary lands in `/usr/local/bin`
+while the old process keeps serving. Follow the install with:
+
+```sh
+just restart                  # klams-service + klams-monitor
+```
+
+Then confirm the version actually moved — this is what the
+sprint-numbered PATCH version on `/healthz` is for:
+
+```sh
+curl -s http://127.0.0.1:7777/healthz | jq .version
+```
+
+If it still reports the previous version, the restart did not take.
+The scanner needs nothing: it is timer-driven and picks up the new
+binary on its next fire.
+
+A restart also **applies pending migrations** — `PostgresStore::connect`
+runs them as a side effect. `just rollback` swaps binaries only and
+cannot undo one; crossing a migration boundary backwards needs
+`just restore-from <date>`.
+
+**Sprint 027 adds `0012_oversize_write.sql`** (additive: one new table,
+no changes to existing ones) and two config keys under `[embeddings]`:
+
+| Key | Default | What it does |
+|-----|---------|--------------|
+| `max_input_tokens` | `512` | The embedding model's input ceiling. Every ingest path gates against it. Verify with `curl -s http://127.0.0.1:7070/info \| jq .max_input_length` before changing. |
+| `oversize_log_retention_days` | `90` | How long refused-write rows (which hold full payloads) are kept before the daily prune. |
+
+**The scanner has a matching `max_input_tokens` in `/etc/klams/scanner.toml`
+and the two must be kept in step.** They are separate processes on
+separate hosts, so nothing enforces agreement: if the scanner's value is
+higher than the service's, it will publish chunks the service refuses,
+and those files' cursors will stall (visibly, in the scanner's logs —
+not silently, which is the pre-027 behaviour this replaces).
+
+The whole procedure, with preflight and verification, is packaged as
+the repo-local `deploy-kubs0` skill (`.claude/skills/deploy-kubs0/`),
+which `/sprint-ship` invokes automatically via `.sprint-deploy`.
+
 Required preconditions (the script aborts loudly if any are
 missing):
 
@@ -196,10 +255,18 @@ missing):
 ```toml
 url = "http://127.0.0.1:7777"
 token = "<bearer from /etc/klams/klams.toml>"
-roots = ["/home/ken/src", "/home/ken/obsidian"]   # MUST be absolute
+roots = ["/home/ken/src"]       # MUST be absolute
 interval_secs = 3600            # ignored when running with --once
 state_dir = "/var/lib/klams"    # SQLite cursor lives here
 ```
+
+> **The Obsidian vault is deliberately NOT scanned** (sprint 028,
+> WI #657 — Ken's decision, 2026-07-25). The vault is largely
+> historical notes; to a recall-first agent a confident stale hit costs
+> more than a miss. Do not reinstate `/home/ken/obsidian` on a rebuild.
+> If specific vault subtrees earn their way back in, add them as
+> targeted roots behind a `.klamsignore` allowlist — not the whole
+> vault.
 
 `roots` **must be absolute paths**. The walker honours `.gitignore`
 and a repo-root `.klamsignore`, and always prunes heavy dependency /
@@ -382,12 +449,27 @@ carries `admin` scope (FR-020).
 
 ### Per-token scope tips
 
-- One read-only token for the viewport so a UI compromise cannot
-  mutate state.
+Scopes are **flat** — `write` does not imply `read`, `admin` does not
+imply `write`. List every scope a token needs. Full model:
+[auth.md](auth.md).
+
+- **The viewport needs `["read", "write", "manage"]`.** It is a curation
+  surface, not a display: it edits and deletes facts and it is where a
+  human resolves dissents. Earlier revisions of this page recommended a
+  read-only viewport token "so a UI compromise cannot mutate state" —
+  that was only nominally true, because until sprint 025 nothing
+  enforced scopes on those routes, so the read-only token could mutate
+  everything anyway. Now the enforcement is real, and a `["read"]`
+  viewport token gets 403 on its own curation features. Withholding
+  `admin` is what limits the blast radius: no hard deletes, no restores,
+  no author lifecycle.
 - One read+write token per agent that produces memories (typically
-  one per editor).
+  one per editor). Add `manage` only for agents you want curating other
+  authors' records.
 - One admin token, used only from your own shell, for restores and
   hard deletes.
+- Give every token an `agent_name`. Ownership on `memory_delete` is
+  decided by the bound author, so a token without one cannot delete.
 
 ## Sprint 008 — Observability profile (Prometheus + Grafana)
 
@@ -524,9 +606,17 @@ is overriding the value. Check with
 Each `[[auth.tokens]]` entry in `klams.toml` now accepts an optional
 `agent_name` field. The agent name is resolved to an `author_id` at
 service startup (the row is created in the `authors` table if it
-doesn't already exist) and cached for the life of the process.
+doesn't already exist) and again on each [auth reload](#hot-reloading-authtokens).
 Every REST write under that bearer is then attributed to the
-resolved author.
+resolved author, and MCP write tools (`memory_add`,
+`memory_append_event`, `dissent_propose`) fall back to it when the
+caller omits `author_id` (sprint 018, WI #62).
+
+Since sprint 025 the binding is also an **authorization** input, not
+just an attribution one: `memory_delete` acts as the bound author and
+refuses to delete another author's memory unless the token carries the
+`manage` scope. A token with no `agent_name` cannot delete at all. See
+[auth.md](auth.md) for the full model.
 
 ```toml
 [[auth.tokens]]
@@ -535,8 +625,8 @@ scopes = ["read", "write"]
 agent_name = "ghcp"            # ← NEW; lowercase, digits, '-' or '_'
 
 [[auth.tokens]]
-token = "viewport-read-XXXXXXXXXXXXXXXX"
-scopes = ["read"]
+token = "viewport-XXXXXXXXXXXXXXXX"
+scopes = ["read", "write", "manage"]   # curation UI; see scope tips above
 agent_name = "viewport"
 
 [[auth.tokens]]
@@ -559,6 +649,36 @@ violation):
   author so existing deployments keep working unchanged.
 - The legacy single `[auth].bearer_token` field is always
   materialized as a `system`-bound grant.
+
+### Hot-reloading `[[auth.tokens]]`
+
+Sprint 018 (WI #61): adding, removing, or rotating bearer tokens no
+longer needs a service restart. Send SIGHUP and the service re-reads
+`klams.toml`, re-resolves token→author bindings, and atomically swaps
+the in-memory token table shared by the REST and `/mcp` surfaces:
+
+```bash
+sudo systemctl reload klams-service      # unit ships ExecReload=kill -HUP
+# or, without systemd:
+kill -HUP "$(pidof klams-service)"
+```
+
+Semantics:
+
+- New `[[auth.tokens]]` entries authenticate immediately after the
+  reload; removed entries stop authenticating. In-flight requests are
+  not dropped — a request already past its auth check completes
+  normally.
+- Only the `[auth]` block is applied. Changes to any other section
+  (postgres, qdrant, embeddings, backup, …) still require a restart.
+- A reload that fails (unparseable TOML, empty `[auth]`, invalid
+  `agent_name`) is logged as an error and the **previous token table
+  stays active** — a broken edit can't lock every caller out. Check
+  `journalctl -u klams-service -g SIGHUP` for the outcome; run
+  `klams-service --validate-config` before reloading to catch errors
+  up front.
+- The file permission model is unchanged: the reload reads the same
+  `root:klams 0640` file.
 
 ### One-shot re-attribution repair
 
@@ -583,3 +703,41 @@ cargo run --release -p reattribute-system -- --apply
 The repair is **idempotent** — a second `--apply` is a no-op once
 every row has been classified. Run once as part of the cutover; no
 recurring schedule is needed.
+
+## Sprint 023 — multi-host scanning
+
+The scanner is a client that POSTs to the central klams service, so
+scanning a second host is just running it there pointed at kubs0. Every
+chunk now carries its **host** (`machine`), keyed into the delete +
+dedupe path, so two hosts that share a path (`/home/ken/src/...` on both)
+never corrupt each other, and `memory_search` knowledge results include
+the host for a fully-qualified `(host, source_path)`.
+
+### Deploying a scanner on a second host (e.g. kai)
+
+1. **Token:** add a dedicated `[[auth.tokens]]` to `/etc/klams/klams.toml`
+   on kubs0 (write scope, `agent_name = "kai-scanner"`), then
+   `sudo systemctl reload klams-service` (hot-reload, no restart — sprint
+   018). Keep it distinct from kubs0's own scanner token so writes stay
+   attributable per host.
+2. **Binary:** install the same-version `klams-scanner` on kai (it's the
+   same Linux release binary; version must match the service it writes
+   to).
+3. **Config:** `/etc/klams/scanner.toml` with `url = "http://kubs0:7777"`,
+   the `kai-scanner` token, and kai's absolute roots (at least
+   `/home/ken/src`). Leave `host` unset — the scanner reports kai's
+   kernel hostname automatically.
+4. **Unit:** install `klams-scanner.service` + `.timer`, but **drop the
+   `After=klams-service.service`** dependency (there is no local service
+   on kai — it depends only on `network-online.target`). Then
+   `systemctl enable --now klams-scanner.timer`.
+
+Verify: after a scan, a kai-only file is retrievable via `memory_search`
+with `host = "kai"`, and kubs0 files show `host = "kubs0"`.
+
+**Failure mode (why per-host, not central mount):** if kai is down, its
+scanner simply doesn't run — kai's chunks go *stale*, never deleted. A
+central mount-and-scan topology (for hosts that can't run the scanner,
+e.g. Windows/cleo) is a separate future option (klams #406) with a
+`NOT_MOUNTED` sentinel guard against a mount outage triggering a mass
+prune.

@@ -8,7 +8,7 @@ mod common;
 
 use common::TestServer;
 use klams_mcp::tools::{
-    memory_add::{run as memory_add, FactTypeArg, MemoryAddArgs, MemoryAddContent},
+    memory_add::{run as memory_add, FactTypeArg, MemoryAddArgs},
     memory_related::{run as memory_related, MemoryRelatedArgs},
     memory_search::{run as memory_search, MemoryKindFilter, MemorySearchArgs},
     register_author::{run as register, RegisterAuthorInput},
@@ -21,20 +21,20 @@ fn mcp_state_from(server: &TestServer) -> McpState {
     McpState::new(
         Arc::clone(&server.store),
         Arc::new(MaintenanceState::default()),
-        Arc::new(vec![]),
         klams_types::ApiConfig::default(),
     )
 }
 
 #[ignore = "requires docker compose stack"]
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // comprehensive smoke: shape + filters + leak
 async fn memory_search_smoke() {
     let server = TestServer::spawn().await;
     let state = mcp_state_from(&server);
     let author = register(
         &state,
         RegisterAuthorInput {
-            agent_name: "GHCP-test-search".into(),
+            agent_name: "ghcp-test-search".into(),
             model: None,
             session_title: None,
             repo: None,
@@ -49,16 +49,14 @@ async fn memory_search_smoke() {
     // Seed a fact + a knowledge item so both backends contribute.
     memory_add(
         &state,
-        MemoryAddArgs {
-            author_id: author.author_id,
-            content: MemoryAddContent::Fact {
-                fact_type: FactTypeArg::EnvFact,
-                payload: serde_json::json!({
-                    "key": "phase4-search-target",
-                    "value": "needle phase4 search"
-                }),
-            },
-        },
+        MemoryAddArgs::fact(
+            author.author_id,
+            FactTypeArg::EnvFact,
+            serde_json::json!({
+                "key": "PHASE4_SEARCH_TARGET",
+                "value": "needle phase4 search"
+            }),
+        ),
     )
     .await
     .expect("seed fact");
@@ -66,17 +64,31 @@ async fn memory_search_smoke() {
     memory_add(
         &state,
         MemoryAddArgs {
-            author_id: author.author_id,
-            content: MemoryAddContent::Knowledge {
-                text: "phase4 search needle knowledge body".into(),
-                tags: vec!["phase4".into()],
-                source_path: None,
-                repo: None,
-            },
+            tags: vec!["phase4".into()],
+            source_path: None,
+            repo: None,
+            ..MemoryAddArgs::knowledge(author.author_id, "phase4 search needle knowledge body")
         },
     )
     .await
     .expect("seed knowledge");
+
+    // Sprint 017: a second knowledge item so the knowledge-only query
+    // below returns >=2 hits with distinct, real per-source ranks.
+    memory_add(
+        &state,
+        MemoryAddArgs {
+            tags: vec!["phase4".into()],
+            source_path: None,
+            repo: None,
+            ..MemoryAddArgs::knowledge(
+                author.author_id,
+                "a second needle knowledge entry for ranking",
+            )
+        },
+    )
+    .await
+    .expect("seed knowledge 2");
 
     let hits = memory_search(
         &state,
@@ -86,15 +98,34 @@ async fn memory_search_smoke() {
             tags: None,
             top_k: Some(20),
         },
+        None,
     )
     .await
     .expect("memory_search");
     assert!(!hits.is_empty(), "expected at least one search hit");
-    // FR-011: projection must not leak internal fields. PublicMemory
-    // has no version / confidence / decay_weight by construction;
-    // round-trip through serde and confirm.
-    let json = serde_json::to_value(&hits[0]).expect("serialize");
-    let obj = json.as_object().expect("object");
+    // Sprint 016: each result is a ScoredMemory envelope. The score is
+    // present (finite) and source_rank is a real per-source rank.
+    let hit = serde_json::to_value(&hits[0]).expect("serialize");
+    let obj = hit.as_object().expect("object");
+    assert!(obj.contains_key("score"), "ScoredMemory missing score");
+    assert!(
+        obj.contains_key("source_rank"),
+        "ScoredMemory missing source_rank"
+    );
+    assert!(obj.contains_key("memory"), "ScoredMemory missing memory");
+    // source_kind would duplicate memory.kind — must NOT be a field.
+    assert!(!obj.contains_key("source_kind"));
+    assert!(hits[0].score.is_finite(), "score must be finite");
+    // Sprint 017: the merged result list is ordered by score descending
+    // — the cross-source fusion invariant the eval harness relies on.
+    // Assert the behavior, not just that the field exists.
+    assert!(
+        hits.windows(2).all(|w| w[0].score >= w[1].score),
+        "merged results must be sorted by score descending"
+    );
+    // FR-011: the wrapped projection must not leak internal fields.
+    let mem = &obj["memory"];
+    let mem_obj = mem.as_object().expect("memory object");
     for forbidden in [
         "version",
         "confidence",
@@ -103,7 +134,7 @@ async fn memory_search_smoke() {
         "deleted_at",
     ] {
         assert!(
-            !obj.contains_key(forbidden),
+            !mem_obj.contains_key(forbidden),
             "PublicMemory leaked `{forbidden}`"
         );
     }
@@ -117,12 +148,35 @@ async fn memory_search_smoke() {
             tags: None,
             top_k: Some(20),
         },
+        None,
     )
     .await
     .expect("memory_search knowledge-only");
     assert!(only_knowledge
         .iter()
-        .all(|m| m.kind() == MemoryKind::Knowledge));
+        .all(|h| h.memory.kind() == MemoryKind::Knowledge));
+    // Sprint 017: with two seeded knowledge items the single-source
+    // result carries real per-source ranks. `source_rank` must reflect
+    // that source's own ordering: the ranks form a 0-based contiguous
+    // set, and a lower rank carries a higher-or-equal score.
+    assert!(
+        only_knowledge.len() >= 2,
+        "expected >=2 knowledge hits to exercise per-source ranking"
+    );
+    let mut rank_score: Vec<(usize, f32)> = only_knowledge
+        .iter()
+        .map(|h| (h.source_rank as usize, h.score))
+        .collect();
+    rank_score.sort_by_key(|(r, _)| *r);
+    assert_eq!(
+        rank_score.iter().map(|(r, _)| *r).collect::<Vec<_>>(),
+        (0..only_knowledge.len()).collect::<Vec<_>>(),
+        "single-source `source_rank`s must be 0-based and contiguous"
+    );
+    assert!(
+        rank_score.windows(2).all(|w| w[0].1 >= w[1].1),
+        "a lower source_rank must carry a higher-or-equal score"
+    );
 
     // Tag filter is honored.
     let tagged = memory_search(
@@ -133,10 +187,68 @@ async fn memory_search_smoke() {
             tags: Some(vec!["phase4".into()]),
             top_k: Some(20),
         },
+        None,
     )
     .await
     .expect("memory_search tagged");
-    assert!(tagged.iter().all(|m| m.tags.iter().any(|t| t == "phase4")));
+    assert!(tagged
+        .iter()
+        .all(|h| h.memory.tags.iter().any(|t| t == "phase4")));
+}
+
+/// Sprint 021 (#317): a search that returns nothing must land in the
+/// miss log — a `search_miss` row keyed by the query text and caller.
+/// Uses an isolated server (empty Qdrant collection + truncated
+/// facts/events) so a query is guaranteed zero-hit; on the shared
+/// collection ANN would still return low-scoring neighbours.
+#[ignore = "requires docker compose stack"]
+#[tokio::test]
+async fn zero_hit_search_records_a_miss() {
+    let server = TestServer::spawn_isolated().await;
+    let state = mcp_state_from(&server);
+
+    let nonce = uuid::Uuid::new_v4().simple().to_string();
+    let query = format!("zzz-no-such-term-{nonce}");
+    let caller = format!("miss-log-caller-{nonce}");
+
+    let hits = memory_search(
+        &state,
+        MemorySearchArgs {
+            query: query.clone(),
+            kinds: None,
+            tags: None,
+            top_k: Some(10),
+        },
+        Some(caller.as_str()),
+    )
+    .await
+    .expect("memory_search");
+    assert!(hits.is_empty(), "query should be a guaranteed zero-hit");
+
+    // The insert is fire-and-forget (spawned), so poll for the row.
+    let pool = server.store.postgres.pool();
+    let mut found: Option<(String, String, i32)> = None;
+    for _ in 0..30 {
+        found = sqlx::query_as::<_, (String, String, i32)>(
+            "SELECT reason, caller, hit_count FROM search_miss WHERE query = $1",
+        )
+        .bind(&query)
+        .fetch_optional(pool)
+        .await
+        .expect("query search_miss");
+        if found.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    let (reason, got_caller, hit_count) =
+        found.expect("zero-hit search should have written a search_miss row");
+    assert_eq!(reason, "zero_hit");
+    assert_eq!(got_caller, caller);
+    assert_eq!(hit_count, 0);
+
+    server.cleanup().await;
 }
 
 #[ignore = "requires docker compose stack"]
@@ -147,7 +259,7 @@ async fn memory_related_smoke() {
     let author = register(
         &state,
         RegisterAuthorInput {
-            agent_name: "GHCP-test-related".into(),
+            agent_name: "ghcp-test-related".into(),
             model: None,
             session_title: None,
             repo: None,
@@ -165,13 +277,13 @@ async fn memory_related_smoke() {
         let mem = memory_add(
             &state,
             MemoryAddArgs {
-                author_id: author.author_id,
-                content: MemoryAddContent::Knowledge {
-                    text: format!("phase4 related seed point number {i} about kittens"),
-                    tags: vec!["related-seed".into()],
-                    source_path: None,
-                    repo: None,
-                },
+                tags: vec!["related-seed".into()],
+                source_path: None,
+                repo: None,
+                ..MemoryAddArgs::knowledge(
+                    author.author_id,
+                    format!("phase4 related seed point number {i} about kittens"),
+                )
             },
         )
         .await

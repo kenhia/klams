@@ -59,12 +59,33 @@ impl<S: Store> HybridStore for StoreHybridAdapter<S> {
                 let vec = self.store.embed_query(query).await?;
                 let hits = self.store.search_knowledge(vec, fetch_cap).await?;
                 let max = hits.iter().map(|(_, s)| *s).fold(0.0_f32, f32::max);
+                // Sprint 029 (#644): tier boost only for hits that are
+                // raw-score-competitive for this query (same rule as
+                // MCP memory_search's `boost_threshold`).
+                let boost_floor = crate::provenance::boost_threshold(max);
                 let rows: Vec<RankedRow> = hits
                     .into_iter()
                     .map(|(item, score)| RankedRow {
                         source: RetrievalSource::Vector,
                         id: item.id,
                         score: normalize(score, max),
+                        // Sprint 029 (#644): provenance weighting on the
+                        // shared REST/context seam. No author lookup here,
+                        // so klams-mind extracts get the hand-authored
+                        // weight rather than the mid tier — the full
+                        // three-tier split (and the curated-stratum 4th
+                        // fusion source) lives on the MCP `memory_search`
+                        // path, which already resolves authors.
+                        weight: adapter_knowledge_weight(&item, score >= boost_floor),
+                        // Sprint 026 (#641): `content_hash` is the collapse
+                        // key and the eval's no-duplicates assertion;
+                        // `host` completes the (host, file) pair a caller
+                        // needs to act on a hit — and, since
+                        // `matches_filters` reads `host` from this payload,
+                        // its absence silently dropped every knowledge row
+                        // whenever a host filter was set. The chunk fields
+                        // have been stored since 022 and projected by
+                        // nobody.
                         payload: serde_json::json!({
                             "kind": ItemKind::Raw,
                             "section": "knowledge",
@@ -72,11 +93,23 @@ impl<S: Store> HybridStore for StoreHybridAdapter<S> {
                             "file": item.file,
                             "tags": item.tags,
                             "repo": item.repo,
+                            "host": item.machine,
+                            "content_hash": item.content_hash,
+                            "heading_path": item.heading_path,
+                            "language": item.language,
+                            "chunk_index": item.chunk_index,
                         }),
                     })
                     .filter(|r| matches_filters(&r.payload, filters))
-                    .take(per_source_top_k as usize)
                     .collect();
+                // Sprint 026 (#641): collapse duplicate content BEFORE
+                // truncating to `per_source_top_k`, so the freed slots go
+                // to new content rather than leaving a short page. The ×3
+                // over-fetch above is what makes that possible. Both REST
+                // read paths (`/memory/search` and `/memory/context`) come
+                // through here, so they collapse identically to MCP
+                // `memory_search`.
+                let rows = collapse_knowledge_rows(rows, per_source_top_k as usize);
                 Ok(rows)
             }
             RetrievalSource::Fts => {
@@ -99,6 +132,60 @@ impl<S: Store> HybridStore for StoreHybridAdapter<S> {
             }
         }
     }
+}
+
+/// Provenance × volatility fusion weight for a knowledge hit on the
+/// adapter (REST `/memory/search` + `/memory/context`) path — the
+/// author-blind approximation of `memory_search`'s three-tier weight
+/// (sprint 029, #644).
+fn adapter_knowledge_weight(item: &klams_types::KnowledgeItem, boost_eligible: bool) -> f32 {
+    let tier =
+        crate::provenance::ProvenanceTier::classify(item.source, None, item.machine.is_some());
+    let tier_w = if boost_eligible { tier.weight() } else { 1.0 };
+    #[allow(clippy::cast_precision_loss)]
+    let age_days =
+        ((time::OffsetDateTime::now_utc() - item.created_at).whole_seconds() as f32) / 86_400.0;
+    tier_w * crate::provenance::volatility_demotion(item.volatility.as_deref(), age_days)
+}
+
+/// Collapse duplicate-content knowledge rows, then truncate to `top_k`
+/// (sprint 026, #641).
+///
+/// `rows` is best-first, so the survivor of each content group is the
+/// best-ranked copy. The survivor's payload gains a `copies` array of
+/// the absorbed points (`{id, host, file}`), which reaches REST callers
+/// verbatim because `SearchHit.payload` is this payload. Rows with no
+/// `content_hash` (pre-022 points) are never collapsed.
+fn collapse_knowledge_rows(rows: Vec<RankedRow>, top_k: usize) -> Vec<RankedRow> {
+    let payload_str = |r: &RankedRow, k: &str| {
+        r.payload
+            .get(k)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    };
+    crate::dedupe::collapse_duplicates(
+        rows,
+        |r| payload_str(r, "content_hash"),
+        |r| klams_types::KnowledgeCopy {
+            id: r.id,
+            host: payload_str(r, "host"),
+            file: payload_str(r, "file"),
+        },
+    )
+    .into_iter()
+    .take(top_k)
+    .map(|(mut row, copies)| {
+        if !copies.is_empty() {
+            if let Some(obj) = row.payload.as_object_mut() {
+                obj.insert(
+                    "copies".into(),
+                    serde_json::to_value(&copies).unwrap_or(serde_json::Value::Null),
+                );
+            }
+        }
+        row
+    })
+    .collect()
 }
 
 /// Post-filter a payload `Value` against the request's `RetrievalFilters`.
@@ -189,6 +276,7 @@ fn into_rows(hits: Vec<TextHit>, section: &'static str) -> Vec<RankedRow> {
                 source: RetrievalSource::Fts,
                 id: h.id,
                 score: normalize(h.score, max),
+                weight: 1.0,
                 payload,
             }
         })
@@ -244,7 +332,10 @@ fn rrf(sources: Vec<Vec<RankedRow>>, k: u32) -> Vec<RankedRow> {
         for (rank, row) in rows.into_iter().enumerate() {
             #[allow(clippy::cast_precision_loss)]
             let r = (rank as f32) + 1.0;
-            let inc = 1.0 / (k_f + r);
+            // Sprint 029 (#644): weighted RRF. `weight == 1.0` is the
+            // classic formula; a curated hit's weight scales its
+            // contribution from every list it appears in.
+            let inc = row.weight / (k_f + r);
             *score.entry(row.id).or_insert(0.0) += inc;
             acc.entry(row.id)
                 .and_modify(|r| r.score = 0.0)
@@ -270,7 +361,9 @@ fn weighted(
                 klams_types::RetrievalSource::Fts => w_fts,
                 klams_types::RetrievalSource::MetadataOnly => 0.0,
             };
-            *score.entry(row.id).or_insert(0.0) += ns * w;
+            // Per-hit weight composes with the per-source weight so
+            // provenance weighting (#644) survives a Weighted config.
+            *score.entry(row.id).or_insert(0.0) += ns * w * row.weight;
             acc.entry(row.id)
                 .and_modify(|r| r.score = 0.0)
                 .or_insert(row);
@@ -327,12 +420,32 @@ fn finalize(mut acc: HashMap<Uuid, RankedRow>, score: &HashMap<Uuid, f32>) -> Ve
         }
     }
     let mut out: Vec<RankedRow> = acc.into_values().collect();
+    // Sprint 029 (#644): ties must break deterministically. `acc` is a
+    // HashMap, so `into_values()` order is randomized per process; a
+    // score-only sort left equal-scored rows (e.g. fact@0 vs
+    // knowledge@0, both exactly w/(k+1)) in hash order — identical
+    // calls returned different pages. Tie-break: source discriminant
+    // (Vector < Fts < MetadataOnly), then id.
     out.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| source_order(a.source).cmp(&source_order(b.source)))
+            .then_with(|| a.id.cmp(&b.id))
     });
     out
+}
+
+/// Stable ordering discriminant for the deterministic tie-break in
+/// [`finalize`]. Vector (knowledge) wins ties over Fts (facts/events)
+/// — a choice made for stability, not semantics; provenance weights,
+/// not this ordering, decide who *should* win.
+fn source_order(s: RetrievalSource) -> u8 {
+    match s {
+        RetrievalSource::Vector => 0,
+        RetrievalSource::Fts => 1,
+        RetrievalSource::MetadataOnly => 2,
+    }
 }
 
 #[cfg(test)]
@@ -354,8 +467,122 @@ mod tests {
             source,
             id: Uuid::now_v7(),
             score,
+            weight: 1.0,
             payload: serde_json::json!({}),
         }
+    }
+
+    // ---- Sprint 026 (#641): duplicate collapse on the shared REST +
+    // context seam. `/memory/search` and `/memory/context` both retrieve
+    // through `StoreHybridAdapter`, so collapsing here covers both.
+
+    fn krow(hash: &str, host: &str, score: f32) -> RankedRow {
+        RankedRow {
+            source: RetrievalSource::Vector,
+            id: Uuid::now_v7(),
+            score,
+            weight: 1.0,
+            payload: serde_json::json!({
+                "section": "knowledge",
+                "text": format!("body of {hash}"),
+                "file": format!("/home/ken/src/{hash}.md"),
+                "host": host,
+                "content_hash": hash,
+            }),
+        }
+    }
+
+    #[test]
+    fn duplicate_rows_collapse_and_free_slots_go_to_new_content() {
+        // Over-fetched list: 3 chunks × 2 hosts. Asking for 3 must
+        // return 3 *distinct* chunks, not "aaa, aaa, bbb".
+        let rows = vec![
+            krow("aaa", "kai", 0.91),
+            krow("aaa", "kubs0", 0.90),
+            krow("bbb", "kai", 0.89),
+            krow("bbb", "kubs0", 0.88),
+            krow("ccc", "kai", 0.87),
+            krow("ccc", "kubs0", 0.86),
+        ];
+        let out = collapse_knowledge_rows(rows, 3);
+        assert_eq!(out.len(), 3);
+        let hashes: Vec<_> = out
+            .iter()
+            .map(|r| r.payload["content_hash"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            hashes,
+            vec!["aaa", "bbb", "ccc"],
+            "the freed slots must fill with new content"
+        );
+    }
+
+    #[test]
+    fn the_surviving_row_carries_its_copies_in_the_payload() {
+        // SearchHit.payload IS this payload, so this is what a REST
+        // caller sees.
+        let dupe = krow("aaa", "kubs0", 0.90);
+        let dupe_id = dupe.id;
+        let out = collapse_knowledge_rows(vec![krow("aaa", "kai", 0.91), dupe], 10);
+        assert_eq!(out.len(), 1);
+        let copies = out[0].payload["copies"].as_array().expect("copies array");
+        assert_eq!(copies.len(), 1);
+        assert_eq!(copies[0]["id"].as_str().unwrap(), dupe_id.to_string());
+        assert_eq!(copies[0]["host"].as_str().unwrap(), "kubs0");
+        assert_eq!(copies[0]["file"].as_str().unwrap(), "/home/ken/src/aaa.md");
+    }
+
+    #[test]
+    fn a_row_that_collapsed_nothing_has_no_copies_key() {
+        let out = collapse_knowledge_rows(vec![krow("aaa", "kai", 0.91)], 10);
+        assert!(
+            out[0].payload.get("copies").is_none(),
+            "no empty copies array on the wire for a result that absorbed nothing"
+        );
+    }
+
+    #[test]
+    fn rows_without_a_content_hash_are_never_collapsed() {
+        // Pre-sprint-022 points carry no content_hash.
+        let out = collapse_knowledge_rows(
+            vec![
+                row(RetrievalSource::Vector, 0.9),
+                row(RetrievalSource::Vector, 0.8),
+            ],
+            10,
+        );
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn collapse_truncates_to_top_k_after_collapsing_not_before() {
+        // If truncation ran first, asking for 2 from [aaa, aaa, bbb]
+        // would yield a 1-result page. It must yield 2.
+        let rows = vec![
+            krow("aaa", "kai", 0.91),
+            krow("aaa", "kubs0", 0.90),
+            krow("bbb", "kai", 0.89),
+        ];
+        let out = collapse_knowledge_rows(rows, 2);
+        assert_eq!(out.len(), 2, "a full page after collapse, not a short one");
+    }
+
+    #[test]
+    fn host_is_present_in_the_payload_so_a_host_filter_can_match() {
+        // `matches_filters` reads `host` from the payload; before 026 the
+        // vector payload had no `host` key at all, so any host-filtered
+        // knowledge query dropped every row.
+        let r = krow("aaa", "kubs0", 0.9);
+        let f = RetrievalFilters {
+            host: Some("kubs0".into()),
+            ..Default::default()
+        };
+        assert!(matches_filters(&r.payload, &f));
+        let f_other = RetrievalFilters {
+            host: Some("kai".into()),
+            ..Default::default()
+        };
+        assert!(!matches_filters(&r.payload, &f_other));
     }
 
     #[test]
@@ -419,6 +646,92 @@ mod tests {
         assert!(fused.is_empty());
         let fused = fuse(vec![Vec::<RankedRow>::new()], FusionStrategy::default_rrf());
         assert!(fused.is_empty());
+    }
+
+    // ---- Sprint 029 (#644): weighted RRF + deterministic ties.
+
+    #[test]
+    fn neutral_weights_reproduce_classic_rrf_scores() {
+        let fused = fuse(
+            vec![vec![row(RetrievalSource::Vector, 0.9)]],
+            FusionStrategy::Rrf { k: 60 },
+        );
+        assert!((fused[0].score - 1.0 / 61.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_weighted_hit_outscores_a_better_ranked_neutral_hit() {
+        // The #628 shape: a curated gotcha at rank 2 loses to bulk at
+        // rank 0 under classic RRF. With weight 2.0 it must win:
+        // 2/63 > 1/61.
+        let mut curated = row(RetrievalSource::Vector, 0.7);
+        curated.weight = 2.0;
+        let curated_id = curated.id;
+        let list = vec![
+            row(RetrievalSource::Vector, 0.9),
+            row(RetrievalSource::Vector, 0.8),
+            curated,
+        ];
+        let fused = fuse(vec![list], FusionStrategy::Rrf { k: 60 });
+        assert_eq!(
+            fused[0].id, curated_id,
+            "weight must scale contribution enough to invert a 2-rank gap"
+        );
+    }
+
+    #[test]
+    fn weights_scale_contribution_but_never_reorder_within_equal_weights() {
+        // All-equal weights ≠ 1.0 must preserve the classic ordering.
+        let mut a = row(RetrievalSource::Vector, 0.9);
+        let mut b = row(RetrievalSource::Vector, 0.5);
+        a.weight = 1.5;
+        b.weight = 1.5;
+        let (ia, ib) = (a.id, b.id);
+        let fused = fuse(vec![vec![a, b]], FusionStrategy::default_rrf());
+        assert_eq!(fused[0].id, ia);
+        assert_eq!(fused[1].id, ib);
+    }
+
+    #[test]
+    fn equal_scores_break_ties_deterministically_across_repeated_calls() {
+        // fact@0 vs knowledge@0 both score exactly w/(k+1). Before 029
+        // the winner was HashMap iteration order — different across
+        // processes, and observable as a nondeterministic page. Fuse
+        // the same inputs repeatedly: the order must never change, and
+        // Vector must win the tie (documented in `source_order`).
+        let k = row(RetrievalSource::Vector, 0.9);
+        let f = row(RetrievalSource::Fts, 0.9);
+        let (kid, fid) = (k.id, f.id);
+        for _ in 0..50 {
+            let fused = fuse(
+                vec![vec![k.clone()], vec![f.clone()]],
+                FusionStrategy::default_rrf(),
+            );
+            assert_eq!(fused[0].id, kid, "Vector wins score ties");
+            assert_eq!(fused[1].id, fid);
+        }
+    }
+
+    #[test]
+    fn same_source_ties_fall_back_to_id_order() {
+        // Two knowledge rows fused from two different lists at the
+        // same rank: equal score, equal source. The id decides —
+        // deterministically, in either insertion order.
+        let a = row(RetrievalSource::Vector, 0.9);
+        let b = row(RetrievalSource::Vector, 0.9);
+        let mut ids = [a.id, b.id];
+        ids.sort();
+        let fused_ab = fuse(
+            vec![vec![a.clone()], vec![b.clone()]],
+            FusionStrategy::default_rrf(),
+        );
+        let fused_ba = fuse(vec![vec![b], vec![a]], FusionStrategy::default_rrf());
+        assert_eq!(fused_ab[0].id, ids[0]);
+        assert_eq!(
+            fused_ab.iter().map(|r| r.id).collect::<Vec<_>>(),
+            fused_ba.iter().map(|r| r.id).collect::<Vec<_>>(),
+            "insertion order must not leak into the page"
+        );
     }
 
     #[test]

@@ -10,6 +10,7 @@ pub mod config;
 pub mod context;
 pub mod decay;
 pub mod dissent;
+pub mod embed_limit;
 pub mod entities;
 pub mod error;
 pub mod hash;
@@ -22,7 +23,9 @@ pub mod responses;
 pub mod retrieval;
 pub mod search;
 pub mod summary;
+pub mod text;
 pub mod validation;
+pub mod window;
 
 /// UUID of the seeded `system` author. Backfilled into every pre-MCP fact
 /// and event row by migrations 0006 and 0007.
@@ -47,7 +50,8 @@ pub fn system_author_id() -> uuid::Uuid {
 }
 
 pub use auth::{
-    validate_agent_name, AgentNameInvalidReason, AuthConfigError, Scope, TokenGrantConfig,
+    validate_agent_name, AgentNameInvalidReason, AuthConfigError, AuthenticatedAuthor,
+    AuthenticatedScopes, Scope, TokenGrantConfig,
 };
 pub use author::{AuthorRecord, PublicAuthorRef, RegisterAuthorArgs, RegisterAuthorError};
 pub use config::{ApiConfig, BackupConfig, BackupConfigError, SameDayStrategy, WindowStartUtc};
@@ -57,12 +61,13 @@ pub use context::{
 };
 pub use decay::DecayConfig;
 pub use dissent::{Dissent, DissentStatus, DissentSubmittedResponse, FactWriteOutcome};
+pub use embed_limit::{estimate_tokens, EmbedLimit, Oversize, DEFAULT_MAX_INPUT_TOKENS};
 pub use entities::{Event, Fact, FactType, KnowledgeItem, Source};
 pub use error::ApiError;
 pub use hash::canonical_json_hash;
 pub use health::{HealthSnapshot, HealthStatus, QueueStatus, SubsystemStatus};
 pub use maintenance::{MaintenanceSnapshot, MaintenanceState, RunningSnapshot};
-pub use memory::{MemoryKind, PublicMemory, PublicMemoryContent};
+pub use memory::{KnowledgeCopy, MemoryKind, PublicMemory, PublicMemoryContent, ScoredMemory};
 pub use pipeline::{AppendEvent, IndexKnowledge, MemoryWrite, UpsertFact};
 pub use requests::{
     AppendEventRequest, IndexKnowledgeRequest, ListAuthorMemoriesParams, ListAuthorsParams,
@@ -77,4 +82,6 @@ pub use responses::{
 pub use retrieval::{FusionStrategy, HybridQueryPlan, RetrievalSource, WeightedNorm};
 pub use search::{SearchHit, SearchType};
 pub use summary::{DigestCluster, EventSummary, KnowledgeDigest, SummaryMechanism};
+pub use text::normalize_chunk_text;
 pub use validation::{ErrorDetail, ValidationError, ValidationResult};
+pub use window::{validate_window, WindowError};

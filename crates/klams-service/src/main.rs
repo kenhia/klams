@@ -62,8 +62,10 @@ async fn main() -> Result<()> {
     for warning in cfg.backup.warnings() {
         tracing::warn!("{warning}");
     }
-    service_backup::metrics::describe();
-    service_backup::metrics::set_maintenance_active(false);
+    // NOTE: metric describes/sets happen AFTER `with_metrics` installs
+    // the global recorder (below) — a write made before the recorder
+    // exists is silently dropped (sprint 020: the maintenance-mode
+    // gauge was set here pre-recorder and its panel showed No Data).
     let maintenance_state = MaintenanceState::new();
 
     if run_now {
@@ -96,13 +98,17 @@ async fn main() -> Result<()> {
     // Sprint 014 — the embedder engine is a config choice; `tei`
     // keeps the pre-014 behavior, `openai` speaks the OpenAI-compat
     // dialect (vLLM, TEI's /v1 route, …).
+    // Sprint 027 (#420) — one ceiling, configured once, enforced by the
+    // embedder and by every ingest path that can reach it.
+    let embed_limit = cfg.embeddings.limit();
     let embedder: Arc<dyn Embedder> = match cfg.embeddings.api {
         config::EmbeddingsApi::Tei => Arc::new(
             TeiEmbedder::new(
                 cfg.embeddings.url.clone(),
                 cfg.embeddings.vector_dim as usize,
             )
-            .context("building TEI client")?,
+            .context("building TEI client")?
+            .with_limit(embed_limit),
         ),
         config::EmbeddingsApi::Openai => Arc::new(
             OpenAiCompatEmbedder::new(
@@ -111,12 +117,24 @@ async fn main() -> Result<()> {
                 cfg.embeddings.vector_dim as usize,
                 cfg.embeddings.api_key.clone(),
             )
-            .context("building OpenAI-compat embedding client")?,
+            .context("building OpenAI-compat embedding client")?
+            .with_limit(embed_limit),
         ),
     };
+    tracing::info!(
+        max_input_tokens = embed_limit.max_input_tokens(),
+        max_chars = embed_limit.max_chars(),
+        "embedder size gate active"
+    );
     let (bumper, bumps_rx) = LastUsedBumper::channel();
-    let store =
-        Arc::new(CompositeStore::new(postgres, qdrant, embedder).with_bump_sender(bumper.sender()));
+    if !cfg.embeddings.query_prefix.is_empty() {
+        tracing::info!(prefix = %cfg.embeddings.query_prefix, "asymmetric query prefix active");
+    }
+    let store = Arc::new(
+        CompositeStore::new(postgres, qdrant, embedder)
+            .with_bump_sender(bumper.sender())
+            .with_query_prefix(cfg.embeddings.query_prefix.clone()),
+    );
 
     cfg.decay.log_resolved();
     if let Err(err) = cfg.decay.validate() {
@@ -157,6 +175,25 @@ async fn main() -> Result<()> {
         });
     }
 
+    // Sprint 027 (#656): the oversize-write log keeps whole rejected
+    // payloads, so unlike the miss log it cannot be left to grow. Prune
+    // daily against the configured retention.
+    {
+        let store = Arc::clone(&store);
+        let retention_days = cfg.embeddings.oversize_log_retention_days;
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(24 * 60 * 60));
+            loop {
+                tick.tick().await;
+                match store.postgres.prune_oversize_writes(retention_days).await {
+                    Ok(0) => {}
+                    Ok(n) => info!(pruned = n, retention_days, "pruned oversize-write log"),
+                    Err(e) => tracing::warn!(%e, "prune_oversize_writes failed"),
+                }
+            }
+        });
+    }
+
     let token_mode = klams_core::tokens::TokenMode::from_config_str(&cfg.tokens.mode);
     let token_counter = klams_core::tokens::TokenCounter::new(token_mode);
     info!(
@@ -166,6 +203,9 @@ async fn main() -> Result<()> {
     );
     let context_builder = Arc::new(
         klams_core::context::ContextBuilder::new(token_counter, cfg.retrieval.per_source_top_k)
+            // Sprint 024 (#330): apply the [retrieval] fusion config
+            // (previously parsed but never wired).
+            .with_fusion(cfg.retrieval.fusion_strategy())
             .with_summary_store(Arc::clone(&store) as Arc<dyn klams_store::SummaryStore>),
     );
 
@@ -201,55 +241,76 @@ async fn main() -> Result<()> {
         validators: Arc::new(ValidatorRegistry::with_defaults()),
         context_builder,
         maintenance: maintenance_state.clone(),
+        embed_limit,
     };
     // Sprint 007 — unify legacy `bearer_token` + scoped `[[auth.tokens]]`
     // into a single `AuthState` and apply the same `require_bearer`
     // layer to both the REST router and the nested `/mcp` router.
     // Previously /mcp was unauthenticated because the layer only sat on
     // the REST sub-router inside `build_router`.
-    let mut all_grants: Vec<klams_api::auth::TokenGrant> = Vec::new();
-    if !cfg.auth.bearer_token.is_empty() {
-        all_grants.push(klams_api::auth::TokenGrant::new(
-            cfg.auth.bearer_token.clone(),
-            vec![
-                klams_types::Scope::Read,
-                klams_types::Scope::Write,
-                klams_types::Scope::Admin,
-            ],
-            Some("legacy".into()),
-        ));
-    }
-    for g in &cfg.auth.tokens {
-        let (author_id, agent_name) = resolve_token_author(&store, g).await?;
-        tracing::info!(
-            token_label = %g.label.as_deref().unwrap_or(""),
-            agent_name = %agent_name,
-            %author_id,
-            "bound bearer to author"
-        );
-        all_grants.push(klams_api::auth::TokenGrant::new_with_author(
-            g.token.clone(),
-            g.scopes.clone(),
-            g.label.clone(),
-            author_id,
-            agent_name,
-        ));
-    }
-    let auth_state = klams_api::auth::AuthState::with_grants(all_grants.clone());
+    let all_grants = build_auth_grants(&store, &cfg.auth).await?;
+    let auth_state = klams_api::auth::AuthState::with_grants(all_grants);
+
+    // Sprint 018 (WI #61) — SIGHUP re-reads the config and atomically
+    // swaps the token table shared by the REST and /mcp layers, so
+    // `[[auth.tokens]]` rotations don't need a service restart. A
+    // failed reload keeps the previous table in effect.
+    spawn_auth_reload_on_sighup(config_path.clone(), Arc::clone(&store), auth_state.clone());
 
     let api_router = build_router_with_auth(state, auth_state.clone());
-    let mcp_grants = std::sync::Arc::new(all_grants);
-    let mcp_state = klams_mcp::tools::McpState::new(
+    let mut mcp_state = klams_mcp::tools::McpState::new(
         Arc::clone(&store),
         std::sync::Arc::new(maintenance_state.clone()),
-        mcp_grants,
         cfg.api.clone(),
     );
+    // Sprint 024 (#330): MCP search fuses with the configured strategy.
+    mcp_state.fusion = cfg.retrieval.fusion_strategy();
+    // Sprint 027 (#420): the same ceiling the REST path and the embedder
+    // enforce, so `memory_add` refuses over-budget text up front.
+    mcp_state.embed_limit = embed_limit;
+    // Sprint 030 (#685): optional second-stage reranker. A bad URL is a
+    // config error worth failing startup for — silently searching
+    // un-reranked while the config says otherwise would be worse.
+    if let Some(url) = cfg.retrieval.reranker_url.as_deref() {
+        mcp_state.reranker = Some(std::sync::Arc::new(klams_store::TeiReranker::new(url)?));
+        mcp_state.rerank_window = cfg.retrieval.rerank_window as usize;
+        info!(
+            reranker_url = url,
+            window = cfg.retrieval.rerank_window,
+            "second-stage reranker enabled"
+        );
+    }
     let mcp_router = klams_mcp::router(mcp_state, cfg.server.mcp_allowed_hosts.clone()).layer(
         axum::middleware::from_fn_with_state(auth_state, klams_api::require_bearer),
     );
     let router = with_metrics(api_router.nest("/mcp", mcp_router));
+    // The global recorder now exists — everything metric-shaped from
+    // here on sticks. Sprint 020: the maintenance gauge and backup
+    // describes used to run ~160 lines earlier and were dropped,
+    // leaving their Grafana panels on "No Data" forever.
     klams_core::metrics::describe();
+    service_backup::metrics::describe();
+    service_backup::metrics::set_maintenance_active(false);
+    // Seed the last-success gauge from the newest artifact on disk so
+    // "Last backup age" is honest immediately after a restart instead
+    // of No Data until the next nightly run.
+    if cfg.backup.enabled {
+        if let Some(dir) = cfg.backup.backup_dir.as_ref() {
+            match service_backup::newest_backup_unix_seconds(dir) {
+                Ok(Some(ts)) => {
+                    service_backup::metrics::record_last_success(ts);
+                    info!(
+                        unix_seconds = ts,
+                        "seeded last-backup-success gauge from disk"
+                    );
+                }
+                Ok(None) => {
+                    tracing::warn!(dir = %dir.display(), "no existing backup artifacts to seed last-success gauge");
+                }
+                Err(e) => tracing::warn!(error = %e, "could not seed last-success gauge"),
+            }
+        }
+    }
 
     // Sprint 007 T024 — one-shot Qdrant author backfill at startup.
     {
@@ -334,6 +395,107 @@ async fn shutdown_signal() {
         () = ctrl_c => {}
         () = terminate => {}
     }
+}
+
+/// Materialize the full grant list from an `[auth]` config block:
+/// the legacy `bearer_token` (all scopes) plus each `[[auth.tokens]]`
+/// entry with its author binding resolved. Used at startup and by the
+/// SIGHUP reload path (sprint 018, WI #61).
+async fn build_auth_grants(
+    store: &Arc<CompositeStore>,
+    auth: &config::AuthConfig,
+) -> Result<Vec<klams_api::auth::TokenGrant>> {
+    let mut all_grants: Vec<klams_api::auth::TokenGrant> = Vec::new();
+    if !auth.bearer_token.is_empty() {
+        all_grants.push(klams_api::auth::TokenGrant::new(
+            auth.bearer_token.clone(),
+            // Sprint 025: `Manage` included — the legacy bearer is the
+            // "everything" token, and scopes are flat, so leaving it out
+            // would silently strip cross-author curation on upgrade.
+            vec![
+                klams_types::Scope::Read,
+                klams_types::Scope::Write,
+                klams_types::Scope::Manage,
+                klams_types::Scope::Admin,
+            ],
+            Some("legacy".into()),
+        ));
+    }
+    for g in &auth.tokens {
+        let (author_id, agent_name) = resolve_token_author(store, g).await?;
+        tracing::info!(
+            token_label = %g.label.as_deref().unwrap_or(""),
+            agent_name = %agent_name,
+            %author_id,
+            "bound bearer to author"
+        );
+        all_grants.push(klams_api::auth::TokenGrant::new_with_author(
+            g.token.clone(),
+            g.scopes.clone(),
+            g.label.clone(),
+            author_id,
+            agent_name,
+        ));
+    }
+    Ok(all_grants)
+}
+
+/// Sprint 018 (WI #61) — install the SIGHUP-triggered auth reload.
+/// Re-reads the same config file, validates its `[auth]` block,
+/// re-resolves token→author bindings, and swaps the shared grant
+/// table. Any error leaves the previous table untouched, so a broken
+/// edit can't lock every caller out.
+fn spawn_auth_reload_on_sighup(
+    config_path: String,
+    store: Arc<CompositeStore>,
+    auth_state: klams_api::auth::AuthState,
+) {
+    tokio::spawn(async move {
+        let mut hup = match signal::unix::signal(signal::unix::SignalKind::hangup()) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!(error = %e, "cannot install SIGHUP handler; auth hot-reload disabled");
+                return;
+            }
+        };
+        while hup.recv().await.is_some() {
+            match reload_auth_grants(&config_path, &store).await {
+                Ok(grants) => {
+                    let count = grants.len();
+                    auth_state.replace_grants(grants);
+                    info!(grants = count, "SIGHUP: auth token table reloaded");
+                }
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        "SIGHUP: auth reload failed; previous token table remains active"
+                    );
+                }
+            }
+        }
+    });
+}
+
+async fn reload_auth_grants(
+    config_path: &str,
+    store: &Arc<CompositeStore>,
+) -> Result<Vec<klams_api::auth::TokenGrant>> {
+    let cfg = config::Config::from_path(config_path)
+        .with_context(|| format!("re-loading config from {config_path}"))?;
+    // Same [auth] checks as `--validate-config`: at least one token
+    // form, and every scoped grant individually valid.
+    if cfg.auth.bearer_token.is_empty() && cfg.auth.tokens.is_empty() {
+        anyhow::bail!("[auth]: at least one of `bearer_token` or `[[auth.tokens]]` must be set");
+    }
+    for (i, g) in cfg.auth.tokens.iter().enumerate() {
+        if let Err(e) = g.validate() {
+            anyhow::bail!(
+                "[auth.tokens[{i}]] ({label}): {e}",
+                label = g.label.as_deref().unwrap_or("<no label>")
+            );
+        }
+    }
+    build_auth_grants(store, &cfg.auth).await
 }
 
 /// Sprint 009 — resolve a bearer token's bound author. If the grant

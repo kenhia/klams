@@ -9,6 +9,7 @@ use crate::{
     maintenance, metrics as mcp_metrics, projection,
     tools::McpState,
 };
+use klams_store::Store;
 use klams_types::{AppendEvent, PublicAuthorRef, PublicMemory, Source};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -18,9 +19,17 @@ const CATEGORY_MAX_LEN: usize = 64;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MemoryAppendEventArgs {
-    #[schemars(with = "String")]
+    /// Optional: defaults to the author bound to the caller's bearer
+    /// token (WI #62). Pass explicitly to write as a different
+    /// registered author.
+    #[serde(default)]
+    #[schemars(with = "Option<String>")]
     pub author_id: Uuid,
     pub category: String,
+    /// Rendered as an object schema, NOT a bare `serde_json::Value` —
+    /// schemars turns the latter into the boolean schema `true`, which
+    /// Claude Code rejects, discarding the whole tool list (WI #309).
+    #[schemars(with = "serde_json::Map<String, serde_json::Value>")]
     pub payload: serde_json::Value,
     #[serde(default)]
     #[schemars(with = "Option<String>")]
@@ -33,8 +42,8 @@ pub struct MemoryAppendEventArgs {
 /// Returns an [`ErrorEnvelope`] for `MAINTENANCE_WINDOW_ACTIVE`,
 /// `MISSING_AUTHOR_ID`, `UNKNOWN_AUTHOR_ID`, `INVALID_CATEGORY`,
 /// `SCHEMA_VALIDATION_FAILED`, or `INTERNAL_ERROR`.
-pub async fn run(
-    state: &McpState,
+pub async fn run<S: Store>(
+    state: &McpState<S>,
     args: MemoryAppendEventArgs,
 ) -> Result<PublicMemory, ErrorEnvelope> {
     if let Some(env) = maintenance::check(&state.maintenance) {
@@ -59,7 +68,6 @@ pub async fn run(
 
     let author = state
         .store
-        .postgres
         .get_author_by_id(args.author_id)
         .await
         .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("get_author_by_id: {e}")))?
@@ -71,11 +79,7 @@ pub async fn run(
         })?;
 
     // FR-005: touch last_seen_at on every authenticated reference.
-    let _ = state
-        .store
-        .postgres
-        .touch_author_last_seen_at(author.id)
-        .await;
+    let _ = state.store.touch_author_last_seen_at(author.id).await;
 
     let req = AppendEvent {
         id: Uuid::now_v7(),
@@ -87,7 +91,6 @@ pub async fn run(
     };
     let event = state
         .store
-        .postgres
         .append_event(req)
         .await
         .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("append_event: {e}")))?;
@@ -98,10 +101,6 @@ pub async fn run(
         mcp_metrics::KIND_EVENT,
     );
 
-    let author_ref = PublicAuthorRef {
-        agent_name: author.agent_name,
-        model: author.model,
-        repo: author.repo,
-    };
+    let author_ref = PublicAuthorRef::from_record(&author);
     Ok(projection::project_event(&event, author_ref))
 }

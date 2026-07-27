@@ -36,11 +36,7 @@ pub fn project_fact(fact: &Fact, author: PublicAuthorRef) -> PublicMemory {
 pub fn project_knowledge(item: &KnowledgeItem, author: PublicAuthorRef) -> PublicMemory {
     PublicMemory {
         id: item.id,
-        content: PublicMemoryContent::Knowledge {
-            text: item.text.clone(),
-            source_path: item.file.clone(),
-            repo: item.repo.clone(),
-        },
+        content: PublicMemoryContent::knowledge_from(item),
         tags: item.tags.clone(),
         author,
         created_at: offset_to_chrono(item.created_at),

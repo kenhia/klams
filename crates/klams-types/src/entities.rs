@@ -105,6 +105,43 @@ pub struct KnowledgeItem {
     pub repo: Option<String>,
     pub file: Option<String>,
     pub machine: Option<String>,
+    /// Every host holding a copy of this content (sprint 028 #642).
+    /// Scanner content is stored once per content hash; this lists the
+    /// hosts whose scans found it. Agent memories and pre-028 points
+    /// have none. `machine`/`file`/`repo` above stay the *canonical*
+    /// copy (the first writer, re-promoted if that copy is deleted).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub machines: Vec<String>,
+    /// Heading breadcrumb the chunker prepended (scanner v2, sprint 022).
+    /// Sprint 026 (#641): written to the Qdrant payload since 022 but
+    /// never read back, so no read path could project it. Now it is.
+    #[serde(default)]
+    pub heading_path: Option<String>,
+    /// Source language the chunker detected. Same sprint-026 history as
+    /// [`Self::heading_path`].
+    #[serde(default)]
+    pub language: Option<String>,
+    /// 0-based index of this chunk within its source file. Same
+    /// sprint-026 history as [`Self::heading_path`].
+    #[serde(default)]
+    pub chunk_index: Option<u32>,
+    /// Declared volatility (sprint 029, #638 / review F-1.4):
+    /// `"stable"` or `"volatile"`, set by the writer at write time.
+    /// Volatile memories get an age-based rank demotion; stable and
+    /// undeclared memories never decay. Free-form `Option<String>`
+    /// rather than an enum so unknown future values degrade to
+    /// "undeclared" instead of dropping the point on read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volatility: Option<String>,
+    /// Id of the memory this record replaced (`memory_supersede`,
+    /// sprint 029 #638). Present on the replacement; the trail back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supersedes: Option<Uuid>,
+    /// Id of the memory that replaced this record. Only ever present
+    /// on superseded (hence hidden) points — visible via the admin
+    /// surfaces, never in live search results.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<Uuid>,
     pub confidence: f32,
     pub decay_weight: f32,
     pub use_count: i64,

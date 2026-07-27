@@ -44,6 +44,13 @@ impl Store for MockStore {
             repo: req.repo,
             file: req.file,
             machine: req.machine,
+            machines: vec![],
+            heading_path: None,
+            language: None,
+            chunk_index: None,
+            volatility: None,
+            supersedes: None,
+            superseded_by: None,
             confidence: 1.0,
             decay_weight: 1.0,
             use_count: 0,
@@ -80,7 +87,11 @@ impl Store for MockStore {
     async fn get_knowledge(&self, id: Uuid) -> StoreResult<Option<KnowledgeItem>> {
         Ok(self.by_id.lock().unwrap().get(&id).cloned())
     }
-    async fn delete_knowledge_by_source_file(&self, sf: &str) -> StoreResult<u64> {
+    async fn delete_knowledge_by_source_file(
+        &self,
+        sf: &str,
+        _machine: Option<&str>,
+    ) -> StoreResult<u64> {
         let mut by_id = self.by_id.lock().unwrap();
         let ids: Vec<Uuid> = by_id
             .iter()
@@ -114,6 +125,7 @@ fn router_with_store(store: Arc<MockStore>) -> axum::Router {
                 100,
             )),
             maintenance: klams_types::MaintenanceState::default(),
+            embed_limit: klams_types::EmbedLimit::default(),
         },
         "test-bearer",
     )
@@ -236,6 +248,51 @@ async fn oversized_text_returns_413() {
     assert_eq!(body["code"], "payload_too_large");
 }
 
+/// Sprint 027 (#420) — the silent-drop regression.
+///
+/// Text between the *old* 8192-character cap and the embedder's real
+/// ~512-token ceiling used to be accepted with `202`. The scanner then
+/// advanced its cursor, the worker's embed call failed with TEI's 413,
+/// and the job was logged and dropped — so the chunk was never stored
+/// and never retried. kai lost ~30k chunks this way in one 2h window.
+///
+/// It must now be refused at the boundary, *before* the 202.
+#[tokio::test]
+async fn text_between_the_old_cap_and_the_token_ceiling_is_rejected_not_accepted() {
+    let store = Arc::new(MockStore::default());
+    let app = router_with_store(store);
+
+    // Comfortably under the retired 8192-char cap, comfortably over what
+    // a 512-token model accepts — precisely the gap that lost data.
+    let gap_text = "a".repeat(4000);
+    assert!(
+        klams_types::EmbedLimit::default().check(&gap_text).is_err(),
+        "test fixture must actually sit in the gap"
+    );
+
+    let (status, body) = post(
+        &app,
+        "/memory/knowledge/index",
+        serde_json::json!({"text": gap_text, "source": "Task"}),
+    )
+    .await;
+
+    assert_eq!(
+        status,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "a chunk the embedder cannot accept must never get a 202"
+    );
+    assert_eq!(body["code"], "payload_too_large");
+    // The caller has to be able to fix this without bisecting for the
+    // limit, which is what #629 and #632 both had to do by hand.
+    let message = body["message"].as_str().unwrap_or_default();
+    assert!(message.contains("4000"), "{message}");
+    assert!(
+        message.contains(&klams_types::EmbedLimit::default().max_chars().to_string()),
+        "{message}"
+    );
+}
+
 #[tokio::test]
 async fn empty_text_returns_400_validation() {
     let store = Arc::new(MockStore::default());
@@ -330,6 +387,13 @@ async fn knowledge_delete_removes_matching_chunks() {
         repo: None,
         file: Some("/abs/path/note.md".into()),
         machine: None,
+        machines: vec![],
+        heading_path: None,
+        language: None,
+        chunk_index: None,
+        volatility: None,
+        supersedes: None,
+        superseded_by: None,
         confidence: 1.0,
         decay_weight: 1.0,
         use_count: 0,
@@ -347,7 +411,7 @@ async fn knowledge_delete_removes_matching_chunks() {
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/memory/knowledge/delete?source_file=%2Fabs%2Fpath%2Fnote.md")
+                .uri("/memory/knowledge/delete?source_file=%2Fabs%2Fpath%2Fnote.md&machine=kubs0")
                 .header(header::AUTHORIZATION, "Bearer test-bearer")
                 .body(Body::empty())
                 .unwrap(),
@@ -370,7 +434,7 @@ async fn knowledge_delete_missing_source_file_returns_zero() {
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/memory/knowledge/delete?source_file=%2Fno%2Fsuch%2Fpath")
+                .uri("/memory/knowledge/delete?source_file=%2Fno%2Fsuch%2Fpath&machine=kubs0")
                 .header(header::AUTHORIZATION, "Bearer test-bearer")
                 .body(Body::empty())
                 .unwrap(),
@@ -382,4 +446,48 @@ async fn knowledge_delete_missing_source_file_returns_zero() {
     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(v["deleted"], 0);
     assert_eq!(v["path"], "canonical");
+}
+
+/// Sprint 025 (#637) — `machine` is required. Omitting it used to mean
+/// "delete this `source_file`'s chunks on every host", so a hand-run
+/// cleanup for one machine silently wiped the others.
+#[tokio::test]
+async fn knowledge_delete_without_machine_is_rejected() {
+    let store = Arc::new(MockStore::default());
+    let app = router_with_store(store);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/memory/knowledge/delete?source_file=%2Fabs%2Fpath%2Fnote.md")
+                .header(header::AUTHORIZATION, "Bearer test-bearer")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let bytes = to_bytes(resp.into_body(), 4096).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(v["field"], "machine", "error must name the missing field");
+}
+
+/// Blank is the same as absent — a `machine=` with nothing after it
+/// must not fall through to the cross-host delete.
+#[tokio::test]
+async fn knowledge_delete_with_blank_machine_is_rejected() {
+    let store = Arc::new(MockStore::default());
+    let app = router_with_store(store);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/memory/knowledge/delete?source_file=%2Fa%2Fb.md&machine=%20%20")
+                .header(header::AUTHORIZATION, "Bearer test-bearer")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }

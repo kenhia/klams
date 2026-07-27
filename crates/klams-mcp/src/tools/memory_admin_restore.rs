@@ -11,6 +11,7 @@ use crate::{
     tools::McpState,
 };
 use chrono::Utc;
+use klams_store::Store;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -33,14 +34,13 @@ pub struct MemoryAdminRestoreOutput {
 /// # Errors
 /// Returns an [`ErrorEnvelope`] for `NOT_FOUND`, `NOT_SOFT_DELETED`,
 /// `EVENTS_NOT_DELETABLE`, or `INTERNAL_ERROR`.
-pub async fn run(
-    state: &McpState,
+pub async fn run<S: Store>(
+    state: &McpState<S>,
     args: MemoryAdminRestoreArgs,
 ) -> Result<MemoryAdminRestoreOutput, ErrorEnvelope> {
     // Events are never deletable so they can't be restored.
     if state
         .store
-        .postgres
         .event_exists(args.id)
         .await
         .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("event_exists: {e}")))?
@@ -53,14 +53,12 @@ pub async fn run(
 
     if state
         .store
-        .postgres
         .fact_exists_any(args.id)
         .await
         .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("fact_exists_any: {e}")))?
     {
         let restored = state
             .store
-            .postgres
             .restore_fact(args.id)
             .await
             .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("restore_fact: {e}")))?;
@@ -79,7 +77,6 @@ pub async fn run(
 
     if let Some(deleted) = state
         .store
-        .qdrant
         .point_is_soft_deleted(args.id)
         .await
         .map_err(|e| {
@@ -97,7 +94,6 @@ pub async fn run(
         }
         state
             .store
-            .qdrant
             .restore_payload(args.id)
             .await
             .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("restore_payload: {e}")))?;

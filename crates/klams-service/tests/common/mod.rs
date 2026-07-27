@@ -12,6 +12,30 @@
 //!
 //! Tests that depend on this harness should be marked `#[ignore]`
 //! by default and run explicitly via `cargo test -- --ignored`.
+//!
+//! # Isolation (sprint 031, #679)
+//!
+//! [`TestServer::spawn_isolated`] gives a test its **own Postgres
+//! schema** (`klams_test_{uuid}`, migrated from empty) and its own
+//! Qdrant collection of the same name. Nothing it writes is visible to
+//! another test, and nothing another test writes is visible to it.
+//!
+//! Until sprint 031 the same method instead `TRUNCATE`d the shared
+//! tables, which wiped rows belonging to any *concurrently running*
+//! test — so the ignored suite only passed under `--test-threads=1`,
+//! and `phase4_summarization_pipeline` lost its events mid-test. The
+//! suite now passes at default parallelism; keep it that way.
+//!
+//! Call [`TestServer::cleanup`] when a test finishes to drop both the
+//! schema and the collection. Skipping it (or panicking before it) is
+//! not fatal — `just test-integration` sweeps orphans before each run —
+//! but it leaves detritus on a long-lived stack.
+//!
+//! [`TestServer::spawn`] still shares one Postgres database and the
+//! `knowledge_items_test` collection. That is fine for tests that
+//! assert on *presence*; any test asserting on ranking or ordering
+//! must use `spawn_isolated`, because a shared corpus accumulates
+//! seeds until the ranking under test is drowned out (#687).
 
 #![allow(dead_code)]
 
@@ -29,6 +53,35 @@ pub mod seed;
 
 pub type TestStore = CompositeStore;
 
+/// Look up (or create) an author row for a test-token binding, mirroring
+/// `main.rs`'s `resolve_token_author`. Idempotent across `spawn_inner`
+/// calls that share the Postgres fixture.
+async fn resolve_test_author(store: &Arc<CompositeStore>, agent_name: &str) -> Uuid {
+    if let Some(a) = store
+        .postgres
+        .get_author_by_agent_name(agent_name)
+        .await
+        .expect("lookup bound author")
+    {
+        return a.id;
+    }
+    let args = klams_types::RegisterAuthorArgs {
+        agent_name: agent_name.to_string(),
+        model: None,
+        session_title: Some("test harness".into()),
+        repo: None,
+        client_app: Some("klams-service-tests".into()),
+        client_version: None,
+        extra: serde_json::json!({}),
+    };
+    store
+        .postgres
+        .insert_author(args, None)
+        .await
+        .expect("insert bound author")
+        .id
+}
+
 pub struct TestServer {
     pub client: Client,
     pub addr: SocketAddr,
@@ -37,6 +90,24 @@ pub struct TestServer {
     pub read_token: String,
     /// Write+Read scope token (sprint 007 T066).
     pub write_token: String,
+    /// Token bound to a named author (sprint 018 / WI #62) — writes
+    /// through it may omit `author_id`.
+    pub author_token: String,
+    /// The `agent_name` the author-bound token attributes writes to.
+    pub author_agent_name: String,
+    /// The author id `author_token` is bound to.
+    pub bound_author_id: Uuid,
+    /// Sprint 025 (#633) — token bound to a *different* author with
+    /// only `[read, write]`. Used to prove a write-scoped caller cannot
+    /// delete somebody else's memory.
+    pub other_write_token: String,
+    /// The author id `other_write_token` is bound to.
+    pub other_author_id: Uuid,
+    /// Sprint 025 (#633) — token bound to a third author carrying
+    /// `[read, write, manage]`: cross-author curation is permitted.
+    pub manage_token: String,
+    /// The author id `manage_token` is bound to.
+    pub manage_author_id: Uuid,
     pub store: Arc<TestStore>,
     /// gRPC Qdrant URL — retained so `cleanup()` can drop the
     /// per-test collection on teardown (sprint 009 T039 / FR-021).
@@ -45,6 +116,81 @@ pub struct TestServer {
     /// `spawn_isolated` this is `klams_test_{uuid}`; for the shared
     /// helpers it is `knowledge_items_test`.
     qdrant_collection: String,
+    /// Sprint 031 (#679) — the dedicated Postgres schema an isolated
+    /// server migrated into, dropped by `cleanup()`. `None` for
+    /// `spawn()`, which shares the default schema.
+    pg_schema: Option<String>,
+    /// Base (unscoped) Postgres URL, retained so `cleanup()` can drop
+    /// the schema on a connection that is not inside it.
+    pg_url: String,
+}
+
+/// Serializes tests that operate on the WHOLE test database.
+///
+/// Sprint 031 (#679): per-schema isolation fixes tests that merely
+/// share tables, but `pg_restore` restores a database-wide dump — there
+/// is no schema to scope it to, and any concurrent reader sees the
+/// target mid-restore. `restore_safety` and `restore_roundtrip` fail
+/// 3-for-3 at default parallelism and pass 3-for-3 serially.
+///
+/// So these serialize rather than isolate, which is the fallback #679
+/// allows for tests that genuinely cannot be isolated. A process-wide
+/// lock is enough: cargo runs each test binary to completion before
+/// starting the next, so the only concurrency is within one file.
+///
+/// Hold the guard for the whole test body, not just the restore call —
+/// the fixture seeding and the row counts around it are equally
+/// database-wide.
+pub async fn whole_database_guard() -> tokio::sync::MutexGuard<'static, ()> {
+    static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    LOCK.lock().await
+}
+
+/// Advisory-lock key serializing per-test schema creation + migration.
+/// Arbitrary but stable; shared by every test process on this database.
+const MIGRATE_LOCK_KEY: i64 = 0x6b6c_616d_0031; // "klam" + sprint 031
+
+/// Take the migration lock, returning the connection that holds it.
+///
+/// Isolated spawns cannot migrate concurrently. `sqlx::migrate!` takes
+/// its own `pg_advisory_lock` keyed on the *database*, so every
+/// per-schema migrator contends for one lock — and migration 0003 runs
+/// `CREATE INDEX CONCURRENTLY`, which waits for every concurrent
+/// virtual transaction in the database, including the ones belonging to
+/// migrators blocked on that lock. That is a real cycle, and Postgres
+/// kills it: `migrate: ... deadlock detected`.
+///
+/// Poll `pg_try_advisory_lock` instead of blocking on
+/// `pg_advisory_lock`: a *blocked* waiter holds a virtual transaction
+/// for as long as it waits, which is exactly what `CONCURRENTLY` snags
+/// on. Each poll is a sub-millisecond transaction that CIC can wait out.
+async fn lock_for_migration(pg_url: &str) -> sqlx::PgConnection {
+    use sqlx::Connection as _;
+    let mut conn = sqlx::PgConnection::connect(pg_url)
+        .await
+        .expect("postgres connect (migration lock)");
+    loop {
+        let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
+            .bind(MIGRATE_LOCK_KEY)
+            .fetch_one(&mut conn)
+            .await
+            .expect("try migration advisory lock");
+        if acquired {
+            return conn;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+/// Point a connection URL's `search_path` at `schema`, libpq-style.
+/// Every table the migrations create, and every query the store runs,
+/// then resolves inside that schema alone — `public` is deliberately
+/// NOT on the path, because the migrations are full of
+/// `CREATE TABLE IF NOT EXISTS` and would silently no-op against the
+/// shared tables if they could see them.
+fn schema_scoped_url(base: &str, schema: &str) -> String {
+    let sep = if base.contains('?') { '&' } else { '?' };
+    format!("{base}{sep}options=-c%20search_path%3D{schema}")
 }
 
 impl std::fmt::Debug for TestServer {
@@ -78,21 +224,60 @@ impl TestServer {
     }
 
     /// Sprint 009 T039 (FR-021 / SC-008) — per-test isolation.
-    /// Creates an ephemeral Qdrant collection `klams_test_{uuid}`
-    /// (dropped via [`Self::cleanup`]) and TRUNCATEs the shared
-    /// Postgres test tables so concurrent tests cannot observe
-    /// each other's facts/events/summaries/dissents/authors.
-    /// Seeded `system` + `lost-author` authors are preserved.
+    ///
+    /// Sprint 031 (#679): isolation is now real rather than
+    /// destructive. The server gets an ephemeral Qdrant collection
+    /// **and** a dedicated Postgres schema, both named
+    /// `klams_test_{uuid}` and both dropped by [`Self::cleanup`]. The
+    /// schema is migrated from empty, so the seeded `system` and
+    /// `lost-author` authors are present exactly as in production.
+    /// Nothing is `TRUNCATE`-d, so a concurrently running test cannot
+    /// have its rows pulled out from under it.
     pub async fn spawn_isolated() -> Self {
-        let collection = format!("klams_test_{}", Uuid::new_v4().simple());
-        Self::spawn_inner(false, collection, true).await
+        Self::spawn_inner(false, Self::isolated_name(), true).await
     }
 
-    #[allow(clippy::too_many_lines)]
+    /// [`Self::spawn_isolated`] with a `SummaryStore` wired into
+    /// `ContextBuilder` (sprint 031 — what
+    /// `phase4_summarization_pipeline` needs to stop racing).
+    pub async fn spawn_isolated_with_summary_store() -> Self {
+        Self::spawn_inner(true, Self::isolated_name(), true).await
+    }
+
+    /// Sprint 030 (#685): isolated server with the second-stage
+    /// reranker wired to `reranker_url` (which may be dead — the
+    /// best-effort skip path is itself under test).
+    pub async fn spawn_isolated_with_reranker(reranker_url: &str) -> Self {
+        Self::spawn_inner_with_reranker(
+            false,
+            Self::isolated_name(),
+            true,
+            Some(reranker_url.to_string()),
+        )
+        .await
+    }
+
+    /// One name for both per-test resources, so an orphaned Qdrant
+    /// collection and an orphaned Postgres schema are recognisably the
+    /// same run.
+    fn isolated_name() -> String {
+        format!("klams_test_{}", Uuid::new_v4().simple())
+    }
+
     async fn spawn_inner(
         with_summary_store: bool,
         qdrant_collection: String,
-        truncate_postgres: bool,
+        isolate: bool,
+    ) -> Self {
+        Self::spawn_inner_with_reranker(with_summary_store, qdrant_collection, isolate, None).await
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn spawn_inner_with_reranker(
+        with_summary_store: bool,
+        qdrant_collection: String,
+        isolate: bool,
+        reranker_url: Option<String>,
     ) -> Self {
         let pg_url = std::env::var("TEST_DATABASE_URL")
             .unwrap_or_else(|_| "postgres://klams:klams_test@127.0.0.1:55432/klams".into());
@@ -104,29 +289,63 @@ impl TestServer {
         let read_token = "test-token-read-only".to_string();
         let write_token = "test-token-write".to_string();
 
-        let postgres = PostgresStore::connect(&pg_url, 4)
-            .await
-            .expect("postgres connect");
-        if truncate_postgres {
-            // Wipe per-test mutable state. `authors` keeps the two
-            // seeded identities ('system', 'lost-author') so the
-            // re-attribution invariants still hold.
-            sqlx::query(
-                "TRUNCATE TABLE facts, events, summaries, dissents RESTART IDENTITY CASCADE",
-            )
-            .execute(postgres.pool())
-            .await
-            .expect("truncate postgres");
-            sqlx::query("DELETE FROM authors WHERE agent_name NOT IN ('system', 'lost-author')")
-                .execute(postgres.pool())
-                .await
-                .expect("prune authors");
-        }
+        // Sprint 031 (#679): an isolated server migrates into its own
+        // schema instead of TRUNCATEing the shared one. Create the
+        // schema on a throwaway connection first — `PostgresStore::
+        // connect` runs the migrations, and they need somewhere to
+        // land.
+        //
+        // What this replaces: a `TRUNCATE facts, events, summaries,
+        // dissents` that wiped rows belonging to whatever else was
+        // running. (Sprint 025 had already removed the `authors` half
+        // of the same hazard for the same reason.) Both halves are now
+        // gone for good — there is nothing shared left to wipe.
+        //
+        // EVERY connect takes the migration lock, isolated or not.
+        // Guarding only the isolated path was not enough, and CI caught
+        // it: locally the shared database is always already migrated, so
+        // `spawn()`'s migration run is a no-op and nothing contends. On a
+        // FRESH database — which is what CI gets every run — the shared
+        // path really does migrate, several `spawn()`s do it at once, and
+        // the `CREATE INDEX CONCURRENTLY` deadlock fires exactly as it
+        // does for isolated spawns. Same lock, same reason.
+        let pg_schema = isolate.then(|| qdrant_collection.clone());
+        let mut lock = lock_for_migration(&pg_url).await;
+        let connect_url = match &pg_schema {
+            Some(schema) => {
+                sqlx::query(&format!("CREATE SCHEMA IF NOT EXISTS {schema}"))
+                    .execute(&mut lock)
+                    .await
+                    .expect("create per-test schema");
+                schema_scoped_url(&pg_url, schema)
+            }
+            None => pg_url.clone(),
+        };
+        let postgres = PostgresStore::connect(&connect_url, 4).await;
+        let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
+            .bind(MIGRATE_LOCK_KEY)
+            .execute(&mut lock)
+            .await;
+        let postgres = postgres.expect("postgres connect");
         let qdrant = QdrantStore::connect(&qdrant_url, &qdrant_collection, 384)
             .await
             .expect("qdrant connect");
         let embedder = Arc::new(TeiEmbedder::new(tei_url, 384).expect("tei client"));
         let store = Arc::new(CompositeStore::new(postgres, qdrant, embedder));
+
+        // Sprint 018 (WI #62) — mirror main.rs's resolve_token_author:
+        // bind a test token to a named author so bearer-fallback
+        // attribution is exercisable.
+        let author_token = "test-token-author-bound".to_string();
+        let author_agent_name = "bearer-bound-test-agent".to_string();
+        let bound_author_id = resolve_test_author(&store, &author_agent_name).await;
+
+        // Sprint 025 (#633): two more bound identities so ownership can
+        // be exercised — one write-only peer, one manage-scoped curator.
+        let other_write_token = "test-token-other-write".to_string();
+        let other_author_id = resolve_test_author(&store, "other-write-test-agent").await;
+        let manage_token = "test-token-manage".to_string();
+        let manage_author_id = resolve_test_author(&store, "manage-test-agent").await;
 
         let (queue, rx) = MemoryQueue::new(256);
         let _workers = spawn_workers(2, rx, Arc::clone(&store));
@@ -150,6 +369,7 @@ impl TestServer {
             validators: Arc::new(klams_core::ValidatorRegistry::with_defaults()),
             context_builder: Arc::new(builder),
             maintenance: klams_types::MaintenanceState::default(),
+            embed_limit: klams_types::EmbedLimit::default(),
         };
         let router = {
             // Mirror main.rs's wiring: single AuthState gates both REST
@@ -160,6 +380,7 @@ impl TestServer {
                     vec![
                         klams_types::Scope::Read,
                         klams_types::Scope::Write,
+                        klams_types::Scope::Manage,
                         klams_types::Scope::Admin,
                     ],
                     Some("legacy".into()),
@@ -174,15 +395,43 @@ impl TestServer {
                     vec![klams_types::Scope::Read, klams_types::Scope::Write],
                     Some("write".into()),
                 ),
+                klams_api::auth::TokenGrant::new_with_author(
+                    author_token.clone(),
+                    vec![klams_types::Scope::Read, klams_types::Scope::Write],
+                    Some("author-bound".into()),
+                    bound_author_id,
+                    author_agent_name.clone(),
+                ),
+                klams_api::auth::TokenGrant::new_with_author(
+                    other_write_token.clone(),
+                    vec![klams_types::Scope::Read, klams_types::Scope::Write],
+                    Some("other-write".into()),
+                    other_author_id,
+                    "other-write-test-agent",
+                ),
+                klams_api::auth::TokenGrant::new_with_author(
+                    manage_token.clone(),
+                    vec![
+                        klams_types::Scope::Read,
+                        klams_types::Scope::Write,
+                        klams_types::Scope::Manage,
+                    ],
+                    Some("manage".into()),
+                    manage_author_id,
+                    "manage-test-agent",
+                ),
             ];
-            let auth_state = klams_api::auth::AuthState::with_grants(grants.clone());
-            let mcp_grants = std::sync::Arc::new(grants);
-            let mcp_state = klams_mcp::tools::McpState::new(
+            let auth_state = klams_api::auth::AuthState::with_grants(grants);
+            let mut mcp_state = klams_mcp::tools::McpState::new(
                 Arc::clone(&store),
                 std::sync::Arc::new(klams_types::MaintenanceState::default()),
-                mcp_grants,
                 klams_types::ApiConfig::default(),
             );
+            if let Some(url) = reranker_url.as_deref() {
+                mcp_state.reranker = Some(Arc::new(
+                    klams_store::TeiReranker::new(url).expect("reranker client"),
+                ));
+            }
             let mcp_router = klams_mcp::router(mcp_state, Vec::new()).layer(
                 axum::middleware::from_fn_with_state(auth_state.clone(), klams_api::require_bearer),
             );
@@ -202,16 +451,37 @@ impl TestServer {
             bearer_token: bearer,
             read_token,
             write_token,
+            author_token,
+            author_agent_name,
+            bound_author_id,
+            other_write_token,
+            other_author_id,
+            manage_token,
+            manage_author_id,
             store,
             qdrant_url,
             qdrant_collection,
+            pg_schema,
+            pg_url,
         }
     }
 
-    /// Sprint 009 T039 — drop the per-test Qdrant collection.
-    /// Safe to call on a `spawn()`-built server too; it will skip
-    /// the shared `knowledge_items_test` collection.
+    /// Sprint 009 T039 — drop this server's per-test resources: the
+    /// Qdrant collection and (sprint 031) the Postgres schema.
+    /// Safe to call on a `spawn()`-built server too; it will skip the
+    /// shared `knowledge_items_test` collection and has no schema to
+    /// drop.
     pub async fn cleanup(self) {
+        if let Some(schema) = &self.pg_schema {
+            // Drop from outside the schema — a pool bound to it would
+            // be pulling the rug out from under its own search_path.
+            if let Ok(admin) = sqlx::PgPool::connect(&self.pg_url).await {
+                let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS {schema} CASCADE"))
+                    .execute(&admin)
+                    .await;
+                admin.close().await;
+            }
+        }
         if self.qdrant_collection == "knowledge_items_test" {
             return;
         }
@@ -219,5 +489,139 @@ impl TestServer {
             .build()
             .expect("qdrant client for cleanup");
         let _ = client.delete_collection(self.qdrant_collection).await;
+    }
+}
+
+/// A live MCP Streamable-HTTP session against the spawned test server.
+///
+/// Sprint 025: hoisted here from `mcp_bearer_author.rs` so the
+/// authorization tests can drive the *real* transport — the ownership
+/// checks read caller identity out of request extensions that only the
+/// HTTP path populates, so calling `tools::*::run` directly would test
+/// the wrong thing.
+pub struct McpSession {
+    client: reqwest::Client,
+    base: String,
+    token: String,
+    session_id: String,
+}
+
+const INIT_BODY: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}"#;
+
+/// Parse a Streamable-HTTP SSE (or bare-JSON) body into its JSON-RPC payload.
+fn parse_sse_json(body: &str) -> serde_json::Value {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(body.trim()) {
+        return v;
+    }
+    for line in body.lines() {
+        if let Some(rest) = line.strip_prefix("data: ") {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(rest) {
+                return v;
+            }
+        }
+    }
+    panic!("no JSON / data: line in body (len={}):\n{body}", body.len());
+}
+
+impl McpSession {
+    pub async fn handshake(addr: SocketAddr, token: &str) -> Self {
+        let client = reqwest::Client::new();
+        let base = format!("http://{addr}/mcp");
+        let init = client
+            .post(&base)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(INIT_BODY)
+            .send()
+            .await
+            .expect("initialize");
+        assert_eq!(init.status(), reqwest::StatusCode::OK, "initialize ok");
+        let session_id = init
+            .headers()
+            .get("mcp-session-id")
+            .expect("mcp-session-id header")
+            .to_str()
+            .unwrap()
+            .to_string();
+        let _ = init.text().await;
+        let notif = client
+            .post(&base)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("mcp-session-id", &session_id)
+            .body(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
+            .send()
+            .await
+            .expect("initialized notify");
+        assert!(notif.status().is_success(), "initialized notify ok");
+        Self {
+            client,
+            base,
+            token: token.to_string(),
+            session_id,
+        }
+    }
+
+    /// Call a tool; returns the parsed JSON the tool put in
+    /// `result.content[0].text`. Errors come back as tool results too
+    /// (with an `error_code` in `meta`), not as transport failures.
+    pub async fn call_tool(&self, name: &str, arguments: serde_json::Value) -> serde_json::Value {
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": arguments},
+        });
+        let resp = self
+            .client
+            .post(&self.base)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .header("Authorization", format!("Bearer {}", self.token))
+            .header("mcp-session-id", &self.session_id)
+            .body(body.to_string())
+            .send()
+            .await
+            .expect("tools/call");
+        assert!(resp.status().is_success(), "tools/call http ok");
+        let rpc = parse_sse_json(&resp.text().await.expect("body"));
+        let text = rpc["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_else(|| panic!("unexpected tools/call response: {rpc}"));
+        serde_json::from_str(text).expect("tool result JSON")
+    }
+
+    /// The `error_code` of a tool result that failed, or `None` if it
+    /// succeeded. The envelope serializes the meta block as `_meta` on
+    /// the wire, so read that.
+    pub fn error_code(v: &serde_json::Value) -> Option<&str> {
+        v["_meta"]["error_code"].as_str()
+    }
+
+    /// Names of the tools this session's token may see.
+    pub async fn list_tool_names(&self) -> Vec<String> {
+        let body = serde_json::json!({
+            "jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}
+        });
+        let resp = self
+            .client
+            .post(&self.base)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .header("Authorization", format!("Bearer {}", self.token))
+            .header("mcp-session-id", &self.session_id)
+            .body(body.to_string())
+            .send()
+            .await
+            .expect("tools/list");
+        let rpc = parse_sse_json(&resp.text().await.expect("body"));
+        rpc["result"]["tools"]
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .map(|t| t["name"].as_str().unwrap_or_default().to_string())
+            .collect()
     }
 }

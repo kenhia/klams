@@ -71,18 +71,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.50, sum by (le, endpoint) (rate(axum_http_requests_duration_seconds_bucket{endpoint=~\"/memory/(search|context)\"}[5m])))",
-          "legendFormat": "p50 {{endpoint}}"
-        },
-        {
-          "refId": "B",
-          "expr": "histogram_quantile(0.95, sum by (le, endpoint) (rate(axum_http_requests_duration_seconds_bucket{endpoint=~\"/memory/(search|context)\"}[5m])))",
-          "legendFormat": "p95 {{endpoint}}"
-        },
-        {
-          "refId": "C",
-          "expr": "histogram_quantile(0.99, sum by (le, endpoint) (rate(axum_http_requests_duration_seconds_bucket{endpoint=~\"/memory/(search|context)\"}[5m])))",
-          "legendFormat": "p99 {{endpoint}}"
+          "expr": "klams_retrieval_duration_seconds{quantile=~\"0.5|0.95|0.99\"}",
+          "legendFormat": "p{{quantile}} {{op}}/{{transport}}"
         }
       ],
       "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }
@@ -100,7 +90,7 @@
           "legendFormat": "{{status}}"
         }
       ],
-      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] }
+      "fieldConfig": { "defaults": { "unit": "reqps", "noValue": "0" }, "overrides": [] }
     },
     {
       "id": 6,
@@ -196,7 +186,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (le, kind) (rate(klams_backup_duration_seconds_bucket[1h])))",
+          "expr": "klams_backup_duration_seconds{quantile=\"0.95\"}",
           "legendFormat": "{{kind}}"
         }
       ],
@@ -230,7 +220,7 @@
           "legendFormat": "{{event}} ok={{ok}}"
         }
       ],
-      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+      "fieldConfig": { "defaults": { "noValue": "0", "unit": "short" }, "overrides": [] }
     },
     {
       "id": 12,
@@ -264,7 +254,7 @@
         }
       ],
       "fieldConfig": {
-        "defaults": { "unit": "reqpm" },
+        "defaults": { "unit": "reqpm", "noValue": "0" },
         "overrides": [
           {
             "matcher": { "id": "byRegexp", "options": ".*hard.*" },
@@ -303,6 +293,57 @@
         }
       ],
       "fieldConfig": { "defaults": { "unit": "reqpm" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } }
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Search miss rate (zero-hit / low-score)",
+      "description": "memory_search calls that returned nothing (zero_hit) or only a weak knowledge match (low_score), per minute by reason. The tuning-data feedback loop (sprint 021 #317) — a rising zero_hit line means agents are asking for things the corpus does not answer.",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 46 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (reason) (rate(klams_search_misses_total[5m])) * 60",
+          "legendFormat": "{{reason}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqpm" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } }
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Oversize writes refused by agent (per hour)",
+      "description": "memory_add calls refused because the text exceeded the embedding model's token ceiling (sprint 027 #656). Each tick is a coherent record an agent wanted to store and had to split by hand; the full rejected payload is kept in the `oversize_write` table. After the 028 model upgrade this should fall to near zero — a line that stays up means the ceiling still bites and #632's server-side chunking is worth revisiting.",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 46 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (agent_name) (rate(klams_mcp_oversize_writes_total[15m])) * 3600",
+          "legendFormat": "{{agent_name}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqph" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } }
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "Dropped queued writes by reason (per hour)",
+      "description": "Queued writes that failed at the worker with no reply channel (sprint 027 #420). The caller already had its 202 and the scanner already advanced its cursor, so every tick here is data that is simply gone. This was invisible before 027: ~30k chunks were lost on kai in one 2h window without moving a counter, while /healthz stayed green. Any sustained non-zero value needs investigating.",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 46 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (type, reason) (rate(klams_writes_failed_total[15m])) * 3600",
+          "legendFormat": "{{type}} / {{reason}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqph" }, "overrides": [] },
       "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } }
     }
   ]

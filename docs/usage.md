@@ -66,7 +66,8 @@ named klams metrics below.
 | `klams_writes_accepted_total` | counter | `type=fact\|event\|knowledge` | Writes accepted onto the queue. |
 | `klams_writes_failed_total` | counter | `type`, `reason=queue_full\|store_error\|too_large` | Writes rejected or failed downstream. |
 | `klams_write_latency_seconds` | histogram | `type` | Handler-side latency from validation to enqueue completion. |
-| `klams_search_latency_seconds` | histogram | – | Latency of `POST /memory/search`. |
+| `klams_retrieval_duration_seconds` | summary (quantile label) | `op=search\|context\|rerank`, `transport=rest\|mcp` | Retrieval latency at every entry point — REST and MCP (sprint 020, WI 63; replaces `klams_search_latency_seconds` / `klams_context_request_seconds`). `op=rerank` is the second-stage cross-encoder's share of an MCP search (sprint 030, #685; ~34 ms median live). |
+| `klams_rerank_skipped_total` | counter | – | Rerank stages skipped because the reranker call failed; the search was served un-reranked. Nonzero = the `klams-reranker` container is sick, not the search path (sprint 030, #685). |
 | `klams_embedding_latency_seconds` | histogram | – | Latency of a single TEI call. |
 
 ## Exit codes
@@ -185,16 +186,38 @@ common task is a one-liner that matches what CI runs.
 | `build`           | `cargo build -p klams-service --release`. |
 | `run`             | `cargo run -p klams-service`, logs to stderr. |
 | `test`            | `cargo test --workspace`. |
-| `gate`            | Constitution pre-commit gate; identical to CI. |
+| `gate`            | Constitution pre-commit gate: fmt + clippy + the hermetic tests. |
+| `test-integration`| The docker-gated suite `gate` excludes. Sweeps the test stack (`scripts/reset-test-stack.sh`), then runs `cargo test --workspace -- --ignored` at default parallelism. Needs `docker compose -f tests/docker-compose.test.yml up -d`. |
 | `health`          | `/healthz` curl + `scripts/verify-mvp.sh --light`. |
 | `verify`          | Full `scripts/verify-mvp.sh` (SC-001..SC-009). |
 | `viewport-build`  | `cargo xwin` Windows cross-build of the viewport. |
 | `viewport-build-linux` | Native Linux build of the viewport (also runs in WSL Ubuntu). |
 | `viewport-run-linux`   | Build + launch the Linux viewport with `--debug`. |
 
-`KLAMS_URL` and `KLAMS_TOKEN` are read from the environment (with
-local-dev defaults) so the same `just health` and `just verify`
-work against a local stack or a remote `kubs0`.
+`KLAMS_URL` and `KLAMS_TOKEN` are read from the environment, so the
+same `just health` and `just verify` work against a local stack or a
+remote `kubs0`.
+
+**`KLAMS_TOKEN` has no default** (sprint 031). It used to fall back to
+`dev-token`, so forgetting to export it produced a `401` that read like
+an auth regression rather than a missing variable. Unset, the recipes
+now stop with `FATAL: KLAMS_TOKEN must be set`.
+
+### `gate` vs CI (sprint 031)
+
+`gate` mirrors what CI runs on a **pull request** minus the integration
+step. As of sprint 031 the docker-compose stack comes up on every
+branch, so CI runs the `--ignored` suite too — `gate` passing no longer
+means CI will. Run `just test-integration` before pushing anything that
+touches the store, the MCP tools, or the write paths.
+
+Two things CI runs that `gate` does not:
+
+- the integration suite (above), on every branch;
+- `search_p95_under_500ms_at_mvp_corpus`, in its own **main-only,
+  non-blocking** job. It seeds the 10k/50k/10k corpus and takes ~5
+  minutes, and a p95 measured on shared CI hardware is noisy enough to
+  need a human reading it rather than a red X.
 
 > **WSL note**: The Linux viewport runs unchanged under WSL Ubuntu via
 > WSLg. Install the webkit2gtk runtime first:
@@ -580,21 +603,54 @@ unchanged. Detailed contracts live under
 
 | Tool | Scope | Purpose |
 |------|-------|---------|
-| `register_author` | `read` | Issue / refresh the caller's author id; everything else is attributed to it. |
+| `register_author` | `read` | Issue / refresh the caller's author id. Optional since sprint 018: write tools default to the bearer token's bound author; call this only to write as a separate per-session identity. `repo` accepts an absolute path or a bare repo name. |
 | `memory_search` | `read` | Hybrid retrieval over facts + knowledge + events. |
 | `event_search` | `read` | Filter `events` by category / task / time window / payload substring. Pure SQL — never hits the embedder (FR-004). |
 | `memory_related` | `read` | Neighborhood expansion around a known memory id. |
-| `memory_context` | `read` | Token-budgeted context bundle (proxies the existing `/memory/context`). |
-| `memory_add` | `write` | Add a fact or knowledge item. Same dedupe + dissent rules as REST. |
+| `dissent_propose` | `write` | File a dissent against a live canonical fact (sprint 015); lands as a pending `AgentProposal` for human review in the viewport. |
+| `memory_add` | `write` | Add a fact or knowledge item. Same dedupe + dissent rules as REST. Flat input schema since sprint 018: `kind` (`"fact"` \| `"knowledge"`) discriminates, with `fact_type`+`payload` required for facts and `text` (+ optional `tags`/`source_path`/`repo`) for knowledge — no top-level `oneOf`, so Anthropic-bound agents can carry the tool. |
 | `memory_append_event` | `write` | Append an event. Always canonical, never soft-deleted. |
 | `memory_delete` | `write` | Soft-delete the caller's own fact / knowledge item by id. |
+| `memory_supersede` | `write` | Sprint 029: replace a stale/wrong **agent-authored knowledge** memory in one call — writes the replacement (carrying `supersedes`), hides the original behind the soft-delete filter with a `superseded_by` pointer. Tags/volatility inherit unless given. Own memories need `write`; another author's needs `manage`. Prefer this over delete-then-add: it keeps the trail. |
+| `memory_update` | `write` | Sprint 029: in-place edit (`text` / `tags` / `volatility`) of an agent-authored knowledge memory; id stable, text changes re-embed. For typos and amendments — supersede when the old statement was *wrong*. Same ownership rules as delete. |
 | `memory_admin_restore` | `admin` | Reverse a prior soft delete. |
 | `memory_admin_hard_delete` | `admin` | Permanently remove a soft-deleted row. |
 | `memory_admin_list_deleted` | `admin` | Page through soft-deleted rows for triage. |
 
 The advertised tool list is filtered per-request by the bearer
 token's grant; an `admin`-less token never sees the `memory_admin_*`
-tools (FR-020).
+tools (FR-020). (Token-budgeted context bundles remain REST-only at
+`/memory/context` — the `memory_context` tool sketched in 007 was
+never mounted.)
+
+Since sprint 018 the write tools' `author_id` argument is optional:
+when omitted, the write is attributed to the author bound to the
+caller's bearer token (`agent_name` in `[[auth.tokens]]`, or the
+seeded `system` author for unbound/legacy tokens). Passing an
+explicit `author_id` still works and always wins.
+
+**Exception since sprint 025 — `memory_delete`.** There `author_id` is
+optional too, but an explicit value may only *confirm* your bound
+author; naming a different one is refused. Deletes always act as your
+own identity. Deleting a memory you wrote needs `write`; deleting
+another author's needs `manage`. Full model: [auth.md](auth.md).
+
+**Lifecycle notes (sprint 029).** `memory_supersede`/`memory_update`
+refuse scanner-ingested targets with `NOT_AGENT_AUTHORED` (derived
+data — fix the file and let the re-scan update the store) and refuse
+already-superseded targets with `NOT_FOUND` naming the replacement.
+`memory_add` (knowledge) may return `similar_existing`
+(`[{id, text_head, author, raw_score}]`, cosine ≥ 0.85 against
+agent-authored memories): when it names what you were about to write,
+call `memory_supersede` on it instead of adding a twin. Knowledge
+writes also accept `volatility: "stable" | "volatile"` — declare
+`volatile` for facts expected to age (IPs, versions, "not yet on X");
+volatile memories rank down as they age (week grace, 30-day
+half-life, 0.25 floor), everything else never decays.
+
+Session teardown
+also answers 204 (not 202) so mcp python-sdk clients no longer log
+`Session termination failed: 202` on close.
 
 ### Scope configuration
 
@@ -608,18 +664,26 @@ materializes into one grant with all three scopes) and adds an
 # bearer_token = "..."
 
 [[auth.tokens]]
-token = "viewport-readonly-XXXXXXXXXXXX"
-scopes = ["read"]
+token = "viewport-XXXXXXXXXXXXXXXXXXXX"
+scopes = ["read", "write", "manage"]   # it edits facts + resolves dissents
 label = "viewport"
+agent_name = "viewport"
 
 [[auth.tokens]]
 token = "ghcp-write-XXXXXXXXXXXXXXXX"
-scopes = ["read", "write"]
+scopes = ["read", "write", "manage"]
 label = "ghcp"
+agent_name = "ghcp"
+
+[[auth.tokens]]
+token = "scanner-XXXXXXXXXXXXXXXXXXXX"
+scopes = ["read", "write"]             # retracts only its own chunks
+label = "scanner"
+agent_name = "klams-scanner"
 
 [[auth.tokens]]
 token = "ken-admin-XXXXXXXXXXXXXXXXXX"
-scopes = ["read", "write", "admin"]
+scopes = ["read", "write", "manage", "admin"]
 label = "ken-admin"
 ```
 
@@ -630,12 +694,20 @@ Validation rules (enforced at load):
 - Every token must be ≥ 16 characters (loose entropy floor — real
   entropy is the operator's responsibility).
 - Every grant's `scopes` array must be non-empty.
+- Scopes are **flat**: `write` does not imply `read`, `admin` does not
+  imply `write`. List each one explicitly.
 
 The `label` is surfaced in logs and metrics (`klams_mcp_calls_total{token_label}`)
 so a noisy or rogue client is easy to identify without leaking the
-raw token. Recommended layout: one read-only token for the viewport
-so a UI compromise cannot mutate state, one read+write token per
-agent, and a single admin token used only from your own shell.
+raw token.
+
+Recommended layout: `read`+`write`+`manage` for the viewport and for
+interactive agents that curate the corpus; `read`+`write` for daemons
+that only write their own records (scanner, kmon — they can still
+retract their *own* chunks); and a single all-scopes admin token used
+only from your own shell. Give every grant an `agent_name`, since
+`memory_delete` decides ownership by the bound author. Full model:
+[auth.md](auth.md).
 
 ### Soft-delete safety model
 
@@ -644,7 +716,7 @@ Facts and knowledge items support **soft delete** via `memory_delete`:
 - `memory_delete` is idempotent — repeated calls on the same id are
   no-ops once the row is tombstoned (FR-014).
 - A soft-deleted row vanishes from every read path (`memory_search`,
-  `memory_related`, `memory_context`, `GET /v1/authors/{id}/memories?state=live`)
+  `memory_related`, `/memory/context`, `GET /v1/authors/{id}/memories?state=live`)
   but is preserved in Postgres / Qdrant with `deleted_at` and
   `deleted_by_author_id` populated.
 - Recovery is `memory_admin_restore`; the original delete
@@ -839,3 +911,323 @@ The repair is idempotent (a second `--apply` is a no-op) and is
 intended as a one-time cutover step. Setup details and the
 `agent_name` token config live in
 [setup.md § Sprint 009](setup.md#sprint-009--stability--attribution).
+
+## Sprint 021 — corpus hygiene + miss log
+
+### Scanner: delete-before-reindex + file-type allowlist
+
+Two ingestion-quality fixes landed in the scanner:
+
+- **Edited files no longer leak stale chunks.** When a tracked file's
+  content changes, `scan_root` now deletes its previous knowledge points
+  (`POST /memory/knowledge/delete?source_file=<abs>`) *before*
+  publishing the new chunks. Before this, an edit added new points but
+  left the old versions live and searchable — the corpus re-polluted
+  itself on every edit. If the delete fails the file's cursor is left
+  unadvanced so the next scan retries rather than stacking new chunks on
+  stale ones.
+- **Only content is indexed.** The walker now applies a file-type
+  allowlist (source, docs/prose, config prose; extensionless ops files
+  like `Dockerfile`/`Makefile`/`justfile`) and explicitly drops
+  lockfiles, JSON fixtures, SVGs, images, and archives — see
+  `ALLOW_EXT` / `ALLOW_NAMES` / `DENY_NAMES` in
+  `crates/klams-scanner/src/walk.rs`. A missing extension is recoverable
+  (add it; the miss log surfaces demand); a false positive costs tokens
+  on every retrieval.
+
+### One-time stale-chunk purge / re-index (operator step)
+
+The delete-before-reindex fix stops *future* leaks; chunks orphaned by
+edits made before it deployed remain until each file next changes. To
+purge them in one pass, **invalidate** the cursor rows — do NOT delete
+the cursor DB. A file re-chunks correctly only when the scanner sees a
+*prior* cursor entry whose hash differs: that path fires
+delete-before-reindex (old chunks removed, then re-published). If you
+delete the cursor instead, every file looks brand-new, so nothing is
+deleted and scanner-v2 chunks stack on top of the old ones — duplicates.
+
+```sh
+sudo systemctl stop klams-scanner.timer klams-scanner.service
+# Force every tracked file to re-chunk via delete-before-reindex, and
+# keep the rows so files that have since vanished are still pruned.
+# mtime_ns=0 defeats the mtime short-circuit; the sentinel hash defeats
+# the content-hash short-circuit.
+# kubs0 has no sqlite3 CLI — drive the cursor edit through python3.
+sudo -u klams python3 -c "import sqlite3; d=sqlite3.connect('/var/lib/klams/scanner.sqlite'); d.execute(\"UPDATE file_cursor SET mtime_ns=0, content_hash='reindex'\"); d.commit()"
+# NOT `just scanner-once` — that runs cargo as YOUR user against your
+# own state dir, not the /var/lib/klams cursor edited above (sprint 028
+# docs fix). Drive the deployed unit instead:
+sudo systemctl start klams-scanner.service  # delete-then-reindex per file
+sudo systemctl start klams-scanner.timer
+```
+
+This re-embeds every file the scanner still walks and **prunes chunks
+for files no longer on this host** (e.g. repos that moved to another
+machine — their rows stay in the cursor, aren't walked, and get
+deleted). It re-embeds the whole present corpus, so fold the sprint 021
+purge into sprint 022's re-index rather than paying it twice.
+
+### Miss log
+
+`memory_search` now records misses — calls that returned nothing
+(`reason=zero_hit`) or only a weak knowledge match
+(`reason=low_score`, top Qdrant cosine < 0.5) — two ways:
+
+- **Metric:** `klams_search_misses_total{reason}` drives the Grafana
+  **"Search miss rate (zero-hit / low-score)"** panel.
+- **Durable row:** a `search_miss` table (migration `0010`) captures the
+  query text, caller (bearer `agent_name`), reason, top score, hit
+  count, and kinds queried — the "what did an agent want and not get"
+  record that drives chunking fixes (022) and the lexical-search
+  decision (024). The insert is fire-and-forget: a failure is logged at
+  debug and never affects the live search. The table is append-only;
+  prune old rows by `created_at` as an operator concern.
+
+```sql
+-- Recent misses, newest first:
+SELECT created_at, caller, reason, top_score, hit_count, query
+FROM search_miss ORDER BY created_at DESC LIMIT 50;
+
+-- What are agents asking for and getting nothing?
+SELECT query, count(*) FROM search_miss
+WHERE reason = 'zero_hit' GROUP BY query ORDER BY count(*) DESC;
+```
+
+## Sprint 022 — scanner v2 (chunks worth retrieving)
+
+### Language-aware chunking
+
+The scanner now chunks by file type (`Lang::from_path`):
+
+- **Markdown** splits on ATX headings, but each chunk carries its
+  heading *path* (`H1 > H2`) as a breadcrumb prepended to the text, and
+  a heading with no body never becomes its own chunk — the
+  `"## MCP tools"`-style bare-heading hits are gone.
+- **Rust / Python** are parsed with tree-sitter and split at top-level
+  item boundaries (function/struct/impl/class…); each chunk records the
+  symbol names it defines. A parse failure falls back to the plain
+  splitter.
+- **Shell / TOML / text** split on blank lines only, so a `#` comment is
+  never mistaken for a heading.
+
+Chunk metadata (`chunk_index`, `language`, `heading_path`, `symbols`)
+travels from the scanner through `POST /memory/knowledge/index` into the
+Qdrant point payload for future neighbour-expansion and the graph layer.
+Text normalization preserves newlines and indentation end-to-end.
+Content-hash dedupe is **content-only** since sprint 028 (#642):
+identical content anywhere is one point whose `copies`/`machines`
+payload records every (host, file) holding it, and deleting one
+location removes only that copy — the point falls with its last copy.
+
+### Full re-index (operator step)
+
+Scanner v2 changes how every chunk is produced, so realizing it on the
+live corpus needs a one-pass re-index — which also absorbs the sprint
+021 one-time stale-chunk purge. **Invalidate** the cursor rows (keep the
+DB) so every file re-chunks *through* delete-before-reindex (021) —
+which replaces its old chunks — while files no longer present are pruned.
+Do **not** `rm` the cursor: that treats files as new and stacks
+scanner-v2 chunks on top of the old ones (duplicates).
+
+```sh
+sudo systemctl stop klams-scanner.timer klams-scanner.service
+# kubs0 has no sqlite3 CLI — drive the cursor edit through python3.
+sudo -u klams python3 -c "import sqlite3; d=sqlite3.connect('/var/lib/klams/scanner.sqlite'); d.execute(\"UPDATE file_cursor SET mtime_ns=0, content_hash='reindex'\"); d.commit()"
+sudo systemctl start klams-scanner.service  # delete-then-reindex, scanner v2 (not `just scanner-once` — wrong user/state dir)
+sudo systemctl start klams-scanner.timer
+```
+
+Scope note: this only touches files this host still walks. Repos that
+have moved to another machine are pruned here (their stale kubs0 chunks
+are removed); re-indexing *those* repos means running the scanner on
+whichever host now holds them, pointed at this klams service.
+
+The embedder gained a batch path (`Embedder::embed_batch`, one request
+for N inputs on TEI `/embed` and the openai-compat `/embeddings` route)
+for a future high-throughput bulk re-embed; the scanner's per-chunk
+ingest is unchanged, so the re-index above runs through the normal
+write queue.
+
+## Sprint 026 — measuring retrieval
+
+### `just eval` — the retrieval regression bar
+
+The suite and runner live in **klams-mind**
+(`evals/suites/homelab-retrieval.toml`); the recipe lives in klams
+because klams is what regresses.
+
+| Recipe                 | What it does |
+|------------------------|--------------|
+| `eval`                 | Runs the suite against the configured klams (`KLAMS_URL` / `KLAMS_TOKEN`). Exits non-zero on a **regression**. |
+| `eval-report <OUT>`    | Same, also writing the markdown report to `<OUT>` — use it to capture a before/after around a retrieval change or the corpus reset. |
+
+Point it at a klams-mind checkout other than `../klams-mind` with
+`KLAMS_MIND_DIR`. It is **not** part of `just gate`: it needs a live
+service with the real corpus, so it is a pre-deploy check, not a
+per-commit one.
+
+Reading the result:
+
+- **`REGRESSION`** — a query marked `expect = "pass"` stopped passing.
+  This is the only thing that fails the run.
+- **Known open** — queries marked `expect = "known_open"`, failing
+  against tracked work (the #628 curated-beats-bulk pair awaits the
+  ranking sprint; the junk-ceiling cases await the fence-unaware chunker
+  fix). They do not fail the run, and each carries a `tracking` note.
+- **Newly fixed** — a `known_open` query that now passes. Promote it to
+  `expect = "pass"` so the next regression in it is caught.
+
+Capture a report before and after any deploy that touches retrieval, and
+before the corpus reset — a before/after is the whole point.
+
+### Reading the search-sample log
+
+Every search is recorded in `search_sample` (migration 0011). This is
+what agent queries actually look like, and it is the honest source for
+both future eval queries and the next miss-log threshold.
+
+```sh
+# What are agents asking, and how well is it going?
+just db-psql -c "SELECT query, caller, top_kind, top_raw_score, hit_count,
+                        duplicates_collapsed
+                 FROM search_sample ORDER BY created_at DESC LIMIT 20"
+
+# The score distribution — recalibrate LOW_SCORE_THRESHOLD from THIS,
+# not from a handful of examples. Knowledge only: the raw scales are not
+# comparable across kinds.
+just db-psql -c "SELECT width_bucket(top_raw_score, 0.6, 1.0, 20) AS bucket,
+                        count(*), round(min(top_raw_score)::numeric, 3) AS lo,
+                        round(max(top_raw_score)::numeric, 3) AS hi
+                 FROM search_sample
+                 WHERE top_kind = 'knowledge' AND top_raw_score IS NOT NULL
+                 GROUP BY bucket ORDER BY bucket"
+
+# How much work is query-time dedupe (#641) actually doing?
+just db-psql -c "SELECT count(*) FILTER (WHERE duplicates_collapsed > 0) AS pages_with_dupes,
+                        count(*) AS total,
+                        round(avg(duplicates_collapsed), 2) AS avg_collapsed
+                 FROM search_sample"
+```
+
+Retention is an operator concern — the table is append-only and
+unpruned. Prune by `created_at` when it gets large.
+
+**After the #655 model swap (sprint 028), `LOW_SCORE_THRESHOLD` is
+stale.** The new embedder has a different score distribution; re-derive
+the threshold from the bucket query above before trusting the miss log
+again.
+
+---
+
+## Sprint 027 — ingest correctness: the 413 family
+
+Nothing in klams knew the embedder's real ceiling. The REST path capped
+knowledge text at 8192 **characters** while the deployed model
+(`BAAI/bge-small-en-v1.5`) accepts 512 **tokens** — roughly 4× apart —
+and MCP `memory_add` had no cap at all. Everything below follows from
+closing that gap.
+
+### The ceiling, and how to check it
+
+```bash
+# What the model actually accepts. auto_truncate MUST stay false: a
+# silently truncated chunk looks complete but is unfindable by its tail.
+curl -s http://127.0.0.1:7070/info | jq '{max_input_length, auto_truncate}'
+```
+
+Set `[embeddings] max_input_tokens` in `/etc/klams/klams.toml` to match,
+and the scanner's `max_input_tokens` in `/etc/klams/scanner.toml` to the
+same value.
+
+**There is no fixed character equivalent, and do not quote one.** The
+ceiling is in tokens, and how many characters that buys depends entirely
+on the content. Measured against the deployed model:
+
+| content | characters accepted at 512 tokens |
+|---|---|
+| punctuation-dense | ~525 |
+| minified JSON, URLs | ~790 |
+| markdown tables | ~1,050 |
+| source code | ~1,490 |
+| English prose | ~1,690 |
+| base64 / hex | >20,000 |
+
+A 32× spread — which is why klams asks the model's own tokenizer
+(TEI's `POST /tokenize`, no forward pass, cheap) rather than estimating
+from character counts. The character estimate survives only in the
+scanner, which talks solely to the klams API and cannot reach TEI.
+
+To check a specific text by hand:
+
+```bash
+curl -s -X POST http://127.0.0.1:7070/tokenize \
+  -H 'Content-Type: application/json' \
+  -d "$(jq -Rn --rawfile t /path/to/text '{inputs:$t}')" | jq 'length'
+```
+
+### What an over-limit write looks like now
+
+```json
+{"isError": true,
+ "content": [{"type": "text",
+   "text": "2500 characters (~836 tokens) exceeds the embedder's 512-token limit; split into pieces of at most 1530 characters"}],
+ "_meta": {"error_code": "PAYLOAD_TOO_LARGE"}}
+```
+
+Note the absence of `retry_after_seconds`. That is now load-bearing:
+**a retry hint is present if and only if retrying the identical call
+could succeed.** Previously this exact failure arrived as
+`EMBEDDING_UNAVAILABLE` + `retry_after_seconds: 5`, and agents reasonably
+concluded the embedder was down and abandoned the write.
+
+The mirror case is fixed too: a transient database failure (pool
+exhaustion) now returns `INTERNAL_ERROR` *with* a retry hint instead of
+looking permanently broken.
+
+### The oversize-write log
+
+Every refused write is recorded with its **full payload**, so "what did
+we lose, how often, and to whom" is answerable:
+
+```bash
+# Who is hitting the ceiling, and how hard?
+just db-psql -c "SELECT agent_name, count(*), max(submitted_chars) AS worst,
+                        round(avg(submitted_chars)) AS avg_chars
+                 FROM oversize_write GROUP BY agent_name ORDER BY count DESC"
+
+# Read what a specific rejection was trying to store.
+just db-psql -c "SELECT created_at, agent_name, submitted_chars, text
+                 FROM oversize_write ORDER BY created_at DESC LIMIT 1"
+
+# Did the agent's hand-split preserve the content, or drop the tail?
+# Cheap heuristic: same author, shortly after, similar content.
+just db-psql -c "SELECT o.created_at, o.agent_name, o.submitted_chars
+                 FROM oversize_write o ORDER BY o.created_at DESC LIMIT 20"
+```
+
+Unlike `search_miss`, this table is **pruned automatically** — it stores
+whole documents, so an unbounded log is a liability rather than an
+instrument. `[embeddings] oversize_log_retention_days` (default 90)
+drives a daily prune.
+
+After the sprint-028 model upgrade this should fall to near zero. That is
+the point: it becomes a rare-event log, and each surviving row is worth
+reading individually. It is also the evidence that decides whether
+#632's server-side chunking is ever actually needed — do not build that
+until this table says it is.
+
+### Dashboard panels
+
+Two new panels on the klams dashboard:
+
+- **Oversize writes refused by agent** — `klams_mcp_oversize_writes_total`.
+- **Dropped queued writes by reason** — `klams_writes_failed_total`, now
+  incremented by the *worker*, not only by HTTP handlers. Any sustained
+  non-zero value here is data loss: the caller already got its 202 and
+  the scanner already advanced its cursor, so nothing will retry it.
+
+That second panel is the one that was missing. `writes_failed` had never
+been touched outside HTTP handlers, so when kai dropped ~30k chunks in a
+two-hour window, no counter moved and `/healthz` stayed green throughout
+(TEI's `/health` answers 200 whenever the model is loaded; input
+rejections never reach it).

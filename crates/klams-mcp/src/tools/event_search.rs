@@ -78,8 +78,8 @@ pub struct EventSearchOutput {
 
 /// Execute `event_search` with read-scope constraints already enforced
 /// by the tool registry.
-pub async fn run(
-    state: &McpState,
+pub async fn run<S: Store>(
+    state: &McpState<S>,
     args: EventSearchArgs,
 ) -> Result<EventSearchOutput, ErrorEnvelope> {
     let now = Utc::now();
@@ -90,24 +90,23 @@ pub async fn run(
         "since",
     )?;
 
-    if since > until {
-        return Err(envelope(
-            errors::INVALID_WINDOW,
-            format!(
-                "window is inverted: since ({}) is after until ({})",
-                since.to_rfc3339(),
-                until.to_rfc3339()
-            ),
-        ));
-    }
-
+    // Sprint 031 (#645): one copy of the rule, in klams-types. This
+    // and `GET /v1/memories` had character-identical checks and
+    // messages, which is two places to fix and one to forget — and the
+    // two surfaces read the same `memories_max_window_days`, so they
+    // are supposed to answer identically.
     let max_days = state.api.memories_max_window_days;
-    if (until - since) > Duration::days(i64::from(max_days)) {
-        return Err(envelope_with_window_max(
-            errors::WINDOW_TOO_LARGE,
-            format!("requested window exceeds configured maximum of {max_days} days"),
-            max_days,
-        ));
+    if let Err(e) = klams_types::validate_window(since, until, max_days) {
+        return Err(match e {
+            klams_types::WindowError::Inverted { .. } => {
+                envelope(errors::INVALID_WINDOW, e.message())
+            }
+            // The MCP envelope carries the ceiling in `_meta` so an
+            // agent can retry with a legal window without guessing.
+            klams_types::WindowError::TooLarge { max_days } => {
+                envelope_with_window_max(errors::WINDOW_TOO_LARGE, e.message(), max_days)
+            }
+        });
     }
 
     let author_ids = normalize_uuids(args.author_id);
