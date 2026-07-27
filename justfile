@@ -26,6 +26,10 @@ compose_file  := 'deploy/docker-compose.yml'
 # klams is what regresses). Override if your checkout is elsewhere.
 klams_mind    := env_var_or_default('KLAMS_MIND_DIR', justfile_directory() / '../klams-mind')
 
+# Windows viewport host (cleo) + deploy target used by `viewport-deploy`.
+viewport_host       := env_var_or_default('VIEWPORT_HOST',       'kenhi@cleo')
+viewport_deploy_dir := env_var_or_default('VIEWPORT_DEPLOY_DIR', 'c:\tools\bin')
+
 # Bring the Postgres+Qdrant+TEI stack up in the background.
 compose-up:
     docker compose -f {{compose_file}} up -d
@@ -178,6 +182,43 @@ verify:
 viewport-build:
     cd viewport && pnpm install --frozen-lockfile && pnpm build
     cd viewport/src-tauri && cargo xwin build --release --target x86_64-pc-windows-msvc
+
+# Cross-compile the viewport and ship klams-viewport.exe to the
+# Windows host (cleo) at VIEWPORT_DEPLOY_DIR. Override VIEWPORT_HOST /
+# VIEWPORT_DEPLOY_DIR to target a different machine/path.
+#
+# History worth keeping: this shipped as a *pull*
+# (`ssh cleo "scp kubs0:... dest"`) because cleo's Win32-OpenSSH 9.5p2
+# had a broken sftp subsystem — `sftp-server.exe` exited immediately on
+# invocation, which killed any `scp`/`sftp` INTO cleo. That is fixed as
+# of 2026-07-27: a plain push now works, 5/5 hash-verified runs at ~2s
+# each, on the same 9.5p2 build. So this is a straight `scp` again, and
+# cleo no longer needs SSH access back to the build host. If pushes
+# ever start failing that way again, the pull is the workaround — see
+# PR #17 for the full diagnostic trail.
+#
+# Close a running viewport on the target first: Windows locks the .exe of a running process.
+viewport-deploy: viewport-build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    exe="viewport/target/x86_64-pc-windows-msvc/release/klams-viewport.exe"
+    host="{{viewport_host}}"
+    dest_dir="$(echo '{{viewport_deploy_dir}}' | tr '\\' '/' | sed 's:/*$::')"
+    dest="$dest_dir/klams-viewport.exe"
+    echo "→ shipping $exe to $host:$dest"
+
+    scp -q "$exe" "$host:$dest"
+
+    # Verify rather than trust the exit code: a partial write that still
+    # exits 0 would otherwise ship a corrupt binary to a machine with no
+    # other check on it.
+    local_hash=$(sha256sum "$exe" | awk '{print $1}')
+    remote_hash=$(ssh "$host" "Get-FileHash '$dest' -Algorithm SHA256 | Select-Object -ExpandProperty Hash" | tr 'A-F' 'a-f' | tr -d '\r')
+    if [ "$local_hash" != "$remote_hash" ]; then
+        echo "✗ hash mismatch (local $local_hash, remote $remote_hash)" >&2
+        exit 1
+    fi
+    echo "→ deployed and hash-verified. Relaunch klams-viewport.exe on the target to pick up the build."
 
 # Native Linux build of the viewport (webkit2gtk).
 # Requires: libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev.

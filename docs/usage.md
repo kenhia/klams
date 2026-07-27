@@ -191,6 +191,7 @@ common task is a one-liner that matches what CI runs.
 | `health`          | `/healthz` curl + `scripts/verify-mvp.sh --light`. |
 | `verify`          | Full `scripts/verify-mvp.sh` (SC-001..SC-009). |
 | `viewport-build`  | `cargo xwin` Windows cross-build of the viewport. |
+| `viewport-deploy` | `viewport-build`, then `scp` the exe to `VIEWPORT_HOST` (default `kenhi@cleo`) at `VIEWPORT_DEPLOY_DIR` (default `c:\tools\bin`) and verify the SHA-256 matches. Close a running viewport on the target first — Windows locks the `.exe` of a running process. |
 | `viewport-build-linux` | Native Linux build of the viewport (also runs in WSL Ubuntu). |
 | `viewport-run-linux`   | Build + launch the Linux viewport with `--debug`. |
 

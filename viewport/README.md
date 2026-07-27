@@ -11,7 +11,9 @@ pnpm install
 pnpm build                                                # SvelteKit static SPA → ./build
 cd src-tauri
 cargo xwin build --release --target x86_64-pc-windows-msvc
-# output: src-tauri/target/x86_64-pc-windows-msvc/release/klams-viewport.exe
+# output: target/x86_64-pc-windows-msvc/release/klams-viewport.exe
+#   (the workspace target dir is viewport/target, NOT viewport/src-tauri/target —
+#    this line said src-tauri/target until 2026-07-27 and pointed at nothing)
 ```
 
 Prerequisites on Linux: `cargo install cargo-xwin` plus
