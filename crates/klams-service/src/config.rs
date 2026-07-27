@@ -522,10 +522,26 @@ mod tests {
         let cfg = Config::from_path(&path).expect("example toml should parse");
         assert_eq!(cfg.server.listen_addr, "127.0.0.1");
         assert_eq!(cfg.server.port, 7777);
-        assert!(!cfg.auth.bearer_token.is_empty());
+        // Sprint 032 (#670): this asserted the OPPOSITE — that the
+        // shipped example renders a `bearer_token`. That assertion was
+        // pinning the very default the WI was filed about. The example
+        // must now ship WITHOUT a full-scope credential; an operator
+        // opts in.
+        assert!(
+            cfg.auth.bearer_token.is_empty(),
+            "the shipped example must not render a full-scope legacy token (#670)"
+        );
         assert!(cfg.postgres.url.starts_with("postgres://"));
-        assert_eq!(cfg.qdrant.collection, "knowledge_items");
-        assert_eq!(cfg.embeddings.vector_dim, 384);
+        // Sprint 032 (#647): these tracked the pre-028 corpus, so the
+        // example provisioned the retired collection at the wrong
+        // vector width. Pinned to what kubs0 actually runs.
+        assert_eq!(cfg.qdrant.collection, "knowledge_items_v2");
+        assert_eq!(cfg.embeddings.vector_dim, 1024);
+        assert_eq!(cfg.embeddings.max_input_tokens, 32768);
+        assert!(
+            cfg.embeddings.query_prefix.starts_with("Instruct:"),
+            "Qwen3-Embedding is asymmetric; the example must carry the query prefix"
+        );
         assert!(cfg.queue.capacity >= 1);
         assert!(cfg.queue.workers >= 1);
         assert_eq!(cfg.logging.format, "json");

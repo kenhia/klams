@@ -98,10 +98,12 @@ max_connections = 8
 # gRPC endpoint. Loopback because Qdrant is bound to 127.0.0.1:6334
 # by the Compose stack.
 grpc_url = "http://127.0.0.1:6334"
-# kubs0 runs "knowledge_items_v2" since sprint 028 (the Qwen3/1024-dim
-# rebuild); the original "knowledge_items" was retained as the rollback
-# target until it is dropped.
-collection = "knowledge_items"
+# Sprint 028 rebuilt the corpus into "knowledge_items_v2" (Qwen3,
+# 1024-dim). Sprint 032 (#647): this line still said "knowledge_items",
+# so a rebuild from this example provisioned the RETIRED collection at
+# the wrong vector width — the comment above it already described the
+# drift without fixing it. The v1 collection was dropped in 032 (#684).
+collection = "knowledge_items_v2"
 
 [embeddings]
 # Embedding endpoint. `api` selects the wire dialect (sprint 014):
@@ -112,8 +114,11 @@ collection = "knowledge_items"
 #              `api_key` for endpoints started with --api-key.
 # Loopback in production.
 url = "http://127.0.0.1:7070"
-model_id = "BAAI/bge-small-en-v1.5"
-vector_dim = 384
+# Sprint 028 (#655): Qwen3-Embedding-0.6B at 1024 dims. Sprint 032
+# (#647) brought this block in line with the live host — it still
+# described bge-small-en-v1.5/384/512, three sprints stale.
+model_id = "Qwen/Qwen3-Embedding-0.6B"
+vector_dim = 1024
 api = "tei"
 
 # The model's maximum input length in TOKENS (sprint 027, #420). This is
@@ -126,19 +131,19 @@ api = "tei"
 # Verify against the live endpoint before changing it:
 #   curl -s http://127.0.0.1:7070/info | jq '{max_input_length, auto_truncate}'
 #
-# bge-small-en-v1.5 reports 512. Do NOT translate that into a character
-# count: measured on this model, 512 tokens buys ~525 characters of
+# Qwen3-Embedding-0.6B reports 32768 (verified live via /info). Do NOT
+# translate a token budget into a character count: measured on the
+# previous model, 512 tokens bought ~525 characters of
 # punctuation-dense text but >20,000 of base64 — a 32x spread. The
 # service asks TEI's /tokenize for the exact count rather than
-# estimating. Sprint 028's longer-context model raises this value — and
-# the scanner's matching `max_input_tokens` in scanner.example.toml,
-# which must be kept in step.
+# estimating. Keep the scanner's matching `max_input_tokens` in
+# scanner.example.toml in step with this value.
 #
 # Leave `auto_truncate` OFF at the TEI container. A silently truncated
 # chunk looks complete but is unfindable by its tail; a visible rejection
 # is strictly better. NOTE: TEI ≥1.8 flipped the default to ON — the
 # compose command passes an explicit `--auto-truncate false`.
-max_input_tokens = 512
+max_input_tokens = 32768
 
 # Prefix prepended to QUERY text before embedding — never to stored
 # documents (sprint 028 #655). Modern retrieval models are asymmetric:
@@ -147,7 +152,7 @@ max_input_tokens = 512
 #                                 retrieve relevant passages that answer
 #                                 the query\nQuery: "
 # Leave empty (default) for symmetric models (bge-m3, bge-small).
-# query_prefix = "query: "
+query_prefix = "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: "
 
 # Retention for the oversize-write log (sprint 027, #656), which records
 # refused knowledge writes INCLUDING the full submitted text so "what did

@@ -52,8 +52,11 @@ state_dir = "/var/lib/klams"
 # Before 027 an over-budget chunk was published anyway, accepted with
 # 202 (advancing the cursor), then dropped at the worker when the embed
 # failed — kai lost ~30k chunks that way in a single 2h window, silently.
-# Keep this in step with the service when sprint 028 swaps the model.
-max_input_tokens = 512
+# Sprint 028 swapped the model to Qwen3-Embedding-0.6B (32768 tokens);
+# sprint 032 (#647) updated this example, which had stayed at the
+# pre-028 512 — a scanner provisioned from it would have split against a
+# ceiling 64x too small, fragmenting every file it ingested.
+max_input_tokens = 32768
 
 # Host stamped on every chunk (sprint 023 #407), making retrieval a
 # fully-qualified (host, file). Defaults to the kernel hostname
