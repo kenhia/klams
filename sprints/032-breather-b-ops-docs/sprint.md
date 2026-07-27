@@ -301,3 +301,72 @@ thiserror 1→2, metrics 0.23→0.24, Qdrant legacy `search_points` →
 
 _(Filled in as the work happens — decisions, surprises, what actually
 shipped vs. what was planned.)_
+
+---
+
+## Live-ops record (#684, #688, #647.2, #647.6)
+
+Run on kubs0, 2026-07-27. Fresh backup first:
+`klams-service --run-backup-now` → `OK run_id=01KYGVD912KZ0D17ZR0B208NDP
+duration_ms=101255 artifacts=2`, producing
+`/gratch/klams-backup/qdrant-2026-07-27.snapshot` (1.1 GB).
+
+### Collections dropped
+
+| Collection | Points | Dim | Why |
+|---|---|---|---|
+| `knowledge_items` | 221,327 | 384 | #684 — the retired v1 corpus, rollback target since 028 |
+| `klams_knowledge` | 0 | 384 | #647.2 — droppings from `reattribute-system` run with its wrong default |
+
+Config verified pointing at `knowledge_items_v2` first. After: only
+`knowledge_items_v2` (180,383 pts, 1024-dim, status green) and
+`knowledge_items_test` remain; `/healthz` Ok, qdrant Ok, search returns
+hits. The binary rollback for the 028 model swap is now gone — reverting
+would mean a full re-embed, which is the accepted trade.
+
+Note: `df` on `/ai` did not move (61 G before and after). Qdrant frees
+segment files lazily; the space returns without further action. The
+"~2 GB reclaimed" in #684 is a projection, not a measurement.
+
+### #688 — the re-source, narrowed
+
+**The WI's rule was wrong for this corpus and would have caused harm.**
+It proposed flipping `source` to `Task` wherever `source = AgentProposal`
+AND `machine` is set AND the author is a scanner identity. Measured
+reality:
+
+- 23 points match `AgentProposal` + `machine`.
+- **None** has a scanner author. The WI's premise — that these came from
+  the pre-028 `~/.claude/projects/**/*.jsonl` scanner path — is wrong:
+  the 13 transcript chunks were written by **klams-mind** through MCP
+  `memory_add`, not by `klams-scanner`.
+- The other 10 are genuine agent-authored writes (`copilot-claude-opus-4.7`,
+  `GitHub Copilot`, `token-master`, `claude`) on real docs and source
+  files, which merely happen to carry `machine`.
+
+`Task` outranks `AgentProposal` in `trust_rank` (2 vs 1). Applying the
+blanket rule would have silently **promoted those 10 genuine agent
+proposals into a higher trust tier** — introducing exactly the
+provenance lie the WI exists to remove.
+
+So the fix was narrowed to the 13 chunks whose `file` is under
+`~/.claude/projects/` and ends `.jsonl` — the actual bulk transcript
+content. `set_payload source = "Task"` on those IDs only.
+
+Counts: `AgentProposal` total 109 → 96; `AgentProposal` + `machine`
+23 → 10 (the genuine writes, untouched, as predicted).
+
+**Can it recur?** No. `crates/klams-mcp/src/tools/memory_add.rs` writes
+`machine: None` on the knowledge path, so no current ingest path can
+produce `AgentProposal` + `machine`. 029's "pre-028 only" belief was
+right about the outcome even though it named the wrong ingester.
+
+### Eval gate
+
+`just eval` → **OK — 21/21 queries passed (100%). 0 regression(s), 0
+known-open, 0 newly fixed.** Exit 0. Matches the 0.1.30 baseline
+exactly, as required.
+
+(Operator note: `just eval` needs `KLAMS_TOKEN`; it defaults to empty
+and fails with "retrieval failed / check klams and KLAMS_TOKEN". The
+klams-mind `.env` holds a working scoped token.)
