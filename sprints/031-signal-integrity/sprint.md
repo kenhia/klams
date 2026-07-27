@@ -324,6 +324,17 @@ version, and suite hash, then move the WI to `done`.
      #679's sanctioned fallback for tests that genuinely cannot be
      isolated. They fail 3-for-3 in parallel and pass 3-for-3 serially.
 
+  **The advisory-lock fix was initially incomplete, and PR CI caught it
+  on its first run** — which is #646's acceptance criterion working
+  before it had even merged. Only the *isolated* path took the lock.
+  Locally that was invisible: the shared test database is always already
+  migrated, so `spawn()`'s migration run is a no-op and nothing
+  contends. CI gets a FRESH database every run, where the shared path
+  really does migrate and several `spawn()`s do it at once. Every
+  connect now takes the lock. Verified by reproducing CI's condition
+  locally against a fresh database: **4 deadlocks before the fix, 0
+  after**, and the full suite green on a fresh database.
+
   **Result:** `just test-integration` green on repeated full runs at
   default parallelism, zero orphaned schemas or collections after.
 

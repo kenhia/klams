@@ -300,24 +300,33 @@ impl TestServer {
         // running. (Sprint 025 had already removed the `authors` half
         // of the same hazard for the same reason.) Both halves are now
         // gone for good — there is nothing shared left to wipe.
+        //
+        // EVERY connect takes the migration lock, isolated or not.
+        // Guarding only the isolated path was not enough, and CI caught
+        // it: locally the shared database is always already migrated, so
+        // `spawn()`'s migration run is a no-op and nothing contends. On a
+        // FRESH database — which is what CI gets every run — the shared
+        // path really does migrate, several `spawn()`s do it at once, and
+        // the `CREATE INDEX CONCURRENTLY` deadlock fires exactly as it
+        // does for isolated spawns. Same lock, same reason.
         let pg_schema = isolate.then(|| qdrant_collection.clone());
-        let postgres = if let Some(schema) = &pg_schema {
-            let mut lock = lock_for_migration(&pg_url).await;
-            sqlx::query(&format!("CREATE SCHEMA IF NOT EXISTS {schema}"))
-                .execute(&mut lock)
-                .await
-                .expect("create per-test schema");
-            let store = PostgresStore::connect(&schema_scoped_url(&pg_url, schema), 4).await;
-            let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
-                .bind(MIGRATE_LOCK_KEY)
-                .execute(&mut lock)
-                .await;
-            store.expect("postgres connect (isolated schema)")
-        } else {
-            PostgresStore::connect(&pg_url, 4)
-                .await
-                .expect("postgres connect")
+        let mut lock = lock_for_migration(&pg_url).await;
+        let connect_url = match &pg_schema {
+            Some(schema) => {
+                sqlx::query(&format!("CREATE SCHEMA IF NOT EXISTS {schema}"))
+                    .execute(&mut lock)
+                    .await
+                    .expect("create per-test schema");
+                schema_scoped_url(&pg_url, schema)
+            }
+            None => pg_url.clone(),
         };
+        let postgres = PostgresStore::connect(&connect_url, 4).await;
+        let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
+            .bind(MIGRATE_LOCK_KEY)
+            .execute(&mut lock)
+            .await;
+        let postgres = postgres.expect("postgres connect");
         let qdrant = QdrantStore::connect(&qdrant_url, &qdrant_collection, 384)
             .await
             .expect("qdrant connect");
