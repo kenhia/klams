@@ -3,12 +3,6 @@
 //! Wraps `reqwest::Client` with bearer-token injection and typed
 //! request/response handling for every documented endpoint.
 
-//! Async Rust client for klams-service HTTP API.
-//!
-//! Phase-2 scope: typed surface + bearer-token injection wired
-//! through `reqwest`. Concrete endpoint implementations land with
-//! their owning user-story handler tasks.
-
 // `ClientError::Api` carries the full `WireError` (extended with
 // `details` + `current_version` in sprint 002) so callers can render
 // structured field-level errors without a second hop. The variant is
@@ -42,8 +36,6 @@ pub enum ClientError {
     Api { status: StatusCode, body: WireError },
     #[error("response decode error: {0}")]
     Decode(String),
-    #[error("not implemented: {0}")]
-    NotImplemented(&'static str),
 }
 
 pub type ClientResult<T> = Result<T, ClientError>;
@@ -157,11 +149,6 @@ impl Client {
             });
             Err(ClientError::Api { status, body })
         }
-    }
-
-    #[deprecated(note = "use `health` which tolerates 503")]
-    pub async fn healthz(&self) -> ClientResult<HealthSnapshot> {
-        self.get_json("/healthz").await
     }
 
     /// Fetch the source-trust policy table (`GET /memory/policy`).

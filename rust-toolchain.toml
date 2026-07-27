@@ -1,5 +1,10 @@
 [toolchain]
-channel = "stable"
+# Sprint 032 (#334): pinned to a concrete version. `channel = "stable"`
+# is not a pin — every machine and every CI run silently picked up
+# whatever stable happened to be that day, which is exactly the drift
+# this file exists to prevent. Bump deliberately; `rust-version` in
+# Cargo.toml is the separate MSRV floor and is not the same knob.
+channel = "1.96.0"
 components = ["rustfmt", "clippy"]
 targets = ["x86_64-pc-windows-msvc"]
 profile = "minimal"

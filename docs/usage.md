@@ -2,14 +2,23 @@
 
 This document covers the runtime behaviour of `klams-service`:
 authentication, health/metrics endpoints, exit codes, and the
-recommended systemd deployment. For HTTP request/response shapes
-see [sprints/001-initial-mvp/contracts/openapi.yaml](../sprints/001-initial-mvp/contracts/openapi.yaml).
+recommended systemd deployment. For HTTP request/response shapes see
+[sprints/002-safety-and-write-ops/contracts/openapi.yaml](../sprints/002-safety-and-write-ops/contracts/openapi.yaml)
+— sprint 032 (#681) repointed this, it named the 001 spec that 002's own
+header declares superseded. Read it as the last hand-written snapshot
+of the wire shapes, not as a generated live contract: routes added from
+sprint 005 on (`/memory/context`, the retrieval and authorization
+surfaces) are documented here and in `docs/architecture.md` rather than
+there.
 
 ## Authentication
 
 All `/memory/*` routes require a bearer token. The token is loaded
-from configuration (`auth.bearer_token` in the service config or
-`KLAMS_AUTH_BEARER_TOKEN` env var) and compared in constant time.
+from configuration (`auth.bearer_token` in the service config or the
+`KLAMS_AUTH__BEARER_TOKEN` env var — **two** underscores between the
+section and the key; the loader is `Env::prefixed("KLAMS_").split("__")`,
+so the single-underscore form these docs used until sprint 032 never
+bound anything) and compared in constant time.
 
 ```text
 Authorization: Bearer <token>
@@ -81,35 +90,31 @@ named klams metrics below.
 
 ## systemd
 
-Suggested unit (`/etc/systemd/system/klams.service`):
-
-```ini
-[Unit]
-Description=klams memory service
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=klams
-Environment=KLAMS_CONFIG=/etc/klams/service.toml
-ExecStart=/usr/local/bin/klams-service
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
+**Do not hand-write a unit.** The shipped one is
+[`deploy/klams-service.service`](../deploy/klams-service.service),
+installed by `just install-systemd`. Sprint 032 (#648) replaced an
+invented "suggested unit" that stood here: it named the service
+`klams.service`, pointed `KLAMS_CONFIG` at a path that does not exist
+(`/etc/klams/service.toml`, real: `/etc/klams/klams.toml`), and omitted
+both `ExecReload` — so `systemctl reload` would not hot-reload
+`[[auth.tokens]]` — and the `ReadWritePaths=` line that
+`ProtectSystem=strict` requires for backups to write at all. Every
+`journalctl` example alongside it used the wrong unit name too, so they
+returned nothing.
 
 Operate with:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now klams.service
-sudo systemctl status klams.service
-journalctl -u klams.service -f      # tail logs
-journalctl -u klams.service --since "1 hour ago"
+sudo systemctl enable --now klams-service.service
+sudo systemctl status klams-service.service
+sudo systemctl reload klams-service.service   # SIGHUP: hot-reload [[auth.tokens]]
+journalctl -u klams-service.service -f        # tail logs
+journalctl -u klams-service.service --since "1 hour ago"
 ```
+
+The scanner and monitor are separate units — `klams-scanner.service` +
+`klams-scanner.timer`, and `klams-monitor.service`.
 
 ## Dissent lifecycle (sprint 002)
 
@@ -187,7 +192,7 @@ common task is a one-liner that matches what CI runs.
 | `run`             | `cargo run -p klams-service`, logs to stderr. |
 | `test`            | `cargo test --workspace`. |
 | `gate`            | Constitution pre-commit gate: fmt + clippy + the hermetic tests. |
-| `test-integration`| The docker-gated suite `gate` excludes. Sweeps the test stack (`scripts/reset-test-stack.sh`), then runs `cargo test --workspace -- --ignored` at default parallelism. Needs `docker compose -f tests/docker-compose.test.yml up -d`. |
+| `test-integration`| The docker-gated suite `gate` excludes. Sweeps the test stack (`scripts/reset-test-stack.sh`), then runs `cargo test --workspace -- --ignored` at default parallelism. Needs `docker compose -f tests/docker-compose.test.yml up -d`; run `... down` when finished — a long-lived test stack shadows the production containers and accumulates seeds (#647). |
 | `health`          | `/healthz` curl + `scripts/verify-mvp.sh --light`. |
 | `verify`          | Full `scripts/verify-mvp.sh` (SC-001..SC-009). |
 | `viewport-build`  | `cargo xwin` Windows cross-build of the viewport. |
@@ -351,14 +356,31 @@ backend outage instead surfaces in-band as
 ### Decay-config tuning recipe
 
 Each fact type has its own decay constant λ, applied as
-`decay_weight = exp(-λ · age_seconds)`. Defaults (suitable for a
-new install) live in `klams_types::DecayConfig::default`:
 
-| FactType   | default λ | half-life     |
-|------------|-----------|---------------|
-| `TaskFact` | `1e-6`    | ≈ 8.0 days    |
-| `UserFact` | `1e-9`    | ≈ 22.0 years  |
-| `EnvFact`  | `1e-9`    | ≈ 22.0 years  |
+```text
+decay_weight = 1 / (1 + λ · age_seconds)
+```
+
+The curve is **hyperbolic, not exponential** (`klams_core::decay::score`),
+and it is **recomputed from total age on every sweep**, not multiplied
+into the previous weight. Sprint 032 (#648) corrected both: these docs
+had said `new_w = old_w · exp(-λ · Δt)`, which is wrong about the curve
+*and* implies a compounding recurrence the code does not have. Every
+half-life below was wrong as a consequence.
+
+For a hyperbolic curve the half-life is simply **`1/λ` seconds**.
+Defaults (suitable for a new install) live in
+`klams_types::DecayConfig::default`:
+
+| FactType   | default λ | half-life (`1/λ`) |
+|------------|-----------|-------------------|
+| `TaskFact` | `1e-6`    | ≈ 11.6 days       |
+| `UserFact` | `1e-9`    | ≈ 31.7 years      |
+| `EnvFact`  | `1e-9`    | ≈ 31.7 years      |
+
+Because the tail is hyperbolic it is much fatter than an exponential
+one: a TaskFact at 10× its half-life still carries ~0.09 weight, where
+an exponential would have left ~0.001.
 
 To rebalance recall against staleness, override under `[decay.lambda]`
 in `klams.toml`:
@@ -369,8 +391,8 @@ task_interval_seconds = 60       # decay sweep cadence
 batch_size            = 256
 
 [decay.lambda]
-TaskFact = 2e-6                  # halve the half-life of task chatter (~4d)
-UserFact = 5e-10                 # double the half-life of user facts  (~44y)
+TaskFact = 2e-6                  # halve the half-life of task chatter (~5.8d)
+UserFact = 5e-10                 # double the half-life of user facts  (~63y)
 EnvFact  = 1e-9                  # leave defaults
 ```
 
@@ -380,7 +402,9 @@ EnvFact  = 1e-9                  # leave defaults
   with the offending key in stderr.
 - `task_interval_seconds == 0` or `batch_size == 0` → exit code `2`.
 - On success: one `INFO` line `decay config loaded: task_fact_lambda=…`
-  is emitted and `klams_decay_config_reload_total` increments.
+  is emitted and `klams_decay_config_reloads_total` increments.
+  (Note the plural — sprint 032 (#648) corrected an off-by-an-`s`
+  that made every alert copied from these docs match nothing.)
 
 There is **no** SIGHUP-style hot-reload; restart the service to
 apply a new `[decay]` block.
@@ -393,26 +417,30 @@ apply a new `[decay]` block.
 
 ```toml
 [summarization]
-enabled              = true
-task_interval        = "60s"   # also accepts "5m", "1h"
-event_cluster_min    = 3       # only summarize ≥ N events
-llm_fallback         = true    # try the chat LLM; on failure use extractive
-llm_url              = "http://kubs0:11434/v1"   # OpenAI-compat base incl. /v1
-llm_model            = "phi3:medium"
+enabled               = true
+task_interval_seconds = 3600   # integer seconds; a string like "60s" fails to boot
+event_cluster_min     = 50     # only summarize ≥ N events per (host, category, day)
 ```
 
-Sprint 014: the chat endpoint speaks the OpenAI-compatible dialect
-(`GET {llm_url}/models` probe, `POST {llm_url}/chat/completions`), so
-`llm_url` works with Ollama's `/v1` route, vLLM, or kvllm on kai; set
-`llm_api_key` if the endpoint requires a bearer key. The legacy
-`ollama_url` / `ollama_model` keys still parse as aliases — but note
-the URL must now include the `/v1` segment.
+Summaries are **extractive only**. Sprint 032 removed the LLM keys
+(`llm_fallback`, `llm_url`, `llm_model`, `llm_api_key`, and the
+`ollama_url` / `ollama_model` aliases) along with the chat client
+behind them: the "fallback" never generated text — it probed
+`{llm_url}/models` and, if the probe answered, relabelled the
+extractive summary as `mechanism = "llm"`. Its default endpoint
+(Ollama on `127.0.0.1:11434`) is deployed in no compose file and no
+unit, so on kubs0 that probe failed every cycle for the life of the
+feature. `knowledge_stale_days` and `knowledge_cluster_min` went the
+same way — parsed and documented since sprint 005, never read.
 
-When the chat endpoint is unreachable, the task records `mechanism = "extractive"`
-and `klams_summarization_runs_total{mechanism="extractive"}` increments;
-the events section in `/memory/context` keeps shipping headlines
-("3x compile, 2x test"). Watch `klams_summarization_lag_seconds` for
-the wall-clock age of the most recent successful cycle.
+A config still carrying any of those keys keeps booting; unknown keys
+in `[summarization]` are ignored, not fatal.
+
+The task records `mechanism = "extractive"` and increments
+`klams_summarization_runs_total{mechanism="extractive"}`; the events
+section in `/memory/context` ships headlines ("3x compile, 2x test").
+Watch `klams_summarization_lag_seconds` for the wall-clock duration of
+the most recent cycle.
 
 ### Viewport: Context Preview pane
 
@@ -444,7 +472,7 @@ Disabled by default — set `enabled = true` to opt in:
 ```toml
 [backup]
 enabled              = true
-backup_dir           = "/ai/klams/backups"         # written atomically: .partial -> rename
+backup_dir           = "/gratch/klams-backup"         # written atomically: .partial -> rename
 window_start_utc     = "07:00"                     # HH:MM UTC; no DST drift
 daily_count          = 14                          # newest N distinct dates per kind
 weekly_count         = 4                           # newest N Sundays per kind
@@ -457,7 +485,7 @@ Validate the config without starting the service:
 
 ```bash
 just backup-validate-config
-# OK: [backup] enabled=true backup_dir=/ai/klams/backups window_start_utc=07:00 ...
+# OK: [backup] enabled=true backup_dir=/gratch/klams-backup window_start_utc=07:00 ...
 ```
 
 ### `just` recipe additions
@@ -534,8 +562,8 @@ identifiers exposed via environment variables (`KLAMS_BACKUP_RUN_ID`,
   "ended_at":   "2026-05-22T07:08:00Z",
   "duration_ms": 480000,
   "artifacts": [
-    {"kind": "postgres", "path": "/ai/klams/backups/postgres-2026-05-22.dump",     "bytes": 12345678},
-    {"kind": "qdrant",   "path": "/ai/klams/backups/qdrant-2026-05-22.snapshot",   "bytes": 9876543}
+    {"kind": "postgres", "path": "/gratch/klams-backup/postgres-2026-05-22.dump",     "bytes": 12345678},
+    {"kind": "qdrant",   "path": "/gratch/klams-backup/qdrant-2026-05-22.snapshot",   "bytes": 9876543}
   ],
   "ok": true,
   "error": null
@@ -566,9 +594,9 @@ against the most recent (or explicitly-dated) pair in
 ```bash
 just backup-verify              # today UTC
 just backup-verify 2026-05-24   # explicit date
-# ==> postgres: /ai/klams/backups/postgres-2026-05-24.dump
+# ==> postgres: /gratch/klams-backup/postgres-2026-05-24.dump
 #   bytes=21168 toc_entries=43 OK
-# ==> qdrant:   /ai/klams/backups/qdrant-2026-05-24.snapshot
+# ==> qdrant:   /gratch/klams-backup/qdrant-2026-05-24.snapshot
 #   bytes=712192 tar_members=18 OK
 # ==> backup-verify: OK
 ```
@@ -698,7 +726,13 @@ Validation rules (enforced at load):
 - Scopes are **flat**: `write` does not imply `read`, `admin` does not
   imply `write`. List each one explicitly.
 
-The `label` is surfaced in logs and metrics (`klams_mcp_calls_total{token_label}`)
+The `label` is surfaced in the startup/SIGHUP log line that binds each
+bearer to its author (`token_label=…`). It is **not** a metric
+dimension: `klams_mcp_calls_total` does not exist, and no series carries
+a `token_label` label — sprint 032 (#648) corrected this claim, and
+#670 had to audit configs by hand rather than query Prometheus as a
+direct consequence. The authoritative series list is
+[deploy/grafana/SERIES.md](../deploy/grafana/SERIES.md).
 so a noisy or rogue client is easy to identify without leaking the
 raw token.
 
@@ -804,7 +838,8 @@ kind?"
 
 `event_search` is the agent-facing counterpart to the Activity
 tab. Read scope. Pure SQL — it never invokes the embedder, so
-counters like `klams_tei_requests_total` must not increment for
+counters like `klams_tei_requests_total` (which does not exist — see
+[SERIES.md](../deploy/grafana/SERIES.md); #648) must not increment for
 a search-only workload (FR-004).
 
 Arguments:

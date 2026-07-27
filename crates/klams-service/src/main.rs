@@ -217,11 +217,7 @@ async fn main() -> Result<()> {
         let scfg = SCfg {
             enabled: cfg.summarization.enabled,
             event_cluster_min: cfg.summarization.event_cluster_min,
-            llm_fallback: cfg.summarization.llm_fallback,
             task_interval: std::time::Duration::from_secs(cfg.summarization.task_interval_seconds),
-            llm_url: cfg.summarization.llm_url.clone(),
-            llm_model: cfg.summarization.llm_model.clone(),
-            llm_api_key: cfg.summarization.llm_api_key.clone(),
         };
         let task = SummarizationTask::new(
             scfg,
@@ -296,6 +292,24 @@ async fn main() -> Result<()> {
     // of No Data until the next nightly run.
     if cfg.backup.enabled {
         if let Some(dir) = cfg.backup.backup_dir.as_ref() {
+            // Sprint 032 (#647) — fail loudly at boot, not at 07:00 UTC.
+            // Not fatal: serving memory is the service's job and backups
+            // are not, so a bad path degrades one feature rather than
+            // taking the whole service down. The ERROR + the
+            // `klams_backup_dir_writable` gauge are what make it visible.
+            match service_backup::lifecycle::probe_writable(dir).await {
+                Ok(()) => service_backup::metrics::set_dir_writable(true),
+                Err(e) => {
+                    service_backup::metrics::set_dir_writable(false);
+                    tracing::error!(
+                        error = %e,
+                        backup_dir = %dir.display(),
+                        "[backup].backup_dir is NOT writable — every backup run will fail. \
+                         If the unit sets ProtectSystem=strict, backup_dir must also appear \
+                         in ReadWritePaths= (deploy/klams-service.service)."
+                    );
+                }
+            }
             match service_backup::newest_backup_unix_seconds(dir) {
                 Ok(Some(ts)) => {
                     service_backup::metrics::record_last_success(ts);
@@ -485,7 +499,7 @@ async fn reload_auth_grants(
     // Same [auth] checks as `--validate-config`: at least one token
     // form, and every scoped grant individually valid.
     if cfg.auth.bearer_token.is_empty() && cfg.auth.tokens.is_empty() {
-        anyhow::bail!("[auth]: at least one of `bearer_token` or `[[auth.tokens]]` must be set");
+        anyhow::bail!("[auth]: {}", klams_types::AuthConfigError::NoTokens);
     }
     for (i, g) in cfg.auth.tokens.iter().enumerate() {
         if let Err(e) = g.validate() {
@@ -558,8 +572,10 @@ fn validate_config_cli(config_path: &str) -> ! {
     // [auth] — at least one token form must be present; each scoped
     // grant must individually validate.
     if cfg.auth.bearer_token.is_empty() && cfg.auth.tokens.is_empty() {
-        errors
-            .push("[auth]: at least one of `bearer_token` or `[[auth.tokens]]` must be set".into());
+        errors.push(format!(
+            "[auth]: {}",
+            klams_types::AuthConfigError::NoTokens
+        ));
     }
     for (i, g) in cfg.auth.tokens.iter().enumerate() {
         if let Err(e) = g.validate() {

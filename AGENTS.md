@@ -70,7 +70,15 @@ tools, or the write paths, also run:
 ```bash
 docker compose -f tests/docker-compose.test.yml up -d   # once
 just test-integration
+docker compose -f tests/docker-compose.test.yml down     # when you are done
 ```
+
+**Tear the test stack down when you finish.** Sprint 032 (#647) found
+it had been up on kubs0 for two weeks alongside the production
+containers, quietly holding a second postgres, qdrant and TEI. It costs
+memory and disk and its qdrant accumulates test seeds until ranking
+assertions starve — `just test-integration` sweeps that state, but only
+for the stack it is about to use.
 
 That recipe sweeps accumulated test state first (a long-lived stack
 otherwise drifts until ranking assertions starve) and runs at default

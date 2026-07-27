@@ -208,7 +208,8 @@ viewport ──invoke("search_unified", q)──▶ tauri command
 │             │  LIMIT decay.batch_size (default 500)          │
 │             ▼                                                │
 │       per-type λ from [decay.lambda] in klams.toml           │
-│             │  new_w = old_w * exp(-λ · Δt)                  │
+│             │  w = 1 / (1 + λ · age)   (hyperbolic, from     │
+│             │      total age — NOT compounded; #648)         │
 │             ▼                                                │
 │       PostgresStore.batch_update_decay(...)                  │
 │             │                                                │
@@ -434,12 +435,13 @@ Retry-After: 5` (FR-011).
 * Clusters by `(host, category, day_bucket)` and emits an
   extractive headline ("3x compile, 2x test, 1x lint") via
   `summarize::extractive::event_headline()`.
-* Probes the configured OpenAI-compat chat endpoint
-  (`GET {llm_url}/models`); on success, marks the summary mechanism
-  `Llm` (the LLM call itself is wired through
-  `OpenAiChatClient::generate()` — sprint 014, previously
-  Ollama-native); on failure, records `Extractive` and the digest
-  still ships.
+* Records `mechanism = Extractive` on every summary. (Through sprint
+  031 the task first probed an OpenAI-compat chat endpoint and, on a
+  successful probe, relabelled the same extractive output as `Llm`. No
+  code path ever sent a completion request. Sprint 032 removed the
+  probe, the client, and the `[summarization]` LLM keys;
+  `SummaryMechanism::Llm` survives in klams-types only so summaries
+  written before then still deserialize.)
 * Upserts active summaries via `SummaryStore::upsert_event_summary`
   into the new `summaries` table (migration `0004_summaries.sql`).
 
@@ -450,7 +452,7 @@ non-finite or negative λ, zero `task_interval_seconds`, or zero
 `batch_size`, naming the first offending key. The service exits
 with status 2 before binding the listener if validation fails
 (FR-013). On success, a single `INFO` line records the resolved
-per-`FactType` λs and the `klams_decay_config_reload_total`
+per-`FactType` λs and the `klams_decay_config_reloads_total`
 counter is bumped (FR-014). SIGHUP-style hot-reload is out of
 scope for this sprint (D-007).
 
@@ -459,7 +461,7 @@ scope for this sprint (D-007).
 A new pane at `/preview` calls `POST /memory/context` and renders
 the bundle with per-section status pills, a 250 ms-debounced
 token-budget slider (D-009), and a raw-vs-summarized toggle.
-See [`viewport.md` §6](../sprints/planning/viewport.md#6-phase-4--context-preview).
+See [`viewport.md` §6](../sprints/planning/archive/viewport.md#6-phase-4--context-preview) (moved to `planning/archive/`; the un-archived path 404ed — #648).
 
 ### 2c.6 Metrics added
 
@@ -469,7 +471,7 @@ See [`viewport.md` §6](../sprints/planning/viewport.md#6-phase-4--context-previ
 | `klams_context_section_items_total{section}` | counter | items returned per section |
 | `klams_summarization_runs_total{mechanism}` | counter | `extractive` vs `llm` cycles |
 | `klams_summarization_lag_seconds` | gauge | wall-clock lag of the most recent cycle |
-| `klams_decay_config_reload_total` | counter | successful config loads at startup |
+| `klams_decay_config_reloads_total` | counter | successful config loads at startup (note the plural; #648) |
 
 Plan and spec for this delta live at
 [sprints/005-advanced-retrieval/plan.md](../sprints/005-advanced-retrieval/plan.md)
@@ -561,16 +563,21 @@ not change.
   `klams_backup_hook_invocations_total{event,ok}`.
 * **Grafana dashboard (US5)** —
   [`deploy/grafana/klams.json`](../deploy/grafana/klams.json) ships
-  the 11-panel dashboard (queue / throughput / latency / errors /
-  backup age / maintenance / summarization / backup duration / runs
-  by ok / hook invocations). **Production install lives in
-  ansible-k, not here.** The handoff document at
-  [`~/ansible-k/specs/klams-integration/klams-grafana.md`](../../../ansible-k/specs/klams-integration/klams-grafana.md)
-  enumerates every series the panels consume and the two recommended
-  alerts (`klams_backup_stale`, `klams_backup_failures`); the
-  `tests/grafana_dashboard_json.rs` integration test parses both and
-  fails if the dashboard references a series the handoff does not
-  list. SC-008's cross-link assertion is satisfied by this paragraph.
+  the dashboard — **17 panels**, not the 11 this paragraph claimed
+  (queue / throughput / latency / errors / backup age / maintenance /
+  summarization / backup duration / runs by ok / hook invocations /
+  MCP author activity / search misses / oversize + failed writes).
+  **Production install lives in ansible-k, not here.**
+
+  The series contract is
+  [`deploy/grafana/SERIES.md`](../deploy/grafana/SERIES.md), in this
+  repo. Sprint 032 (#680) moved it here from
+  `~/ansible-k/specs/klams-integration/klams-grafana.md` — a repo inert
+  since 2026-07-05, whose path from here did not even resolve (#648's
+  broken-link sweep caught it). `tests/grafana_dashboard_json.rs`
+  parses SERIES.md and the dashboard and fails if a panel queries an
+  undocumented series **or** if the code declares one that SERIES.md
+  omits. SC-008's cross-link assertion is satisfied by this paragraph.
 
 Plan and spec live at
 [sprints/006-maintenance-and-backups/plan.md](../sprints/006-maintenance-and-backups/plan.md)
@@ -653,7 +660,10 @@ materialized at load time into one grant with all four scopes; the
 [data-model.md §5](../sprints/007-mcp-server/data-model.md#5-configuration-extension-klams-typesauthconfig))
 issues per-purpose tokens. Insufficient-scope calls return a
 deterministic `permission_denied` error; scope failures are counted
-by `klams_mcp_scope_denied_total{scope,tool}`.
+by the `403` response and its log line. (`klams_mcp_scope_denied_total`
+was documented here but never emitted — sprint 032, #648. The series
+that do exist are listed in
+[deploy/grafana/SERIES.md](../deploy/grafana/SERIES.md).)
 
 **Scopes are flat, not hierarchical** — `Scope::satisfies` is exact
 equality, so `Write` does not imply `Read` and `Admin` does not imply
@@ -934,12 +944,13 @@ a build choice. No schema changes; no new storage.
   optional bearer key). Selected via `[embeddings] api = "tei" | "openai"`;
   for `openai` the `url` must include the version segment (TEI's own
   `/v1` route, vLLM, and Ollama `/v1` all work).
-* **Chat client** ([crates/klams-core/src/summarize/llm.rs](../crates/klams-core/src/summarize/llm.rs))
-  — `OpenAiChatClient` (`GET {llm_url}/models` probe,
-  `POST {llm_url}/chat/completions`) replaces the Ollama-native
-  client. Config: `[summarization] llm_url` / `llm_model` /
-  `llm_api_key`; the legacy `ollama_url` / `ollama_model` keys parse
-  as serde aliases, but the URL value must now include `/v1`.
+* **Chat client** — `OpenAiChatClient` (`GET {llm_url}/models` probe,
+  `POST {llm_url}/chat/completions`) replaced the Ollama-native client
+  here. **Removed in sprint 032** (#647/#335) together with
+  `crates/klams-core/src/summarize/llm.rs` and the `[summarization]`
+  `llm_*` / `ollama_*` keys: the `chat/completions` half never had a
+  production caller, so the only live effect was the probe, against an
+  Ollama instance that was deployed on no host. See §2c.3.
 * **Embedding topology decision** — embeddings stay local to `kubs0`
   (TEI container, GPU-capable); the OpenAI-compat path exists so a
   future switch to vLLM/kvllm is a URL change. `vector_dim` remains
@@ -993,12 +1004,25 @@ eval harness. No storage or schema change.
   its `kind` doubles as the source discriminator, so there is no
   separate `source_kind`. Distinct from the REST `/memory/search`
   `SearchHit` (a flattened preview/payload shape), which is untouched.
-* **Known limitation — cross-kind score scale.** The merged sort mixes
-  Qdrant cosine similarity (knowledge, ~0..1) with Postgres `ts_rank`
-  (facts/events, unbounded, typically ≪1), biasing the order toward
-  knowledge. Sprint 016 *exposes* this via `score` + `memory.kind`
-  rather than correcting it (roadmap item-2 / YAGNI — no failing eval
-  metric demands a fusion fix yet). Compare scores only within a kind.
+* **Known limitation — cross-kind score scale. RESOLVED in sprint 024;
+  do not act on this paragraph.** As written for sprint 016 it said the
+  merged sort mixes Qdrant cosine similarity (knowledge, ~0..1) with
+  Postgres `ts_rank` (facts/events, unbounded, typically ≪1), biasing
+  the order toward knowledge, and that 016 *exposed* rather than fixed
+  it. Sprint 024 (#329/#330) unified ranking on Reciprocal Rank Fusion,
+  which is scale-free by construction — it consumes ranks, not scores —
+  so the bias is gone and cross-kind ordering is trustworthy. Sprint 030
+  added a cross-encoder rerank over the fused candidate set on top.
+
+  What survives is narrower and still true: `score` is an **RRF value,
+  not a similarity**, so it is not comparable across queries and should
+  not be thresholded. Rank order is the meaningful output.
+
+  (Sprint 032, #648: left standing, this paragraph told readers to
+  distrust ordering that has been correct since 024 — the most
+  expensive kind of stale doc, because acting on it means ignoring good
+  results. Corrected in place; restructuring these delta sections
+  belongs to #692, not here.)
 * **Consumer**: klams-mind's client + eval runner update in lockstep;
   the contract change is recorded in that repo at
   `sprints/planning/001-cross-project-note.md`.
@@ -1426,10 +1450,19 @@ Rationale in
 
 ### 3.1 Network exposure
 
-* `klams-service` binds `0.0.0.0:7777` (set in
-  [`deploy/config/klams.example.toml`](../deploy/config/klams.example.toml)
-  via `listen_addr`) so the viewport on the LAN can reach it. UFW on
-  `kubs0` restricts `7777/tcp` to `192.168.1.0/24`.
+* `klams-service` binds **`127.0.0.1:7777`** (`listen_addr` in
+  [`deploy/config/klams.example.toml`](../deploy/config/klams.example.toml)).
+  Off-host access is via **`tailscale serve`**, which terminates TLS and
+  proxies to loopback — so the reachable address is
+  `https://kubs0.encke-wahoo.ts.net:7777`, on the tailnet only.
+
+  Sprint 032 (#648) corrected this: it said the service binds
+  `0.0.0.0:7777` for LAN reach with UFW restricting `7777/tcp` to
+  `192.168.1.0/24`. Neither is true now — `0.0.0.0` was abandoned
+  because it *conflicted with `tailscaled` already holding :7777*, and
+  the access boundary is the tailnet, not a UFW subnet rule. A wrong
+  exposure claim is the worst kind to leave standing: it invites both
+  false alarm and false confidence.
 * Compose dependencies are bound to `127.0.0.1` only; they are reached
   by the service over loopback and never exposed to the LAN.
 * All inter-container traffic stays on the `klams-net` bridge.

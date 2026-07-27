@@ -27,8 +27,15 @@ struct Cli {
 
 const DEFAULT_DB: &str = "postgres://klams:klams@127.0.0.1:5432/klams";
 const DEFAULT_QDRANT: &str = "http://127.0.0.1:6334";
-const DEFAULT_COLLECTION: &str = "klams_knowledge";
-const VECTOR_DIM: u64 = 384;
+// Sprint 032 (#647): these were `klams_knowledge` / 384 — a collection
+// name that has never existed in production and the pre-028 vector
+// width. `QdrantStore::connect` CREATES a missing collection, so the
+// tool run bare would manufacture an empty `klams_knowledge`, find
+// nothing to repair, and exit 0 — a repair tool that reports success
+// for doing nothing. The preflight below is the real fix: the default
+// can drift again, but the tool can no longer invent its target.
+const DEFAULT_COLLECTION: &str = "knowledge_items_v2";
+const VECTOR_DIM: u64 = 1024;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -58,6 +65,13 @@ async fn run(mode: RepairMode, report_out: Option<&str>) -> anyhow::Result<()> {
     let collection =
         std::env::var("KLAMS_QDRANT_COLLECTION").unwrap_or_else(|_| DEFAULT_COLLECTION.to_string());
 
+    // Sprint 032 (#647) — refuse to repair a collection that isn't
+    // there. `QdrantStore::connect` creates on absence (deliberately,
+    // for the service's cold-start race), which for a *repair* tool is
+    // the wrong default entirely: it turns "you pointed me at the wrong
+    // collection" into "zero rows needed repair, exit 0".
+    ensure_collection_exists(&qdrant_url, &collection).await?;
+
     let postgres = PostgresStore::connect(&db_url, 4)
         .await
         .with_context(|| format!("connect Postgres {db_url}"))?;
@@ -74,4 +88,35 @@ async fn run(mode: RepairMode, report_out: Option<&str>) -> anyhow::Result<()> {
         std::fs::write(path, &json).with_context(|| format!("write report-out {path}"))?;
     }
     Ok(())
+}
+
+/// Fail loudly when the target collection is absent, listing what *is*
+/// there so the operator can fix the pointer in one step.
+async fn ensure_collection_exists(qdrant_url: &str, collection: &str) -> anyhow::Result<()> {
+    let client = qdrant_client::Qdrant::from_url(qdrant_url)
+        .build()
+        .with_context(|| format!("qdrant client {qdrant_url}"))?;
+    let exists = client
+        .collection_exists(collection)
+        .await
+        .with_context(|| format!("qdrant collection_exists {collection}"))?;
+    if exists {
+        return Ok(());
+    }
+    let names = client.list_collections().await.map_or_else(
+        |_| "<could not list>".to_string(),
+        |r| {
+            r.collections
+                .into_iter()
+                .map(|c| c.name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        },
+    );
+    anyhow::bail!(
+        "collection `{collection}` does not exist at {qdrant_url}; \
+         refusing to create it. Collections present: {names}. \
+         Set KLAMS_QDRANT_COLLECTION to the live one (see `collection` \
+         in /etc/klams/klams.toml)."
+    )
 }

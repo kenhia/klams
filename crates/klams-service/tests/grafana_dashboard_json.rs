@@ -1,12 +1,23 @@
-//! Sprint 006 T049 — `deploy/grafana/klams.json` syntax + series-coverage smoke test.
+//! Sprint 006 T049 — `deploy/grafana/klams.json` syntax + series-coverage checks.
 //!
-//! Parses the dashboard JSON, walks every `panels[].targets[].expr`,
-//! extracts the `klams_*` series each `PromQL` references, and asserts
-//! the union is a subset of the series table published in the
-//! ansible-k handoff `klams-grafana.md`. If the handoff file is not
-//! reachable (e.g. CI without ~/ansible-k cloned), the test prints a
-//! one-line skip and passes — drift detection happens locally and on
-//! the kubsdb deployer.
+//! Sprint 032 (#680): the series contract moved INTO this repo, at
+//! `deploy/grafana/SERIES.md`. It used to be read from
+//! `$HOME/ansible-k/specs/klams-integration/klams-grafana.md` — a repo
+//! inert since 2026-07-05 — and the test **self-skipped when that file
+//! was absent**. So on CI, and on any machine without that sibling
+//! checkout, the cross-check silently did nothing while reporting
+//! green; a check that quietly passes is worse than no check. Sprint
+//! 027 discovered this the hard way: adding two panels meant editing a
+//! deprecated repo to make a klams test go green.
+//!
+//! Two directions are now asserted, both unconditionally:
+//!
+//! 1. every `klams_*` series a dashboard panel queries is documented in
+//!    SERIES.md — catches a panel graphing an undocumented series;
+//! 2. every `klams_*` series declared in `crates/*/src/**` is documented
+//!    in SERIES.md — catches a metric added to the code that nobody
+//!    wrote down. This is the direction the old cross-repo check could
+//!    never have covered.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -15,12 +26,12 @@ fn dashboard_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../deploy/grafana/klams.json")
 }
 
-fn handoff_path() -> PathBuf {
-    if let Ok(p) = std::env::var("KLAMS_GRAFANA_HANDOFF") {
-        return PathBuf::from(p);
-    }
-    let home = std::env::var("HOME").unwrap_or_default();
-    PathBuf::from(home).join("ansible-k/specs/klams-integration/klams-grafana.md")
+fn series_doc_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../deploy/grafana/SERIES.md")
+}
+
+fn crates_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")
 }
 
 /// Collect every distinct token matching `klams_[A-Za-z0-9_]+` in `s`.
@@ -43,10 +54,10 @@ fn extract_series(s: &str) -> HashSet<String> {
     out
 }
 
-/// Parse the series-table column from the handoff doc: collect every
+/// Parse the series-table column from SERIES.md: collect every
 /// backtick-wrapped `klams_*` token sitting in the first column of a
 /// markdown table row (line starts with `|` and contains `|`).
-fn handoff_series(md: &str) -> HashSet<String> {
+fn documented_series(md: &str) -> HashSet<String> {
     let mut out = HashSet::new();
     for line in md.lines() {
         let trimmed = line.trim_start();
@@ -96,26 +107,61 @@ fn dashboard_json_parses_and_has_panels() {
     }
 }
 
-#[test]
-fn every_panel_series_appears_in_handoff_table() {
-    let dashboard = std::fs::read_to_string(dashboard_path()).expect("read dashboard");
-    let v: serde_json::Value = serde_json::from_str(&dashboard).expect("dashboard JSON parses");
-
-    let handoff = handoff_path();
-    if !handoff.exists() {
-        eprintln!(
-            "skipping handoff cross-check: {} not present (set KLAMS_GRAFANA_HANDOFF to override)",
-            handoff.display()
-        );
+/// Every `"klams_*"` string literal declared under `crates/*/src/`.
+/// Names ending in `_test` are fixtures, not exposition.
+fn series_declared_in_source(dir: &std::path::Path, out: &mut HashSet<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
         return;
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            // Only `src/` is exposition; `tests/` holds fixtures that
+            // name series they do not emit (this file among them).
+            if entry.file_name() == "tests" || entry.file_name() == "benches" {
+                continue;
+            }
+            series_declared_in_source(&p, out);
+            continue;
+        }
+        if p.extension().and_then(|s| s.to_str()) != Some("rs") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&p) else {
+            continue;
+        };
+        for quoted in text.split('"').skip(1).step_by(2) {
+            if quoted.len() > "klams_".len()
+                && quoted.starts_with("klams_")
+                && !quoted.ends_with("_test")
+                && quoted
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+            {
+                out.insert(quoted.to_string());
+            }
+        }
     }
-    let md = std::fs::read_to_string(&handoff).expect("read handoff");
-    let known = handoff_series(&md);
+}
+
+fn documented() -> HashSet<String> {
+    let path = series_doc_path();
+    let md =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let known = documented_series(&md);
     assert!(
         !known.is_empty(),
         "could not parse any klams_* series from {} — check the markdown table format",
-        handoff.display()
+        path.display()
     );
+    known
+}
+
+#[test]
+fn every_panel_series_is_documented() {
+    let dashboard = std::fs::read_to_string(dashboard_path()).expect("read dashboard");
+    let v: serde_json::Value = serde_json::from_str(&dashboard).expect("dashboard JSON parses");
+    let known = documented();
 
     let mut referenced: HashSet<String> = HashSet::new();
     for panel in v["panels"].as_array().unwrap() {
@@ -130,11 +176,30 @@ fn every_panel_series_appears_in_handoff_table() {
         "no klams_* series referenced in any panel expr — dashboard authored wrong?"
     );
 
-    let unknown: Vec<&String> = referenced.difference(&known).collect();
+    let mut unknown: Vec<&String> = referenced.difference(&known).collect();
+    unknown.sort();
     assert!(
         unknown.is_empty(),
-        "dashboard references series not listed in the handoff table: {unknown:?}\n  handoff = {}\n  known = {known:?}",
-        handoff.display()
+        "dashboard panels query series not documented in deploy/grafana/SERIES.md: {unknown:?}"
+    );
+}
+
+#[test]
+fn every_source_declared_series_is_documented() {
+    let known = documented();
+    let mut declared = HashSet::new();
+    series_declared_in_source(&crates_dir(), &mut declared);
+    assert!(
+        declared.len() > 20,
+        "expected to find the service's metric constants, found {}",
+        declared.len()
+    );
+
+    let mut undocumented: Vec<&String> = declared.difference(&known).collect();
+    undocumented.sort();
+    assert!(
+        undocumented.is_empty(),
+        "series declared in code but missing from deploy/grafana/SERIES.md: {undocumented:?}"
     );
 }
 

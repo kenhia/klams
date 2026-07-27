@@ -25,11 +25,11 @@ fn build_app(state: MaintenanceState) -> Router {
         .route("/memory/context", post(ok_handler))
         .route("/memory/events", post(ok_handler))
         .route(
-            "/memory/dissents/:id/promote",
+            "/memory/dissents/{id}/promote",
             post(ok_handler).route_layer(Extension(CriticalWrite)),
         )
         .route(
-            "/memory/dissents/:id/discard",
+            "/memory/dissents/{id}/discard",
             post(ok_handler).route_layer(Extension(CriticalWrite)),
         )
         .layer(from_fn_with_state(state, maintenance_check))

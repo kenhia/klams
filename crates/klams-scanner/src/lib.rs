@@ -13,11 +13,6 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[must_use]
-pub fn banner() -> &'static str {
-    "klams-scanner ready"
-}
-
 /// The host this scanner runs on, for chunk attribution (sprint 023
 /// #407). Reads the kernel's live hostname from procfs — identical to
 /// `gethostname(2)`, with no crate and no systemd-unit dependency

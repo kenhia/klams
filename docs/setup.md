@@ -153,8 +153,11 @@ task_interval_seconds = 3600   # default: 1h
 # huge corpus never holds a long-running write lock.
 batch_size = 500               # default: 500
 
-# Per-FactType decay rate λ in the formula new_w = old_w * exp(-λ · Δt)
-# where Δt is seconds since last_used_at. Larger λ = decays faster.
+# Per-FactType decay rate λ in the formula w = 1 / (1 + λ · age),
+# where age is seconds since last_used_at. Hyperbolic, recomputed from
+# total age each sweep — not exponential and not compounded (#648
+# corrected this; half-life is 1/λ seconds, so 1e-6 = ~11.6 days).
+# Larger λ = decays faster.
 # Defaults reflect Working memory (TaskFact) draining ~1000× faster
 # than long-lived Machine/User facts.
 [decay.lambda]
@@ -349,7 +352,10 @@ docker compose -f tests/docker-compose.test.yml down -v
 
 # 3. Bring up a fresh stack
 docker compose -f tests/docker-compose.test.yml up -d
-just wait-for-stack
+# `just wait-for-stack` was cited here until sprint 032 (#648); no such
+# recipe has ever existed. Poll the containers instead:
+until [ "$(docker compose -f tests/docker-compose.test.yml ps \
+        --format '{{.Health}}' | sort -u)" = "healthy" ]; do sleep 2; done
 
 # 4. Restore from yesterday's snapshot
 just restore-from $(date -u -d 'yesterday' +%F)
@@ -518,10 +524,13 @@ prompt to change), browse to **Dashboards → klams**, and confirm the
 three **MCP author activity** panels render. The panel-vs-series
 contract test
 [`crates/klams-service/tests/grafana_dashboard_json.rs`](../crates/klams-service/tests/grafana_dashboard_json.rs)
-keeps the dashboard JSON in lock-step with the
-[ansible-k klams-grafana.md handoff doc](https://github.com/kenhia/ansible-k/blob/main/specs/klams-integration/klams-grafana.md);
-every series referenced by a panel must appear in that handoff
-table or the workspace gate fails.
+keeps the dashboard JSON in lock-step with the series contract at
+[`deploy/grafana/SERIES.md`](../deploy/grafana/SERIES.md). Sprint 032
+(#680) moved that contract here from the inert ansible-k repo, where
+the test read it from a sibling checkout and self-skipped when absent —
+so it was a silent no-op on CI. It now checks both directions
+unconditionally: a panel may not query an undocumented series, and code
+may not declare one.
 
 ### Tear the profile down
 
@@ -694,11 +703,21 @@ bucket sum (FR-016, FR-016a).
 ```bash
 # Dry-run; prints the per-author reassignment plan and the
 # `lost-author` bucket count without touching the store.
-cargo run --release -p reattribute-system
+cargo run --release -p reattribute-system -- --dry-run
 
 # Commit:
 cargo run --release -p reattribute-system -- --apply
 ```
+
+Exactly one of `--dry-run` / `--apply` is **required** — running it
+bare exits 2, so the first form above needed the flag it was missing
+(#648). It targets `knowledge_items_v2` by default and refuses to run
+against a collection that does not exist; override with
+`KLAMS_QDRANT_COLLECTION` if the live `collection` in
+`/etc/klams/klams.toml` ever differs. Before sprint 032 its default
+named a collection that had never existed in production, and because
+`QdrantStore::connect` creates on absence, a bare run manufactured that
+collection and reported zero repairs (#647).
 
 The repair is **idempotent** — a second `--apply` is a no-op once
 every row has been classified. Run once as part of the cutover; no

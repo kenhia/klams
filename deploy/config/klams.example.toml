@@ -10,15 +10,33 @@ listen_addr = "127.0.0.1"
 port = 7777
 
 [auth]
-# 32-byte hex token. Generated and written by the provision script.
-# Treat as a secret; constant-time compared.
-bearer_token = "changeme-rendered-by-provision-script"
+# Sprint 032 (#670) — this block used to LEAD with a `bearer_token`
+# line, so every fresh install started life holding a full-admin
+# credential nobody chose. It doesn't any more: scoped
+# `[[auth.tokens]]` below are the path of least resistance, and the
+# legacy form is opt-in break-glass.
+#
+# The legacy `[auth] bearer_token` still works and still materializes
+# ONE grant carrying every scope — read + write + manage + admin. That
+# is what it is for; it is deliberately not narrowed, because narrowing
+# would silently strip capability from a deployment whose only
+# credential it is. What changed is that you now have to ask for it.
+#
+# Two properties it cannot give you, which is why it should not be your
+# daily driver:
+#   * It declares no `agent_name`, so every write through it attributes
+#     to the seeded `system` author rather than to anything traceable.
+#   * It carries `manage` + `admin`, so it can cross-author delete,
+#     hard-delete, restore, and run the author lifecycle.
+# A scoped grant with `agent_name` gives you the same power where you
+# want it and attribution everywhere.
+#
+# bearer_token = "changeme-32-byte-hex"   # break-glass only; see docs/auth.md
 
-# Sprint 007 — scoped MCP tokens.
-# The legacy `bearer_token` above still works (it materializes as
-# one grant with all scopes). For per-purpose tokens, uncomment
-# and fill in the `[[auth.tokens]]` blocks below. Every token MUST
-# be ≥ 16 characters; `scopes` MUST be non-empty.
+# Sprint 007 — scoped MCP tokens. THE DEFAULT. At least one of
+# `bearer_token` or `[[auth.tokens]]` must be set or the service
+# refuses to start. Every token MUST be ≥ 16 characters; `scopes`
+# MUST be non-empty.
 #
 # SCOPES ARE FLAT, NOT HIERARCHICAL: "write" does not imply "read",
 # and "admin" does not imply "write". List every scope a token needs.
@@ -80,10 +98,12 @@ max_connections = 8
 # gRPC endpoint. Loopback because Qdrant is bound to 127.0.0.1:6334
 # by the Compose stack.
 grpc_url = "http://127.0.0.1:6334"
-# kubs0 runs "knowledge_items_v2" since sprint 028 (the Qwen3/1024-dim
-# rebuild); the original "knowledge_items" was retained as the rollback
-# target until it is dropped.
-collection = "knowledge_items"
+# Sprint 028 rebuilt the corpus into "knowledge_items_v2" (Qwen3,
+# 1024-dim). Sprint 032 (#647): this line still said "knowledge_items",
+# so a rebuild from this example provisioned the RETIRED collection at
+# the wrong vector width — the comment above it already described the
+# drift without fixing it. The v1 collection was dropped in 032 (#684).
+collection = "knowledge_items_v2"
 
 [embeddings]
 # Embedding endpoint. `api` selects the wire dialect (sprint 014):
@@ -94,8 +114,11 @@ collection = "knowledge_items"
 #              `api_key` for endpoints started with --api-key.
 # Loopback in production.
 url = "http://127.0.0.1:7070"
-model_id = "BAAI/bge-small-en-v1.5"
-vector_dim = 384
+# Sprint 028 (#655): Qwen3-Embedding-0.6B at 1024 dims. Sprint 032
+# (#647) brought this block in line with the live host — it still
+# described bge-small-en-v1.5/384/512, three sprints stale.
+model_id = "Qwen/Qwen3-Embedding-0.6B"
+vector_dim = 1024
 api = "tei"
 
 # The model's maximum input length in TOKENS (sprint 027, #420). This is
@@ -108,19 +131,19 @@ api = "tei"
 # Verify against the live endpoint before changing it:
 #   curl -s http://127.0.0.1:7070/info | jq '{max_input_length, auto_truncate}'
 #
-# bge-small-en-v1.5 reports 512. Do NOT translate that into a character
-# count: measured on this model, 512 tokens buys ~525 characters of
+# Qwen3-Embedding-0.6B reports 32768 (verified live via /info). Do NOT
+# translate a token budget into a character count: measured on the
+# previous model, 512 tokens bought ~525 characters of
 # punctuation-dense text but >20,000 of base64 — a 32x spread. The
 # service asks TEI's /tokenize for the exact count rather than
-# estimating. Sprint 028's longer-context model raises this value — and
-# the scanner's matching `max_input_tokens` in scanner.example.toml,
-# which must be kept in step.
+# estimating. Keep the scanner's matching `max_input_tokens` in
+# scanner.example.toml in step with this value.
 #
 # Leave `auto_truncate` OFF at the TEI container. A silently truncated
 # chunk looks complete but is unfindable by its tail; a visible rejection
 # is strictly better. NOTE: TEI ≥1.8 flipped the default to ON — the
 # compose command passes an explicit `--auto-truncate false`.
-max_input_tokens = 512
+max_input_tokens = 32768
 
 # Prefix prepended to QUERY text before embedding — never to stored
 # documents (sprint 028 #655). Modern retrieval models are asymmetric:
@@ -129,7 +152,7 @@ max_input_tokens = 512
 #                                 retrieve relevant passages that answer
 #                                 the query\nQuery: "
 # Leave empty (default) for symmetric models (bge-m3, bge-small).
-# query_prefix = "query: "
+query_prefix = "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: "
 
 # Retention for the oversize-write log (sprint 027, #656), which records
 # refused knowledge writes INCLUDING the full submitted text so "what did
@@ -172,6 +195,17 @@ EnvFact  = 1e-9
 # Fusion strategy for hybrid retrieval. "rrf" (default) is
 # Reciprocal Rank Fusion: score(d) = Σ_s 1 / (k + rank_s(d)).
 # "weighted" uses per-source weights with normalization.
+#
+# SCOPE (sprint 032, #648): `fusion` / `rrf_k` / the [retrieval.weights]
+# table are honoured by MCP `memory_search` and by `/memory/context`.
+# REST `GET /memory/search` does NOT read them — it calls
+# `FusionStrategy::default_rrf()` unconditionally
+# (crates/klams-api/src/handlers/search.rs), so it always fuses with
+# plain RRF at k=60 no matter what is set here. Setting
+# `fusion = "weighted"` therefore changes MCP results and leaves the
+# REST endpoint alone. Documented rather than wired because this sprint
+# is retrieval-neutral by contract; wiring it is a ranking change and
+# needs the eval gate.
 fusion           = "rrf"
 rrf_k            = 60       # used when fusion = "rrf"
 per_source_top_k = 100      # each retrieval source returns top-k before fusion
@@ -200,17 +234,17 @@ mode = "tiktoken"
 [summarization]
 # Background summarization task. When disabled, /memory/context still
 # works — it just falls back to raw items + truncation.
+#
+# Sprint 032 (#647/#335) removed the LLM keys (`llm_fallback`,
+# `llm_url`, `llm_model`, `llm_api_key`, and the `ollama_url` /
+# `ollama_model` aliases) and the never-read knowledge-digest keys
+# (`knowledge_stale_days`, `knowledge_cluster_min`). Summaries are
+# extractive, full stop — the "LLM fallback" only ever pinged
+# {llm_url}/models and relabelled the extractive output, and its
+# default endpoint (Ollama on 127.0.0.1:11434) is deployed nowhere.
+# Configs that still carry the old keys keep booting; they are ignored.
 enabled                = true
 event_cluster_min      = 50     # min events per (host, category, day_bucket) to summarize
-knowledge_stale_days   = 90     # last_used_at AND updated_at older than this = stale
-knowledge_cluster_min  = 20     # min stale chunks per (repo, file_prefix) cluster
-llm_fallback           = true   # use the chat LLM when extractive output is inadequate
-# OpenAI-compat chat base *including* /v1 (sprint 014). Works with
-# Ollama's /v1 route (shown), vLLM, or kvllm on kai. Set
-# `llm_api_key` for endpoints that require a bearer key. The legacy
-# `ollama_url`/`ollama_model` keys still parse as aliases.
-llm_url                = "http://127.0.0.1:11434/v1"
-llm_model              = "phi3:medium"
 task_interval_seconds  = 3600
 
 # ---------------------------------------------------------------------------
@@ -228,7 +262,7 @@ task_interval_seconds  = 3600
 #
 # [backup]
 # enabled              = false                  # master switch; default off
-# backup_dir           = "/ai/klams/backups"    # written atomically via .partial -> rename
+# backup_dir           = "/gratch/klams-backup"    # written atomically via .partial -> rename
 # window_start_utc     = "07:00"                # HH:MM, UTC only (no DST drift)
 # daily_count          = 14                     # newest N distinct dates per kind
 # weekly_count         = 4                      # newest N Sundays per kind

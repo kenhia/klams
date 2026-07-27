@@ -74,6 +74,29 @@ pub struct LockfileContents {
 /// Filename of the lockfile inside `backup_dir`.
 pub const LOCKFILE_NAME: &str = "lockfile";
 
+/// Sprint 032 (#647) — prove at startup that `backup_dir` is writable,
+/// by doing the same thing the first nightly run will do: create the
+/// directory, write a file inside it, remove it.
+///
+/// This exists because the failure it catches is invisible otherwise.
+/// `ProtectSystem=strict` in the systemd unit makes the entire
+/// filesystem read-only unless a path is granted back via
+/// `ReadWritePaths=`; get that line wrong and the service starts fine,
+/// serves memory fine, and dies on the lockfile with EROFS at 07:00
+/// UTC — which is how backups were silently dead from 2026-05-31 until
+/// sprint 020. A boot-time probe turns "discovered weeks later" into
+/// "logged before the service finishes starting".
+///
+/// # Errors
+///
+/// Any filesystem error from the create/write/remove sequence.
+pub async fn probe_writable(backup_dir: &Path) -> std::io::Result<()> {
+    tokio::fs::create_dir_all(backup_dir).await?;
+    let probe = backup_dir.join(".klams-write-probe");
+    tokio::fs::write(&probe, b"klams startup writability probe\n").await?;
+    tokio::fs::remove_file(&probe).await
+}
+
 /// Write a fresh lockfile recording this process's PID and the
 /// active run. Fails if the lockfile already exists.
 ///

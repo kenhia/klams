@@ -32,14 +32,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 fn extractive_cfg() -> SummarizationConfig {
+    // Sprint 032: extractive is the only mechanism now — the LLM path
+    // this fixture used to disable explicitly no longer exists.
     SummarizationConfig {
         enabled: true,
         event_cluster_min: 2,
-        llm_fallback: false,
         task_interval: Duration::from_secs(3600),
-        llm_url: "http://127.0.0.1:1/v1".into(), // never contacted with llm_fallback=false
-        llm_model: "unused".into(),
-        llm_api_key: None,
     }
 }
 

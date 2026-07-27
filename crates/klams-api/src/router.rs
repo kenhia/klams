@@ -131,7 +131,7 @@ pub fn build_router_with_auth<S: Store>(state: ApiState<S>, auth_state: AuthStat
             post(handlers::knowledge::delete::<S>).route_layer(scope!(Scope::Write)),
         )
         .route(
-            "/memory/knowledge/:id",
+            "/memory/knowledge/{id}",
             get(handlers::knowledge::get::<S>).route_layer(scope!(Scope::Read)),
         )
         .route(
@@ -151,14 +151,14 @@ pub fn build_router_with_auth<S: Store>(state: ApiState<S>, auth_state: AuthStat
             get(handlers::dissents::list).route_layer(scope!(Scope::Read)),
         )
         .route(
-            "/memory/dissents/:id",
+            "/memory/dissents/{id}",
             get(handlers::dissents::get).route_layer(scope!(Scope::Read)),
         )
         // Promote overwrites a live canonical fact and discard resolves
         // somebody else's proposal: both are cross-author curation, so
         // they sit at `manage` alongside cross-author delete.
         .route(
-            "/memory/dissents/:id/promote",
+            "/memory/dissents/{id}/promote",
             post(handlers::dissents::promote)
                 .route_layer(scope!(Scope::Manage))
                 .route_layer(axum::Extension(
@@ -166,7 +166,7 @@ pub fn build_router_with_auth<S: Store>(state: ApiState<S>, auth_state: AuthStat
                 )),
         )
         .route(
-            "/memory/dissents/:id/discard",
+            "/memory/dissents/{id}/discard",
             post(handlers::dissents::discard)
                 .route_layer(scope!(Scope::Manage))
                 .route_layer(axum::Extension(
@@ -178,11 +178,11 @@ pub fn build_router_with_auth<S: Store>(state: ApiState<S>, auth_state: AuthStat
             get(handlers::authors::list::<S>).route_layer(scope!(Scope::Read)),
         )
         .route(
-            "/v1/authors/:id",
+            "/v1/authors/{id}",
             get(handlers::authors::get::<S>).route_layer(scope!(Scope::Read)),
         )
         .route(
-            "/v1/authors/:id/memories",
+            "/v1/authors/{id}/memories",
             get(handlers::authors::memories::<S>).route_layer(scope!(Scope::Read)),
         )
         .route(

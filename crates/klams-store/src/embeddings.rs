@@ -90,19 +90,14 @@ pub trait Embedder: Send + Sync + std::fmt::Debug {
     /// Embed a single input; the returned vector length must equal
     /// [`Embedder::expected_dim`].
     async fn embed(&self, text: &str) -> StoreResult<Vec<f32>>;
-    /// Embed many inputs in one request where the backend supports it —
-    /// TEI `/embed` and the openai-compat `/embeddings` route both accept
-    /// an array (sprint 022 #325, the batch path needed for a bulk
-    /// re-embed). Returns one vector per input, in input order. The
-    /// default falls back to sequential [`Embedder::embed`] so simple
-    /// or mock backends need not implement it.
-    async fn embed_batch(&self, texts: &[String]) -> StoreResult<Vec<Vec<f32>>> {
-        let mut out = Vec::with_capacity(texts.len());
-        for t in texts {
-            out.push(self.embed(t).await?);
-        }
-        Ok(out)
-    }
+    // Sprint 032 (#335) removed `embed_batch`. Sprint 022 (#325) added
+    // it as "the batch path needed for a bulk re-embed" and no caller
+    // ever appeared — including in sprint 028, which re-embedded the
+    // entire corpus by replaying it through `POST
+    // /memory/knowledge/index` (one `embed` per item). The one event it
+    // was built for happened without it. `TeiEmbedder::request` and
+    // `OpenAiCompatEmbedder::request` still take a slice, so a real
+    // batch caller is a small method away when one exists.
     /// Exact input-token counts for `texts`, if this backend can
     /// produce them (sprint 027, WI #420).
     ///
@@ -250,8 +245,8 @@ impl TeiEmbedder {
 }
 
 impl TeiEmbedder {
-    /// One `POST /embed` with N inputs → N vectors, in order. Backs both
-    /// [`Embedder::embed`] and [`Embedder::embed_batch`].
+    /// One `POST /embed` with N inputs → N vectors, in order. Backs
+    /// [`Embedder::embed`]; takes a slice so a batch caller stays cheap.
     async fn request(&self, inputs: &[&str]) -> StoreResult<Vec<Vec<f32>>> {
         preflight(inputs, self.limit)?;
         let url = format!("{}/embed", self.base_url.trim_end_matches('/'));
@@ -300,14 +295,6 @@ impl Embedder for TeiEmbedder {
             .into_iter()
             .next()
             .ok_or_else(|| StoreError::Embedding("empty vectors response".into()))
-    }
-
-    async fn embed_batch(&self, texts: &[String]) -> StoreResult<Vec<Vec<f32>>> {
-        if texts.is_empty() {
-            return Ok(Vec::new());
-        }
-        let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
-        self.request(&refs).await
     }
 
     /// Exact token counts from TEI's `POST /tokenize` (sprint 027).
@@ -448,8 +435,8 @@ impl OpenAiCompatEmbedder {
 
 impl OpenAiCompatEmbedder {
     /// One `POST {base}/embeddings` with N inputs → N vectors, in the
-    /// `data` array order. Backs both [`Embedder::embed`] and
-    /// [`Embedder::embed_batch`].
+    /// `data` array order. Backs [`Embedder::embed`]; takes a slice so a
+    /// batch caller stays cheap.
     async fn request(&self, inputs: &[&str]) -> StoreResult<Vec<Vec<f32>>> {
         preflight(inputs, self.limit)?;
         let url = format!("{}/embeddings", self.base_url);
@@ -504,14 +491,6 @@ impl Embedder for OpenAiCompatEmbedder {
             .ok_or_else(|| StoreError::Embedding("empty data response".into()))
     }
 
-    async fn embed_batch(&self, texts: &[String]) -> StoreResult<Vec<Vec<f32>>> {
-        if texts.is_empty() {
-            return Ok(Vec::new());
-        }
-        let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
-        self.request(&refs).await
-    }
-
     /// Probes `GET {base}/models` with a 1s timeout. Any 2xx counts as
     /// alive; model presence is not asserted here (some engines gate
     /// the list behind auth scopes the embed path doesn't need).
@@ -563,13 +542,6 @@ mod tests {
         let embedder = TeiEmbedder::new(url, dim).unwrap();
         let v = embedder.embed("hello world").await.unwrap();
         assert_eq!(v.len(), dim);
-        // Batch path (#325): N inputs → N vectors of the right dim.
-        let batch = embedder
-            .embed_batch(&["hello world".to_string(), "second input".to_string()])
-            .await
-            .unwrap();
-        assert_eq!(batch.len(), 2);
-        assert!(batch.iter().all(|v| v.len() == dim));
     }
 
     /// Live-TEI helpers for the ignored integration tests: the served
@@ -722,43 +694,6 @@ mod tests {
             .unwrap();
         let v = e.embed("hi").await.unwrap();
         assert_eq!(v, vec![0.1, 0.2, 0.3]);
-    }
-
-    #[tokio::test]
-    async fn openai_embed_batch_sends_all_inputs_and_parses_in_order() {
-        // Sprint 022 (#325): one request carries every input; the `data`
-        // array maps back to inputs in order.
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/v1/embeddings"))
-            .and(body_partial_json(
-                serde_json::json!({ "model": "m", "input": ["a", "b"] }),
-            ))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "object": "list",
-                "data": [
-                    { "object": "embedding", "embedding": [1.0, 0.0] },
-                    { "object": "embedding", "embedding": [0.0, 1.0] }
-                ]
-            })))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let e = OpenAiCompatEmbedder::new(format!("{}/v1", server.uri()), "m", 2, None).unwrap();
-        let out = e
-            .embed_batch(&["a".to_string(), "b".to_string()])
-            .await
-            .unwrap();
-        assert_eq!(out, vec![vec![1.0, 0.0], vec![0.0, 1.0]]);
-    }
-
-    #[tokio::test]
-    async fn embed_batch_empty_is_empty() {
-        let server = MockServer::start().await;
-        // No mount: an empty batch must short-circuit without an HTTP call.
-        let e = OpenAiCompatEmbedder::new(format!("{}/v1", server.uri()), "m", 2, None).unwrap();
-        assert!(e.embed_batch(&[]).await.unwrap().is_empty());
     }
 
     #[tokio::test]
