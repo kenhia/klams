@@ -435,3 +435,37 @@ A *server* bump is a storage-format change against a live 180k-point
 collection; #684's v1 drop (done this sprint) was the prerequisite, so
 it is now unblocked — but it deserves its own change with a backup and
 an eval run, not the last hour of this one.
+
+## Deployed 2026-07-27
+
+- Version `0.1.32` live on kubs0 (`/healthz` confirms; was `0.1.31`).
+- Rollback target: `0.1.31` via `just rollback` (`.prev` binaries in place).
+- Migrations applied: **none** (no new files in `migrations/`), so the
+  binary rollback is a complete rollback.
+- Config changes required: **none by Ken** — the two `/etc/klams/klams.toml`
+  edits this sprint needed (#670's legacy-token retirement and the stray
+  top-level `scopes` key) were made and verified during the sprint, backed
+  up to `klams.toml.bak-032-pre670`.
+
+Verified live, beyond `/healthz`:
+
+- **`/metrics` is not empty** — 4,374 bytes, 7 distinct `klams_*` series.
+  This is the specific thing #334's `metrics` bump could have broken
+  silently; a version-skewed exposition renders zero bytes and every
+  Grafana panel goes No Data.
+- **`klams_backup_dir_writable 1`** — the new #647 gauge, reporting the
+  live `/gratch/klams-backup` probe result.
+- **axum 0.8 path routes resolve** — `GET /v1/authors/{id}` → 200,
+  `GET /memory/dissents` → 200. These are the routes whose `/:id` syntax
+  panicked at runtime before conversion.
+- **The retired legacy token still 401s** after a full restart (not just
+  after the SIGHUP reload it was retired under), and a scoped token 200s.
+- **`query_points` returns hits** — `POST /memory/search` on a live query
+  returns a full page with sane RRF scores.
+- `just health` → 2 passed, 0 failed. `just verify` → **7 passed, 0
+  failed**, 3 skipped (perf/viewport/restart, all covered elsewhere).
+- `just eval` → **21/21 (100%), 0 regressions** against the deployed
+  0.1.32 — the 0.1.30 baseline held across the Qdrant API migration, the
+  v1 collection drop, and the transcript re-source.
+- Units `klams-service`, `klams-monitor`, `klams-scanner.timer` all
+  active; no ERROR or WARN in the journal since restart.
