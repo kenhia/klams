@@ -53,7 +53,7 @@ async fn memory_search_smoke() {
             author.author_id,
             FactTypeArg::EnvFact,
             serde_json::json!({
-                "key": "phase4-search-target",
+                "key": "PHASE4_SEARCH_TARGET",
                 "value": "needle phase4 search"
             }),
         ),

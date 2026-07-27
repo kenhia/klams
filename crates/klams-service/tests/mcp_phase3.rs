@@ -75,7 +75,7 @@ async fn memory_add_fact_smoke() {
         MemoryAddArgs::fact(
             author.author_id,
             FactTypeArg::EnvFact,
-            serde_json::json!({"key": "phase3-smoke", "value": "ok"}),
+            serde_json::json!({"key": "PHASE3_SMOKE", "value": "ok"}),
         ),
     )
     .await

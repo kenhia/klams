@@ -71,7 +71,7 @@ async fn memory_delete_soft_smoke() {
             author,
             FactTypeArg::EnvFact,
             serde_json::json!({
-                "key": "phase6-soft-delete",
+                "key": "PHASE6_SOFT_DELETE",
                 "value": "needle-soft-delete"
             }),
         ),
@@ -175,7 +175,7 @@ async fn memory_admin_restore_smoke() {
             author,
             FactTypeArg::EnvFact,
             serde_json::json!({
-                "key": "phase6-restore",
+                "key": "PHASE6_RESTORE",
                 "value": "needle-restore"
             }),
         ),
@@ -245,7 +245,7 @@ async fn memory_admin_hard_delete_smoke() {
             author,
             FactTypeArg::EnvFact,
             serde_json::json!({
-                "key": "phase6-hard",
+                "key": "PHASE6_HARD",
                 "value": "needle-hard"
             }),
         ),
@@ -299,7 +299,7 @@ async fn memory_admin_list_deleted_smoke() {
                 author,
                 FactTypeArg::EnvFact,
                 serde_json::json!({
-                    "key": format!("phase6-list-{i}"),
+                    "key": format!("PHASE6_LIST_{i}"),
                     "value": format!("needle-list-{i}")
                 }),
             ),

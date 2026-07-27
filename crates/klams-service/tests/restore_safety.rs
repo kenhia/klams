@@ -35,6 +35,24 @@ fn qdrant_rest_url() -> String {
 }
 
 async fn ensure_collection() {
+    // Sprint 031 (#679/#687): DROP then create, rather than
+    // create-if-missing.
+    //
+    // Restoring a snapshot into a collection leaves qdrant 1.18 unable
+    // to create new snapshots from it — every later run of this file
+    // then fails with `Failed to get_snapshot_creator, Failed to
+    // restore local replica`, surfacing two steps downstream as a
+    // baffling `ArtifactMissing { kind: Qdrant }`. Because the test
+    // stack is long-lived, one restore run poisons every run after it
+    // until somebody deletes the collection by hand.
+    //
+    // These collections hold nothing but this file's fixture, so
+    // dropping is free.
+    let rest = qdrant_rest_url();
+    let _ = reqwest::Client::new()
+        .delete(format!("{rest}/collections/{TEST_COLLECTION}"))
+        .send()
+        .await;
     QdrantStore::connect(&qdrant_grpc_url(), TEST_COLLECTION, 384)
         .await
         .expect("create collection");
@@ -73,6 +91,8 @@ fn deps_for(dir: &std::path::Path, state: &MaintenanceState) -> OrchestratorDeps
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires docker-compose.test.yml"]
 async fn restore_refuses_non_empty_without_force() {
+    // Whole-database restore — see `common::whole_database_guard`.
+    let _serial = common::whole_database_guard().await;
     ensure_collection().await;
     let dir = tempdir().unwrap();
     let state = MaintenanceState::new();
@@ -108,6 +128,8 @@ async fn restore_refuses_non_empty_without_force() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires docker-compose.test.yml"]
 async fn restore_with_force_overwrites_non_empty() {
+    // Whole-database restore — see `common::whole_database_guard`.
+    let _serial = common::whole_database_guard().await;
     ensure_collection().await;
     let dir = tempdir().unwrap();
     let state = MaintenanceState::new();
@@ -156,6 +178,8 @@ async fn restore_with_force_overwrites_non_empty() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires docker-compose.test.yml"]
 async fn restore_truncated_dump_rolls_back() {
+    // Whole-database restore — see `common::whole_database_guard`.
+    let _serial = common::whole_database_guard().await;
     ensure_collection().await;
     let dir = tempdir().unwrap();
     let state = MaintenanceState::new();

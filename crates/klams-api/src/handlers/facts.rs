@@ -1,6 +1,5 @@
 //! HTTP handlers for `/memory/facts` (POST upsert + GET list).
 
-use crate::auth::AuthenticatedAuthor;
 use crate::router::ApiState;
 use crate::ApiError;
 use axum::{
@@ -14,8 +13,9 @@ use base64::Engine as _;
 use klams_core::{metrics as m, WriteJob};
 use klams_store::{FactQuery, Store};
 use klams_types::{
-    DissentStatus, DissentSubmittedResponse, FactPage, FactType, FactWriteOutcome,
-    FactWriteResponse, MemoryWrite, Source, UpsertFact, UpsertFactRequest, WritePath,
+    AuthenticatedAuthor, DissentStatus, DissentSubmittedResponse, FactPage, FactType,
+    FactWriteOutcome, FactWriteResponse, MemoryWrite, Source, UpsertFact, UpsertFactRequest,
+    WritePath,
 };
 use serde::Deserialize;
 use time::OffsetDateTime;

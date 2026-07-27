@@ -119,7 +119,7 @@ async fn memory_add_without_author_id_attributes_to_bearer_author() {
             serde_json::json!({
                 "kind": "fact",
                 "fact_type": "EnvFact",
-                "payload": {"key": "wi62-bearer-fallback", "value": "ok"},
+                "payload": {"key": "WI62_BEARER_FALLBACK", "value": "ok"},
             }),
         )
         .await;
@@ -142,7 +142,7 @@ async fn explicit_author_id_still_wins_over_bearer_binding() {
                 "author_id": klams_types::SYSTEM_AUTHOR_ID,
                 "kind": "fact",
                 "fact_type": "EnvFact",
-                "payload": {"key": "wi62-explicit-author", "value": "ok"},
+                "payload": {"key": "WI62_EXPLICIT_AUTHOR", "value": "ok"},
             }),
         )
         .await;

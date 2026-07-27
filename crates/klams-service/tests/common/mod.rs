@@ -125,6 +125,27 @@ pub struct TestServer {
     pg_url: String,
 }
 
+/// Serializes tests that operate on the WHOLE test database.
+///
+/// Sprint 031 (#679): per-schema isolation fixes tests that merely
+/// share tables, but `pg_restore` restores a database-wide dump — there
+/// is no schema to scope it to, and any concurrent reader sees the
+/// target mid-restore. `restore_safety` and `restore_roundtrip` fail
+/// 3-for-3 at default parallelism and pass 3-for-3 serially.
+///
+/// So these serialize rather than isolate, which is the fallback #679
+/// allows for tests that genuinely cannot be isolated. A process-wide
+/// lock is enough: cargo runs each test binary to completion before
+/// starting the next, so the only concurrency is within one file.
+///
+/// Hold the guard for the whole test body, not just the restore call —
+/// the fixture seeding and the row counts around it are equally
+/// database-wide.
+pub async fn whole_database_guard() -> tokio::sync::MutexGuard<'static, ()> {
+    static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    LOCK.lock().await
+}
+
 /// Advisory-lock key serializing per-test schema creation + migration.
 /// Arbitrary but stable; shared by every test process on this database.
 const MIGRATE_LOCK_KEY: i64 = 0x6b6c_616d_0031; // "klam" + sprint 031

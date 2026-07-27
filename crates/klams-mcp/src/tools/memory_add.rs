@@ -16,7 +16,7 @@ use crate::{
     projection,
     tools::McpState,
 };
-use klams_store::Store as _;
+use klams_store::Store;
 use klams_types::{FactType, IndexKnowledge, PublicAuthorRef, PublicMemory, Source, UpsertFact};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -31,6 +31,8 @@ pub enum MemoryAddContent {
     Fact {
         fact_type: FactTypeArg,
         payload: serde_json::Value,
+        /// Existing fact this write amends; `None` adds a new one.
+        amends: Option<Uuid>,
     },
     Knowledge {
         text: String,
@@ -113,6 +115,26 @@ pub struct MemoryAddArgs {
     /// Required when `kind` is `fact`: arbitrary JSON payload.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload: Option<serde_json::Value>,
+    /// Optional, `fact` only: the id of an existing fact this write
+    /// **amends**. Supply it when you believe a stored fact is now
+    /// wrong and this payload replaces it.
+    ///
+    /// Amending is where the trust policy applies. If the fact you are
+    /// amending was written by a more-trusted source than an agent
+    /// proposal, your version does NOT overwrite it: it is recorded as
+    /// a dissent for review, and the response comes back with
+    /// `write_path: "dissent"` plus a `dissent_id`. If it was written
+    /// at equal or lower trust, the amendment applies and the fact's
+    /// version bumps.
+    ///
+    /// Omit it to add a new fact. Sprint 031 (#645): this is the MCP
+    /// spelling of the REST `explicit_id` field — without it there was
+    /// no way to express "I am correcting THAT fact" over MCP, so the
+    /// dissent path was unreachable from this tool no matter which
+    /// store method it called.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<String>")]
+    pub amends: Option<Uuid>,
     /// Required when `kind` is `knowledge`: the text to embed.
     ///
     /// Bounded by the embedding model's input length. Oversized text is
@@ -148,6 +170,7 @@ impl MemoryAddArgs {
             kind: MemoryAddKind::Fact,
             fact_type: Some(fact_type),
             payload: Some(payload),
+            amends: None,
             text: None,
             tags: Vec::new(),
             source_path: None,
@@ -165,6 +188,7 @@ impl MemoryAddArgs {
             kind: MemoryAddKind::Knowledge,
             fact_type: None,
             payload: None,
+            amends: None,
             text: Some(text.into()),
             tags: Vec::new(),
             source_path: None,
@@ -184,9 +208,11 @@ impl MemoryAddArgs {
     pub fn content(self) -> Result<MemoryAddContent, ErrorEnvelope> {
         match self.kind {
             MemoryAddKind::Fact => match (self.fact_type, self.payload) {
-                (Some(fact_type), Some(payload)) => {
-                    Ok(MemoryAddContent::Fact { fact_type, payload })
-                }
+                (Some(fact_type), Some(payload)) => Ok(MemoryAddContent::Fact {
+                    fact_type,
+                    payload,
+                    amends: self.amends,
+                }),
                 (fact_type, payload) => {
                     let mut missing = Vec::new();
                     if fact_type.is_none() {
@@ -260,6 +286,21 @@ pub struct MemoryAddOutput {
     /// empty.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub similar_existing: Vec<SimilarExisting>,
+    /// Sprint 031 (#645): `"dissent"` when the fact contradicted a
+    /// higher-trust canonical record, so the write was recorded as a
+    /// disagreement rather than applied. Omitted (and the write was
+    /// canonical) otherwise — which is every knowledge write and the
+    /// common fact case, so existing callers see no change.
+    ///
+    /// This is the field that makes the documented safety property
+    /// legible to the agent: `memory` is what the store actually holds,
+    /// NOT what you just sent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub write_path: Option<&'static str>,
+    /// The dissent recorded when `write_path` is `"dissent"`. Feed it
+    /// to a human, or leave it for review — it is not auto-promoted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dissent_id: Option<Uuid>,
 }
 
 /// The output *is* the persisted memory (its wire shape flattens to
@@ -280,7 +321,10 @@ impl std::ops::Deref for MemoryAddOutput {
 /// `MISSING_AUTHOR_ID`, `UNKNOWN_AUTHOR_ID`, `EMBEDDING_UNAVAILABLE`,
 /// `SCHEMA_VALIDATION_FAILED`, or `INTERNAL_ERROR`.
 #[allow(clippy::too_many_lines)]
-pub async fn run(state: &McpState, args: MemoryAddArgs) -> Result<MemoryAddOutput, ErrorEnvelope> {
+pub async fn run<S: Store>(
+    state: &McpState<S>,
+    args: MemoryAddArgs,
+) -> Result<MemoryAddOutput, ErrorEnvelope> {
     if let Some(env) = maintenance::check(&state.maintenance) {
         return Err(env);
     }
@@ -294,7 +338,6 @@ pub async fn run(state: &McpState, args: MemoryAddArgs) -> Result<MemoryAddOutpu
     let content = args.content()?;
     let author = state
         .store
-        .postgres
         .get_author_by_id(author_id)
         .await
         .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("get_author_by_id: {e}")))?
@@ -306,39 +349,67 @@ pub async fn run(state: &McpState, args: MemoryAddArgs) -> Result<MemoryAddOutpu
         })?;
 
     // FR-005: touch last_seen_at on every authenticated reference.
-    let _ = state
-        .store
-        .postgres
-        .touch_author_last_seen_at(author.id)
-        .await;
+    let _ = state.store.touch_author_last_seen_at(author.id).await;
 
     let author_ref = PublicAuthorRef::from_record(&author);
 
     match content {
-        MemoryAddContent::Fact { fact_type, payload } => {
+        MemoryAddContent::Fact {
+            fact_type,
+            payload,
+            amends,
+        } => {
+            if !payload.is_object() {
+                return Err(envelope(
+                    errors::SCHEMA_VALIDATION_FAILED,
+                    "payload must be a JSON object",
+                ));
+            }
             let req = UpsertFact {
                 fact_type: fact_type.into(),
                 payload,
                 source: Source::AgentProposal,
-                explicit_id: None,
+                // The amend target, if any. `upsert_fact_v2` compares
+                // the caller's trust rank against the canonical row's
+                // and either bumps the version or diverts to a dissent.
+                explicit_id: amends,
                 expected_version: None,
                 author_id: author.id,
             };
-            let fact = state
-                .store
-                .postgres
-                .upsert_fact(req)
-                .await
-                .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("upsert_fact: {e}")))?;
+
+            // Sprint 031 (#645) — the policy hole. This path called
+            // `upsert_fact` (v1) with no validation at all, so on the
+            // surface agents actually use:
+            //
+            //   * a malformed payload was stored (REST rejected the
+            //     same bytes through `ValidatorRegistry`), and
+            //   * a fact contradicting a higher-trust canonical record
+            //     OVERWROTE it, silently. The documented safety
+            //     property — "agents can't overwrite canonical facts;
+            //     they disagree via dissent" — simply was not held.
+            //
+            // Both surfaces now run the same registry and the same
+            // `upsert_fact_v2`, which is what routes a contradiction to
+            // a dissent instead of over the top of the canonical row.
+            if let Err(details) = state
+                .validators
+                .validate_write(&klams_types::MemoryWrite::UpsertFact(req.clone()))
+            {
+                let rules: Vec<String> = details.iter().map(|d| d.rule.clone()).collect();
+                klams_core::metrics::incr_validation_rejections_owned(&rules);
+                return Err(validation_envelope(&details));
+            }
+
+            let outcome =
+                state.store.upsert_fact_v2(req).await.map_err(|e| {
+                    envelope(errors::INTERNAL_ERROR, format!("upsert_fact_v2: {e}"))
+                })?;
             mcp_metrics::record_write(
                 &author.agent_name,
                 author.model.as_deref(),
                 mcp_metrics::KIND_FACT,
             );
-            Ok(MemoryAddOutput {
-                memory: projection::project_fact(&fact, author_ref),
-                similar_existing: Vec::new(),
-            })
+            fact_outcome_to_output(state, outcome, author_ref).await
         }
         MemoryAddContent::Knowledge {
             text,
@@ -347,23 +418,54 @@ pub async fn run(state: &McpState, args: MemoryAddArgs) -> Result<MemoryAddOutpu
             repo,
             volatility,
         } => {
-            if text.trim().is_empty() {
-                return Err(envelope(
-                    errors::SCHEMA_VALIDATION_FAILED,
-                    "knowledge text must be non-empty",
-                ));
-            }
+            // Sprint 031 (#645): normalize, bound the tags and hash the
+            // NORMALIZED text, through the same `klams_core` function
+            // REST uses. Previously this path trimmed-and-checked for
+            // emptiness, accepted any tags at all, and hashed the raw
+            // input — so agent-written content that differed from a
+            // stored chunk only in trailing whitespace got a different
+            // content hash and became a second point.
+            let prepared = klams_core::prepare_knowledge(&text, &tags)
+                .map_err(|details| validation_envelope(&details))?;
+
             // Sprint 027 (#420/#629): this path had NO length check at
             // all — `memory_search` in the same crate enforced
             // MAX_QUERY_LEN, but a write of any size went straight to
             // the embedder and came back as a transient-looking error.
             // Fail here instead, with numbers the caller can act on.
-            enforce_embed_size(state, author.id, &author.agent_name, &text).await?;
-            let hash = sha256_hex(&text);
+            enforce_embed_size(state, author.id, &author.agent_name, &prepared.text).await?;
+
+            // Sprint 031 (#645): the dedupe probe REST has always run
+            // and this path never did. Identical content submitted
+            // twice used to become two points — which is corpus-quality
+            // debt paid by every later search, and 028 spent a whole
+            // sprint on exactly that class of duplication.
+            if let Some(existing) = state
+                .store
+                .find_knowledge_by_content_hash(&prepared.content_hash)
+                .await
+                .map_err(|e| errors::from_store_error("qdrant", &e))?
+            {
+                if let Some(item) = state
+                    .store
+                    .get_knowledge(existing)
+                    .await
+                    .map_err(|e| errors::from_store_error("qdrant", &e))?
+                {
+                    let owner = knowledge_owner_ref(state, &item).await;
+                    return Ok(MemoryAddOutput {
+                        memory: projection::project_knowledge(&item, owner),
+                        similar_existing: Vec::new(),
+                        write_path: None,
+                        dissent_id: None,
+                    });
+                }
+            }
+
             let req = IndexKnowledge {
                 id: Uuid::now_v7(),
-                text,
-                content_hash: hash,
+                text: prepared.text,
+                content_hash: prepared.content_hash,
                 source: Source::AgentProposal,
                 tags,
                 repo,
@@ -385,8 +487,7 @@ pub async fn run(state: &McpState, args: MemoryAddArgs) -> Result<MemoryAddOutpu
             // that made agents give up and lose the write.
             let embedding = state
                 .store
-                .embedder
-                .embed(&req.text)
+                .embed_document(&req.text)
                 .await
                 .map_err(|e| errors::from_store_error("embedding", &e))?;
             // Sprint 029 (#638): similar-on-write. The embedding is
@@ -397,7 +498,6 @@ pub async fn run(state: &McpState, args: MemoryAddArgs) -> Result<MemoryAddOutpu
             // failed lookup must not fail a valid write.
             let similar_existing = match state
                 .store
-                .qdrant
                 .search_knowledge_curated(embedding.clone(), similar_fetch_k())
                 .await
             {
@@ -416,8 +516,7 @@ pub async fn run(state: &McpState, args: MemoryAddArgs) -> Result<MemoryAddOutpu
             };
             let item = state
                 .store
-                .qdrant
-                .index_knowledge(req, embedding)
+                .index_knowledge_with_embedding(req, embedding)
                 .await
                 .map_err(|e| errors::from_store_error("qdrant", &e))?;
             mcp_metrics::record_write(
@@ -428,8 +527,90 @@ pub async fn run(state: &McpState, args: MemoryAddArgs) -> Result<MemoryAddOutpu
             Ok(MemoryAddOutput {
                 memory: projection::project_knowledge(&item, author_ref),
                 similar_existing,
+                write_path: None,
+                dissent_id: None,
             })
         }
+    }
+}
+
+/// Render a `ValidatorRegistry` rejection as an MCP error envelope.
+///
+/// REST answers the same rejection with a 422 carrying structured
+/// `details`; the MCP envelope has no `details` slot, so the field/rule
+/// pairs are folded into the message. An agent has to be able to fix
+/// its payload from what it is told, and `SCHEMA_VALIDATION_FAILED`
+/// alone does not tell it which field.
+fn validation_envelope(details: &[klams_types::ErrorDetail]) -> ErrorEnvelope {
+    let joined = details
+        .iter()
+        .map(|d| format!("{} ({}): {}", d.field, d.rule, d.message))
+        .collect::<Vec<_>>()
+        .join("; ");
+    envelope(errors::SCHEMA_VALIDATION_FAILED, joined)
+}
+
+/// Map a `upsert_fact_v2` outcome onto the tool's output.
+///
+/// `Dissented` is NOT an error: the write was accepted, it just did not
+/// become canonical. Report the canonical fact as `memory` — that is
+/// what the store holds, and an agent that reads back its own submitted
+/// payload here would draw exactly the wrong conclusion — and flag the
+/// path so the difference is visible.
+async fn fact_outcome_to_output<S: Store>(
+    state: &McpState<S>,
+    outcome: klams_types::FactWriteOutcome,
+    author_ref: PublicAuthorRef,
+) -> Result<MemoryAddOutput, ErrorEnvelope> {
+    match outcome {
+        klams_types::FactWriteOutcome::Persisted { fact } => Ok(MemoryAddOutput {
+            memory: projection::project_fact(&fact, author_ref),
+            similar_existing: Vec::new(),
+            write_path: None,
+            dissent_id: None,
+        }),
+        klams_types::FactWriteOutcome::Dissented {
+            dissent_id,
+            fact_id,
+        } => {
+            let (fact, canonical_author) = state
+                .store
+                .fetch_facts_with_authors(&[fact_id])
+                .await
+                .map_err(|e| {
+                    envelope(
+                        errors::INTERNAL_ERROR,
+                        format!("fetch canonical fact after dissent: {e}"),
+                    )
+                })?
+                .into_iter()
+                .next()
+                .ok_or_else(|| {
+                    envelope(
+                        errors::INTERNAL_ERROR,
+                        format!("canonical fact {fact_id} vanished after dissent {dissent_id}"),
+                    )
+                })?;
+            Ok(MemoryAddOutput {
+                memory: projection::project_fact(
+                    &fact,
+                    PublicAuthorRef::from_record(&canonical_author),
+                ),
+                similar_existing: Vec::new(),
+                write_path: Some(klams_types::WritePath::Dissent.as_str()),
+                dissent_id: Some(dissent_id),
+            })
+        }
+        // MCP never sends `expected_version`, so this is unreachable
+        // through the tool today. Handled rather than `unreachable!()`
+        // because the store owns that decision, not this handler.
+        klams_types::FactWriteOutcome::VersionConflict {
+            current_version,
+            fact_id,
+        } => Err(envelope(
+            errors::SCHEMA_VALIDATION_FAILED,
+            format!("version conflict on fact {fact_id}: current version is {current_version}"),
+        )),
     }
 }
 
@@ -441,8 +622,33 @@ fn similar_fetch_k() -> u32 {
 
 /// Resolve author names for the similar-on-write hits and project them
 /// into the nudge shape.
-async fn similar_refs(
-    state: &McpState,
+/// Resolve the author of an existing knowledge point.
+///
+/// Used on the dedupe hit: the point already in the store belongs to
+/// whoever wrote it first, which is often not the caller. Attributing
+/// it to the caller would be a quiet lie about provenance — the axis
+/// ranking now weights on. Falls back to an unattributed ref rather
+/// than failing the write; the dedupe outcome is still correct.
+async fn knowledge_owner_ref<S: Store>(
+    state: &McpState<S>,
+    item: &klams_types::KnowledgeItem,
+) -> PublicAuthorRef {
+    let owner = state
+        .store
+        .knowledge_authors_by_ids(&[item.id])
+        .await
+        .ok()
+        .and_then(|m| m.get(&item.id).copied());
+    if let Some(id) = owner {
+        if let Ok(Some(record)) = state.store.get_author_by_id(id).await {
+            return PublicAuthorRef::from_record(&record);
+        }
+    }
+    PublicAuthorRef::unknown()
+}
+
+async fn similar_refs<S: Store>(
+    state: &McpState<S>,
     close: Vec<(klams_types::KnowledgeItem, f32)>,
 ) -> Vec<SimilarExisting> {
     if close.is_empty() {
@@ -451,7 +657,6 @@ async fn similar_refs(
     let ids: Vec<Uuid> = close.iter().map(|(it, _)| it.id).collect();
     let author_map = state
         .store
-        .qdrant
         .knowledge_authors_by_ids(&ids)
         .await
         .unwrap_or_default();
@@ -460,7 +665,7 @@ async fn similar_refs(
         if names.contains_key(author_id) {
             continue;
         }
-        if let Ok(Some(a)) = state.store.postgres.get_author_by_id(*author_id).await {
+        if let Ok(Some(a)) = state.store.get_author_by_id(*author_id).await {
             names.insert(*author_id, a.agent_name);
         }
     }
@@ -486,8 +691,8 @@ async fn similar_refs(
 /// not change the error the caller gets. Shared by `memory_add` and the
 /// sprint-029 lifecycle verbs (`memory_supersede` / `memory_update`),
 /// which write new text under the same ceiling.
-pub(crate) async fn enforce_embed_size(
-    state: &McpState,
+pub(crate) async fn enforce_embed_size<S: Store>(
+    state: &McpState<S>,
     author_id: Uuid,
     agent_name: &str,
     text: &str,
@@ -507,7 +712,7 @@ pub(crate) async fn enforce_embed_size(
     if let Some(oversize) = oversize {
         let row =
             klams_store::OversizeWrite::from_oversize(&oversize, Some(author_id), agent_name, text);
-        if let Err(e) = state.store.postgres.insert_oversize_write(&row).await {
+        if let Err(e) = state.store.insert_oversize_write(&row).await {
             tracing::warn!(%e, "insert_oversize_write failed (log is best-effort)");
         }
         mcp_metrics::record_oversize_write(agent_name);

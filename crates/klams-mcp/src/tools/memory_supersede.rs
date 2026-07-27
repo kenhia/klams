@@ -30,6 +30,7 @@ use crate::{
     tools::memory_delete::{authorize_curation, DeleteCaller},
     tools::McpState,
 };
+use klams_store::Store;
 use klams_types::{IndexKnowledge, PublicAuthorRef, Source};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -64,8 +65,8 @@ pub struct MemorySupersedeArgs {
 /// superseded/deleted), `NOT_AGENT_AUTHORED`, `INSUFFICIENT_SCOPE`,
 /// `PAYLOAD_TOO_LARGE`, `EMBEDDING_UNAVAILABLE`, or `INTERNAL_ERROR`.
 #[allow(clippy::too_many_lines)]
-pub async fn run(
-    state: &McpState,
+pub async fn run<S: Store>(
+    state: &McpState<S>,
     args: MemorySupersedeArgs,
     caller: Option<&DeleteCaller>,
 ) -> Result<MemoryAddOutput, ErrorEnvelope> {
@@ -90,7 +91,6 @@ pub async fn run(
     // The target must exist, be live, and be agent-authored knowledge.
     let old = state
         .store
-        .qdrant
         .get_knowledge(args.id)
         .await
         .map_err(|e| errors::from_store_error("get_knowledge", &e))?
@@ -106,7 +106,6 @@ pub async fn run(
         })?;
     if state
         .store
-        .qdrant
         .point_is_soft_deleted(args.id)
         .await
         .ok()
@@ -135,7 +134,6 @@ pub async fn run(
 
     let owner = state
         .store
-        .qdrant
         .knowledge_authors_by_ids(&[args.id])
         .await
         .map_err(|e| errors::from_store_error("knowledge_authors_by_ids", &e))?
@@ -145,7 +143,6 @@ pub async fn run(
 
     let author = state
         .store
-        .postgres
         .get_author_by_id(caller.author_id)
         .await
         .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("get_author_by_id: {e}")))?
@@ -155,11 +152,7 @@ pub async fn run(
                 format!("author_id {} not found", caller.author_id),
             )
         })?;
-    let _ = state
-        .store
-        .postgres
-        .touch_author_last_seen_at(author.id)
-        .await;
+    let _ = state.store.touch_author_last_seen_at(author.id).await;
 
     enforce_embed_size(state, author.id, &author.agent_name, &text).await?;
 
@@ -189,27 +182,24 @@ pub async fn run(
     };
     let embedding = state
         .store
-        .embedder
-        .embed(&req.text)
+        .embed_document(&req.text)
         .await
         .map_err(|e| errors::from_store_error("embedding", &e))?;
     let item = state
         .store
-        .qdrant
-        .index_knowledge(req, embedding)
+        .index_knowledge_with_embedding(req, embedding)
         .await
         .map_err(|e| errors::from_store_error("qdrant", &e))?;
 
     if let Err(e) = state
         .store
-        .qdrant
         .mark_superseded(old.id, new_id, author.id, time::OffsetDateTime::now_utc())
         .await
     {
         // Undo the replacement so the store is not left with both
         // memories live. Best-effort: if the cleanup also fails, say
         // exactly what state things are in.
-        let cleanup = state.store.qdrant.hard_delete_point(new_id).await;
+        let cleanup = state.store.hard_delete_point(new_id).await;
         let detail = match cleanup {
             Ok(()) => format!(
                 "marking {} superseded failed ({e}); the replacement was \
@@ -235,5 +225,9 @@ pub async fn run(
     Ok(MemoryAddOutput {
         memory: projection::project_knowledge(&item, PublicAuthorRef::from_record(&author)),
         similar_existing: Vec::new(),
+        // Knowledge writes have no dissent path — supersession IS the
+        // disagreement mechanism for knowledge.
+        write_path: None,
+        dissent_id: None,
     })
 }

@@ -110,8 +110,8 @@ pub struct MemorySearchArgs {
 /// Returns an [`ErrorEnvelope`] for `EMPTY_QUERY`, `INVALID_TOP_K`,
 /// `EMBEDDING_UNAVAILABLE`, or `INTERNAL_ERROR`.
 #[allow(clippy::too_many_lines)]
-pub async fn run(
-    state: &McpState,
+pub async fn run<S: Store>(
+    state: &McpState<S>,
     args: MemorySearchArgs,
     caller: Option<&str>,
 ) -> Result<Vec<ScoredMemory>, ErrorEnvelope> {
@@ -198,7 +198,6 @@ pub async fn run(
         // hold the line.
         let all_curated: Vec<(KnowledgeItem, f32)> = state
             .store
-            .qdrant
             .search_knowledge_curated(embedding, top_k)
             .await
             .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("curated search: {e}")))?;
@@ -222,7 +221,6 @@ pub async fn run(
             ids.dedup();
             let author_map = state
                 .store
-                .qdrant
                 .knowledge_authors_by_ids(&ids)
                 .await
                 .unwrap_or_default();
@@ -291,7 +289,6 @@ pub async fn run(
             let ids: Vec<uuid::Uuid> = fact_hits.iter().map(|h| h.id).collect();
             let rows = state
                 .store
-                .postgres
                 .fetch_facts_with_authors(&ids)
                 .await
                 .map_err(|e| {
@@ -320,7 +317,6 @@ pub async fn run(
             let ids: Vec<uuid::Uuid> = event_hits.iter().map(|h| h.id).collect();
             let rows = state
                 .store
-                .postgres
                 .fetch_events_with_authors(&ids)
                 .await
                 .map_err(|e| {
@@ -431,7 +427,7 @@ pub async fn run(
         };
         let store = state.store.clone();
         tokio::spawn(async move {
-            if let Err(e) = store.postgres.insert_search_miss(&miss).await {
+            if let Err(e) = store.insert_search_miss(&miss).await {
                 tracing::debug!(%e, "insert_search_miss failed (miss log best-effort)");
             }
         });
@@ -455,7 +451,7 @@ pub async fn run(
         };
         let store = state.store.clone();
         tokio::spawn(async move {
-            if let Err(e) = store.postgres.insert_search_sample(&sample).await {
+            if let Err(e) = store.insert_search_sample(&sample).await {
                 tracing::debug!(%e, "insert_search_sample failed (sample log best-effort)");
             }
         });
@@ -557,13 +553,13 @@ fn rank_u32(rank: usize) -> u32 {
     u32::try_from(rank).unwrap_or(u32::MAX)
 }
 
-async fn fetch_authors(
-    state: &McpState,
+async fn fetch_authors<S: Store>(
+    state: &McpState<S>,
     ids: &[uuid::Uuid],
 ) -> HashMap<uuid::Uuid, PublicAuthorRef> {
     let mut out = HashMap::with_capacity(ids.len());
     for id in ids {
-        if let Ok(Some(a)) = state.store.postgres.get_author_by_id(*id).await {
+        if let Ok(Some(a)) = state.store.get_author_by_id(*id).await {
             out.insert(*id, PublicAuthorRef::from_record(&a));
         }
     }
@@ -599,7 +595,7 @@ fn classify_miss(hit_count: usize, top: Option<(f32, MemoryKind)>) -> Option<&'s
 /// config, plumbed onto [`McpState`] by `klams-service` (sprint 024
 /// #328/#330). Defaults to RRF(k=60) for test harnesses that don't set
 /// it.
-fn fusion_strategy(state: &McpState) -> FusionStrategy {
+fn fusion_strategy<S: Store>(state: &McpState<S>) -> FusionStrategy {
     state.fusion
 }
 

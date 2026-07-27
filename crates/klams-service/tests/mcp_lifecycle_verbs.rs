@@ -379,7 +379,11 @@ async fn memory_add_nudges_on_a_near_duplicate() {
     let text = "s029 similar-on-write: the klams backup path is /gratch/klams-backup";
     let first_id = seed_knowledge(&owner, text).await;
 
-    // Identical text → cosine ~1.0, comfortably above any threshold.
+    // Sprint 031 (#645): BYTE-identical text no longer reaches the
+    // nudge — the content-hash dedupe probe the REST path has always
+    // run now runs here too, so the write returns the existing point
+    // rather than making a twin to be nudged about. That is strictly
+    // what the nudge was asking the writer to do, done for them.
     let out = owner
         .call_tool(
             "memory_add",
@@ -387,9 +391,29 @@ async fn memory_add_nudges_on_a_near_duplicate() {
         )
         .await;
     assert_eq!(McpSession::error_code(&out), None, "{out}");
+    assert!(
+        out["id"].as_str().is_some_and(|i| same_uuid(i, &first_id)),
+        "an identical re-write must dedupe onto the existing point, \
+         not create a second one: {out}"
+    );
+
+    // Near-but-not-identical text is what the nudge is for: dedupe
+    // cannot see it (different hash), so the writer is told which
+    // existing memory to supersede.
+    let out = owner
+        .call_tool(
+            "memory_add",
+            serde_json::json!({
+                "kind": "knowledge",
+                "text": "s029 similar-on-write: klams keeps its backups under \
+                         /gratch/klams-backup",
+            }),
+        )
+        .await;
+    assert_eq!(McpSession::error_code(&out), None, "{out}");
     let similar = out["similar_existing"]
         .as_array()
-        .unwrap_or_else(|| panic!("twin write must carry similar_existing: {out}"));
+        .unwrap_or_else(|| panic!("near-duplicate write must carry similar_existing: {out}"));
     assert!(
         similar
             .iter()

@@ -9,6 +9,6 @@ pub mod handlers;
 pub mod middleware;
 pub mod router;
 
-pub use auth::{require_bearer, AuthState, AuthenticatedAuthor, AuthenticatedScopes, TokenGrant};
+pub use auth::{require_bearer, AuthState, TokenGrant};
 pub use error::ApiError;
 pub use router::{build_router, build_router_with_auth, with_metrics, ApiState};

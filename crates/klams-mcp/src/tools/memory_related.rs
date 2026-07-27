@@ -11,6 +11,7 @@ use crate::{
     projection,
     tools::McpState,
 };
+use klams_store::Store;
 use klams_types::{PublicAuthorRef, PublicMemory};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -33,8 +34,8 @@ pub struct MemoryRelatedArgs {
 /// # Errors
 /// Returns an [`ErrorEnvelope`] for `INVALID_TOP_K`, `NOT_FOUND`,
 /// or `INTERNAL_ERROR`.
-pub async fn run(
-    state: &McpState,
+pub async fn run<S: Store>(
+    state: &McpState<S>,
     args: MemoryRelatedArgs,
 ) -> Result<Vec<PublicMemory>, ErrorEnvelope> {
     let top_k = args.top_k.unwrap_or(DEFAULT_TOP_K);
@@ -50,7 +51,6 @@ pub async fn run(
 
     let vector = state
         .store
-        .qdrant
         .get_point_vector(args.id)
         .await
         .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("get_point_vector: {e}")))?
@@ -65,7 +65,6 @@ pub async fn run(
     // returns it (similarity 1.0 to itself).
     let raw = state
         .store
-        .qdrant
         .search_knowledge(vector, top_k + 1)
         .await
         .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("search_knowledge: {e}")))?;
@@ -79,7 +78,6 @@ pub async fn run(
     let ids: Vec<Uuid> = hits.iter().map(|(it, _)| it.id).collect();
     let author_map = state
         .store
-        .qdrant
         .knowledge_authors_by_ids(&ids)
         .await
         .unwrap_or_default();
@@ -88,7 +86,7 @@ pub async fn run(
     wanted.dedup();
     let mut authors: HashMap<Uuid, PublicAuthorRef> = HashMap::with_capacity(wanted.len());
     for aid in wanted {
-        if let Ok(Some(a)) = state.store.postgres.get_author_by_id(aid).await {
+        if let Ok(Some(a)) = state.store.get_author_by_id(aid).await {
             authors.insert(aid, PublicAuthorRef::from_record(&a));
         }
     }

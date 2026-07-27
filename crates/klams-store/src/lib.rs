@@ -491,6 +491,257 @@ pub trait Store: Send + Sync + 'static {
     async fn touch_author_last_seen_at(&self, _id: Uuid) -> StoreResult<u64> {
         Ok(0)
     }
+
+    // ---------------------------------------------------------------
+    // Sprint 031 (#645) — the surface `klams-mcp` used to reach through
+    // `CompositeStore`'s concrete `.postgres` / `.qdrant` / `.embedder`
+    // fields to get at. Holding a concrete store is what made the MCP
+    // tools unmockable, which is why 13 of its 17 test files were empty
+    // `#[ignore]`d stubs pointing at klams-service integration tests.
+    //
+    // Every method defaults to an error rather than being required, so
+    // a mock implements only the handful its test exercises — the same
+    // convention the dissent and summary operations above already use.
+    // ---------------------------------------------------------------
+
+    async fn get_author_by_id(&self, _id: Uuid) -> StoreResult<Option<klams_types::AuthorRecord>> {
+        Err(StoreError::Other("get_author_by_id not implemented".into()))
+    }
+
+    async fn get_author_by_agent_name(
+        &self,
+        _agent_name: &str,
+    ) -> StoreResult<Option<klams_types::AuthorRecord>> {
+        Err(StoreError::Other(
+            "get_author_by_agent_name not implemented".into(),
+        ))
+    }
+
+    async fn insert_author(
+        &self,
+        _args: klams_types::RegisterAuthorArgs,
+        _explicit_id: Option<Uuid>,
+    ) -> StoreResult<klams_types::AuthorRecord> {
+        Err(StoreError::Other("insert_author not implemented".into()))
+    }
+
+    async fn event_exists(&self, _id: Uuid) -> StoreResult<bool> {
+        Err(StoreError::Other("event_exists not implemented".into()))
+    }
+
+    async fn soft_delete_fact(&self, _id: Uuid, _by_author_id: Uuid) -> StoreResult<bool> {
+        Err(StoreError::Other("soft_delete_fact not implemented".into()))
+    }
+
+    async fn restore_fact(&self, _id: Uuid) -> StoreResult<bool> {
+        Err(StoreError::Other("restore_fact not implemented".into()))
+    }
+
+    async fn hard_delete_fact(&self, _id: Uuid) -> StoreResult<bool> {
+        Err(StoreError::Other("hard_delete_fact not implemented".into()))
+    }
+
+    async fn fact_owner(&self, _id: Uuid) -> StoreResult<Option<Uuid>> {
+        Err(StoreError::Other("fact_owner not implemented".into()))
+    }
+
+    async fn fact_exists_any(&self, _id: Uuid) -> StoreResult<bool> {
+        Err(StoreError::Other("fact_exists_any not implemented".into()))
+    }
+
+    async fn propose_dissent(
+        &self,
+        _fact_id: Uuid,
+        _proposed_payload: &serde_json::Value,
+        _author_id: Uuid,
+        _reason: &str,
+        _contradicting_memory_id: Option<Uuid>,
+    ) -> StoreResult<Option<(Uuid, bool)>> {
+        Err(StoreError::Other("propose_dissent not implemented".into()))
+    }
+
+    async fn list_deleted_facts_filtered(
+        &self,
+        _limit: u32,
+        _since: Option<OffsetDateTime>,
+        _author_id: Option<Uuid>,
+        _cursor: Option<(OffsetDateTime, Uuid)>,
+    ) -> StoreResult<Vec<(postgres::DeletedFactRow, klams_types::AuthorRecord)>> {
+        Err(StoreError::Other(
+            "list_deleted_facts_filtered not implemented".into(),
+        ))
+    }
+
+    async fn list_all_authors(&self) -> StoreResult<Vec<klams_types::AuthorRecord>> {
+        Err(StoreError::Other("list_all_authors not implemented".into()))
+    }
+
+    async fn merge_author_rows(&self, _from: Uuid, _into: Uuid) -> StoreResult<(u64, u64, u64)> {
+        Err(StoreError::Other(
+            "merge_author_rows not implemented".into(),
+        ))
+    }
+
+    async fn delete_author(&self, _author_id: Uuid) -> StoreResult<bool> {
+        Err(StoreError::Other("delete_author not implemented".into()))
+    }
+
+    async fn count_author_rows(&self, _author_id: Uuid) -> StoreResult<(i64, i64, i64)> {
+        Err(StoreError::Other(
+            "count_author_rows not implemented".into(),
+        ))
+    }
+
+    async fn fetch_facts_with_authors(
+        &self,
+        _ids: &[Uuid],
+    ) -> StoreResult<Vec<(Fact, klams_types::AuthorRecord)>> {
+        Err(StoreError::Other(
+            "fetch_facts_with_authors not implemented".into(),
+        ))
+    }
+
+    async fn fetch_events_with_authors(
+        &self,
+        _ids: &[Uuid],
+    ) -> StoreResult<Vec<(Event, klams_types::AuthorRecord)>> {
+        Err(StoreError::Other(
+            "fetch_events_with_authors not implemented".into(),
+        ))
+    }
+
+    async fn insert_search_miss(&self, _miss: &SearchMiss) -> StoreResult<()> {
+        Err(StoreError::Other(
+            "insert_search_miss not implemented".into(),
+        ))
+    }
+
+    async fn insert_search_sample(&self, _sample: &SearchSample) -> StoreResult<()> {
+        Err(StoreError::Other(
+            "insert_search_sample not implemented".into(),
+        ))
+    }
+
+    async fn insert_oversize_write(&self, _write: &OversizeWrite) -> StoreResult<()> {
+        Err(StoreError::Other(
+            "insert_oversize_write not implemented".into(),
+        ))
+    }
+
+    async fn point_is_soft_deleted(&self, _id: Uuid) -> StoreResult<Option<bool>> {
+        Err(StoreError::Other(
+            "point_is_soft_deleted not implemented".into(),
+        ))
+    }
+
+    async fn knowledge_authors_by_ids(
+        &self,
+        _ids: &[Uuid],
+    ) -> StoreResult<std::collections::HashMap<Uuid, Uuid>> {
+        Err(StoreError::Other(
+            "knowledge_authors_by_ids not implemented".into(),
+        ))
+    }
+
+    async fn index_knowledge_with_embedding(
+        &self,
+        _req: IndexKnowledge,
+        _embedding: Vec<f32>,
+    ) -> StoreResult<KnowledgeItem> {
+        Err(StoreError::Other(
+            "index_knowledge_with_embedding not implemented".into(),
+        ))
+    }
+
+    async fn upsert_knowledge_item(
+        &self,
+        _item: &KnowledgeItem,
+        _author_id: Uuid,
+        _embedding: Vec<f32>,
+    ) -> StoreResult<()> {
+        Err(StoreError::Other(
+            "upsert_knowledge_item not implemented".into(),
+        ))
+    }
+
+    async fn soft_delete_payload(
+        &self,
+        _id: Uuid,
+        _by_author_id: Uuid,
+        _when: OffsetDateTime,
+    ) -> StoreResult<()> {
+        Err(StoreError::Other(
+            "soft_delete_payload not implemented".into(),
+        ))
+    }
+
+    async fn search_knowledge_curated(
+        &self,
+        _query_vector: Vec<f32>,
+        _top_k: u32,
+    ) -> StoreResult<Vec<(KnowledgeItem, f32)>> {
+        Err(StoreError::Other(
+            "search_knowledge_curated not implemented".into(),
+        ))
+    }
+
+    async fn restore_payload(&self, _id: Uuid) -> StoreResult<()> {
+        Err(StoreError::Other("restore_payload not implemented".into()))
+    }
+
+    async fn reassign_knowledge_author(&self, _from: Uuid, _into: Uuid) -> StoreResult<u64> {
+        Err(StoreError::Other(
+            "reassign_knowledge_author not implemented".into(),
+        ))
+    }
+
+    async fn point_exists_any(&self, _id: Uuid) -> StoreResult<bool> {
+        Err(StoreError::Other("point_exists_any not implemented".into()))
+    }
+
+    async fn mark_superseded(
+        &self,
+        _old_id: Uuid,
+        _new_id: Uuid,
+        _by_author_id: Uuid,
+        _when: OffsetDateTime,
+    ) -> StoreResult<()> {
+        Err(StoreError::Other("mark_superseded not implemented".into()))
+    }
+
+    async fn list_deleted_knowledge(
+        &self,
+        _limit: u32,
+        _author_id: Option<Uuid>,
+        _offset: Option<Uuid>,
+    ) -> StoreResult<(
+        Vec<(KnowledgeItem, OffsetDateTime, Option<Uuid>, Option<Uuid>)>,
+        Option<Uuid>,
+    )> {
+        Err(StoreError::Other(
+            "list_deleted_knowledge not implemented".into(),
+        ))
+    }
+
+    async fn hard_delete_point(&self, _id: Uuid) -> StoreResult<()> {
+        Err(StoreError::Other(
+            "hard_delete_point not implemented".into(),
+        ))
+    }
+
+    async fn get_point_vector(&self, _id: Uuid) -> StoreResult<Option<Vec<f32>>> {
+        Err(StoreError::Other("get_point_vector not implemented".into()))
+    }
+
+    async fn count_knowledge_by_author_any(&self, _author_id: Uuid) -> StoreResult<u64> {
+        Err(StoreError::Other(
+            "count_knowledge_by_author_any not implemented".into(),
+        ))
+    }
+
+    async fn embed_document(&self, _text: &str) -> StoreResult<Vec<f32>> {
+        Err(StoreError::Other("embed_document not implemented".into()))
+    }
 }
 
 /// Query for `Store::list_authors_v1`.

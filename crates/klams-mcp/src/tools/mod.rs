@@ -19,8 +19,9 @@ pub mod memory_supersede;
 pub mod memory_update;
 pub mod register_author;
 
-use klams_api::auth::{AuthenticatedAuthor, AuthenticatedScopes};
-use klams_store::CompositeStore;
+use klams_core::validate::ValidatorRegistry;
+use klams_store::{CompositeStore, Store};
+use klams_types::{AuthenticatedAuthor, AuthenticatedScopes};
 use klams_types::{MaintenanceState, Scope};
 use rmcp::{
     model::{
@@ -105,9 +106,15 @@ const BEARER_AUTHOR_TOOLS: [&str; 3] = ["memory_add", "memory_append_event", "di
 /// ever read it, and with WI #61's hot-reloadable table a snapshot
 /// here would go stale. Caller identity reaches tools via request
 /// extensions ([`caller_scopes`] / [`caller_author`]).
+///
+/// Sprint 031 (#645): generic over `S: Store` instead of holding a
+/// concrete `Arc<CompositeStore>`. The concrete type is why the tools
+/// could not be tested without Postgres, Qdrant and TEI all running —
+/// there was no seam to substitute. `klams-service` instantiates
+/// `McpState<CompositeStore>`; tests instantiate it over a mock.
 #[derive(Clone)]
-pub struct McpState {
-    pub store: Arc<CompositeStore>,
+pub struct McpState<S: Store = CompositeStore> {
+    pub store: Arc<S>,
     pub maintenance: Arc<MaintenanceState>,
     pub api: klams_types::ApiConfig,
     /// Cross-source rank-fusion strategy for `memory_search` (sprint 024
@@ -123,19 +130,25 @@ pub struct McpState {
     pub reranker: Option<Arc<klams_store::TeiReranker>>,
     /// Max candidates per rerank call (`[retrieval] rerank_window`).
     pub rerank_window: usize,
+    /// Sprint 031 (#645): the same `ValidatorRegistry` the REST surface
+    /// runs writes through. MCP had none — an agent could store a
+    /// `UserFact` with no `name`, or an `EnvFact` whose key broke the
+    /// documented shape, and the write landed. REST rejected the
+    /// identical payload. One policy, both surfaces.
+    pub validators: Arc<ValidatorRegistry>,
 }
 
-impl std::fmt::Debug for McpState {
+impl<S: Store> std::fmt::Debug for McpState<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("McpState").finish_non_exhaustive()
     }
 }
 
-impl McpState {
+impl<S: Store> McpState<S> {
     /// Canonical constructor used by `klams-service`.
     #[must_use]
     pub fn new(
-        store: Arc<CompositeStore>,
+        store: Arc<S>,
         maintenance: Arc<MaintenanceState>,
         api: klams_types::ApiConfig,
     ) -> Self {
@@ -154,6 +167,10 @@ impl McpState {
             // reranker_url` (sprint 030 #685).
             reranker: None,
             rerank_window: 50,
+            // Sprint 031 (#645): the defaults are the same set REST
+            // installs, so the two surfaces agree out of the box
+            // rather than only when the caller remembers to wire it.
+            validators: Arc::new(ValidatorRegistry::with_defaults()),
         }
     }
 
@@ -167,19 +184,19 @@ impl McpState {
 
 /// `ServerHandler` implementation that exposes the klams MCP tools.
 #[derive(Clone, Debug)]
-pub struct ToolRegistry {
-    state: McpState,
+pub struct ToolRegistry<S: Store = CompositeStore> {
+    state: McpState<S>,
 }
 
-impl ToolRegistry {
+impl<S: Store> ToolRegistry<S> {
     #[must_use]
-    pub fn new(state: McpState) -> Self {
+    pub fn new(state: McpState<S>) -> Self {
         Self { state }
     }
 }
 
 #[allow(clippy::needless_pass_by_value)]
-impl ServerHandler for ToolRegistry {
+impl<S: Store> ServerHandler for ToolRegistry<S> {
     fn get_info(&self) -> ServerInfo {
         let mut info = ServerInfo::default();
         info.protocol_version = ProtocolVersion::default();

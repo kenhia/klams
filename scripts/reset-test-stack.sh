@@ -18,6 +18,13 @@
 #      is explicit, so a test that panics before `cleanup()` leaves its
 #      pair behind. 107 orphaned collections had accumulated by 031.
 #
+#   3. The `klams_backup_*` / `klams_restore_*` fixture collections.
+#      Restoring a snapshot into a collection leaves qdrant 1.18 unable
+#      to snapshot it again ("Failed to get_snapshot_creator"), so one
+#      restore run poisons every later one. The tests now drop these
+#      themselves, but sweeping here heals a stack wedged by an older
+#      build.
+#
 # Both are dropped and recreated on next use, so this is safe to run
 # before any suite — but NOT while one is running.
 #
@@ -48,7 +55,7 @@ dropped=0
 while read -r name; do
     [[ -z "$name" ]] && continue
     case "$name" in
-        knowledge_items_test | klams_test_*) ;;
+        knowledge_items_test | klams_test_* | klams_backup_* | klams_restore_*) ;;
         *) continue ;;
     esac
     curl -fsS -X DELETE "$qdrant/collections/$name" >/dev/null
