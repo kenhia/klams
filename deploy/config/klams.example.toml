@@ -10,15 +10,33 @@ listen_addr = "127.0.0.1"
 port = 7777
 
 [auth]
-# 32-byte hex token. Generated and written by the provision script.
-# Treat as a secret; constant-time compared.
-bearer_token = "changeme-rendered-by-provision-script"
+# Sprint 032 (#670) — this block used to LEAD with a `bearer_token`
+# line, so every fresh install started life holding a full-admin
+# credential nobody chose. It doesn't any more: scoped
+# `[[auth.tokens]]` below are the path of least resistance, and the
+# legacy form is opt-in break-glass.
+#
+# The legacy `[auth] bearer_token` still works and still materializes
+# ONE grant carrying every scope — read + write + manage + admin. That
+# is what it is for; it is deliberately not narrowed, because narrowing
+# would silently strip capability from a deployment whose only
+# credential it is. What changed is that you now have to ask for it.
+#
+# Two properties it cannot give you, which is why it should not be your
+# daily driver:
+#   * It declares no `agent_name`, so every write through it attributes
+#     to the seeded `system` author rather than to anything traceable.
+#   * It carries `manage` + `admin`, so it can cross-author delete,
+#     hard-delete, restore, and run the author lifecycle.
+# A scoped grant with `agent_name` gives you the same power where you
+# want it and attribution everywhere.
+#
+# bearer_token = "changeme-32-byte-hex"   # break-glass only; see docs/auth.md
 
-# Sprint 007 — scoped MCP tokens.
-# The legacy `bearer_token` above still works (it materializes as
-# one grant with all scopes). For per-purpose tokens, uncomment
-# and fill in the `[[auth.tokens]]` blocks below. Every token MUST
-# be ≥ 16 characters; `scopes` MUST be non-empty.
+# Sprint 007 — scoped MCP tokens. THE DEFAULT. At least one of
+# `bearer_token` or `[[auth.tokens]]` must be set or the service
+# refuses to start. Every token MUST be ≥ 16 characters; `scopes`
+# MUST be non-empty.
 #
 # SCOPES ARE FLAT, NOT HIERARCHICAL: "write" does not imply "read",
 # and "admin" does not imply "write". List every scope a token needs.

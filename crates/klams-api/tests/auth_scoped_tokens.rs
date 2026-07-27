@@ -15,13 +15,30 @@ fn legacy_bearer_grants_full_scope_label() {
     let state = AuthState::new("super-secret");
     // Legacy path: AuthState::new must construct a grant with all
     // scopes so existing single-token deployments keep working.
+    //
+    // Sprint 032 (#670): this is the drift pin for a decision, not just
+    // a description. The legacy grant is the "everything" token by
+    // construction and stays that way — the posture change was to stop
+    // *provisioning* one by default, not to narrow it, because
+    // narrowing removes capability from deployments whose only
+    // credential it is. `Manage` was missing from this assertion, which
+    // is exactly how the set could have drifted unnoticed; all four are
+    // pinned now.
     let grants = state.grants_for_test();
     assert_eq!(grants.len(), 1);
     let scopes: &[Scope] = &grants[0].scopes;
     assert!(scopes.contains(&Scope::Read));
     assert!(scopes.contains(&Scope::Write));
+    assert!(scopes.contains(&Scope::Manage));
     assert!(scopes.contains(&Scope::Admin));
+    assert_eq!(
+        scopes.len(),
+        4,
+        "legacy grant must carry exactly the four scopes"
+    );
     assert_eq!(grants[0].label.as_deref(), Some("legacy"));
+    // It cannot be attributable: no agent_name to declare.
+    assert_eq!(&*grants[0].agent_name, "system");
 }
 
 #[test]

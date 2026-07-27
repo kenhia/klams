@@ -58,8 +58,30 @@ or revoking a token takes effect on the next request.
 
 The single pre-sprint-007 `bearer_token` still works and materializes as
 one grant carrying **all four** scopes. It is the "everything" token by
-construction. Prefer per-purpose `[[auth.tokens]]` entries; keep the
-legacy token, if at all, as an operator break-glass credential.
+construction, and sprint 032 (#670) deliberately left its scope set
+alone: narrowing it would silently strip capability from a deployment
+whose only credential it is, which is a worse failure than the one being
+avoided.
+
+What sprint 032 changed is that **it is no longer the default**.
+`deploy/config/klams.example.toml` used to lead with a rendered
+`bearer_token`, so every fresh install began holding a full-admin
+credential nobody had chosen. The example now ships it commented out and
+leads with scoped `[[auth.tokens]]`; a config with neither refuses to
+start, which makes the choice deliberate rather than inherited. kubs0
+itself was migrated to scoped grants only in the same sprint.
+
+Two properties the legacy token cannot have, and the reason it should
+not be anyone's daily driver:
+
+- It declares no `agent_name`, so writes through it attribute to the
+  seeded `system` author rather than to anything traceable.
+- It carries `manage` + `admin`, so it can cross-author delete,
+  hard-delete, restore, and run the author lifecycle verbs.
+
+A scoped grant with an `agent_name` gives the same power where you
+actually want it, and attribution everywhere. Keep the legacy token, if
+at all, as break-glass.
 
 ## What each scope authorizes
 

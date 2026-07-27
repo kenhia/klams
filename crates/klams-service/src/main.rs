@@ -499,7 +499,7 @@ async fn reload_auth_grants(
     // Same [auth] checks as `--validate-config`: at least one token
     // form, and every scoped grant individually valid.
     if cfg.auth.bearer_token.is_empty() && cfg.auth.tokens.is_empty() {
-        anyhow::bail!("[auth]: at least one of `bearer_token` or `[[auth.tokens]]` must be set");
+        anyhow::bail!("[auth]: {}", klams_types::AuthConfigError::NoTokens);
     }
     for (i, g) in cfg.auth.tokens.iter().enumerate() {
         if let Err(e) = g.validate() {
@@ -572,8 +572,10 @@ fn validate_config_cli(config_path: &str) -> ! {
     // [auth] — at least one token form must be present; each scoped
     // grant must individually validate.
     if cfg.auth.bearer_token.is_empty() && cfg.auth.tokens.is_empty() {
-        errors
-            .push("[auth]: at least one of `bearer_token` or `[[auth.tokens]]` must be set".into());
+        errors.push(format!(
+            "[auth]: {}",
+            klams_types::AuthConfigError::NoTokens
+        ));
     }
     for (i, g) in cfg.auth.tokens.iter().enumerate() {
         if let Err(e) = g.validate() {
