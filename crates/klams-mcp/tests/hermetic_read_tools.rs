@@ -348,6 +348,7 @@ async fn event_search_refuses_an_inverted_window() {
             until: Some("2026-07-19T00:00:00Z".into()),
             ..empty_event_search()
         },
+        Some("test-agent"),
     )
     .await
     .expect_err("since after until must be refused");
@@ -365,6 +366,7 @@ async fn event_search_refuses_a_window_past_the_configured_ceiling() {
             until: Some("2026-01-01T00:00:00Z".into()),
             ..empty_event_search()
         },
+        Some("test-agent"),
     )
     .await
     .expect_err("a six-year window must be refused");
@@ -386,6 +388,7 @@ async fn event_search_rejects_an_unparseable_timestamp() {
             since: Some("last tuesday".into()),
             ..empty_event_search()
         },
+        Some("test-agent"),
     )
     .await
     .expect_err("free text is not RFC3339");

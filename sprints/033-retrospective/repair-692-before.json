@@ -1,0 +1,264 @@
+[
+ {
+  "id": "019e6043-5582-7093-aa56-9139c8d9fec9",
+  "payload": {
+   "text": "axum middleware footgun for nested services: `Router::new().merge(protected).merge(public).layer(...)` applies the layer ONLY to routes present at `.layer(...)` time. Subsequent `.nest(\"/mcp\", inner)` calls on the result do NOT pick up that layer. Either (a) attach the layer to `inner` before nesting, or (b) `.nest(...).layer(...)` again. klams sprint 007 hit this: `/mcp` was unauthenticated in production because `require_bearer` was layered on the REST sub-router and the MCP nest came later. Fix in `crates/klams-service/src/main.rs`: build `mcp_router = klams_mcp::router(...).layer(from_fn_with_state(auth_state, require_bearer))` then nest. Regression test in `crates/klams-service/tests/mcp_auth.rs`.",
+   "created_at": "2026-05-25T17:51:26.205001044Z",
+   "use_count": 0,
+   "repo": "/home/ken/src/ai/klams",
+   "source": "AgentProposal",
+   "tags": [
+    "axum",
+    "middleware",
+    "auth",
+    "security",
+    "rust",
+    "sprint-007"
+   ],
+   "id": "019e6043-5582-7093-aa56-9139c8d9fec9",
+   "decay_weight": 1.0,
+   "content_hash": "6a5b6d6f214f3ab528c19f7e0b49869535e7dc32d91fccdce35cf4fad85c9442",
+   "updated_at": "2026-05-25T17:51:26.205001044Z",
+   "file": "crates/klams-service/src/main.rs",
+   "confidence": 1.0,
+   "author_id": "019e6042-dd85-7480-afc7-913004d0768c",
+   "machine": "kubs0"
+  }
+ },
+ {
+  "id": "019e6043-5585-7030-b589-87510aba28a4",
+  "payload": {
+   "text": "rmcp `StreamableHttpServerConfig.allowed_hosts` is a DNS-rebinding Host-header allowlist with a footgun default: when non-empty and the inbound `Host:` header doesn't match, rmcp returns `403 Forbidden: Host header is not allowed` BEFORE any outer middleware (including auth) runs. The previous klams default `[\"localhost\",\"127.0.0.1\",\"0.0.0.0\"]` blocked every operator connecting via a real hostname (e.g. `kubs0:7777`) and confused VS Code's MCP client into a retry-with-new-auth-registration loop. Fix: pass an empty Vec to disable the check, OR drive the allowlist from operator config. klams ships it as `[server].mcp_allowed_hosts` (default empty = disabled, `require_bearer` is the real gate). See `crates/klams-mcp/src/transport.rs` and `crates/klams-service/src/config.rs::ServerConfig`.",
+   "use_count": 0,
+   "updated_at": "2026-05-25T17:51:26.35546562Z",
+   "created_at": "2026-05-25T17:51:26.35546562Z",
+   "id": "019e6043-5585-7030-b589-87510aba28a4",
+   "tags": [
+    "mcp",
+    "rmcp",
+    "security",
+    "dns-rebinding",
+    "config",
+    "sprint-007"
+   ],
+   "repo": "/home/ken/src/ai/klams",
+   "confidence": 1.0,
+   "source": "AgentProposal",
+   "file": "crates/klams-mcp/src/transport.rs",
+   "decay_weight": 1.0,
+   "content_hash": "a71708f449caaf124f35c31548511970da4b0adbf2e9a0af86962a4ff623a7dc",
+   "author_id": "019e6042-dd85-7480-afc7-913004d0768c",
+   "machine": "kubs0"
+  }
+ },
+ {
+  "id": "019e6043-5589-70d2-8235-053761509a11",
+  "payload": {
+   "updated_at": "2026-05-25T17:51:26.354173986Z",
+   "text": "VS Code Insiders `\"type\": \"http\"` MCP client accepts static bearer auth out of the box via `headers.Authorization` in `.vscode/mcp.json` \u2014 no OAuth dance required. Example: `{\"klams\":{\"type\":\"http\",\"url\":\"http://host:7777/mcp\",\"headers\":{\"Authorization\":\"Bearer <token>\"}}}`. Missing `/.well-known/oauth-protected-resource` and `/.well-known/oauth-authorization-server` endpoints produce two harmless `[warning] Could not fetch resource metadata` lines in the \"MCP: <name>\" Output panel and then the client proceeds. No \"User did not provide client details\" / token-paste dialog appears. Verified 2026-05-25 against VS Code Insiders + rmcp 1.7 StreamableHttpService.",
+   "id": "019e6043-5589-70d2-8235-053761509a11",
+   "use_count": 0,
+   "repo": "/home/ken/src/ai/klams",
+   "tags": [
+    "mcp",
+    "vscode",
+    "auth",
+    "oauth",
+    "streamable-http",
+    "rmcp",
+    "sprint-007"
+   ],
+   "content_hash": "15757dae6c8898327b1a5622dc73c19bec9223a2e0b81d263ff99bd4b6b53647",
+   "created_at": "2026-05-25T17:51:26.354173986Z",
+   "confidence": 1.0,
+   "decay_weight": 1.0,
+   "file": "specs/007-mcp-server/research-vscode-mcp-http.md",
+   "source": "AgentProposal",
+   "author_id": "019e6042-dd85-7480-afc7-913004d0768c",
+   "machine": "kubs0"
+  }
+ },
+ {
+  "id": "019e6043-558c-7391-98a3-3c4e416c9c2c",
+  "payload": {
+   "decay_weight": 1.0,
+   "tags": [
+    "rmcp",
+    "axum",
+    "mcp",
+    "rust",
+    "request-extensions",
+    "scope-filter",
+    "sprint-007"
+   ],
+   "repo": "/home/ken/src/ai/klams",
+   "id": "019e6043-558c-7391-98a3-3c4e416c9c2c",
+   "updated_at": "2026-05-25T17:51:26.234223827Z",
+   "content_hash": "1b729269caeb6c02d5fedf5806935fbd69cb32b9616209b51febc3358555f340",
+   "source": "AgentProposal",
+   "confidence": 1.0,
+   "created_at": "2026-05-25T17:51:26.234223827Z",
+   "file": "crates/klams-mcp/src/tools/mod.rs",
+   "text": "Pattern for accessing axum request extensions from inside an rmcp 1.7 `ServerHandler` (e.g. to scope-filter `tools/list` by the caller's auth): rmcp's `StreamableHttpService` injects `http::request::Parts` into the rmcp `RequestContext.extensions`. Pull your own extension out via `ctx.extensions.get::<axum::http::request::Parts>().and_then(|p| p.extensions.get::<MyExt>())`. Documented in rmcp's `tower.rs` doc-comment near `pub struct StreamableHttpService`. klams uses this in `crates/klams-mcp/src/tools/mod.rs::caller_scopes` to enforce FR-020 per-tool scope filtering.",
+   "use_count": 0,
+   "author_id": "019e6042-dd85-7480-afc7-913004d0768c",
+   "machine": "kubs0"
+  }
+ },
+ {
+  "id": "019e6043-558e-7c61-a182-4c271886ff31",
+  "payload": {
+   "decay_weight": 1.0,
+   "repo": "/home/ken/src/ai/klams",
+   "file": "crates/klams-service/tests/mcp_auth.rs",
+   "confidence": 1.0,
+   "use_count": 0,
+   "tags": [
+    "mcp",
+    "rmcp",
+    "testing",
+    "sse",
+    "streamable-http",
+    "rust",
+    "sprint-007"
+   ],
+   "text": "Testing rmcp Streamable HTTP from raw reqwest requires handling: (1) full handshake order \u2014 POST `initialize` \u2192 capture `mcp-session-id` response header \u2192 POST `notifications/initialized` (no id) \u2192 then POST `tools/list` etc., all with `Accept: application/json, text/event-stream`; (2) when `StreamableHttpServerConfig.json_response = false` (klams default), responses arrive as SSE with `data: <json>\\n\\n` framing AND interleaved empty `data:\\n` keep-alive pings \u2014 parser must skip empties and take the first `data:` line that successfully parses as JSON. Working harness: `crates/klams-service/tests/mcp_auth.rs::list_tools_with` + `parse_sse_json`. Flip `json_response = true` if you want plain JSON responses (eliminates the `Failed to parse message: \"\"` warnings VS Code logs on keep-alives).",
+   "content_hash": "1305be9c5384c0f213134bb7fb66160f20e30ca0ffd4417c199074446a23796c",
+   "source": "AgentProposal",
+   "updated_at": "2026-05-25T17:51:26.354952552Z",
+   "id": "019e6043-558e-7c61-a182-4c271886ff31",
+   "created_at": "2026-05-25T17:51:26.354952552Z",
+   "author_id": "019e6042-dd85-7480-afc7-913004d0768c",
+   "machine": "kubs0"
+  }
+ },
+ {
+  "id": "019eaa3f-91f7-7ec0-aba2-7c0c7f9e3206",
+  "payload": {
+   "decay_weight": 1.0,
+   "use_count": 0,
+   "content_hash": "3ef35c012dd23098703d861b772e930713ed66dd8a4191385689dcfd3ffee062",
+   "source": "AgentProposal",
+   "text": "LVGL swipe-vs-tap disambiguation (kdeskdash, C/LVGL v9 touch dashboard): a swipe that begins on a clickable widget still releases over it, so LVGL fires LV_EVENT_CLICKED even though the user meant to swipe. In every CLICKED callback on a swipe-navigated screen, bail when a gesture is in progress AND NULL-guard the indev: `lv_indev_t *indev = lv_indev_active(); if (indev && lv_indev_get_gesture_dir(indev) != LV_DIR_NONE) return;`. Two gotchas: (1) lv_indev_get_gesture_dir() dereferences its arg with NO NULL check (lib/lvgl/src/indev/lv_indev.c) and lv_indev_active() can return NULL for programmatically dispatched events \u2014 so `lv_indev_get_gesture_dir(lv_indev_active())` is a latent NULL deref; a GoL ce-review caught 3 button callbacks doing exactly this. (2) The widget consumes the gesture by default \u2014 add LV_OBJ_FLAG_GESTURE_BUBBLE to the panel + every button + label so the swipe still reaches the shell's screen-level LV_EVENT_GESTURE navigation. For region-sensitive taps, capture the press point on LV_EVENT_PRESSED (gesture not yet classified at press time) and decide on LV_EVENT_CLICKED. Plain helpers called from a guarded callback need no guard. Pattern bit twice: src/modes/menu.c tile_cb (canonical, commented) then src/modes/game_of_life.c canvas_pressed_cb/canvas_clicked_cb + reset/restart/cancel_cb. Documented in docs/solutions/best-practices/lvgl-swipe-vs-tap-gesture-guard.md.",
+   "id": "019eaa3f-91f7-7ec0-aba2-7c0c7f9e3206",
+   "updated_at": "2026-06-09T02:39:13.463243952Z",
+   "tags": [
+    "lvgl",
+    "gesture",
+    "tap",
+    "swipe",
+    "touch",
+    "event-handling",
+    "embedded-ui",
+    "kdeskdash"
+   ],
+   "created_at": "2026-06-09T02:39:13.463243952Z",
+   "author_id": "019eaa3e-6389-7b80-9f3b-aacfc1b74ca1",
+   "file": "docs/solutions/best-practices/lvgl-swipe-vs-tap-gesture-guard.md",
+   "confidence": 1.0,
+   "machine": "kubs0"
+  }
+ },
+ {
+  "id": "019ec4af-767d-7290-a91a-f3d6cc1cd41f",
+  "payload": {
+   "author_id": "019ec4af-5abf-7551-ba8f-f7650d01e5b1",
+   "updated_at": "2026-06-14T05:51:34.029997548Z",
+   "source": "AgentProposal",
+   "created_at": "2026-06-14T05:51:34.029997548Z",
+   "file": "/home/ken/src/ai/krag/.scratch/phase8-tokenmaster-klams-spike-handoff.md",
+   "text": "TMX token-master agent successfully routed recall into klams from krag on 2026-06-13. Spike validated: klams HTTP MCP transport with bearer auth works from Copilot CLI, memory_search returns real indexed krag content (architecture docs, spec plans, obsidian notes), and graph build produced 10489 nodes / 15967 links.",
+   "id": "019ec4af-767d-7290-a91a-f3d6cc1cd41f",
+   "decay_weight": 1.0,
+   "tags": [
+    "spike",
+    "token-master",
+    "klams-integration"
+   ],
+   "use_count": 0,
+   "content_hash": "d78362866e7bd4718be31ef95b9bb5e669f97886e77f2de590d6422661231e7e",
+   "confidence": 1.0,
+   "repo": "/home/ken/src/ai/krag",
+   "machine": "kubs0"
+  }
+ },
+ {
+  "id": "019f49e8-269a-7072-a69e-9dc738e3e2cc",
+  "payload": {
+   "use_count": 0,
+   "file": "/home/ken/src/ai/kyac/docs/10-findings.md",
+   "text": "kyac (Ken's LangChain/LangGraph homelab controller, github.com/kenhia/kyac) shipped sprint 007 consolidation 2026-07-10: a fresh-eyes external review of sprints 001-006 found 3 HIGH-severity read-only-tier approval bypasses INHERITED VERBATIM FROM kagent's shell.py gate \u2014 and by extension present in any repo sharing that allowlist DNA (kagent, kmon). The holes: (1) allowlisted programs hide mutations in their argument space \u2014 `find -delete`/`-fprintf` write/delete files, `git --output=<file>` writes an arbitrary attacker-controlled file (CRITICAL, `--format=format:<literal> --output=~/.ssh/authorized_keys`), `ip route add`/`nvidia-smi -pm`/`journalctl --vacuum-*` mutate; (2) `env` and `ps eww` and `cat /proc/self/environ` dump the agent's own secrets (ANTHROPIC_API_KEY, tokens) into model context \u2192 shared memory; (3) the fs secret denylist only guarded read_file, so `cat ~/.env`/`grep -r ~/.ssh`/symlinks bypassed it. Durable fix pattern: deny-by-spelling is leaky and needs an ADVERSARIAL SECOND PASS (the first fix looked right and still let git --output through) \u2014 use prefix-aware matching for abbreviations, a global --output deny for every program, and check directory args not just files. Backport tracked as kagent korg WI #312. Accepted residual: a read-only agent still reads what the operator can read via a non-secret-named parent \u2014 guardrail, not a boundary.",
+   "repo": "src",
+   "decay_weight": 1.0,
+   "confidence": 1.0,
+   "tags": [
+    "kyac",
+    "kagent",
+    "security",
+    "shell-gate",
+    "lessons"
+   ],
+   "id": "019f49e8-269a-7072-a69e-9dc738e3e2cc",
+   "content_hash": "d00539d743d8e9ccbc084072d22cc3c1ebf6537d25db943381faeabdbf73e1ee",
+   "created_at": "2026-07-10T02:42:58.914121009Z",
+   "source": "AgentProposal",
+   "updated_at": "2026-07-10T02:42:58.914121009Z",
+   "author_id": "019f4986-0ee3-7ae3-8de5-f697e2692dc6",
+   "machine": "kubs0"
+  }
+ },
+ {
+  "id": "019f4fe8-9669-75f3-b177-2564d93724ef",
+  "payload": {
+   "text": "Homelab TLS + auth direction decided 2026-07-11 (doc: homelab-ai-plan/decisions/2026-07-11-tls-and-auth-direction.md): mesh-first with Tailscale free Personal plan (6 users/unlimited devices since Apr 2026). TLS = MagicDNS + `tailscale serve` with auto-renewed publicly-trusted Let's Encrypt certs on <host>.<tailnet>.ts.net \u2014 no private CA, no trust-store distribution to iPhone/browsers/CLI. Auth = tailnet identity: services bind 127.0.0.1 with tailscale serve as sole ingress, and read the injected Tailscale-User-Login / Tailscale-User-Name headers; kyac's contract is a FastAPI `current_identity` dependency returning Identity{user, display, via} with 401 on missing header, plus a KYAC_AUTH=dev localhost mode. klams keeps its bearer tokens as defense-in-depth. Rejected: proxy-first (step-ca+Caddy+Authelia+internal DNS \u2014 recurring private-root trust distribution, 4 new critical-path services), homegrown kauth, headscale (loses ts.net certs). Rollout: tailnet+iPhone first, then klams :7777 behind serve as first TLS consumer, then kvllm/korg, then kyac as first auth consumer, then close all 0.0.0.0 LAN listeners. Verified greenfield on 2026-07-11: no tailscale/proxy/auth product on kai/kubs0/kubsdb/ksandbox; LAN DNS is router 192.168.1.1 under `localdomain`; the old hand-rolled localCA from the pre-rebuild system is gone (backup path absent) and superseded.",
+   "repo": "homelab-ai-plan",
+   "updated_at": "2026-07-11T06:41:10.906862011Z",
+   "file": "decisions/2026-07-11-tls-and-auth-direction.md",
+   "confidence": 1.0,
+   "tags": [
+    "homelab",
+    "tls",
+    "auth",
+    "tailscale",
+    "decision",
+    "kyac"
+   ],
+   "id": "019f4fe8-9669-75f3-b177-2564d93724ef",
+   "decay_weight": 1.0,
+   "author_id": "019f4986-0ee3-7ae3-8de5-f697e2692dc6",
+   "created_at": "2026-07-11T06:41:10.906862011Z",
+   "content_hash": "cdaff550a00c92c51aa979340560de24bd42d3c04628f49bd7dea9066d3b89e7",
+   "use_count": 0,
+   "source": "AgentProposal",
+   "machine": "kubs0"
+  }
+ },
+ {
+  "id": "019f5262-f1b4-7b00-8a70-cd750d884569",
+  "payload": {
+   "content_hash": "ecdcc51db4460d4a69fb05db101a7313035985f0927b095c5ea0f34a258fdb41",
+   "file": "decisions/2026-07-11-tls-and-auth-direction.md",
+   "id": "019f5262-f1b4-7b00-8a70-cd750d884569",
+   "decay_weight": 1.0,
+   "source": "AgentProposal",
+   "author_id": "019f4986-0ee3-7ae3-8de5-f697e2692dc6",
+   "use_count": 0,
+   "created_at": "2026-07-11T18:14:04.066144878Z",
+   "text": "Refinement (2026-07-11) to the homelab TLS+auth decision (doc: homelab-ai-plan/decisions/2026-07-11-tls-and-auth-direction.md): after review with Ken the plan was de-maximalized. It is now ADDITIVE and DUAL-STACK \u2014 the LAN stays up throughout, services keep their plain-HTTP LAN listener while `tailscale serve` adds an HTTPS ts.net endpoint, clients migrate one at a time, and `ssh ken@kai` over the LAN is explicitly unchanged (Tailscale is additive). The two driving goals are (1) trusted HTTPS without per-device cert-trust chores and (2) off-LAN phone access with nothing exposed. Aggressive lockdown (localhost-only binds, tailnet-only SSH) is an OPTIONAL later appendix, not a prerequisite. Device inventory: ENROLL kai, kubs0, kubsdb, ksandbox, gratch (Unraid NAS \u2014 retires the old 'replace Unraid self-signed cert' to-do; Unraid has first-class Tailscale support), the Pis, cleo (Windows), iPhone. DO NOT ENROLL kwork \u2014 it's Microsoft-managed (Ken is a Surface-team vendor); enrolling risks the corporate VPN (DNS/posture conflicts) and MDM policy rejection, and gains nothing needed. Consequence: kwork reaches korg only via LAN http (http://kubsdb:5674), leaving that one path plaintext on the LAN \u2014 accepted as no-worse-than-today (backlog data, on-LAN active interception only), with an SSH local-forward tunnel (ssh -L 5674:localhost:5674 ken@kubsdb) as the optional encryption mitigation that needs no software on the managed machine. URL change pattern: http://kubsdb:5674 -> https://kubsdb.<tailnet>.ts.net:5674 (same port; ts.net suffix required for cert validation).",
+   "updated_at": "2026-07-11T18:14:04.066144878Z",
+   "repo": "homelab-ai-plan",
+   "tags": [
+    "homelab",
+    "tls",
+    "auth",
+    "tailscale",
+    "decision",
+    "kwork",
+    "gratch",
+    "kyac"
+   ],
+   "confidence": 1.0,
+   "machine": "kubs0"
+  }
+ }
+]

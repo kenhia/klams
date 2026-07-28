@@ -53,7 +53,7 @@ impl Store for MockStore {
                 content_hash: "h".into(),
                 source: Source::Controller,
                 tags: vec![],
-                repo: None,
+                repo: Some("mockrepo".into()),
                 file: None,
                 machine: None,
                 machines: vec![],
@@ -207,6 +207,54 @@ async fn search_sets_degraded_when_knowledge_fails() {
     for hit in results {
         assert_ne!(hit["type"], "knowledge");
     }
+}
+
+/// Sprint 033 (#692 retrospective): `SearchRequest.filters` was
+/// accepted and silently discarded — `search.rs` built
+/// `RetrievalFilters::default()` regardless of what the caller sent.
+/// The filter semantics are the same ones `/memory/context` already
+/// applies through the shared hybrid adapter.
+#[tokio::test]
+async fn search_honors_retrieval_filters() {
+    let app = router_with(Arc::new(MockStore::default()));
+
+    // Matching repo filter: the knowledge hit stays.
+    let (status, body) = search(
+        &app,
+        serde_json::json!({"query": "x", "types": ["knowledge"], "filters": {"repo": "mockrepo"}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let results = body["results"].as_array().unwrap();
+    assert!(
+        results.iter().any(|h| h["type"] == "knowledge"),
+        "matching repo filter must keep the knowledge hit"
+    );
+
+    // Non-matching repo filter: the knowledge hit is excluded.
+    let (status, body) = search(
+        &app,
+        serde_json::json!({"query": "x", "types": ["knowledge"], "filters": {"repo": "elsewhere"}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let results = body["results"].as_array().unwrap();
+    assert!(
+        results.iter().all(|h| h["type"] != "knowledge"),
+        "non-matching repo filter must exclude the knowledge hit"
+    );
+}
+
+#[tokio::test]
+async fn malformed_filters_return_400() {
+    let app = router_with(Arc::new(MockStore::default()));
+    let (status, body) = search(
+        &app,
+        serde_json::json!({"query": "x", "filters": {"bogus_field": 1}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], "validation_error");
 }
 
 #[tokio::test]

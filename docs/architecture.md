@@ -1,13 +1,12 @@
 # klams Architecture
 
-This document describes how the klams MVP is assembled at runtime: which
+This document describes how klams is assembled at runtime: which
 components exist, how they communicate, where their state lives, and how
 they are deployed on the production host `kubs0`. It complements
-[setup.md](setup.md) (provisioning) and
-[usage.md](usage.md) (operator-facing recipes), and is the operator-
-oriented counterpart to the formal design records in
-[sprints/001-initial-mvp/plan.md](../sprints/001-initial-mvp/plan.md) and
-[sprints/001-initial-mvp/research.md](../sprints/001-initial-mvp/research.md).
+[setup.md](setup.md) (provisioning) and [usage.md](usage.md)
+(operator-facing recipes). It describes the **current** system; the
+sprint-by-sprint history lives in `sprints/NNN-*/` and git history, with
+inline attributions here ("sprint 029, #644") where the trail matters.
 
 ## 1. Components
 
@@ -16,58 +15,71 @@ oriented counterpart to the formal design records in
                        │  klams-viewport             │
                        │  (Windows / Linux / WSL)    │
                        │  Tauri 2 + SvelteKit        │
-                       │  reads-only desktop UI      │
+                       │  desktop UI                 │
                        └──────────────┬──────────────┘
-                                      │ HTTPS-style bearer over plain
-                                      │ HTTP on LAN; klams-client crate
+                                      │ bearer over the tailnet;
+                                      │ klams-client crate
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │ kubs0 (Linux x86_64)                                                │
 │                                                                     │
 │   ┌──────────────────────────────────────────────────────────────┐  │
-│   │ klams-service (systemd, native binary)                       │  │
+│   │ klams-service (systemd, native binary, 127.0.0.1:7777)       │  │
 │   │   ┌───────────────────────────────────────────────────────┐  │  │
-│   │   │ klams-api     axum router, bearer auth, validation,   │  │  │
-│   │   │               error mapping, /healthz, /metrics       │  │  │
+│   │   │ klams-api     axum router, bearer auth + scopes,      │  │  │
+│   │   │               validation, /healthz, /metrics          │  │  │
+│   │   ├───────────────────────────────────────────────────────┤  │  │
+│   │   │ klams-mcp     MCP tool surface at /mcp (rmcp),        │  │  │
+│   │   │               PublicMemory projection, scope gating   │  │  │
 │   │   ├───────────────────────────────────────────────────────┤  │  │
 │   │   │ klams-core    bounded mpsc write queue + worker pool, │  │  │
-│   │   │               MemoryWrite dispatch, dedupe hashing    │  │  │
+│   │   │               hybrid retrieval + RRF fusion,          │  │  │
+│   │   │               provenance weights, dedupe collapse     │  │  │
 │   │   ├───────────────────────────────────────────────────────┤  │  │
 │   │   │ klams-store   Postgres (sqlx) | Qdrant (gRPC) |       │  │  │
-│   │   │               TEI HTTP embedding adapter              │  │  │
+│   │   │               TEI embedder | TEI reranker (HTTP)      │  │  │
 │   │   ├───────────────────────────────────────────────────────┤  │  │
-│   │   │ Backup task   tokio scheduler → pg_dump + qdrant      │  │  │
-│   │   │               snapshot → retention; flips             │  │  │
-│   │   │               MaintenanceState + fires status_hook    │  │  │
+│   │   │ Background    backup (pg_dump + qdrant snapshot),     │  │  │
+│   │   │ tasks         fact decay, event summarization,        │  │  │
+│   │   │               oversize-log prune, auth SIGHUP reload  │  │  │
 │   │   └───────────────────────────────────────────────────────┘  │  │
-│   └───────┬──────────────────────┬──────────────────────┬────────┘  │
-│           │                      │                      │           │
-│           │ TCP 5432             │ gRPC 6334            │ HTTP 7070 │
-│           ▼                      ▼                      ▼           │
-│   ┌──────────────┐        ┌──────────────┐       ┌──────────────┐   │
-│   │ postgres     │        │ qdrant       │       │ tei          │   │
-│   │ (Compose)    │        │ (Compose)    │       │ (Compose)    │   │
-│   │ facts,events │        │ knowledge    │       │ embeddings,  │   │
-│   │              │        │ vectors      │       │ optional GPU │   │
-│   └──────┬───────┘        └──────┬───────┘       └──────┬───────┘   │
-│          │                       │                      │           │
-│          └────── all three on user-defined bridge `klams-net` ──────┘
-│          │                       │                      │           │
-│          ▼                       ▼                      ▼           │
-│   ${KLAMS_DATA_ROOT}/postgres   /qdrant                /tei         │
+│   └────┬───────────────┬───────────────┬───────────────┬────────┘  │
+│        │               │               │               │           │
+│        │ TCP 5432      │ gRPC 6334     │ HTTP 7070     │ HTTP 7071 │
+│        ▼               ▼               ▼               ▼           │
+│  ┌───────────┐   ┌───────────┐   ┌───────────┐   ┌────────────┐    │
+│  │ postgres  │   │ qdrant    │   │ tei       │   │ reranker   │    │
+│  │ (Compose) │   │ (Compose) │   │ (Compose) │   │ (Compose)  │    │
+│  │ facts,    │   │ knowledge │   │ Qwen3     │   │ bge-       │    │
+│  │ events,   │   │ vectors   │   │ embedder, │   │ reranker-  │    │
+│  │ authors,  │   │ (v2, 1024 │   │ GPU       │   │ v2-m3, GPU │    │
+│  │ logs      │   │  dims)    │   │           │   │            │    │
+│  └─────┬─────┘   └─────┬─────┘   └─────┬─────┘   └─────┬──────┘    │
+│        │               │               │               │           │
+│        └── all four on user-defined bridge `klams-net` ────────────┘
+│        │               │               │               │           │
+│        ▼               ▼               ▼               ▼           │
+│  ${KLAMS_DATA_ROOT}/postgres  /qdrant  /tei  (reranker shares /tei)│
 └─────────────────────────────────────────────────────────────────────┘
 ```
+
+Two more binaries feed the service from outside the process:
+`klams-scanner` (systemd timer, hourly) and `klams-monitor` (systemd
+service) — see §2.4.
 
 ### 1.1 Service crates (`crates/`)
 
 | Crate | Role |
 |-------|------|
-| `klams-types` | Shared serde DTOs: `Fact`, `Event`, `KnowledgeItem`, `MemoryWrite`, `SearchResult`, `HealthSnapshot`. No I/O. |
-| `klams-core` | Bounded mpsc queue, worker pool, dedupe hashing, `MemoryWrite` dispatch. The async heart of the service. |
-| `klams-store` | Storage adapters: `PostgresStore` (sqlx, compile-time checked), `QdrantStore` (gRPC), `TeiEmbedder` (HTTP). Each adapter is a small trait + concrete impl. |
-| `klams-api` | `axum` router, bearer auth middleware, request validation, error → JSON mapping, `/healthz`, `/metrics`. |
-| `klams-service` | The binary. Loads `klams.toml`, wires queue + workers + HTTP server, owns the tokio runtime. |
+| `klams-types` | Shared serde DTOs (`Fact`, `Event`, `KnowledgeItem`, `MemoryWrite`, `PublicMemory`, `ScoredMemory`, `HealthSnapshot`), plus shared policy types: `EmbedLimit` token estimation (`src/embed_limit.rs`), `DecayConfig` validation, auth config shapes. No I/O. |
+| `klams-core` | The async heart: bounded mpsc queue + worker pool, `MemoryWrite` dispatch, hybrid retrieval + RRF fusion (`src/hybrid.rs`), provenance weighting (`src/provenance.rs`), query-time duplicate collapse (`src/dedupe.rs`), context bundling, summarization, decay worker, metrics registry. |
+| `klams-store` | Storage adapters: `PostgresStore` (sqlx, compile-time checked), `QdrantStore` (gRPC), `TeiEmbedder` behind the `Embedder` trait (`src/embeddings.rs`; an `OpenAiCompatEmbedder` alternative is selected via `[embeddings] api`, sprint 014), `TeiReranker` (`src/rerank.rs`, sprint 030 #685). `CompositeStore` implements the one `Store` trait everything upstream consumes. |
+| `klams-api` | `axum` router, bearer auth + per-route scope middleware, request validation, error → JSON mapping, REST handlers, `/healthz`, `/metrics`. |
+| `klams-mcp` | The MCP tool surface (rmcp `StreamableHttpService` mounted at `/mcp`), projection to `PublicMemory`, scope gating, tool metrics. Generic over `Store` (`McpState<S: Store>`) since sprint 031 (#645) so MCP and REST share one write layer — enforced by `crates/klams-mcp/tests/no_concrete_store_reachthrough.rs`. |
+| `klams-service` | The binary. Loads `klams.toml`, wires queue + workers + HTTP server + background tasks, owns the tokio runtime. |
 | `klams-client` | Typed HTTP client. Used by the viewport's Tauri backend so the desktop app and any future Rust caller share one API contract. |
+| `klams-scanner` | Non-agentic filesystem writer: walks configured roots, chunks, publishes to `/memory/knowledge/index` (sprint 003; §2.4). |
+| `klams-monitor` | Non-agentic systemd-state writer: posts `Service` events on unit-state edges; optional kpidash `/healthz` reporter (sprint 003/010; §2.4). |
 
 ### 1.2 Viewport (`viewport/`)
 
@@ -95,1333 +107,658 @@ The `custom-protocol` Tauri feature is enabled by default in
 the asset-protocol handler; without it the webview can't reach the
 bundled SvelteKit assets and stays at `about:blank`.
 
+Key routes: `/` dashboard (polls `/healthz`), `/activity` (sprint 008),
+`/authors/{id}` drilldown, per-kind detail pages `/facts/{id}`,
+`/events/{id}`, `/knowledge/{id}` (sprint 015), `/dissents` with diff +
+promote/discard (sprint 002), `/preview` context-bundle preview
+(sprint 005).
+
 ### 1.3 Stateful dependencies (Docker Compose)
 
-[`deploy/docker-compose.yml`](../deploy/docker-compose.yml) defines three
-services, all attached to a single user-defined bridge network
-`klams-net` with deterministic DNS aliases (`postgres`, `qdrant`,
-`tei`). The default `bridge` network is intentionally not used —
-rationale in [research.md §13](../sprints/001-initial-mvp/research.md#13-docker-network).
+[`deploy/docker-compose.yml`](../deploy/docker-compose.yml) defines four
+always-on services plus two behind the `observability` profile, all
+attached to a single user-defined bridge network `klams-net` with
+deterministic DNS aliases. The default `bridge` network is intentionally
+not used — rationale in
+[research.md §13](../sprints/001-initial-mvp/research.md#13-docker-network).
+Image tags and model ids are pinned in `compose.env` (template:
+[`deploy/compose.env.example`](../deploy/compose.env.example)).
 
 | Service | Container | Bind | Volume | Notes |
 |---------|-----------|------|--------|-------|
-| `postgres` | `klams-postgres` | `127.0.0.1:5432` | `${KLAMS_DATA_ROOT}/postgres` | Postgres 16. Container runs as uid 999 — never `chown -R` the data tree. |
-| `qdrant` | `klams-qdrant` | `127.0.0.1:6333/6334` | `${KLAMS_DATA_ROOT}/qdrant` | Pinned via `QDRANT_IMAGE_TAG` in `compose.env`. Client/server minor versions must match. |
-| `tei` | `klams-tei` | `127.0.0.1:7070` | `${KLAMS_DATA_ROOT}/tei` | Embeddings. Default is the CPU image; GPU override lives in `docker-compose.gpu.yml`. Healthcheck uses `curl`. |
+| `postgres` | `klams-postgres` | `127.0.0.1:5432` | `${KLAMS_DATA_ROOT}/postgres` | Postgres 16. Container runs as uid 999 — never `chown -R` the data tree. Holds `facts`, `events`, `authors`, `dissents`, `summaries`, and the `search_miss` / `search_sample` / `oversize_write` logs. |
+| `qdrant` | `klams-qdrant` | `127.0.0.1:6333/6334` | `${KLAMS_DATA_ROOT}/qdrant` | Pinned via `QDRANT_IMAGE_TAG`. Client/server minor versions must match. Holds the knowledge collection `knowledge_items_v2` (1024-dim, ~180k points; the pre-028 `knowledge_items` collection was dropped in sprint 032, #684). |
+| `tei` | `klams-tei` | `127.0.0.1:7070` | `${KLAMS_DATA_ROOT}/tei` | Embedder: `Qwen/Qwen3-Embedding-0.6B` (`TEI_MODEL_ID`), CUDA image on the GPU via CDI ([`deploy/docker-compose.gpu.yml`](../deploy/docker-compose.gpu.yml)). Runs `--auto-truncate false` — a silently truncated **stored** chunk looks complete but is unfindable by its tail (standing decision, sprints 027/028) — and `--max-batch-tokens 32768` to match the model's context. |
+| `reranker` | `klams-reranker` | `127.0.0.1:7071` | shares `${KLAMS_DATA_ROOT}/tei` | Second TEI container serving `BAAI/bge-reranker-v2-m3` over `POST /rerank` (sprint 030, #685). Same GPU via CDI. Runs `--auto-truncate` **on** — the opposite of the embedder, deliberately: this container only *scores* (query, text) pairs, nothing is stored, so truncation degrades one ranking signal gracefully. `--max-client-batch-size 64` must stay ≥ `[retrieval] rerank_window` (default 50). |
+| `prometheus` | `klams-prometheus` | `observability` profile | — | Scrapes `klams-service:7777/metrics` ([`deploy/prometheus/prometheus.yml`](../deploy/prometheus/prometheus.yml)). |
+| `grafana` | `klams-grafana` | `observability` profile | — | Dashboard from [`deploy/grafana/klams.json`](../deploy/grafana/klams.json); see §2.9. |
+
+GPU note (sprint 028, #655): kubs0's RTX 4080 SUPER is exposed via CDI
+(`/etc/cdi/nvidia.yaml`, generated with `nvidia-ctk cdi generate` —
+regenerate after NVIDIA driver upgrades), not the legacy
+`deploy.resources` runtime form.
 
 ## 2. Data flow
 
-### 2.1 Write path (fact / event)
+### 2.1 Write path — facts and events
+
+Two entry surfaces, one write layer. REST (`POST /memory/facts`,
+`POST /memory/events`) is the controller/operator surface; MCP
+(`memory_add` with a fact payload, `memory_append_event`) is the agent
+surface. Since sprint 031 (#645) both route through the same core
+validation and store calls — `McpState` is generic over `Store`, and a
+guard test forbids the MCP crate from reaching around the trait.
 
 ```text
-controller ──HTTP POST /v1/facts──▶ klams-api
-                                       │ auth + per-type validators
-                                       │      + sanity rules
-                                       │      + optimistic-concurrency
-                                       │        (expected_version)
-                                       ▼
-                                    klams-core enqueue (bounded mpsc)
-                                       │
-                                       ▼
-                                    worker pool ── dedupe hash ──▶ PostgresStore (sqlx)
-                                       │                              │
-                                       │                              ▼
-                                       │                       persisted Fact (version++)
-                                       │
-                                       │ lower-trust write against a higher-trust canonical?
-                                       └─▶ DissentStore.insert(payload, source, ts)
-                                                 │
-                                                 ▼
-                                          202 Accepted { dissent_id, status: "pending" }
-                                          (canonical fact unchanged;
-                                           fact.dissent_count incremented by trigger)
+caller ──POST /memory/facts──▶ klams-api ─┐        both surfaces run the
+agent  ──MCP memory_add──────▶ klams-mcp ─┤        same validation registry
+                                          ▼        (sprint 031, #645)
+                          per-type validators + sanity rules
+                                          │  malformed writes never touch
+                                          ▼  a store (sprint 002)
+                          klams-core enqueue (bounded mpsc)
+                                          │
+                                          ▼
+                          worker pool ──▶ PostgresStore::upsert_fact_v2
+                                          │  (trust-ranked; sqlx)
+                            ┌─────────────┴─────────────┐
+                            ▼                           ▼
+                     persisted Fact               lower-trust write vs a
+                     (version++)                  higher-trust canonical?
+                                                  → diverted to `dissents`
+                                                  (canonical unchanged;
+                                                   dissent_count bumped)
 ```
 
-Writes are durable before the queue acknowledges: facts and events are
-persisted to Postgres on the worker, and only durable writes increment
-the success counter (SC-004). Lower-trust writes that contradict a
-canonical fact are diverted to the `dissents` table rather than
-overwriting; operators resolve them via
-`POST /memory/dissents/{id}/{promote|discard}`. Stale-`version` writes
-return HTTP 409 with the current version in the body so retries can be
-mechanical.
+* **Validation** — per-type validators plus universal sanity rules run
+  before the write reaches the queue (sprint 002); MCP fact writes run
+  the same registry (previously the v1 path had none — sprint 031).
+  Rejections increment `klams_validation_rejections_total{rule}`.
+* **Attribution** — the bearer token's `agent_name` resolves to an
+  `authors` row and stamps `author_id` on every write (sprint 009;
+  §3.2). Tokens without `agent_name` fall back to `system`.
+* **Optimistic concurrency** — every fact carries a monotonically
+  increasing `version`; writers supply `expected_version` and stale
+  writes return HTTP 409 with the current version so retries can be
+  mechanical (sprint 002).
+* **Trust + dissents** — a lower-trust write contradicting a
+  higher-trust canonical fact diverts to the `dissents` table instead of
+  overwriting; the caller gets `path: "dissent"` and a `dissent_id`.
+  Agents can also file *semantic* contradictions directly via the
+  `dissent_propose` MCP tool (proposed correction + required `reason`,
+  optional `contradicting_memory_id`; lands as `Source::AgentProposal`
+  — sprint 015). Resolution is operator-only: viewport `/dissents` →
+  `POST /memory/dissents/{id}/{promote|discard}`, gated at `Manage`
+  scope (§3.2).
+* **Durability** — facts and events are persisted to Postgres on the
+  worker before the success counter increments.
+* **Events are append-only** — no update, no soft delete (§2.3 applies
+  to facts and knowledge only).
+* **Write-policy introspection** — `GET /memory/policy` exposes the
+  dedupe + decay + trust rules so callers need not read the TOML
+  (sprint 003).
 
-### 2.2 Write path (knowledge item)
+### 2.2 Write path — knowledge (agent writes)
+
+Knowledge text is embedded and stored **only** in Qdrant; there is no
+Postgres knowledge table. Entry surfaces: MCP `memory_add`
+([`crates/klams-mcp/src/tools/memory_add.rs`](../crates/klams-mcp/src/tools/memory_add.rs))
+and REST `POST /memory/knowledge/index`
+([`crates/klams-api/src/handlers/knowledge.rs`](../crates/klams-api/src/handlers/knowledge.rs),
+the scanner's route).
 
 ```text
-controller ──POST /v1/knowledge──▶ klams-api ──▶ klams-core
-                                                    │
-                                              worker pool
-                                                    │ chunk + dedupe
-                                                    ▼
-                                       TeiEmbedder.embed(text)  ── HTTP ──▶ tei
-                                                    │
-                                                    ▼
-                                       QdrantStore.upsert(vector, payload)
+agent ──memory_add──▶ ┌──────────────────────────────────────────────┐
+scanner ──/index────▶ │ 1. token-size gate (Store::check_embed_size  │
+                      │    → TEI POST /tokenize, exact count against │
+                      │    [embeddings] max_input_tokens; reject     │
+                      │    BEFORE the 202)                           │
+                      │ 2. content-hash dedupe probe                 │
+                      │    (find_knowledge_by_content_hash)          │
+                      │ 3. similar-on-write probe (MCP only)         │
+                      └───────────────────┬──────────────────────────┘
+                                          ▼
+                          klams-core enqueue (bounded mpsc)
+                                          │
+                                          ▼
+                     worker: TeiEmbedder.embed(text) ── HTTP ──▶ tei
+                                          │
+                                          ▼
+                     QdrantStore.upsert(vector, payload)
 ```
 
-Chunks become searchable within 10 s p95 under MVP load (SC-002).
+* **One token ceiling, three enforcement points** (sprint 027, #629).
+  `klams_types::EmbedLimit` is the single definition of "will the
+  embedder accept this text". The REST and MCP gates ask the model's
+  own tokenizer — `Store::check_embed_size` → `Embedder::count_tokens`
+  → TEI `POST /tokenize` (no forward pass, cheap) — and reject with
+  `413` **before** enqueueing. That ordering is the point: the scanner
+  advances its cursor on the `202` and the worker has no reply channel,
+  so anything accepted here and rejected later would be lost silently.
+  The scanner, which cannot reach TEI directly, uses the
+  `EmbedLimit::estimate_tokens` character heuristic (documented as an
+  approximation — real content spans 1.03 to >39 chars/token, so no
+  conservative divisor exists); the embedder's own preflight uses
+  `EmbedLimit::certainly_exceeds`, a provable WordPiece lower bound,
+  so a rejection there is final. Production ceiling:
+  `[embeddings] max_input_tokens = 32768` (Qwen3-Embedding-0.6B,
+  verified live via TEI `/info`); the compiled-in default of 512 is
+  the bge-small legacy for hermetic test stacks.
+* **Failure classification** (sprint 027, #656). `StoreError` carries a
+  `Transience`: embedder 4xx fails immediately with the response body
+  captured, 5xx/connect/timeout retry, and Postgres failures classify
+  by SQLSTATE. The MCP error mapper (`errors::from_store_error`)
+  enforces the contract invariant: `retry_after_seconds` is present
+  **iff** the error is transient. A worker-side embed failure
+  increments `klams_writes_failed_total{type,reason}` — the silent-loss
+  triangle (oversize accept → reply-less worker drop → advanced
+  cursor) is closed at all three corners.
+* **Oversize-write log** (sprint 027). Refused knowledge writes are
+  recorded in `oversize_write` *including the full submitted text* —
+  evidence for whether server-side chunking (#632) is ever worth
+  building. Because it retains whole documents it is pruned on a daily
+  timer (`prune_oversize_writes`, `crates/klams-service/src/main.rs`),
+  unlike the operator-pruned search logs.
+* **Content-hash dedupe** — an identical live chunk short-circuits the
+  write (the probe excludes soft-deleted points, so a re-add of deleted
+  content stores fresh — sprint 028, #642). Scanner ingest instead
+  *attaches a copy* to the existing point (§2.4).
+* **Similar-on-write** (sprint 029, #638). `memory_add` reuses its
+  embedding for a curated-stratum probe and returns `similar_existing`
+  (up to 5 hits at raw cosine ≥ 0.85: id, text head, author) so the
+  writer can supersede instead of duplicating, at the only moment that
+  check is cheap. Non-blocking, best-effort.
+* **Volatility declaration** (sprint 029, #638). `memory_add` /
+  `memory_update` / `memory_supersede` accept optional
+  `volatility: "stable" | "volatile"`, stored in the point payload and
+  consumed at query time (§2.5).
 
-Since sprint 027 the handler gates `text` against the embedder's token
-ceiling **before** enqueueing, so a chunk the model would refuse gets a
-`413` instead of a `202`. That ordering is the point: the scanner
-advances its cursor on the `202`, and the worker has no reply channel, so
-anything accepted here and rejected later is lost silently (see §2m).
+### 2.3 Knowledge lifecycle — supersede, update, delete
 
-### 2.3 Read path (unified search)
+Agent-written knowledge gets the smallest sufficient verb set
+(sprint 029, #638); facts amend via versioned upsert, events append,
+scanner chunks re-scan.
+
+* **`memory_supersede(id, text, tags?, volatility?)`** — the primary
+  correction verb
+  ([`crates/klams-mcp/src/tools/memory_supersede.rs`](../crates/klams-mcp/src/tools/memory_supersede.rs)):
+  writes the replacement (carrying `supersedes`), then stamps the old
+  point with the soft-delete pair plus `superseded_by`. Every retrieval
+  filter hides the superseded point; `memory_admin_list_deleted` shows
+  the pointer and `memory_admin_restore` undoes the hiding. A
+  mid-flight failure rolls the replacement back (best-effort) and the
+  error says exactly what state the store is in.
+* **`memory_update(id, text?, tags?, volatility?)`** — in-place edit,
+  id stable; text changes re-embed and re-hash. Authorship never
+  changes.
+* **Authorization** — both verbs sit at `Write` scope with the shared
+  ownership gate (`authorize_curation`: own it, or hold `Manage`) that
+  `memory_delete` uses; supersession *is* a delete plus a write, so it
+  is deliberately one authorization decision. Both refuse
+  non-agent-authored targets (`NOT_AGENT_AUTHORED`) — scanner chunks
+  are corrected by re-scanning, not by hand.
+
+**Soft-delete representation** (sprint 007): `deleted_at`
+(timestamptz / Qdrant payload string) is NULL for live rows, set to the
+UTC delete time for tombstoned ones; every read path applies
+`deleted_at IS NULL` (or the Qdrant `is_empty("deleted_at")`
+equivalent) unless an admin tool asks for the inverse.
+
+| State | Postgres / Qdrant | `memory_search` | `memory_admin_list_deleted` |
+|-------|-------------------|-----------------|------------------------------|
+| live | `deleted_at` absent | yes | no |
+| soft-deleted | `deleted_at = T`, `deleted_by_author_id = A` (+ `superseded_by` if superseded) | no | yes |
+| hard-deleted | row/point removed | no | no |
+
+Background contradiction detection and consolidation stay klams-mind's
+job (WI-259 division of labor) — klams ships the primitives.
+
+### 2.4 Non-agentic writers — scanner and monitor
 
 ```text
-viewport ──invoke("search_unified", q)──▶ tauri command
-                                              │ klams-client
-                                              ▼
-                                          klams-api  ──▶ TeiEmbedder.embed(q)
-                                              │                │
-                                              │                ▼
-                                              ├──▶ PostgresStore.search_facts(q)
-                                              ├──▶ PostgresStore.search_events(q)
-                                              └──▶ QdrantStore.search(vector)
-                                              ▼
-                                          merged SearchResult[]  ── < 500 ms p95 (SC-003)
++----------------------+          POST /memory/knowledge/index
+| klams-scanner.timer  |  ─────▶  +-----------------+ ──────────────▶ +---------------+
+|  (OnUnitActiveSec=1h)|          |  klams-scanner  | POST /memory/   | klams-service |
++----------------------+          |   (--once run)  | knowledge/      |               |
+                                  +-----------------+ delete ───────▶ |               |
+                                                                      +---------------+
++----------------------+          POST /memory/events                        ▲
+|  klams-monitor.svc   |  ─────▶  +----------------+ ────────────────────────┘
+|  (Type=simple,       |          |  klams-monitor |  (Service events on
+|   Restart=on-fail)   |          |  sd-poll loop  |   edge transitions)
++----------------------+          +----------------+
 ```
 
-### 2.4 Health + observability
+**Scanner.** `klams-scanner` walks the configured roots (production:
+`~/src` on **both** `kubs0` and `kai`, which sync the tree; the
+Obsidian vault was removed from the corpus in sprint 028, #657 —
+rationale and revisit criteria in [setup.md](setup.md)). It prunes
+heavy dependency/cache trees (`target`, `node_modules`, `.venv`,
+`__pycache__`, …) before descent, honours `.gitignore` +
+`.klamsignore`, and applies a file-type allowlist (sprint 021) so only
+content worth retrieving — source, docs/prose, config prose — is
+indexed.
 
-* `/healthz` returns a `HealthSnapshot` (per-dependency probe result + version).
-* `/metrics` exposes Prometheus counters/histograms via `axum-prometheus`.
-* Structured `tracing` logs are emitted as JSON when
-  `KLAMS_LOG_FORMAT=json`; the systemd unit sets this in production.
-* The viewport polls `/healthz` on an exponential backoff (capped at
-  60 s) and surfaces the result in the dashboard.
-
-### 2.5 Decay task
-
-```text
-┌──────────────────────────────────────────────────────────────┐
-│ klams-service                                                │
-│                                                              │
-│   tokio interval (decay.task_interval_seconds, default 3600) │
-│             │                                                │
-│             ▼                                                │
-│       DecayWorker.tick()                                     │
-│             │  SELECT id, fact_type, decay_weight,           │
-│             │         last_used_at FROM facts                │
-│             │  LIMIT decay.batch_size (default 500)          │
-│             ▼                                                │
-│       per-type λ from [decay.lambda] in klams.toml           │
-│             │  w = 1 / (1 + λ · age)   (hyperbolic, from     │
-│             │      total age — NOT compounded; #648)         │
-│             ▼                                                │
-│       PostgresStore.batch_update_decay(...)                  │
-│             │                                                │
-│             ▼                                                │
-│       /memory/search ranks by decay_weight × relevance       │
-└──────────────────────────────────────────────────────────────┘
-```
-
-The decay loop is in-process (no separate scheduler), bounded by
-`batch_size` per tick, and idempotent — a missed tick just means
-the next one covers a longer Δt. Defaults are baked into the binary;
-overrides live under `[decay]` in `klams.toml`.
-
-## 2a. Phase 2 deltas (sprint 002)
-
-Sprint 002 (`sprints/002-safety-and-write-ops/`) layers safety, drift
-control, and viewport curation on top of the Phase 1 pipeline without
-changing the crate boundaries:
-
-* **Validation (FR-001..FR-007)** — per-type validators + universal
-  sanity rules run inside `klams-api` before the write reaches the
-  queue; malformed agent writes never touch Postgres or Qdrant
-  (SC-001).
-* **Dissents (FR-008..FR-013)** — new `dissents` table + 
-  `dissent_count` column on `facts` + BEFORE-DELETE orphan trigger.
-  Endpoints: `GET /memory/dissents`, `POST /memory/dissents/{id}/promote`,
-  `POST /memory/dissents/{id}/discard`. Lower-trust contradictions
-  divert to dissents instead of overwriting (SC-002).
-* **Optimistic concurrency (FR-014..FR-015)** — every fact carries a
-  monotonically increasing `version`; writes supply `expected_version`
-  and stale writes return HTTP 409 with `current_version` (SC-003).
-* **Decay-aware ranking (FR-016..FR-019)** — see §2.5; per-type λ
-  values configured via `[decay.lambda]` (SC-004).
-* **Viewport curation (FR-020..FR-023)** — provenance panel on every
-  inspector page, edit/delete with optimistic rollback, dedicated
-  `/dissents` page with diff + promote/discard, nav-bar pending-dissent
-  badge (SC-005).
-* **`just` inner loop (FR-024..FR-030)** — top-level `justfile` is the
-  single source of developer + CI commands; `just gate` runs the
-  constitution's fmt/clippy/test gate (SC-006, SC-007).
-
-Plan and spec live at
-[sprints/002-safety-and-write-ops/plan.md](../sprints/002-safety-and-write-ops/plan.md)
-and
-[sprints/002-safety-and-write-ops/spec.md](../sprints/002-safety-and-write-ops/spec.md).
-
-## 2b. Phase 3 deltas (sprint 003)
-
-Sprint 003 (`sprints/003-non-agentic-writes/`) adds **non-agentic
-writers** (a filesystem scanner, a systemd-state monitor) that feed
-klams without an LLM in the write path, plus a deployment story to
-land all three klams binaries under systemd on `kubs0`. The crate
-boundaries do not change; two new binaries live under `crates/`.
-
-```text
-+----------------------+        POST /memory/knowledge/index
-| klams-scanner.timer  |  --->  +-----------------+  ----------------->  +---------------+
-|   (systemd OnUnit-   |        |  klams-scanner  |  POST /knowledge/    | klams-service |
-|    ActiveSec=1h)     |        |   (--once run)  |  delete?source_file= |  (axum + pg + |
-+----------------------+        +-----------------+  -----------------> |   qdrant)     |
-                                                                         +---------------+
-                                                                                 ^
-+----------------------+        POST /memory/events                              |
-|  klams-monitor.svc   |  --->  +----------------+   --------------------------- +
-|  (Type=simple,       |        |  klams-monitor |   (Service/Execution events,
-|   Restart=on-fail)   |        |   sd-poll loop |    sd-bus / systemctl is-active)
-+----------------------+        +----------------+
-```
-
-* **Write paths (FR-001..FR-006)** — every write response now carries
-  a `path: "canonical" | "dissent"` field (additive — flattened into
-  the existing `Fact` shape so pre-sprint-003 clients ignoring unknown
-  fields keep working). `MemoryPolicy` is exposed at
-  `GET /memory/policy` so callers can introspect dedupe + decay rules
-  without reading the TOML (SC-001, SC-005).
-* **Scanner (FR-007..FR-012)** — `klams-scanner` walks `~/src` and
-  `~/obsidian` (configurable), honours `.gitignore` + `.klamsignore`,
-  always skips `target/`, `node_modules/`, `.git/`, and (sprint 021)
-  applies a file-type allowlist so only content worth retrieving —
-  source, docs/prose, config prose — is indexed; lockfiles, JSON
-  fixtures, SVGs, and images are dropped. Chunking is **language-aware**
-  (sprint 022): markdown splits on headings with heading-*path* context
-  (no bare-heading chunks); Rust/Python parse with tree-sitter and split
-  at item boundaries carrying symbol names; everything else splits on
-  blank lines (a `#` comment is never a heading). Chunks carry
-  index/language/heading-path/symbol metadata to the payload, and are
-  POSTed to `/memory/knowledge/index`. A local SQLite cursor at
-  `~/.local/state/klams/scanner.sqlite` short-circuits unchanged files
-  on `mtime`, then on content hash. Vanished files trigger
-  `/memory/knowledge/delete?source_file=<abs>` (SC-002); since sprint
-  021 a *changed* file triggers the same delete **before** its new
+* **Chunking is language-aware** (sprint 022;
+  [`crates/klams-scanner/src/chunk.rs`](../crates/klams-scanner/src/chunk.rs)):
+  markdown splits on headings with heading-*path* context; Rust/Python
+  parse with tree-sitter and split at item boundaries carrying symbol
+  names; everything else splits on blank lines. The markdown splitter
+  is **fence-aware** (sprint 028, #639): `markdown_blocks` tracks
+  fenced-code state per CommonMark rules, so a `# comment` inside a
+  fence is body text, never a heading — pre-028 such comments emitted
+  content-free chunks that scored up to 0.956 raw cosine on
+  heading-echo queries. A markdown-only body floor
+  (`MIN_BODY_CHARS = 40`, breadcrumb excluded) drops tiny sections
+  whose breadcrumb outweighs their content.
+* **Per-host cursor** — a local SQLite database
+  ([`crates/klams-scanner/src/cursor.rs`](../crates/klams-scanner/src/cursor.rs)
+  at `~/.local/state/klams/scanner.sqlite`) short-circuits unchanged
+  files on `mtime`, then on content hash. A failed publish leaves the
+  cursor unadvanced so the chunk is re-offered next scan.
+* **Real repo names** (sprint 028, #640) — `repo` is derived per file
+  (deepest ancestor with a `.git` entry, else the first path segment
+  under the scan root), making the `repo` retrieval filter meaningful.
+* **Content-only storage dedupe with copy bookkeeping** (sprint 028,
+  #642). ONE Qdrant point per `content_hash`. The (host, file) identity
+  is payload bookkeeping: `copies[]` ({machine, file, repo},
+  authoritative) with derived keyword-indexed `machines[]` / `files[]`
+  lists, and the singular `machine`/`file`/`repo` as the canonical copy
+  (re-promoted when the canonical copy is deleted). A dedupe hit
+  attaches the new location (`attach_copy`,
+  [`crates/klams-store/src/qdrant.rs`](../crates/klams-store/src/qdrant.rs));
+  `delete_knowledge_by_source_file` removes one copy and deletes the
+  point only when the last copy goes. Bookkeeping is serialized by a
+  process-wide mutex — Qdrant has no transactions, and a lost update
+  here could delete a point a host still relies on. Pre-028 points
+  synthesize their singular fields as their only copy.
+* **Delete-before-reindex** (sprint 021) — a *changed* file triggers
+  `/memory/knowledge/delete?source_file=…&machine=…` before its new
   chunks are published, so edits replace rather than accumulate stale
-  points.
-* **Monitor (FR-013..FR-016)** — `klams-monitor` polls `systemctl
-  is-active <service>` for a TOML-configured list of units, diffs
-  state against the last poll, and POSTs only **edge transitions**
-  (`active↔inactive`, `version changed`) as `Event(category=Service)`.
-  Steady-state polls emit zero traffic (SC-003).
-* **systemd integration (FR-017..FR-018)** — `klams-service` runs as a
-  `Type=simple` unit with `After=postgresql.service qdrant.service`;
-  `klams-scanner.timer` fires the scanner hourly via a `Type=oneshot`
-  unit; `klams-monitor.service` is `Type=simple` with
-  `Restart=on-failure`. All three units use the same hardening profile
-  (`NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`). Note
-  `ProtectSystem=strict` makes the filesystem read-only for the
-  service: any writable path outside `StateDirectory` needs an
-  explicit `ReadWritePaths=` (the backup dir gained one in sprint 020
-  after the hardened unit silently broke nightly backups for 40
-  days). The
-  `install-systemd.sh` helper is idempotent, supports `--dry-run`, and
-  rotates the previous binary to `<bin>.prev` so `just rollback`
-  works (SC-004).
-* **ansible-k handoff (FR-019..FR-022)** — self-contained directory at
-  `sprints/003-non-agentic-writes/handoff/` (README + spec + api-contract
-  + example script) ready to `cp -r` to
-  `/home/ken/ansible-k/specs/klams-integration/`. The pinned-version
-  header references `GET /healthz?contract=v1` as the drift-detection
-  handshake (SC-006).
-* **Backwards compatibility (FR-023)** — every sprint-001 and sprint-002
-  integration test still passes against the post-sprint-003 binary;
-  the `path` field is additive and `MemoryPolicy` is a new endpoint.
+  points; a *vanished* file triggers the same delete. The `machine`
+  parameter is required — it scopes the blast radius to the host that
+  observed the change.
 
-Plan and spec live at
-[sprints/003-non-agentic-writes/plan.md](../sprints/003-non-agentic-writes/plan.md)
-and
-[sprints/003-non-agentic-writes/spec.md](../sprints/003-non-agentic-writes/spec.md).
+**Monitor.** `klams-monitor` polls `systemctl is-active` for a
+TOML-configured unit list, diffs against the last poll, and POSTs only
+**edge transitions** (`active↔inactive`, version changes) as
+`Event(category=Service)` with the real hostname; steady-state polls
+emit zero traffic. Known limitation (kwi #55): the monitor posts to
+`klams-service` itself, so it cannot record that service's own *Down* —
+the outage stays reconstructable from the gap to the recovery *Up*.
+Behind the default-on `kpidash` cargo feature
+([`crates/klams-monitor/src/kpidash.rs`](../crates/klams-monitor/src/kpidash.rs)),
+an optional `[kpidash]` config section additionally polls `/healthz`
+and publishes a `kpidash:services:<name>:<host>` Redis card — an
+*external* observer on a separate Redis host, which side-steps the
+kwi #55 self-dependency. The section is inert when omitted.
 
-### Sprint 010 — ingestion operationalized
+### 2.5 Read path — MCP `memory_search`
 
-Sprint 010 (`sprints/010-operationalize-ingestion/`) takes the sprint-003
-scanner and monitor from "buildable" to **live on `kubs0`**:
+The agent-facing, eval-measured retrieval pipeline
+([`crates/klams-mcp/src/tools/memory_search.rs`](../crates/klams-mcp/src/tools/memory_search.rs)).
+Stages, in execution order:
 
-* `klams-scanner.timer` fires the scanner hourly (`Type=oneshot`); the
-  scanner walks `/home/ken/src` + `/home/ken/obsidian`, pruning heavy
-  dependency/cache trees (`target`, `node_modules`, `.pnpm-store`,
-  `.venv`, `__pycache__`, `.obsidian`, …) **before** descent and
-  honouring `.gitignore` + a repo-root `.klamsignore`. End-to-end
-  ingestion (index, attribution, ignore-handling, idempotency, delete-
-  on-vanish) is verified by sentinel-note acceptance probes.
-* `klams-monitor.service` (`Type=simple`) polls `klams-service.service`
-  and posts typed `Service` events on edge transitions. **Known
-  limitation:** because the monitor posts events to `klams-service`
-  itself, it cannot record `klams-service`'s own *Down* (the sink is
-  unavailable during the outage) — a documented known limitation
-  (kwi #55); the outage stays reconstructable from the gap to the
-  recovery *Up*. Service events now carry the real host (read from
-  `/proc/sys/kernel/hostname`), not `host=unknown` (kwi #56, fixed).
-* The units declare `After=/Wants=docker.service` — Postgres, Qdrant,
-  and the TEI embedder run in Docker; there is no host
-  `postgresql.service`.
-* The legacy python looper (`~/src/tools/ksvc-looper/klams_monitor.py`)
-  is a **kpidash app-health reporter** (polls `/healthz` → dashboard),
-  not a klams event source, so it is *not* replaced by the Rust monitor's
-  event path — the two observe different signals. That kpidash path is
-  now **re-homed into the Rust monitor** behind the default-on `kpidash`
-  cargo feature: an optional `[kpidash]` config section makes
-  `klams-monitor` poll `/healthz` and publish the same
-  `kpidash:services:<name>:<host>` Redis card the looper wrote (identical
-  `{ts,state,text,host,icon}` JSON). It lives in the monitor — not the
-  service — so it stays an *external* observer that can still report
-  `down` when `klams-service` is offline (the kpidash Redis sink is on a
-  separate host, side-stepping the kwi #55 self-dependency). The whole
-  section is inert when omitted, so a clone without Redis never connects.
-  See [`crates/klams-monitor/src/kpidash.rs`](../crates/klams-monitor/src/kpidash.rs).
-  Live cutover (stop the looper, deploy the configured monitor) is the
-  remaining operator step.
+1. **Validate** — non-empty query; `top_k` 1..=50 (default 10);
+   optional `kinds` narrows which backends are queried.
+2. **Embed the query** — `Store::embed_query` prepends
+   `[embeddings] query_prefix` (the Qwen3 instruct prefix; asymmetric
+   retrieval models prefix *queries*, never documents — sprint 028,
+   #655) and calls TEI. An over-long query classifies as permanent
+   `PAYLOAD_TOO_LARGE`, not an outage.
+3. **Global ANN** — `search_knowledge` over-fetched ×2
+   (`KNOWLEDGE_OVERFETCH`): ~44% of the corpus is duplicate cross-host
+   content, so a plain top-k fetch routinely collapsed to half a page
+   (sprint 026, #641).
+4. **Curated-stratum ANN** (sprint 029, #644/#628) — a second, filtered
+   search (`search_knowledge_curated`: `source = AgentProposal` AND no
+   `machine`, live points only) with the same query vector.
+   Agent-authored knowledge is ~100 points in a ~180k corpus, so a
+   badly-phrased query can miss the curated target in ANY global top-k;
+   the stratum's own rank list later enters fusion as a 4th source. The
+   `machine` gate matters: scanned agent-session transcripts are
+   `AgentProposal` *with* a machine and would otherwise flood the
+   stratum.
+5. **Query-relative boost gate** — stratum membership and the tier
+   weight both require a raw cosine ≥
+   `provenance::boost_threshold(top_raw)` =
+   `max(0.45, 0.82 × top_raw)`
+   ([`crates/klams-core/src/provenance.rs`](../crates/klams-core/src/provenance.rs);
+   0.45 is the measured Qwen3 junk line, 0.82 the competitive
+   fraction). Without it, topically-adjacent agent memories (raw 0.60)
+   displaced genuine bulk answers (raw 0.75) — eligibility, not fusion
+   arithmetic, is where relevance holds the line.
+6. **Author resolution** — one batched lookup maps knowledge points to
+   author records for projection and tier classification.
+7. **Per-hit provenance weight** (sprint 029, #644) — each knowledge
+   hit gets `ProvenanceTier::classify(source, agent_name, has_machine)`
+   × `volatility_demotion(volatility, age_days)`. Three tiers:
+   hand-authored (`memory_add` writes, w = 2.0) > machine-extracted
+   (klams-mind session extracts, w = 1.5) > bulk scanner (w = 1.0).
+   Volatile-declared memories keep full weight for a week, then decay
+   with a 30-day half-life floored at 0.25 — demoted, never
+   disappeared. Stable and undeclared memories never decay: scanner
+   `created_at` is scan time, and silently burying stable truths is the
+   worst failure mode. Weights scale RRF contribution; they never
+   reorder hits within a source list.
+8. **Facts + events FTS** — `search_text` (Postgres `ts_rank`), scored
+   and ranked per source.
+9. **Tag filter** — post-projection; a hit must carry *all* requested
+   tags.
+10. **Duplicate collapse** (sprint 026, #641) —
+    `klams_core::dedupe::collapse_duplicates` groups knowledge hits by
+    `content_hash` and keeps the best-ranked copy, **before** fusion so
+    freed ranks compact. The survivor carries `copies` so nothing
+    becomes unreachable. Facts/events carry no `content_hash` and are
+    never collapsed. `source_rank`s are re-numbered contiguously over
+    the list the caller receives.
+11. **Raw-score snapshot** — per-source scores are captured by id
+    before fusion overwrites them: `raw_score` on the output, and the
+    miss-log signal, are about the cosine, not the fused value.
+12. **Cross-encoder rerank** (sprint 030, #685) — if
+    `[retrieval] reranker_url` is set, the knowledge candidates (global
+    + curated, post collapse/tag-filter, up to
+    `[retrieval] rerank_window` = 50) go to `POST /rerank`
+    (bge-reranker-v2-m3, port 7071;
+    [`crates/klams-store/src/rerank.rs`](../crates/klams-store/src/rerank.rs)).
+    The stage reorders the knowledge within-source rank list plus the
+    curated order — the *inputs* to weighted RRF — so provenance
+    weights apply to the reranked order: the cross-encoder fixes
+    semantic order within a tier, the weights still arbitrate across
+    tiers. Facts/events are not submitted (JSON payloads, not prose).
+    Best-effort by contract: one attempt, 5 s timeout, no retries; any
+    failure serves the un-reranked order, logs a warning, and bumps
+    `klams_rerank_skipped_total`. Config absent = stage off (the
+    rollback switch). Measured live: ~34 ms median, ~43 ms p99; it took
+    the eval from 19/21 to 21/21 by fixing curated-vs-curated
+    inversions that per-tier weights cannot see.
+13. **Weighted RRF fusion** — `klams_core::hybrid::fuse` (strategy from
+    `[retrieval] fusion`, default RRF `k=60`) over four rank lists:
+    knowledge, facts, events, curated stratum. Per-hit contribution is
+    `w/(k+rank+1)`. RRF is scale-free — it consumes ranks, not scores —
+    which is why it replaced the raw-score sort (History: pre-024 the
+    merged sort mixed Qdrant cosine with unbounded `ts_rank` and
+    structurally favoured knowledge; sprint 024 #329/#330 fixed the
+    class). Ties break deterministically by source discriminant then id
+    (sprint 029). Truncate to `top_k`.
+14. **Instrumentation, fire-and-forget** — every search appends a
+    `search_sample` row (query, caller, top **raw** score + its kind,
+    hit count, kinds, duplicates collapsed — sprint 026, #643); a
+    zero-hit or weak search (top raw < `LOW_SCORE_THRESHOLD` = 0.45,
+    calibrated for Qwen3 in sprint 028) also appends a `search_miss`
+    row and bumps the miss counter. `klams_mcp_search_total` is
+    labelled with the calling agent.
 
-## 2c. Phase 5 deltas (sprint 005 — advanced retrieval)
+Output: `Vec<ScoredMemory>` — `{ score, raw_score, source_rank,
+memory }` envelopes over the `PublicMemory` projection (§3.1). Contract
+note: `score` is an **RRF value, not a similarity** — not comparable
+across queries, never threshold it; rank order is the meaningful
+output. `raw_score` is the per-source score (cosine for knowledge,
+`ts_rank` for facts/events).
 
-Sprint 005 adds **hybrid retrieval, summarization, and a unified
-`/memory/context` bundler** so an agent can ask "give me the most
-useful context for this query under N tokens" instead of paging
-through raw rows. The wire contract lives at
-[sprints/005-advanced-retrieval/contracts/memory-context.openapi.yaml](../sprints/005-advanced-retrieval/contracts/memory-context.openapi.yaml).
+### 2.6 Read path — REST `/memory/search` and `/memory/context`
 
-### 2c.1 Hybrid retrieval (US2)
+The REST read paths are **not** the §2.5 pipeline. Both go through
+`StoreHybridAdapter`
+([`crates/klams-core/src/hybrid.rs`](../crates/klams-core/src/hybrid.rs)),
+which shares some stages and lacks others. Unification is an open work
+item; until then the divergence is:
 
-`klams_core::hybrid` introduces two primitives:
+| Stage | MCP `memory_search` | REST adapter paths |
+|-------|--------------------|--------------------|
+| Over-fetch | ×2 | ×3 |
+| Query-relative boost gate | yes | yes (same `boost_threshold`) |
+| Provenance weight | three tiers via author resolution | author-blind two-tier approximation (`adapter_knowledge_weight`: klams-mind extracts get the hand-authored weight) |
+| Duplicate collapse | yes | yes (`collapse_knowledge_rows`, same key) |
+| Curated stratum (4th source) | yes | **no** |
+| Cross-encoder rerank | yes (config-gated) | **no** |
+| Fusion strategy | `[retrieval] fusion` config | `/memory/search` **hardcodes** `FusionStrategy::default_rrf()` ([`crates/klams-api/src/handlers/search.rs`](../crates/klams-api/src/handlers/search.rs)); `/memory/context` honours the config via `ContextBuilder::with_fusion` |
+| Filters | tag filter only (tool argument) | full `RetrievalFilters` (host / type / tag / repo / file / source / since / until) |
 
-* `StoreHybridAdapter<S: Store>` — wraps a `Store` and exposes a
-  `retrieve(plan)` that over-fetches each configured `RetrievalSource`
-  (`Vector`, `Fts`) by 3× and post-filters payloads against
-  `RetrievalFilters` (host / type / tag / repo / file / source /
-  since / until).
-* `fuse(sources, FusionStrategy)` — pure rank fusion. Two strategies:
-  - `Rrf { k }` — reciprocal-rank fusion (default `k=60`).
-  - `Weighted { vector, fts, normalization }` — score-weighted with
-    `MinMax` or `ZScore` normalization (handles constant
-    distributions by collapsing to uniform contribution).
+`POST /memory/search` fans out vector + FTS retrieves through the
+adapter, fuses, and returns flattened `SearchHit`s (preview + payload —
+a different shape from MCP's `ScoredMemory`). Degraded mode: if one
+source fails the response still returns 200 with `degraded: true` and
+the surviving hits. As of sprint 033 (#692) the request's `filters`
+field is parsed into the same `RetrievalFilters` the context handler
+uses and actually applied — it had been accepted and silently discarded
+since sprint 005 (contract-tested now).
 
-### 2c.2 Context bundler (US1)
+`POST /memory/context`
+([`crates/klams-api/src/handlers/context.rs`](../crates/klams-api/src/handlers/context.rs))
+is the token-budgeted bundler (sprint 005): `ContextBuilder`
+([`crates/klams-core/src/context.rs`](../crates/klams-core/src/context.rs))
+retrieves per section (facts / knowledge / events) through the same
+adapter, fuses per-section with the configured strategy, token-counts
+items (`cl100k_base` via `tiktoken-rs`, `chars_div4` fallback), and
+greedy-fills each section under the caller's `token_budget`, marking
+`truncated` when the budget was hit. Per-section degradation is
+reported in-band (`SectionMeta`); only when every source is unavailable
+does the endpoint return `503 + Retry-After`.
 
-`klams_core::context::ContextBuilder` orchestrates retrieval +
-token budgeting:
+### 2.7 Other read surfaces
 
-1. Calls the hybrid adapter once per section (facts / knowledge /
-   events).
-2. Buckets returned rows by `payload.section` and fuses per-section
-   with the configured `FusionStrategy`.
-3. Token-counts each item via `klams_core::tokens` (currently
-   `cl100k_base` via `tiktoken-rs`, with a `chars_div4` fallback
-   advertised in `TokenEncoderId`).
-4. Greedy-fills each section under the caller's `token_budget`,
-   marking `ContextBundle.truncated = true` when the budget was hit.
+* **`event_search` (MCP)** — pure SQL over the events table; it never
+  invokes the embedder (sprint 008 contract: cheap event lookup). Since
+  sprint 033 it attributes the caller in the search counter and log,
+  like `memory_search`.
+* **`memory_related` (MCP)** — nearest-neighbour walk from a given
+  memory.
+* **`GET /v1/memories` (REST) + viewport `/activity`** — a uniform,
+  globally newest-first `PublicMemory` stream over all three kinds via
+  the single `Store::list_memories` method (sprint 008: "two surfaces,
+  one query" — `event_search` paging and this route share the store
+  code, so agent-visible and operator-visible numbers cannot diverge).
+  Defaults to a 24-hour window; windows over 30 days return 400.
+  Soft-deleted rows surface with `state=deleted` and their tombstone
+  metadata.
+* **`GET /v1/authors*`** — author list/detail plus
+  `GET /v1/authors/{id}/memories` for the viewport drilldown.
+* **Admin tools (MCP)** — `memory_admin_list_deleted`,
+  `memory_admin_restore`, `memory_admin_hard_delete`, and the author
+  registry verbs (§3.2), all `Admin` scope.
 
-`POST /memory/context` (handler at
-[crates/klams-api/src/handlers/context.rs](../crates/klams-api/src/handlers/context.rs))
-returns a `ContextBundle { facts, knowledge, events, total_spent,
-truncated, token_encoder, sections }` with per-section
-`SectionMeta { status, source, degraded_reason }`. Per-section
-degradation is reported in-band; only when **every** source is
-unavailable does the endpoint surface `503 Service Unavailable +
-Retry-After: 5` (FR-011).
+### 2.8 Background tasks
 
-### 2c.3 Summarization (US3)
+All in-process in `klams-service`; no external scheduler.
 
-`klams_core::summarize::SummarizationTask` runs at
-`[summarization].task_interval` (default 60 s), guarded by a
-`tokio::sync::Mutex` so cycles never lap:
+* **Fact decay** — a tokio interval
+  (`[decay] task_interval_seconds`, default 3600) recomputes
+  `decay_weight = 1 / (1 + λ · age)` per fact (hyperbolic, from total
+  age — not compounded; #648), with per-`FactType` λ from
+  `[decay.lambda]`, batched by `[decay] batch_size` (default 500).
+  Idempotent — a missed tick just means the next covers a longer Δt.
+  `DecayConfig::validate()` rejects bad config at startup (exit 2
+  before binding the listener; sprint 005). Fact search ranks by
+  `decay_weight × relevance`. Knowledge has **no** blanket decay — only
+  the declared-volatility demotion of §2.5.
+* **Event summarization** — `SummarizationTask` (sprint 005) reads a
+  7-day event window, clusters by `(host, category, day_bucket)`, and
+  upserts extractive headlines ("3x compile, 2x test") into the
+  `summaries` table. Extractive only: the LLM client and
+  `[summarization]` LLM keys were removed in sprint 032 (#647/#335) —
+  no code path ever sent a completion request; `SummaryMechanism::Llm`
+  survives in klams-types only so old rows deserialize.
+* **Backups** (sprint 006) — once per UTC day
+  (`[backup] window_start_utc`), `backup::run_once` flips
+  `MaintenanceState.active`, fires the `started` status hook, takes a
+  `pg_dump` then a Qdrant snapshot (both written as `.partial` and
+  atomically renamed), prunes retention (newest `daily_count` dates +
+  newest `weekly_count` Sundays, filename-as-truth), fires
+  `finished`/`failed`, and clears the flag in a guard on both paths. A
+  lockfile + startup recovery handle mid-run crashes. While a backup is
+  in flight the `maintenance_check` middleware 503s non-critical writes
+  with `Retry-After`; dissent promote/discard are the critical-write
+  exceptions. The status hook is exec-with-JSON-on-stdin
+  ([`crates/klams-service/src/backup/hook.rs`](../crates/klams-service/src/backup/hook.rs)),
+  bounded by a timeout with SIGTERM grace; hook failure is
+  observability, not control flow. Restore tooling and its non-empty
+  guard (Postgres rows and Qdrant points probed separately —
+  [`crates/klams-service/src/backup/restore.rs`](../crates/klams-service/src/backup/restore.rs))
+  are operator recipes in [setup.md](setup.md). Note
+  `ProtectSystem=strict` in the hardened units: any writable path
+  outside `StateDirectory` needs an explicit `ReadWritePaths=` — the
+  backup dir gained one in sprint 020 after the hardened unit silently
+  broke nightly backups for 40 days.
+* **Oversize-log prune** — daily timer, §2.2.
+* **Auth reload** — SIGHUP re-reads `[[auth.tokens]]` and atomically
+  swaps the grant table (WI #61); token rotation needs no restart.
 
-* Reads a 7-day window of events via the `EventSource` trait
-  (`StoreEventSource` pages in chunks of 500, capped at 50k).
-* Clusters by `(host, category, day_bucket)` and emits an
-  extractive headline ("3x compile, 2x test, 1x lint") via
-  `summarize::extractive::event_headline()`.
-* Records `mechanism = Extractive` on every summary. (Through sprint
-  031 the task first probed an OpenAI-compat chat endpoint and, on a
-  successful probe, relabelled the same extractive output as `Llm`. No
-  code path ever sent a completion request. Sprint 032 removed the
-  probe, the client, and the `[summarization]` LLM keys;
-  `SummaryMechanism::Llm` survives in klams-types only so summaries
-  written before then still deserialize.)
-* Upserts active summaries via `SummaryStore::upsert_event_summary`
-  into the new `summaries` table (migration `0004_summaries.sql`).
+### 2.9 Health and observability
 
-### 2c.4 Decay-config validation (US4)
+* **`/healthz`** returns a `HealthSnapshot`: per-dependency probe
+  results for **postgres, qdrant, and embeddings** (plus version — the
+  patch segment is the sprint number, which is how the dashboard shows
+  the deployed sprint at a glance — and maintenance state). The
+  reranker is deliberately **not** health-checked today; since the
+  rerank stage is best-effort a dead reranker degrades quality
+  silently. That is a tracked gap (WI filed in sprint 033).
+* **`/metrics`** (Prometheus). The authoritative series contract is
+  [`deploy/grafana/SERIES.md`](../deploy/grafana/SERIES.md) —
+  `crates/klams-service/tests/grafana_dashboard_json.rs` fails if the
+  dashboard queries an undocumented series or the code declares one
+  SERIES.md omits.
+  Highlights: `klams_retrieval_duration_seconds{op, transport}`
+  (search/context latency at every entry point, including
+  `op="rerank"` for the cross-encoder stage), `klams_queue_depth`,
+  `klams_writes_total` / `klams_writes_failed_total{type,reason}`,
+  per-author MCP counters (`klams_mcp_writes_total`,
+  `klams_mcp_deletes_total`, `klams_mcp_search_total` — search gained
+  real caller labels in sprint 026, and `event_search` attribution in
+  sprint 033), `klams_validation_rejections_total`,
+  `klams_rerank_skipped_total`, backup runs/duration/size/last-success,
+  summarization runs/lag.
+* **Search quality logs** (Postgres): `search_miss` — zero-hit or
+  weak-match searches, threshold 0.45 raw cosine (recalibrated per
+  embedding model; History: it was 0.5 against bge-small — below that
+  model's junk floor, so it never fired — then 0.80, then re-derived
+  for Qwen3 in sprint 028) — and `search_sample`, every search's query
+  + caller + top raw score (sprint 026, #643). These feed the eval
+  suite (`just eval`, 21 queries, runner in klams-mind) that gates
+  retrieval changes.
+* **Grafana** — [`deploy/grafana/klams.json`](../deploy/grafana/klams.json),
+  17 panels (queue, throughput, latency, errors, backup age,
+  maintenance, summarization, per-author MCP activity, search misses,
+  oversize/failed writes). Production install lives in ansible-k.
+* **Logs** — structured `tracing`, JSON when `KLAMS_LOG_FORMAT=json`
+  (the systemd unit sets this). The viewport polls `/healthz` on an
+  exponential backoff capped at 60 s.
 
-`DecayConfig::validate()` (in `klams-types/src/decay.rs`) rejects
-non-finite or negative λ, zero `task_interval_seconds`, or zero
-`batch_size`, naming the first offending key. The service exits
-with status 2 before binding the listener if validation fails
-(FR-013). On success, a single `INFO` line records the resolved
-per-`FactType` λs and the `klams_decay_config_reloads_total`
-counter is bumped (FR-014). SIGHUP-style hot-reload is out of
-scope for this sprint (D-007).
+### 2.10 Document history
 
-### 2c.5 Viewport context preview (US5)
+This document was restructured in sprint 033 (#692): the original
+sprint-001 description plus fourteen delta sections (§2a–§2p, one per
+sprint) were folded into the single current-state description above.
+The delta-section trail lives in git history and in `sprints/NNN-*/`.
 
-A new pane at `/preview` calls `POST /memory/context` and renders
-the bundle with per-section status pills, a 250 ms-debounced
-token-budget slider (D-009), and a raw-vs-summarized toggle.
-See [`viewport.md` §6](../sprints/planning/archive/viewport.md#6-phase-4--context-preview) (moved to `planning/archive/`; the un-archived path 404ed — #648).
+## 3. MCP surface and auth
 
-### 2c.6 Metrics added
+### 3.1 Public projection
 
-| Metric | Type | Use |
-|---|---|---|
-| `klams_retrieval_duration_seconds{op, transport}` | summary | search + context latency at every entry point (REST + MCP; sprint 020 replaces the context-only histogram) |
-| `klams_context_section_items_total{section}` | counter | items returned per section |
-| `klams_summarization_runs_total{mechanism}` | counter | `extractive` vs `llm` cycles |
-| `klams_summarization_lag_seconds` | gauge | wall-clock lag of the most recent cycle |
-| `klams_decay_config_reloads_total` | counter | successful config loads at startup (note the plural; #648) |
+The only shape returned by MCP tools and the viewport author/activity
+REST endpoints is `klams_types::PublicMemory` (sprint 007). The
+internal `Fact`, `Event`, and `KnowledgeItem` types are **never**
+serialized across the public boundary; the projection deliberately
+omits `version`, `decay_weight`, `confidence`, `use_count`,
+`last_used_at`, raw embedding vectors, and the internal `source` trust
+tier. Knowledge projections carry `content_hash` (the collapse key),
+`heading_path` / `language` / `chunk_index`, and `author.id` (ownership
+reasoning without a round-trip) — sprint 026. The knowledge→public and
+author mappings each live in one place
+(`PublicMemoryContent::knowledge_from`, `PublicAuthorRef::from_record`);
+they were previously hand-rolled at four call sites, which is how
+payload fields got written but never projected.
 
-Plan and spec for this delta live at
-[sprints/005-advanced-retrieval/plan.md](../sprints/005-advanced-retrieval/plan.md)
-and
-[sprints/005-advanced-retrieval/spec.md](../sprints/005-advanced-retrieval/spec.md).
+The surface split is binding (sprint 015): the agent surface is
+MCP-only; REST is the controller/operator surface (klams-mind uses REST
+only for `GET /v1/memories` bulk reads and `/healthz`).
 
-## 2d. Phase 6 deltas (sprint 006 — maintenance & backups)
+### 3.2 Scopes, tokens, attribution
 
-Sprint 006 adds an in-process **backup task** to `klams-service` that
-takes a Postgres `pg_dump` and a Qdrant snapshot once per UTC day, an
-axum middleware that quiesces non-critical writes while a backup is
-in flight, a generic exec-with-JSON status hook so external observers
-(kpidash, ansible-k) can subscribe to the lifecycle, and a Grafana
-dashboard authored alongside the metrics. The crate boundaries do
-not change.
+Every MCP tool and every protected REST route is gated by a `Scope`
+checked from the bearer token's grant. Four tiers — `Read`, `Write`,
+`Admin`, `Manage` — and **scopes are flat, not hierarchical**:
+`Scope::satisfies` is exact equality, so `Write` does not imply `Read`;
+every grant lists what it needs. Full model: [auth.md](auth.md).
 
-```text
-┌───────────────────────────────────────────────────────────────────┐
-│ klams-service                                                     │
-│                                                                   │
-│   ┌──────────────┐  every UTC day  ┌────────────────────────────┐ │
-│   │  scheduler   │  ─────────────▶ │  Backup task               │ │
-│   │ (sleep_until │                 │   1. mark MaintenanceState │ │
-│   │  window_utc) │                 │      .active = true        │ │
-│   └──────────────┘                 │   2. status_hook "started" │ │
-│                                    │   3. pg_dump  -> *.partial │ │
-│                                    │      atomic rename         │ │
-│                                    │   4. qdrant snapshot ditto │ │
-│                                    │   5. retention prune       │ │
-│                                    │   6. status_hook           │ │
-│                                    │      "finished" / "failed" │ │
-│                                    │   7. clear MaintenanceState│ │
-│                                    └─────────────┬──────────────┘ │
-│                                                  │                │
-│                              ┌───────────────────┼──────────────┐ │
-│                              ▼                   ▼              ▼ │
-│                         pg_dump 16          qdrant REST   status_hook │
-│                         (TCP 5432)         (HTTP 6333)    (exec + stdin JSON) │
-│                                                                   │
-│   axum router ── maintenance_check middleware ──▶ 503 + Retry-After│
-│                  (reads MaintenanceState.active)                  │
-│                                                                   │
-│   /healthz ──▶ HealthSnapshot.maintenance { active, run_id, ...} │
-└───────────────────────────────────────────────────────────────────┘
-                          │
-                          ▼
-              ${backup_dir}/
-              ├── lockfile                       (pid + run_id; stale-recovery on startup)
-              ├── postgres-YYYY-MM-DD.dump       (atomic; .partial during write)
-              ├── qdrant-YYYY-MM-DD.snapshot
-              └── (older dates pruned per daily_count + weekly_count)
-```
-
-* **Scheduler (FR-001..FR-006)** — hand-rolled `tokio::time::sleep_until`
-  loop on the next UTC `[backup].window_start_utc` instant, calling
-  `backup::run_once` exactly once per day. Skipped with a single INFO
-  line when `[backup].enabled = false`.
-* **Orchestrator** — `klams_service::backup::run_once` flips
-  `MaintenanceState::active = true`, fires the `started` hook, takes
-  the Postgres dump then the Qdrant snapshot then the retention prune,
-  fires `finished` / `failed`, and clears the flag in a guard that
-  runs on both success and failure paths. Lockfile + `.partial` files
-  protect against mid-run crashes — startup recovery cleans both up
-  and emits a `failed` hook with `error: "service_restarted_mid_backup"`.
-* **MaintenanceState (FR-007..FR-008)** — shared `Arc<RwLock>` in
-  `klams-types` so `klams-api` can depend on it without dragging in
-  `klams-service`. The `maintenance_check` middleware short-circuits
-  non-`GET`, non-critical-write requests with a `503 + Retry-After`
-  envelope when active; the critical-write set (currently
-  `POST /memory/dissents/{id}/{promote,discard}`) is matched
-  path-wise because axum global layers run before routing.
-* **Hook executor (FR-009..FR-012)** — `tokio::process::Command` with
-  piped stdin, env passthrough for `KLAMS_BACKUP_RUN_ID` +
-  `KLAMS_BACKUP_EVENT`, bounded by `status_hook_timeout` with a 2s
-  SIGTERM grace before SIGKILL (via `nix::sys::signal`, since
-  `unsafe_code = forbid` rules out `libc::kill` directly). Hook
-  failure is observability, not control flow — see
-  `crates/klams-service/src/backup/hook.rs`. Schema:
-  [`contracts/backup-status-hook.schema.json`](../sprints/006-maintenance-and-backups/contracts/backup-status-hook.schema.json).
-* **Retention (FR-005)** — filename-as-truth date parsing keeps the
-  newest `daily_count` distinct dates + the newest `weekly_count`
-  Sundays per kind; treats `same_day_strategy = "suffix"` runs as the
-  same date for retention (highest-N copy wins). No mtime consulted.
-* **Metrics** — five new Prometheus series:
-  `klams_backup_runs_total{ok}`,
-  `klams_backup_duration_seconds{kind}`,
-  `klams_backup_last_success_timestamp_seconds`,
-  `klams_backup_size_bytes{kind}`,
-  `klams_backup_hook_invocations_total{event,ok}`.
-* **Grafana dashboard (US5)** —
-  [`deploy/grafana/klams.json`](../deploy/grafana/klams.json) ships
-  the dashboard — **17 panels**, not the 11 this paragraph claimed
-  (queue / throughput / latency / errors / backup age / maintenance /
-  summarization / backup duration / runs by ok / hook invocations /
-  MCP author activity / search misses / oversize + failed writes).
-  **Production install lives in ansible-k, not here.**
-
-  The series contract is
-  [`deploy/grafana/SERIES.md`](../deploy/grafana/SERIES.md), in this
-  repo. Sprint 032 (#680) moved it here from
-  `~/ansible-k/specs/klams-integration/klams-grafana.md` — a repo inert
-  since 2026-07-05, whose path from here did not even resolve (#648's
-  broken-link sweep caught it). `tests/grafana_dashboard_json.rs`
-  parses SERIES.md and the dashboard and fails if a panel queries an
-  undocumented series **or** if the code declares one that SERIES.md
-  omits. SC-008's cross-link assertion is satisfied by this paragraph.
-
-Plan and spec live at
-[sprints/006-maintenance-and-backups/plan.md](../sprints/006-maintenance-and-backups/plan.md)
-and
-[sprints/006-maintenance-and-backups/spec.md](../sprints/006-maintenance-and-backups/spec.md).
-
-## 2e. Phase 7 deltas (sprint 007 — MCP projection layer)
-
-Sprint 007 (`sprints/007-mcp-server/`) exposes klams over the **Model
-Context Protocol** without changing the underlying Postgres/Qdrant
-schemas. The MCP surface is a new public projection on top of the
-existing stores; everything below it (decay, dissents, dedupe,
-embedding pipeline) is untouched.
-
-### 2e.1 `authors` table — first-class attribution
-
-New table `authors` (migration `0005_authors_table.sql`) attributes
-every memory to the agent that wrote it. `facts.author_id` and
-`events.author_id` become NOT NULL FKs after a backfill to the
-seeded `SYSTEM_AUTHOR_ID` (`00000000-0000-7000-8000-000000000001`);
-Qdrant points carry `author_id` in payload. Schema reference:
-[sprints/007-mcp-server/data-model.md §1–§4](../sprints/007-mcp-server/data-model.md).
-
-Authors are registered via the `register_author` MCP tool, though
-since sprint 018 a caller rarely needs it: the author bound to the
-bearer token (`agent_name` in `[[auth.tokens]]`) attributes writes
-automatically. The server bumps `last_seen_at` on each touch
-(FR-005).
-
-Sprint 025 (#636) gave the registry the verbs it had been missing —
-it could only ever *create*. `register_author` now dedupes on
-`agent_name` (it minted a fresh UUIDv7 per call, which is how the
-store reached 8 `klams-mind` and 6 `kyac` rows), and the
-`memory_admin_{list,remove,merge}_author*` tools cover inspection,
-block-if-owned removal, and transactional merge. Removal refuses
-while an author owns facts, events, knowledge points, or recorded
-soft-deletes; reassigning is `merge`'s job and is explicit.
-
-### 2e.2 Public projection (`PublicMemory`)
-
-The only shape returned by MCP tools and the viewport author REST
-endpoints is `klams_types::PublicMemory`. The internal `Fact`,
-`Event`, and `KnowledgeItem` types are **never** serialized across
-the public boundary; the projection deliberately omits
-`version`, `decay_weight`, `confidence`, `use_count`, `last_used_at`,
-raw embedding vectors, and the internal `source` trust tier
-(`User`/`Controller`/`Task`/`AgentProposal`).
-
-```text
-+-----------------------+   Streamable    +---------------------+
-| MCP client            |   HTTP / SSE    |  klams-mcp          |
-| (VS Code, Copilot     |  ◄ JSON-RPC ──► |  rmcp ServerHandler |
-|  CLI, custom)         |   over POST/GET |  + scope filter     |
-+-----------------------+                 +---------+-----------+
-                                                    │
-                                                    ▼
-                                          +---------------------+
-                                          |  ProjectionLayer    |
-                                          | (Fact|Event|Knowledge|
-                                          |   → PublicMemory)   |
-                                          +----+---------+------+
-                                               │         │
-                              +----------------+         +-------------+
-                              ▼                                        ▼
-                    +--------------------+                  +--------------------+
-                    |  PostgresStore     |                  |  QdrantStore       |
-                    | (facts, events,    |                  | (knowledge_items,  |
-                    |  authors)          |                  |  authors-aware     |
-                    +--------------------+                  |   payload)         |
-                                                            +--------------------+
-```
-
-### 2e.3 Scope-gated tool surface
-
-Every MCP tool is gated by a `Scope` checked from the bearer token's
-`TokenGrant`. Sprint 025 added a fourth tier, `Manage`, for
-cross-author curation. The legacy single `bearer_token` field is
-materialized at load time into one grant with all four scopes; the
-`[[auth.tokens]]` array (see
-[data-model.md §5](../sprints/007-mcp-server/data-model.md#5-configuration-extension-klams-typesauthconfig))
-issues per-purpose tokens. Insufficient-scope calls return a
-deterministic `permission_denied` error; scope failures are counted
-by the `403` response and its log line. (`klams_mcp_scope_denied_total`
-was documented here but never emitted — sprint 032, #648. The series
-that do exist are listed in
-[deploy/grafana/SERIES.md](../deploy/grafana/SERIES.md).)
-
-**Scopes are flat, not hierarchical** — `Scope::satisfies` is exact
-equality, so `Write` does not imply `Read` and `Admin` does not imply
-`Manage`. Every grant lists what it needs. This is deliberate:
-granting a broad-sounding scope can never silently confer a
-capability that was not intended.
-
-| Tool family | Scope |
-|-------------|-------|
-| `memory_search`, `memory_related`, `event_search` | `Read` |
-| `memory_add`, `memory_append_event`, `memory_delete`, `dissent_propose`, `register_author` | `Write` |
+| Surface | Scope |
+|---------|-------|
+| `memory_search`, `memory_related`, `event_search`; REST reads (`/memory/search`, `/memory/context`, `GET /memory/*`, `/v1/authors*`, `/v1/memories`) | `Read` |
+| `memory_add`, `memory_append_event`, `memory_delete`, `memory_supersede`, `memory_update`, `dissent_propose`, `register_author`; REST writes (`POST /memory/facts`, `/memory/events`, `/memory/knowledge/{index,delete}`) | `Write` |
 | `memory_admin_*` (restore, hard_delete, list_deleted, list/remove/merge authors) | `Admin` |
+| Cross-author curation: deleting/superseding/updating somebody else's memory; REST dissent promote/discard | `Manage` |
 
-`Manage` gates behaviour rather than whole tools: `memory_delete`
-requires it to delete a memory authored by *somebody else*
-(self-management needs only `Write`), and on the REST surface it
-gates dissent promote/discard. `register_author` moved `Read` →
-`Write` in sprint 025 — minting identities was a read-scope operation
-until then.
+`Manage` gates *behaviour* rather than whole tools: self-management
+needs only `Write` (`authorize_curation` — own it, or hold `Manage`).
+Sprint 025 (#637) layered `require_scope` onto every protected REST
+route (previously exactly one route checked, so any valid bearer could
+bulk-delete knowledge) — see the route table in
+[`crates/klams-api/src/router.rs`](../crates/klams-api/src/router.rs).
 
-Sprint 025 also layered `require_scope` onto **every** protected REST
-route. Before that it was installed on exactly one (`/v1/memories`),
-so the `scopes` list in `[[auth.tokens]]` was decorative on that
-surface: any valid bearer could index knowledge, bulk-delete it, and
-resolve dissents. Full model: [auth.md](auth.md).
+**Tokens.** `[[auth.tokens]]` issues per-purpose bearer tokens with a
+scope list and an optional `agent_name` (strict charset, validated at
+startup). The legacy single `bearer_token` is materialized as a grant
+with all scopes, bound to `system`. Tokens hot-reload on SIGHUP
+(§2.8). Multiple tokens may share an `agent_name` and resolve to the
+same author.
 
-### 2e.4 Soft-delete representation
+**Attribution** (sprints 007/009/018). The `authors` table attributes
+every memory to the agent that wrote it; `facts.author_id` /
+`events.author_id` are NOT NULL FKs and Qdrant points carry
+`author_id` in payload. The bearer's `agent_name` resolves through an
+`AuthorBinding` cache to an `author_id` stamped on every write — on
+the MCP surface the token-bound identity is authoritative for
+`memory_add`, `memory_append_event`, and `dissent_propose`
+(`BEARER_AUTHOR_TOOLS` in
+[`crates/klams-mcp/src/tools/mod.rs`](../crates/klams-mcp/src/tools/mod.rs)),
+so `register_author` is rarely needed. `register_author` dedupes on
+`agent_name` (sprint 025, #636 — it previously minted a fresh UUIDv7
+per call), and the `memory_admin_{list,remove,merge}_author*` verbs
+cover inspection, block-if-owned removal, and transactional merge.
 
-Facts and knowledge items support **soft delete**:
-`deleted_at` (timestamptz / Qdrant payload string) is NULL for live
-rows, set to the UTC delete time for tombstoned ones. Every read
-path applies `WHERE deleted_at IS NULL` (or the Qdrant equivalent
-`must_not deleted_at`) unless an admin tool explicitly asks for the
-inverse. `events` are append-only and **never** carry soft-delete
-columns (FR-015).
-
-| State | Postgres | Qdrant payload | Visible to `memory_search` | Visible to `memory_admin_list_deleted` |
-|-------|----------|----------------|----------------------------|----------------------------------------|
-| live | `deleted_at IS NULL` | no `deleted_at` key | yes | no |
-| soft-deleted | `deleted_at = T`, `deleted_by_author_id = A` | `deleted_at = T`, `deleted_by_author_id = A` | no | yes |
-| hard-deleted | row removed | point removed | no | no |
-
-The viewport drilldown at `/authors/{id}` consumes the same
-projection via `GET /v1/authors/{id}/memories` and renders a state
-badge (`live` | `soft-deleted` | `hard-deleted`) plus a
-cross-kind link `{id, kind} → /facts|/knowledge|/events/{id}`
-(FR-025).
-
-### 2e.5 HTTP transport & auth wiring
+### 3.3 Transport
 
 The MCP surface is mounted at `/mcp` on the same axum router as the
-REST API (no separate listener). `klams-service::main` builds:
+REST API (no separate listener):
 
 ```text
 Router::new()
-  .merge(protected_rest)      // /v1/* behind require_bearer
-  .merge(public)              // /healthz, /metrics (when enabled)
+  .merge(protected_rest)      // /memory/*, /v1/* behind require_bearer
+  .merge(public)              // /healthz, /metrics
   .nest("/mcp",
         klams_mcp::router(mcp_state, cfg.server.mcp_allowed_hosts)
             .layer(require_bearer))   // ← layer attached HERE
 ```
 
 The `require_bearer` layer **must** wrap the `/mcp` sub-router
-directly; layering on the outer `Router::new()` after `.nest(...)`
-does not apply to nested services in axum 0.8. The shared
-`AuthState` (built from `[auth.bearer_token]` + `[[auth.tokens]]`)
-backs both the REST and MCP gates so a single token works for both.
-
-`klams_mcp::router` wraps rmcp's `StreamableHttpService` with a
-configurable Host-header allowlist (`[server].mcp_allowed_hosts`).
-Default is empty — the allowlist is **disabled** because
-`require_bearer` is the real access control; bearer-less requests
-are rejected with `401` before any tool sees them. Operators who
-want DNS-rebinding belt-and-suspenders can set the list explicitly
-(e.g. `["localhost", "workstation:7777"]`).
-
-No OAuth metadata is served. VS Code Insiders' `"type": "http"`
-client accepts a static `headers.Authorization` in `mcp.json` and
-treats the absent `/.well-known/oauth-protected-resource` as a
-harmless warning. The handshake walkthrough lives at
-[sprints/007-mcp-server/research-vscode-mcp-http.md](../sprints/007-mcp-server/research-vscode-mcp-http.md).
-
-Plan and spec live at
-[sprints/007-mcp-server/plan.md](../sprints/007-mcp-server/plan.md)
-and
-[sprints/007-mcp-server/spec.md](../sprints/007-mcp-server/spec.md).
-
-## 2f. Phase 8 deltas (sprint 008 — Activity observability)
-
-Sprint 008 (`sprints/008-activity-observability/`) closes the
-observability triangle around the MCP layer added in sprint 007: one
-agent-facing tool, one operator-facing HTTP surface, and one shared
-viewport tab — all reading from the **same query path** so the
-numbers agents see and the numbers operators see can never diverge.
-No new storage; no schema changes.
-
-### 2f.1 Shared query layer
-
-A single `Store::list_memories` method on the
-[klams-store](../crates/klams-store/src/lib.rs) trait projects
-`facts`, `events` and `knowledge` rows into a uniform `PublicMemory`
-stream, globally newest-first: each kind is paged `created_at DESC`
-after one shared `(created_at, id)` keyset and merged, behind an opaque
-cursor (kwi #54 — knowledge, in Qdrant, is ordered via a `created_at`
-datetime index rather than point-id order). Both `event_search` (MCP)
-and `GET /v1/memories` (HTTP) delegate to it; there is no parallel SQL
-anywhere. Rationale (R-001 — "two
-surfaces, one query") lives in
-[sprints/008-activity-observability/research.md](../sprints/008-activity-observability/research.md).
-
-```text
-   MCP event_search        HTTP GET /v1/memories       Viewport /activity
-          │                          │                          │
-          └────────────┬─────────────┴─────────────┬────────────┘
-                       ▼                           ▼
-              klams-store::list_memories     klams-store::event_search
-                       │                           │
-                       └─────────── pure SQL ──────┘   (no embedding call)
-```
-
-`event_search` is **pure-SQL on the events table** — it never invokes
-the embedder (FR-004); the `tei_requests_total` counter must not
-increment for a search-only workload. This is the contract that
-agents can rely on for cheap event lookup.
-
-### 2f.2 Operator surface — `GET /v1/memories`
-
-New read-only route on `klams-api` returning the same `PublicMemory`
-projection with bearer scope `read`. Defaults to a 24-hour window;
-windows larger than 30 days return HTTP 400 `WINDOW_TOO_LARGE`. Soft-
-deleted rows are surfaced via `state=deleted` with the original
-`deleted_at` / `deleted_by` metadata preserved (FR-015a) so operators
-can inspect what was removed without restoring it.
-
-### 2f.3 Viewport — `/activity` tab
-
-New SvelteKit route at
-[viewport/src/routes/activity/+page.svelte](../viewport/src/routes/activity/+page.svelte)
-wraps `GET /v1/memories` via a `viewport_list_memories` Tauri command.
-Filters: time window, kinds, authors, live / soft-deleted / all. Rows
-link to the per-kind detail page regardless of state so soft-deleted
-items remain navigable.
-
-### 2f.4 Grafana panel fix — author activity
-
-Sprint 007 shipped three MCP author counters
-(`klams_mcp_writes_total`, `klams_mcp_deletes_total`,
-`klams_mcp_search_total`) but no dashboard panels for them, leaving
-SC-005 ("operator can see per-author MCP activity") un-met. Sprint 008
-adds three panels to
-[deploy/grafana/klams.json](../deploy/grafana/klams.json) (writes /
-deletes / search by `agent_name`), wires
-[deploy/prometheus/prometheus.yml](../deploy/prometheus/prometheus.yml)
-to scrape `klams-service:7777/metrics`, and gates both behind the
-existing `observability` Compose profile so the production stack is
-unaffected when the profile is not selected. The handoff table in
-ansible-k's
-[`sprints/klams-integration/klams-grafana.md`](https://github.com/kenhia/ansible-k/blob/main/specs/klams-integration/klams-grafana.md)
-gained matching rows for the three series — the
-`every_panel_series_appears_in_handoff_table` contract test enforces
-this going forward.
-
-### 2f.5 Performance baseline harness — `klams-bench`
-
-Non-shipping crate at [tools/bench/](../tools/bench/) with two
-binaries: `seed` (writes a deterministic
-`ChaCha20Rng::from_seed`-generated corpus via the existing write
-surfaces, with 503/queue-full exponential-backoff retry) and `run`
-(replays a representative query set against `memory_search`, records
-microsecond latencies into an HDR histogram, writes
-[sprints/008-activity-observability/perf-baseline.md](../sprints/008-activity-observability/perf-baseline.md)).
-Per FR-022 the harness **never gates `just gate`** — `bench-seed` and
-`bench-run` always exit 0; the artifact is a measurement, not an
-assertion. The baseline file auto-tags "Smoke run" when the corpus is
-below the canonical 10k facts / 50k knowledge target.
-
-Plan and spec live at
-[sprints/008-activity-observability/plan.md](../sprints/008-activity-observability/plan.md)
-and
-[sprints/008-activity-observability/spec.md](../sprints/008-activity-observability/spec.md).
-
-## 2g. Phase 9 deltas (sprint 009 — Stability & attribution)
-
-Sprint 009 (`sprints/009-stability-attribution/`) closes three
-production wounds left open after sprint 008: the loopback CLOSE_WAIT
-leak that exhausted file descriptors under sustained traffic
-(kwi #26), the REST attribution gap that stamped every non-MCP write
-as `system` (kwi #28), and a viewport drilldown 404 from the Authors
-view. No new storage, no schema changes — every fix is in the
-service plumbing.
-
-### 2g.1 Connection-limits layer
-
-A per-peer `ConnectionLimits` tower layer wraps the axum service in
-[`klams-service::main`](../crates/klams-service/src/main.rs). The
-layer caps concurrent in-flight requests per remote IP and trims
-idle keep-alive connections so a misbehaving client (or a long-lived
-loopback writer that fails to close) cannot accumulate sockets in
-`CLOSE_WAIT` indefinitely. The packaged systemd unit raises
-`LimitNOFILE=65536` (see [deploy/klams-service.service](../deploy/klams-service.service))
-so the in-app cap is reached before the kernel-level fd cap is hit.
-Validated by an 18-hour loopback soak harness exposed as
-`just soak --duration 18h` ([tools/soak/](../tools/soak/)).
-
-### 2g.2 Attribution flow — bearer → author_id
-
-```text
-client HTTP request                 service startup
-   Authorization: Bearer <tok>          │
-              │                          ▼
-              ▼                  [auth.tokens] grants
-     require_bearer middleware           │ each grant
-   resolves token → TokenGrant           ▼ with agent_name
-              │                  AuthorBinding cache
-              ▼                  agent_name → author_id
-     Request::extensions.insert(             (one row in
-          AuthorBinding { author_id })       authors table)
-              │
-              ▼
-     REST handler extracts AuthorBinding
-              │
-              ▼
-     UpsertFact { author_id, .. } → worker
-     AppendEvent { author_id, .. } → worker
-     IndexKnowledge { author_id, .. } → worker
-              │
-              ▼
-     PostgresStore::upsert_fact_with_author(... author_id ...)
-     QdrantStore::index_knowledge_with_author(... author_id ...)
-```
-
-Each `[[auth.tokens]]` entry now carries an optional `agent_name`
-([crates/klams-types/src/auth.rs](../crates/klams-types/src/auth.rs))
-validated at startup against a strict charset (lowercase, digits,
-`-`/`_`) so a typo never reaches the cache. Tokens without
-`agent_name` fall back to `system`. The legacy `bearer_token` field
-is materialized as a `system`-bound grant, so existing deployments
-keep working with no config change. Multiple tokens may share an
-`agent_name`; they all resolve to the same `author_id`.
-
-### 2g.3 One-shot re-attribution repair
-
-For deployments with historical `system`-stamped REST writes,
-[tools/reattribute-system/](../tools/reattribute-system/) ships a
-standalone CLI that walks `facts`/`events`/`knowledge_items`, finds
-the `register_author` event that immediately preceded each write,
-and reassigns the row to that author. Rows with no resolvable
-antecedent land on the new `lost-author` seed identity rather than
-staying on `system`, keeping the bucket sum invariant intact. The
-repair is idempotent and dry-run by default; `--apply` commits. The
-store-level invariant tests live in [crates/klams-store/src/repair.rs](../crates/klams-store/src/repair.rs).
-
-### 2g.4 Test isolation
-
-The Phase 6 MCP test harness ([crates/klams-service/tests/common/mod.rs](../crates/klams-service/tests/common/mod.rs))
-gained `TestServer::spawn_isolated()`: each test gets a per-test
-Qdrant collection (`klams_test_{uuid}`) and a truncated Postgres
-between runs, with the seeded `system` and `lost-author` identities
-preserved so attribution invariants still hold. Validated 10/10
-under default parallelism.
-
-Plan and spec live at
-[sprints/009-stability-attribution/plan.md](../sprints/009-stability-attribution/plan.md)
-and
-[sprints/009-stability-attribution/spec.md](../sprints/009-stability-attribution/spec.md).
-
-## 2h. Sprint 014 deltas — serving pivot
-
-Sprint 014 ([sprints/014-serving-pivot/](../sprints/014-serving-pivot/sprint.md))
-decouples klams from vendor-native model-serving APIs so the engine
-behind embeddings and summarization is a **configuration choice**, not
-a build choice. No schema changes; no new storage.
-
-* **`Embedder` trait** ([crates/klams-store/src/embeddings.rs](../crates/klams-store/src/embeddings.rs))
-  — `CompositeStore.embedder` is now `Arc<dyn Embedder>`. Two impls:
-  `TeiEmbedder` (TEI-native `POST /embed`, the production default) and
-  `OpenAiCompatEmbedder` (`POST {url}/embeddings`, OpenAI shapes,
-  optional bearer key). Selected via `[embeddings] api = "tei" | "openai"`;
-  for `openai` the `url` must include the version segment (TEI's own
-  `/v1` route, vLLM, and Ollama `/v1` all work).
-* **Chat client** — `OpenAiChatClient` (`GET {llm_url}/models` probe,
-  `POST {llm_url}/chat/completions`) replaced the Ollama-native client
-  here. **Removed in sprint 032** (#647/#335) together with
-  `crates/klams-core/src/summarize/llm.rs` and the `[summarization]`
-  `llm_*` / `ollama_*` keys: the `chat/completions` half never had a
-  production caller, so the only live effect was the probe, against an
-  Ollama instance that was deployed on no host. See §2c.3.
-* **Embedding topology decision** — embeddings stay local to `kubs0`
-  (TEI container, GPU-capable); the OpenAI-compat path exists so a
-  future switch to vLLM/kvllm is a URL change. `vector_dim` remains
-  config-driven end-to-end (config → Qdrant collection bootstrap →
-  per-embed `expected_dim` check); changing the embedding model is a
-  deliberate re-embed event — procedure in
-  [sprints/014-serving-pivot/re-embed-runbook.md](../sprints/014-serving-pivot/re-embed-runbook.md).
-
-## 2i. Sprint 015 deltas — companion enablement
-
-Sprint 015 ([sprints/015-companion-enablement/](../sprints/015-companion-enablement/sprint.md))
-onboards `klams-mind` (the Python/LangChain companion at
-`~/src/ai/klams-mind`) as a first-class, attributable agent.
-
-* **`dissent_propose` MCP tool** (`Write` scope) — file a dissent
-  directly against a live canonical fact: proposed correction +
-  required `reason`, optional `contradicting_memory_id`. This is the
-  external path for *semantic* contradiction detection; the write-path
-  trigger (§2.1) still handles same-fact trust conflicts. Proposals
-  land as `Source::AgentProposal`, reuse the pending
-  `(fact_id, payload_hash)` dedupe, and resolve only through the
-  viewport `/dissents` promote/discard flow. Migration
-  `0009_dissent_proposals.sql` adds nullable `reason` /
-  `contradicting_memory_id` / `author_id` provenance columns;
-  write-path dissents leave them NULL.
-* **Viewport detail routes** (kwi #31) — `/facts/{id}`, `/events/{id}`,
-  `/knowledge/{id}` pages now exist (the `hrefFor()` links from the
-  Activity/Authors views previously 404'd); a vitest route-existence
-  guard prevents future dangling links. Fact details link to their
-  pending dissents.
-* **Token grant** — the example config gains a commented
-  `klams-mind` read+write `[[auth.tokens]]` block with
-  `agent_name = "klams-mind"`.
-* **Surface split (binding)** — the agent surface is MCP-only
-  (`PublicMemory` projection); REST is the controller/operator surface.
-  klams-mind uses REST only for `GET /v1/memories` bulk reads and
-  `/healthz`.
-
-## 2j. Sprint 016 deltas — retrieval diagnostics
-
-Sprint 016 ([sprints/016-retrieval-diagnostics/](../sprints/016-retrieval-diagnostics/sprint.md))
-makes `memory_search` results diagnosable for klams-mind's retrieval
-eval harness. No storage or schema change.
-
-* **`memory_search` now returns `klams_types::ScoredMemory` envelopes**
-  (`{ score, source_rank, memory }`) instead of bare `PublicMemory`.
-  The tool previously computed a per-hit relevance score and discarded
-  it; now it surfaces `score` and `source_rank` (the hit's 0-based rank
-  within its own source's result list, before cross-source fusion — the
-  global rank is the array index). The wrapped `memory` is unchanged;
-  its `kind` doubles as the source discriminator, so there is no
-  separate `source_kind`. Distinct from the REST `/memory/search`
-  `SearchHit` (a flattened preview/payload shape), which is untouched.
-* **Known limitation — cross-kind score scale. RESOLVED in sprint 024;
-  do not act on this paragraph.** As written for sprint 016 it said the
-  merged sort mixes Qdrant cosine similarity (knowledge, ~0..1) with
-  Postgres `ts_rank` (facts/events, unbounded, typically ≪1), biasing
-  the order toward knowledge, and that 016 *exposed* rather than fixed
-  it. Sprint 024 (#329/#330) unified ranking on Reciprocal Rank Fusion,
-  which is scale-free by construction — it consumes ranks, not scores —
-  so the bias is gone and cross-kind ordering is trustworthy. Sprint 030
-  added a cross-encoder rerank over the fused candidate set on top.
-
-  What survives is narrower and still true: `score` is an **RRF value,
-  not a similarity**, so it is not comparable across queries and should
-  not be thresholded. Rank order is the meaningful output.
-
-  (Sprint 032, #648: left standing, this paragraph told readers to
-  distrust ordering that has been correct since 024 — the most
-  expensive kind of stale doc, because acting on it means ignoring good
-  results. Corrected in place; restructuring these delta sections
-  belongs to #692, not here.)
-* **Consumer**: klams-mind's client + eval runner update in lockstep;
-  the contract change is recorded in that repo at
-  `sprints/planning/001-cross-project-note.md`.
-
-## 2k. Sprint 026 deltas — query-time dedupe + projection additions
-
-Sprint 026 ([sprints/026-retrieval-measurement/](../sprints/026-retrieval-measurement/sprint.md),
-WI #641) collapses duplicate content at query time and widens the
-knowledge projection. No storage or schema change, no migration.
-
-* **Why**: sprint 023 deliberately made *ingest* dedupe host-scoped
-  (`find_knowledge_by_content_hash(hash, file, machine)`) so that
-  per-host delete works. `kai` and `kubs0` scan a synced `~/src`, so
-  nearly every chunk is stored twice. Measured on the live corpus:
-  221,982 points, 124,034 unique `content_hash`, 36,121 hashes on both
-  hosts — and a 10-result page was reliably 5 duplicate pairs.
-* **Query-time collapse** (`klams_core::dedupe::collapse_duplicates`)
-  groups knowledge hits by `content_hash` and keeps the best-ranked
-  copy. It runs **before** rank fusion, so freed ranks compact and the
-  released slots fill with new content instead of leaving holes. The
-  fetch over-fetches (MCP ×2, the hybrid adapter's existing ×3) so a
-  page stays full after collapse.
-  - Keys on **content only** — host/file/repo never keep two copies
-    apart. Duplicate storage was never the problem; duplicate top-k
-    slots were.
-  - The survivor carries `copies: [{id, host, file}]` for every
-    duplicate it absorbed, so nothing becomes unreachable.
-  - **Top-k scope**: a copy outside the fetch window is not hunted down.
-  - Applied on all three read paths: MCP `memory_search`, REST
-    `/memory/search`, and `/memory/context` (the latter two share the
-    `StoreHybridAdapter` seam). Facts and events carry no
-    `content_hash` and are never collapsed. Distinct from the
-    `ContextBuilder`'s cross-section dedupe (repo+file), which is
-    unchanged.
-* **Projection additions** on knowledge results:
-  `content_hash` (the collapse key, and the eval's no-duplicates
-  assertion), `heading_path` / `language` / `chunk_index`, and
-  `author.id` (ownership reasoning for delete/supersede without a
-  `register_author` round-trip).
-* **`KnowledgeItem` gained `heading_path` / `language` / `chunk_index`.**
-  Sprint 022 wrote these to the Qdrant payload but `payload_to_item`
-  never read them back, so no read path could project them. The
-  knowledge→public mapping now lives in one place
-  (`PublicMemoryContent::knowledge_from`), as does the author mapping
-  (`PublicAuthorRef::from_record`); both were previously hand-rolled at
-  four call sites, which is how the fields came to be dropped.
-* **Incidental fix**: `matches_filters` reads `host` from the retrieval
-  payload, but the vector payload never carried a `host` key — so a
-  host-filtered knowledge query silently dropped every row. The payload
-  now carries it.
-
-## 2l. Sprint 026 deltas — retrieval measurement (#643)
-
-The other half of sprint 026: make retrieval quality *measurable*, so the
-ranking work in sprint 029 is a measured change rather than a guess.
-
-* **The miss log was a dead instrument.** `LOW_SCORE_THRESHOLD` was 0.5,
-  but bge-small cosine on this corpus sits ~0.75–0.96 **even for junk** (a
-  content-free fragment measured 0.956) — the threshold sat below the
-  floor of the distribution, so `low_score` could never fire. Two weeks of
-  production recorded **one** miss, and that one was a `zero_hit` from an
-  emptied filter. Recalibrated to **0.80**, inside the observed
-  weak/strong boundary (~0.78–0.82, from #628's paired queries). This is a
-  *calibrated* constant, honest only against the current embedding model —
-  the #655 GPU model swap (sprint 028) changes the distribution wholesale
-  and must re-derive it.
-* **New: the search-sample log** (`search_sample`, migration 0011).
-  Records **every** search — query, caller, top **raw** (pre-fusion) score,
-  that hit's kind, hit count, kinds queried, and how many duplicates the
-  #641 collapse removed. klams previously had no record of what agents ask
-  it, which is why every eval query to date was invented rather than
-  observed, and why the threshold above could only be calibrated from a
-  handful of data points. Written fire-and-forget, exactly like
-  `search_miss`; retention is an operator prune concern.
-  - `top_raw_score` is deliberately the pre-fusion score: post-024 `score`
-    is pure RRF and carries no magnitude, so a distribution over fused
-    scores would say nothing about match quality.
-* **Caller attribution fixed.** `record_search` was hardcoded to
-  `"anonymous"` since sprint 020, so the per-agent search counter had
-  exactly one label value — while the caller's agent name sat unused in
-  the argument list. The miss log, the sample log, and the metric now
-  share one `caller_label` helper so they cannot disagree.
-* **`source_rank` is re-numbered after duplicate collapse.** Collapse
-  removes entries, so survivors kept holed pre-collapse ranks (a caller
-  asking for 20 could see ranks 0 and 25) — leaking the over-fetch
-  multiplier as a gap. Ranks are now contiguous over the list the caller
-  actually receives, restoring the sprint-017 invariant.
-* **The eval suite is the gate** (`just eval`). The suite and runner live
-  in klams-mind (`evals/suites/homelab-retrieval.toml`); the recipe lives
-  here because klams is what regresses. It grew from 4 queries to 21, with
-  three new check types — `no_duplicates` (#641's invariant),
-  `min_body_chars` (the junk ceiling, breadcrumb stripped), and
-  `memory_id` with `max_rank` (curated-beats-bulk; presence alone would
-  have passed while #628 was live). Queries carry `expect`: `pass` is the
-  regression bar, `known_open` is a tracked failure that does not fail the
-  run. Without that distinction a measurement suite can only contain
-  queries that already pass — which is exactly how the old four scored
-  4/4 while every real failure was happening.
-
-## 2m. Sprint 027 deltas — ingest correctness (#420 / #629 / #656)
-
-### 2m.1 One ceiling, three enforcement points
-
-`klams_types::EmbedLimit` is the single definition of "will the embedder
-accept this text". It lives in `klams-types` because that is the only
-crate the scanner, the API, and MCP all share — the same reason
-`normalize_chunk_text` lives there.
-
-```text
-              [embeddings] max_input_tokens = 512
-                            │
-        ┌───────────────────┼───────────────────┐
-        ▼                   ▼                   ▼
-  scanner chunker     REST /index         MCP memory_add
-  (char estimate:     (exact count        (exact count;
-   cannot reach        before the 202,      this path had
-   TEI; a 413 is       so the cursor        NO cap at all
-   a counted skip,     never advances       before 027)
-   never a stall)      past a lost chunk)
-        └───────────────────┼───────────────────┘
-                            ▼
-                    TeiEmbedder preflight
-                 (provable bound only — a
-                  rejection here is final)
-```
-
-The REST and MCP gates ask the **model's own tokenizer** —
-`Store::check_embed_size` → `Embedder::count_tokens` → TEI's
-`POST /tokenize`, which runs no forward pass and so costs far less than
-the failed embed it replaces.
-
-That is not what this sprint set out to build. The plan called for a
-conservative chars-per-token bound; measuring the live model showed no
-such bound can work. Real content spans **1.03 chars/token**
-(punctuation-dense) to **>39** (base64) — a 32× spread — so a divisor
-safe for the former splits ordinary prose chunks in half, while one that
-leaves prose alone under-counts the former threefold. The character
-estimate (`klams_types::EmbedLimit`) therefore survives only where the
-tokenizer is unreachable: the scanner, which talks solely to the klams
-API. Its documentation carries the measurement table and states that it
-is an approximation.
-
-`tiktoken` is deliberately unused despite already being a workspace
-dependency: `cl100k_base` is OpenAI's BPE vocabulary while bge-family
-models use WordPiece, so it would be confidently wrong rather than
-honestly approximate.
-
-One subtlety worth preserving: the embedder's own preflight uses
-`EmbedLimit::certainly_exceeds`, a *provable* bound (WordPiece never
-merges across whitespace, so *n* words ⇒ ≥ *n* tokens) rather than the
-estimate. A rejection there is final, and refusing on an estimate would
-discard token-efficient content the model accepts — a new source of lost
-writes in the sprint meant to end them.
-
-### 2m.2 The silent-loss triangle, closed
-
-Three independent gaps combined into invisible data loss (review F-3.2):
-
-1. REST accepted ≤8192 characters, ~4× the model's real capacity.
-2. The worker embeds with **no reply channel** for knowledge; on failure
-   it logged and dropped the job without incrementing `writes_failed`,
-   because that counter was only ever touched by HTTP handlers.
-3. The scanner had already advanced its cursor on the `202`, so nothing
-   ever retried.
-
-All three are now closed: the size gate makes (1) impossible, the worker
-increments `writes_failed{type,reason}` and logs the loss explicitly at
-(2), and rejecting before the `202` means (3) cannot arise.
-
-`/healthz` is deliberately unchanged. TEI's `/health` returns 200
-whenever the model is loaded — input rejections never touch it — so
-health was never going to catch this. The dropped-write counter is the
-right instrument, not a health check.
-
-### 2m.3 The transient/permanent axis
-
-`StoreError` gained a classification (`Transience`) because the
-information needed to answer "should the caller retry?" was being
-destroyed at the HTTP boundary and could not be recovered downstream.
-The embedder retry loops retried *every* non-2xx three times and
-discarded the response body — including TEI's `inputs must have less
-than 512 tokens`, the one actionable string it sends.
-
-Now: 4xx fails immediately with the body captured, 5xx/connect/timeout
-retry, and Postgres failures are classified by SQLSTATE
-(`08`/`40`/`53`/`57` → transient) via `StoreError::from_sqlx`. The MCP
-layer maps all of it through one function, `errors::from_store_error`,
-which enforces the invariant that makes the contract usable:
-`retry_after_seconds` is present **iff** the error is transient.
-
-### 2m.4 The oversize-write log
-
-`oversize_write` (migration 0012) records refused knowledge writes
-*including the full submitted text*. It mirrors the `search_miss`
-pattern — fire-and-forget, never affecting what the caller sees — with
-one deliberate difference: it is **pruned on a daily timer** rather than
-left to the operator, because it retains whole documents.
-
-Its purpose is evidential. Sprint 028 raises the ceiling to 8k+ tokens,
-which should make oversize rejections rare; this table is what decides
-whether #632's server-side chunking is ever worth building, rather than
-building it on the assumption that it is.
-
-## 2n. Sprint 028 deltas — corpus quality (#639 / #640 / #642 / #655 / #657)
-
-* **Fence-aware markdown chunker (#639).** `markdown_blocks` tracks
-  fenced-code state (backtick and tilde fences, info strings, CommonMark
-  length/indent rules), so a `# comment` inside a fence is body text,
-  never an ATX heading. Pre-028, such comments closed the open section —
-  emitting content-free `"<breadcrumb>\n\n```bash"` chunks that scored
-  up to 0.956 raw cosine on heading-echo queries — and corrupted the
-  breadcrumb stack for the rest of the file. A markdown-only body floor
-  (`MIN_BODY_CHARS = 40`, breadcrumb excluded) additionally drops tiny
-  sections ("MIT.") whose breadcrumb outweighs their content.
-* **Real repo names (#640).** The scanner derives `repo` per file — the
-  deepest ancestor with a `.git` entry (directory or worktree file),
-  else the first path segment under the scan root — instead of stamping
-  every point with the root's basename (218k of 222k live points said
-  `repo="src"`). The `RetrievalFilters.repo` filter is meaningful for
-  scanner content from the 028 re-scan onward.
-* **Content-only storage dedupe with copy bookkeeping (#642).** ONE
-  Qdrant point per `content_hash` (Ken's #641 ruling extended to
-  storage). The (host, file) identity that sprints 022/023 encoded as
-  point identity became payload bookkeeping: `copies[]`
-  ({machine, file, repo} structs, authoritative), with derived
-  keyword-indexed `machines[]` / `files[]` lists, and the singular
-  `machine`/`file`/`repo` retained as the *canonical* copy (re-promoted
-  when the canonical copy is deleted). Dedupe hits attach the new
-  location; `delete_knowledge_by_source_file` removes one copy and
-  deletes the point only when the last copy goes. Pre-028 points carry
-  no `copies` list — their singular fields synthesize as their only
-  copy, so they behave exactly as before. Bookkeeping is serialized by a
-  process-wide mutex (Qdrant has no transactions; a lost update here
-  could delete a point a host still relies on). The content-hash probe
-  now also excludes soft-deleted points — a scanner chunk deduping onto
-  a deleted memory made live content unsearchable.
-* **GPU embedder (#655).** TEI moved from the CPU image to the CUDA
-  image on kubs0's RTX 4080 SUPER (16 GB, CDI passthrough — see
-  `deploy/docker-compose.gpu.yml`), with an eval-selected long-context
-  model replacing `bge-small-en-v1.5` (384-dim, 512 tokens). The
-  `[embeddings] query_prefix` key supports asymmetric retrieval models
-  (prefix on queries, never on documents). TEI ≥1.8 note: the
-  `--auto-truncate` default flipped to `true`; klams passes an explicit
-  `false` — a silently truncated chunk looks complete but is unfindable
-  by its tail (standing decision).
-* **Obsidian out of the corpus (#657).** The vault root was removed from
-  kubs0's scanner config, its cursor rows cleared, and its points fell
-  with the corpus reset. Rationale and revisit criteria in
-  `docs/setup.md`.
-
-## 2o. Sprint 029 deltas — ranking & lifecycle (#644 / #638 / #628)
-
-### 2o.1 Weighted, deterministic RRF (#644)
-
-Fusion is still RRF (`klams_core::hybrid::fuse`), with two changes:
-
-* **Per-hit weights.** `RankedRow.weight` scales a hit's contribution
-  — `w/(k+rank+1)` instead of `1/(k+rank+1)`; `1.0` is neutral. The
-  weight composes the **provenance tier**
-  (`klams_core::provenance::ProvenanceTier`) with **declared-volatility
-  age demotion**. Three tiers, derived at query time from fields the
-  store already records (`source` + author `agent_name` — deliberately
-  NOT `Source::trust_rank`, which orders scanner above agents):
-  hand-authored (`memory_add` writes; w = 2.0) > machine-extracted
-  (klams-mind session extracts; w = 1.5) > bulk scanner (w = 1.0).
-  Weights scale contribution, never reorder within a source list; a
-  bulk hit that genuinely dominates can still win.
-* **Deterministic ties.** `finalize` breaks equal fused scores by
-  source discriminant then id. Pre-029, equal scores (fact@0 vs
-  knowledge@0 are bit-identical) kept `HashMap` iteration order —
-  identical calls could return different pages.
-
-Volatility (`F-1.4`): an optional write-time declaration
-(`stable`/`volatile`) on `memory_add`/`memory_update`/`memory_supersede`.
-Volatile memories keep full weight for a week, then halve every 30
-days, floored at 0.25 (demoted, never disappeared). Stable and
-undeclared memories never decay — scanner `created_at` is scan time,
-and silently burying stable truths is the worst failure mode. No
-blanket knowledge decay.
-
-### 2o.2 The curated stratum — a 4th fusion source (#644 / #628)
-
-Agent-authored knowledge is ~100 points in a ~180k corpus, so a
-badly-phrased query can miss the curated target in ANY global top-k
-(#628's Query A failure mode). MCP `memory_search` therefore runs a
-second, filtered ANN search (`search_knowledge_curated`:
-`source = AgentProposal` AND no `machine`, live points only —
-index-backed, the stratum is tiny) with the same query vector, and
-feeds the stratum's own rank list into fusion as a 4th RRF source. A
-curated memory deep in the global list gets its stratum rank counted;
-one absent from the global list joins the page. Two guards, both
-measured against the live corpus (2026-07-26):
-
-* **The `machine` gate.** "Curated" is `AgentProposal` *and no
-  machine* (review F-2.4's full definition): the corpus holds
-  file-derived AgentProposal points — scanned Claude session
-  transcripts with `machine` set — that flooded the stratum until the
-  gate landed. A true `memory_add` write never carries a machine.
-* **The query-relative boost threshold**
-  (`provenance::boost_threshold`): stratum membership *and* the tier
-  weight require a raw cosine within `CURATED_COMPETITIVE_FRAC = 0.82`
-  of the query's best raw score (global and curated pooled), floored
-  at `CURATED_STRATUM_RAW_FLOOR = 0.45` (the Qwen3 junk line). A
-  boosted curated hit at any stratum rank outscores every unboosted
-  rank-0 hit, so eligibility — not fusion arithmetic — is where
-  relevance has to hold the line. Without it, topically-adjacent agent
-  memories (raw 0.60) displaced a genuine bulk answer (raw 0.75).
-
-The REST `/memory/search` and `/memory/context` paths share the
-per-hit weighting via `StoreHybridAdapter` (author-blind two-tier
-approximation, same relative gate) but not the stratum — the
-eval-measured, agent-facing path is MCP `memory_search`.
-
-### 2o.3 Knowledge lifecycle verbs (#638)
-
-Agent-written knowledge — the only class that had *no* lifecycle story
-— gets the smallest sufficient verb set (facts amend, events append,
-scanner chunks re-scan; all unchanged):
-
-* **`memory_supersede(id, text, tags?, volatility?)`** — the primary
-  correction verb: writes the replacement (carrying `supersedes`),
-  then stamps the old point with the soft-delete pair plus
-  `superseded_by`. Every existing retrieval filter hides it; the admin
-  surface (`memory_admin_list_deleted`) shows the pointer and
-  `memory_admin_restore` undoes the hiding. Ordered new-first; a
-  mid-flight failure rolls the replacement back (best-effort) and the
-  error says exactly what state the store is in.
-* **`memory_update(id, text?, tags?, volatility?)`** — in-place edit,
-  id stable; text changes re-embed and re-hash. Authorship never
-  changes.
-* **Similar-on-write** — `memory_add` (knowledge) reuses its embedding
-  for a curated-stratum probe and returns `similar_existing`
-  (id, text head, author, raw cosine ≥ 0.85) so the writer supersedes
-  instead of duplicating, at the only moment that check is cheap.
-  Non-blocking and best-effort.
-
-Authorization rides sprint 025's model: both verbs sit at `Write`
-scope, with the shared ownership gate (`authorize_curation` — own it,
-or hold `manage`) that `memory_delete` uses; supersession *is* a
-delete plus a write, so it is deliberately one authorization decision.
-Both verbs refuse non-agent-authored targets with
-`NOT_AGENT_AUTHORED`. Background contradiction detection/consolidation
-stays klams-mind's job (WI-259 division of labor) — klams ships the
-primitives.
-
-## 2p. Sprint 030 deltas — second-stage reranker (#685)
-
-`memory_search` gained an optional cross-encoder stage between
-candidate assembly and rank fusion:
-
-* **Model & serving.** A second TEI container (`reranker` compose
-  service, port 7071, same GPU via CDI) serves
-  `BAAI/bge-reranker-v2-m3` over `POST /rerank`. The WI's candidate,
-  Qwen3-Reranker-0.6B, cannot be served: TEI has no merged Qwen3
-  classifier support (upstream PRs #886/#730/#835 open as of
-  2026-07-26; verified live — the seq-cls conversion is refused with
-  `` `classifier` model type is not supported for Qwen3 ``). Swap the
-  model id in `compose.env` when a TEI release merges it.
-* **Placement.** The stage scores the *knowledge candidates* (global
-  ANN + curated stratum, post dedupe/tag-filter, up to
-  `[retrieval] rerank_window` = 50) and reorders the knowledge
-  within-source rank list plus `curated_order` — the inputs to 029's
-  weighted RRF. Provenance weights therefore apply to the RERANKED
-  order: the cross-encoder fixes semantic order within a tier; the
-  weights still arbitrate across tiers. Facts/events are not
-  submitted (JSON payloads, not prose). `raw_score` stays the cosine.
-* **Contract.** Best-effort: one attempt, 5 s timeout, no retries; on
-  any failure the un-reranked order is served, a warning logged, and
-  `klams_rerank_skipped_total` incremented. Config-gated:
-  `[retrieval] reranker_url` absent = stage off (the rollback switch).
-  Stage latency rides the existing retrieval histogram as
-  `op="rerank"` — measured live: ~34 ms median, ~43 ms p99 per search.
-* **Why.** The 029 leftovers were two curated-vs-curated rank-1
-  inversions — same tier, same author, invisible to per-hit
-  provenance weights. The cross-encoder closes exactly that class:
-  eval went 19/21 → **21/21 (100%), 0 regressions** with the stage on
-  (bake-off on the live corpus, 2026-07-26). The reranker container
-  runs `--auto-truncate` ON — the opposite of the embedder,
-  deliberately: a truncated *scoring* signal degrades gracefully,
-  nothing is stored.
-* **Deferred.** Trained LTR / fine-tuned reranker stays gated behind
-  ~1–2k labeled pairs (search_sample + LLM-judge bootstrap) — see
-  korg #685.
-
-## 3. Deployment topology on `kubs0`
+directly; layering on the outer router after `.nest(...)` does not
+apply to nested services in axum 0.8. One shared `AuthState` backs both
+gates, so a single token works for REST and MCP.
+
+`klams_mcp::router` wraps rmcp's `StreamableHttpService` (JSON-RPC over
+POST/GET, streamable HTTP/SSE) with a configurable Host-header
+allowlist (`[server].mcp_allowed_hosts`); the default is empty —
+`require_bearer` is the real access control, and bearer-less requests
+get `401` before any tool sees them. No OAuth metadata is served; VS
+Code-style `"type": "http"` clients pass a static
+`headers.Authorization`.
+
+## 4. Deployment topology on `kubs0`
 
 ```text
 kubs0
 ├── /ai/klams/                              KLAMS_ROOT
 │   ├── config/klams.toml                   service config (perm 0600)
+│   ├── config/compose.env                  image/model pins + PG password
 │   ├── data/                               KLAMS_DATA_ROOT
 │   │   ├── postgres/                       uid 999:999
 │   │   ├── qdrant/
-│   │   └── tei/
-│   └── logs/                               optional spool
+│   │   └── tei/                            model cache (embedder + reranker)
+│   └── (backups live at [backup].backup_dir — a separate filesystem)
 │
 ├── systemd
-│   ├── klams-service.service               (Type=simple, After=postgresql qdrant)
-│   ├── klams-scanner.service               (Type=oneshot, runs `klams-scanner --once`)
+│   ├── klams-service.service               (Type=simple, After=docker.service)
+│   ├── klams-scanner.service               (Type=oneshot, `klams-scanner --once`)
 │   ├── klams-scanner.timer                 (OnBootSec=5min, OnUnitActiveSec=1h)
 │   └── klams-monitor.service               (Type=simple, Restart=on-failure)
 │
@@ -1429,59 +766,66 @@ kubs0
     └── network: klams-net (bridge)
         ├── klams-postgres
         ├── klams-qdrant
-        └── klams-tei
+        ├── klams-tei                       (GPU via CDI)
+        ├── klams-reranker                  (GPU via CDI)
+        └── klams-prometheus / klams-grafana  (observability profile)
 ```
 
-The split between **systemd-managed klams-service** and
+The split between **systemd-managed klams binaries** and
 **Compose-managed dependencies** is deliberate:
 
-* The service is a single Rust binary with no native deps beyond
-  libssl — easy to ship via `cargo build --release` + `scp`, easy to
-  restart with `systemctl restart klams`.
-* Postgres, Qdrant and TEI all have non-trivial image/version
-  management that Compose handles cleanly via `compose.env` pins.
-* This avoids a chicken-and-egg dance where the service's own
-  container would need to live on `klams-net` alongside its
-  dependencies; instead the service connects to `127.0.0.1:<port>`
-  via the published Compose ports.
+* The service is a single Rust binary with no native deps beyond libssl
+  — built on the host it runs on (`cargo build --release` +
+  `install-systemd.sh`), easy to restart. It connects to its
+  dependencies over the published loopback ports, so it needs no place
+  on `klams-net`.
+* Postgres, Qdrant and the two TEI containers have non-trivial
+  image/version management that Compose handles via `compose.env` pins.
+* All three units share a hardening profile (`NoNewPrivileges`,
+  `ProtectSystem=strict`, `ProtectHome`); they declare
+  `After=/Wants=docker.service` because the stateful dependencies live
+  in Docker. `install-systemd.sh` is idempotent, supports `--dry-run`,
+  and rotates the previous binary to `<bin>.prev` so `just rollback`
+  works.
+* `klams-service.service` raises `LimitNOFILE=65536`, and a per-peer
+  `ConnectionLimits` tower layer caps in-flight requests per remote IP
+  and trims idle keep-alives (sprint 009, kwi #26 — a loopback
+  CLOSE_WAIT leak exhausted fds under sustained traffic; validated by
+  an 18-hour soak, `tools/soak/`).
 
 Rationale in
 [research.md §3](../sprints/001-initial-mvp/research.md#3-klams-service-deployment).
 
-### 3.1 Network exposure
+### 4.1 Network exposure
 
 * `klams-service` binds **`127.0.0.1:7777`** (`listen_addr` in
   [`deploy/config/klams.example.toml`](../deploy/config/klams.example.toml)).
-  Off-host access is via **`tailscale serve`**, which terminates TLS and
-  proxies to loopback — so the reachable address is
+  Off-host access is via **`tailscale serve`**, which terminates TLS
+  and proxies to loopback — the reachable address is
   `https://kubs0.encke-wahoo.ts.net:7777`, on the tailnet only.
-
-  Sprint 032 (#648) corrected this: it said the service binds
-  `0.0.0.0:7777` for LAN reach with UFW restricting `7777/tcp` to
-  `192.168.1.0/24`. Neither is true now — `0.0.0.0` was abandoned
-  because it *conflicted with `tailscaled` already holding :7777*, and
-  the access boundary is the tailnet, not a UFW subnet rule. A wrong
-  exposure claim is the worst kind to leave standing: it invites both
-  false alarm and false confidence.
+  (History, sprint 032 #648: earlier revisions claimed `0.0.0.0:7777` +
+  a UFW subnet rule; `0.0.0.0` was abandoned because it conflicted with
+  `tailscaled` already holding :7777, and the access boundary is the
+  tailnet.)
 * Compose dependencies are bound to `127.0.0.1` only; they are reached
   by the service over loopback and never exposed to the LAN.
 * All inter-container traffic stays on the `klams-net` bridge.
 
-### 3.2 Secrets
+### 4.2 Secrets
 
-* Bearer token: 32-byte hex in `klams.toml` (file mode `0600`).
-  Constant-time compared on every request.
+* Bearer tokens: in `klams.toml` (file mode `0600`), constant-time
+  compared on every request.
 * Postgres password: in `compose.env` (mode `0600`) and inlined into
   the service's `postgres.url`.
-* No TLS in MVP — LAN-only deployment, see
-  [research.md §7](../sprints/001-initial-mvp/research.md#7-auth-model-for-mvp).
+* TLS is terminated by `tailscale serve`; the service itself speaks
+  plain HTTP on loopback.
 
-## 4. Where to look next
+## 5. Where to look next
 
 * End-to-end provisioning steps: [setup.md](setup.md).
-* Day-to-day operator recipes (start/stop, log inspection, viewport
-  install): [usage.md](usage.md).
-* MVP smoke checks mapped to success criteria:
-  [sprints/001-initial-mvp/quickstart.md §9](../sprints/001-initial-mvp/quickstart.md#9-smoke-test-the-user-stories).
-* Per-decision rationale:
-  [sprints/001-initial-mvp/research.md](../sprints/001-initial-mvp/research.md).
+* Day-to-day operator recipes (start/stop, log inspection, backups,
+  restore, viewport install): [usage.md](usage.md).
+* Auth model in full: [auth.md](auth.md).
+* Metrics series contract: [deploy/grafana/SERIES.md](../deploy/grafana/SERIES.md).
+* Per-sprint rationale and contracts: `sprints/NNN-*/` (sprints 001–012
+  keep the retired spec-kit layout; 013+ use `sprint.md`).

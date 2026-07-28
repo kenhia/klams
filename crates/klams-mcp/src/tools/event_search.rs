@@ -81,6 +81,7 @@ pub struct EventSearchOutput {
 pub async fn run<S: Store>(
     state: &McpState<S>,
     args: EventSearchArgs,
+    caller: Option<&str>,
 ) -> Result<EventSearchOutput, ErrorEnvelope> {
     let now = Utc::now();
     let until = parse_or_default(args.until.as_deref(), now, "until")?;
@@ -130,15 +131,19 @@ pub async fn run<S: Store>(
         .map_err(|e| envelope(errors::INTERNAL_ERROR, format!("event_search: {e}")))?;
 
     // Keep span labels bounded; author_id is intentionally excluded.
+    // Sprint 033 (#692): attribute to the caller — the 026 fix that
+    // gave memory_search real agent labels never reached this tool,
+    // so its metric series stayed a single "anonymous".
+    let agent = crate::tools::memory_search::caller_label(caller);
     tracing::info!(
         token_hash = "unknown",
-        agent_name = "anonymous",
+        agent_name = agent,
         model = "unknown",
         requested_window_hours = (until - since).num_hours(),
         result_count = events.len(),
         "mcp.event_search complete"
     );
-    mcp_metrics::record_search("anonymous", None);
+    mcp_metrics::record_search(agent, None);
 
     Ok(EventSearchOutput {
         events,

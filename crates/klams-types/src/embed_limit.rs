@@ -52,10 +52,11 @@
 //! backends, and as documentation of the ceiling's rough shape.
 //!
 //! `tiktoken-rs` is deliberately not used even though it is already a
-//! workspace dependency: `cl100k_base` is `OpenAI`'s BPE vocabulary while
-//! bge-family models use `WordPiece` over a different vocabulary, so it
-//! would produce confidently wrong numbers — worse than an estimate that
-//! is honest about being one.
+//! workspace dependency: `cl100k_base` is `OpenAI`'s BPE vocabulary,
+//! which matches neither bge-family `WordPiece` (the 027 model this
+//! table was measured on) nor the Qwen3 BPE vocabulary deployed since
+//! 028, so it would produce confidently wrong numbers — worse than an
+//! estimate that is honest about being one.
 //!
 //! ## Direction of error
 //!
@@ -67,11 +68,15 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// Token ceiling of `BAAI/bge-small-en-v1.5`, the model deployed on
-/// kubs0 (measured live: `max_input_length: 512`, `auto_truncate: false`).
+/// Fallback token ceiling when config doesn't say otherwise.
 ///
-/// Sprint 028 replaces this model with a longer-context one on the GPU;
-/// the ceiling is configurable precisely so that is a config change.
+/// 512 was `BAAI/bge-small-en-v1.5`'s measured limit (the model this
+/// gate was built against in 027). Sprint 028 swapped production to
+/// `Qwen/Qwen3-Embedding-0.6B` (32768 tokens), set explicitly via
+/// `[embeddings] max_input_tokens` — the deployed config never uses
+/// this default. It stays at 512 deliberately: a too-small fallback
+/// refuses loudly at the boundary, a too-large one recreates the
+/// silent worker-drop this module exists to prevent.
 pub const DEFAULT_MAX_INPUT_TOKENS: usize = 512;
 
 /// `WordPiece` wraps every input in `[CLS]` … `[SEP]`, which count against

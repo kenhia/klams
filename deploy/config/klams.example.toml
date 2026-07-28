@@ -222,8 +222,11 @@ per_source_top_k = 100      # each retrieval source returns top-k before fusion
 # runtime, so a sick reranker only costs the reorder, never the
 # search). rerank_window must stay <= the container's
 # --max-client-batch-size (compose serves 64).
-# reranker_url  = "http://127.0.0.1:7071"
-# rerank_window = 50
+# Enabled here because production runs it (033 retrospective: an
+# example that trails the live config is the drift class #647 fixed
+# for `collection`). Comment these two lines out to roll back.
+reranker_url  = "http://127.0.0.1:7071"
+rerank_window = 50
 
 [tokens]
 # Token-cost estimator for /memory/context budget accounting.

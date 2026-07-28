@@ -30,7 +30,7 @@ klams_mind    := env_var_or_default('KLAMS_MIND_DIR', justfile_directory() / '..
 viewport_host       := env_var_or_default('VIEWPORT_HOST',       'kenhi@cleo')
 viewport_deploy_dir := env_var_or_default('VIEWPORT_DEPLOY_DIR', 'c:\tools\bin')
 
-# Bring the Postgres+Qdrant+TEI stack up in the background.
+# Bring the Postgres+Qdrant+TEI+reranker stack up in the background.
 compose-up:
     docker compose -f {{compose_file}} up -d
 
@@ -443,11 +443,13 @@ bench-run *ARGS:
 
 # sprint 009 — purge every row written by the `klams-bench` agent
 # (FR-011 attribution). Resolves the author_id by agent_name, then
-# DELETEs from facts / events / knowledge_items in Postgres and from
-# the Qdrant collection by `author_id` payload filter. No payload-
-# pattern fallback. Reads connection settings from env:
+# DELETEs from facts / events in Postgres (knowledge lives only in
+# Qdrant) and from the Qdrant collection by `author_id` payload
+# filter. No payload-pattern fallback. Reads connection settings
+# from env:
 #   PGPASSWORD, PGHOST=127.0.0.1, PGUSER=klams, PGDATABASE=klams,
-#   QDRANT_URL=http://127.0.0.1:6333, QDRANT_COLLECTION=knowledge_items.
+#   QDRANT_URL=http://127.0.0.1:6333,
+#   QDRANT_COLLECTION=knowledge_items_v2.
 bench-clean:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -455,7 +457,7 @@ bench-clean:
     PGUSER="${PGUSER:-klams}"
     PGDATABASE="${PGDATABASE:-klams}"
     QDRANT_URL="${QDRANT_URL:-http://127.0.0.1:6333}"
-    QDRANT_COLLECTION="${QDRANT_COLLECTION:-knowledge_items}"
+    QDRANT_COLLECTION="${QDRANT_COLLECTION:-knowledge_items_v2}"
     : "${PGPASSWORD:?PGPASSWORD must be set}"
     export PGPASSWORD PGHOST PGUSER PGDATABASE
     author_id=$(psql -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" -At \

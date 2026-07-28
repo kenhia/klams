@@ -77,8 +77,10 @@ impl std::fmt::Debug for QdrantStore {
 }
 
 impl QdrantStore {
-    /// Connect, ensure the `knowledge_items` collection and payload
-    /// indexes exist.
+    /// Connect, ensure the configured collection (production:
+    /// `knowledge_items_v2` since sprint 028) and payload indexes
+    /// exist. Note this *creates on absence* — a wrong collection name
+    /// manufactures an empty collection instead of failing.
     pub async fn connect(grpc_url: &str, collection: &str, vector_dim: u64) -> StoreResult<Self> {
         let client = Qdrant::from_url(grpc_url)
             .build()

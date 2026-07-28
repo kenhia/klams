@@ -20,9 +20,9 @@ for the rules governing `queries.txt`.
 - `just bench-seed` → `cargo run --release -p klams-bench --bin seed`
 - `just bench-run`  → `cargo run --release -p klams-bench --bin run`
 - `just bench-clean` → purge every row authored by `klams-bench`
-  from Postgres (`facts` / `events` / `knowledge_items` `WHERE
-  author_id = (SELECT id FROM authors WHERE agent_name =
-  'klams-bench')`) and from the Qdrant collection (payload filter
+  from Postgres (`facts` / `events` `WHERE author_id = (SELECT id
+  FROM authors WHERE agent_name = 'klams-bench')`) and from the
+  Qdrant collection (default `knowledge_items_v2`; payload filter
   `author_id = <uuid>`). Needs `PGPASSWORD`; honors `PGHOST`,
   `PGUSER`, `PGDATABASE`, `QDRANT_URL`, `QDRANT_COLLECTION`.
 

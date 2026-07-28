@@ -421,7 +421,8 @@ impl<S: Store> ServerHandler for ToolRegistry<S> {
                         )))
                     }
                 };
-                match event_search::run(&self.state, args).await {
+                let caller_agent = caller.as_ref().map(|a| a.agent_name.as_str());
+                match event_search::run(&self.state, args, caller_agent).await {
                     Ok(out) => Ok(json_result(&out)),
                     Err(env) => Ok(envelope_result(&env)),
                 }

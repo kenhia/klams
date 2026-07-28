@@ -368,9 +368,12 @@ diff /tmp/pre-counts-events /tmp/post-counts-events && echo "events match"
 ```
 
 > **`--force` is required against a non-empty target.** `just
-> restore-from <date>` refuses to overwrite a Postgres that already
-> has rows in `facts` / `events` / `knowledge_items` and exits
-> non-zero with `target is non-empty; pass --force to overwrite`.
+> restore-from <date>` refuses to overwrite a non-empty target and
+> exits non-zero with `target is non-empty; pass --force to
+> overwrite`. The guard probes the two stores separately
+> (`crates/klams-service/src/backup/restore.rs`): Postgres rows in
+> `facts` / `events`, and Qdrant points in the knowledge collection —
+> knowledge lives only in Qdrant; Postgres has no knowledge table.
 > Pass `--force` only when you have already accepted the data loss:
 >
 > ```bash

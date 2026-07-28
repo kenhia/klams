@@ -43,7 +43,19 @@ pub async fn search<S: Store>(
     let want_knowledge = wants(req.types.as_ref(), SearchType::Knowledge);
 
     let adapter = StoreHybridAdapter::new(Arc::clone(&state.store));
-    let filters = RetrievalFilters::default();
+    // Sprint 033 (#692): `filters` was accepted and silently discarded
+    // since sprint 005 — every search ran with the defaults. Parse it
+    // into the same `RetrievalFilters` the `/memory/context` handler
+    // feeds this adapter, so both surfaces share one filter contract.
+    let filters = match req.filters.clone() {
+        Some(v) => {
+            serde_json::from_value::<RetrievalFilters>(v).map_err(|e| ApiError::Validation {
+                field: "filters".into(),
+                message: format!("invalid filters: {e}"),
+            })?
+        }
+        None => RetrievalFilters::default(),
+    };
 
     let vector_fut = async {
         if want_knowledge {
