@@ -1,0 +1,173 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 1010" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif">
+  <!-- klams read path (MCP memory_search), post-030 — sprint 033 (#694).
+       Stage order matches crates/klams-mcp/src/tools/memory_search.rs::run.
+       Constants verified live 2026-07-28 (033 retrospective F-2.*). -->
+  <style>
+    svg { --bg:#ffffff; --ink:#1f2735; --muted:#5c6577; --line:#7d8aa0;
+          --stage:#dbe7fb; --stageline:#4a76c9;
+          --src:#fdf0d3; --srcline:#c08a1e;
+          --rank:#e9e2f8; --rankline:#7e5fc4;
+          --log:#f2e4e0; --logline:#b0614a;
+          --note:#f4f6fa; --noteline:#aab4c4;
+          --cur:#ddf2e4; --curline:#2e9e5b; }
+    @media (prefers-color-scheme: dark) {
+      svg { --bg:#0d1117; --ink:#e6ecf5; --muted:#9aa6b8; --line:#8b98ac;
+            --stage:#1d3050; --stageline:#6f9ae0;
+            --src:#3a2e12; --srcline:#d9a83c;
+            --rank:#2a2344; --rankline:#a68ae0;
+            --log:#392019; --logline:#cf7f66;
+            --note:#161d29; --noteline:#3d4a5e;
+            --cur:#15301f; --curline:#4dbd7d; }
+    }
+    .stage { fill:var(--stage); stroke:var(--stageline); stroke-width:1.5; }
+    .src { fill:var(--src); stroke:var(--srcline); stroke-width:1.5; }
+    .rank { fill:var(--rank); stroke:var(--rankline); stroke-width:1.5; }
+    .log { fill:var(--log); stroke:var(--logline); stroke-width:1.5; }
+    .note { fill:var(--note); stroke:var(--noteline); stroke-width:1.2; }
+    .cur { fill:var(--cur); stroke:var(--curline); stroke-width:1.5; }
+    .t { fill:var(--ink); font-size:14px; font-weight:600; }
+    .s { fill:var(--muted); font-size:11.5px; }
+    .tt { fill:var(--ink); font-size:17px; font-weight:700; }
+    .k { fill:var(--muted); font-size:11px; font-family:ui-monospace,'Cascadia Code',Consolas,monospace; }
+    .fl { stroke:var(--line); stroke-width:1.7; fill:none; marker-end:url(#arr2); }
+    .fl2 { stroke:var(--line); stroke-width:1.5; fill:none; stroke-dasharray:6 4; marker-end:url(#arr2); }
+  </style>
+  <defs>
+    <marker id="arr2" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="8" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 4 L0 8 z" fill="var(--line)"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="1240" height="1010" fill="var(--bg)"/>
+  <text x="24" y="34" class="tt">klams — read path (MCP memory_search)</text>
+  <text x="24" y="52" class="s">as it actually is post-030 · stage order = memory_search.rs::run · constants re-verified in the 033 retrospective</text>
+
+  <!-- query in -->
+  <rect x="40" y="76" width="400" height="58" rx="8" class="stage"/>
+  <text x="56" y="100" class="t">query (agent, via MCP tool call)</text>
+  <text x="56" y="118" class="s">validate: non-empty · ≤1024 chars · top_k 1–50 (default 10)</text>
+
+  <!-- embed -->
+  <rect x="40" y="162" width="400" height="58" rx="8" class="stage"/>
+  <text x="56" y="186" class="t">embed the query — TEI :7070</text>
+  <text x="56" y="204" class="s">Qwen3-Embedding-0.6B · instruct prefix on the query only</text>
+  <path class="fl" d="M240 134 L240 162"/>
+
+  <!-- three retrieves -->
+  <rect x="40" y="252" width="250" height="104" rx="8" class="src"/>
+  <text x="56" y="276" class="t">global ANN</text>
+  <text x="56" y="294" class="s">Qdrant knowledge_items_v2</text>
+  <text x="56" y="310" class="s">fetch top_k × 2 (over-fetch for</text>
+  <text x="56" y="326" class="s">the dedupe collapse below)</text>
+  <text x="56" y="344" class="k">deleted_at empty</text>
+
+  <rect x="314" y="252" width="264" height="104" rx="8" class="cur"/>
+  <text x="330" y="276" class="t">curated-stratum ANN (029)</text>
+  <text x="330" y="294" class="s">same vector, curated points only:</text>
+  <text x="330" y="310" class="k">source=AgentProposal ∧ no machine</text>
+  <text x="330" y="326" class="s">guarantees hand-written memories</text>
+  <text x="330" y="344" class="s">are seen even when bulk floods ANN</text>
+
+  <rect x="602" y="252" width="250" height="104" rx="8" class="src"/>
+  <text x="618" y="276" class="t">Postgres FTS</text>
+  <text x="618" y="294" class="s">facts + events, ts_rank_cd</text>
+  <text x="618" y="310" class="s">two separately-capped lists</text>
+  <text x="618" y="326" class="s">(facts already decay- and</text>
+  <text x="618" y="344" class="s">use-count-weighted in SQL)</text>
+
+  <path class="fl" d="M180 220 L166 252"/>
+  <path class="fl" d="M330 220 L400 252"/>
+  <path class="fl" d="M440 200 C560 210 640 228 700 252"/>
+
+  <!-- boost gate -->
+  <rect x="314" y="384" width="264" height="86" rx="8" class="cur"/>
+  <text x="330" y="408" class="t">query-relative boost gate</text>
+  <text x="330" y="426" class="k">threshold = max(0.45, 0.82 × top_raw)</text>
+  <text x="330" y="442" class="s">a curated hit below it loses stratum + boost —</text>
+  <text x="330" y="458" class="s">adjacent-but-wrong memories can't flood the page</text>
+  <path class="fl" d="M446 356 L446 384"/>
+
+  <!-- weights -->
+  <rect x="314" y="498" width="264" height="100" rx="8" class="rank"/>
+  <text x="330" y="522" class="t">provenance × volatility weight</text>
+  <text x="330" y="540" class="s">2.0 hand · 1.5 extract · 1.0 bulk</text>
+  <text x="330" y="556" class="s">declared-volatile: full weight for a week,</text>
+  <text x="330" y="572" class="s">then 30-day half-life, floored at 0.25</text>
+  <text x="330" y="590" class="s">(undeclared/stable memories never decay)</text>
+  <path class="fl" d="M446 470 L446 498"/>
+
+  <!-- dedupe -->
+  <rect x="40" y="498" width="250" height="100" rx="8" class="stage"/>
+  <text x="56" y="522" class="t">duplicate collapse (026)</text>
+  <text x="56" y="540" class="s">group by content_hash, keep the</text>
+  <text x="56" y="556" class="s">best-ranked point, survivors carry</text>
+  <text x="56" y="572" class="k">copies[{host,file}]</text>
+  <text x="56" y="590" class="s">then per-kind ranks renumbered</text>
+  <path class="fl" d="M166 356 L166 498"/>
+  <text x="176" y="430" class="s">+ optional tag filter</text>
+
+  <!-- rerank -->
+  <rect x="40" y="636" width="538" height="96" rx="8" class="rank"/>
+  <text x="56" y="660" class="t">cross-encoder rerank — best-effort (030)</text>
+  <text x="56" y="678" class="s">bge-reranker-v2-m3 (:7071, GPU) scores (query, text) pairs for the knowledge list</text>
+  <text x="56" y="694" class="s">window ≤ 50 candidates (non-binding at default top_k) · ~35 ms · 5 s timeout</text>
+  <text x="56" y="710" class="s">any failure → skip + metric, never a failed search · config-gated: [retrieval] reranker_url</text>
+  <path class="fl" d="M166 598 L166 636"/>
+  <path class="fl" d="M446 598 L446 636"/>
+
+  <!-- fuse -->
+  <rect x="40" y="764" width="538" height="96" rx="8" class="rank"/>
+  <text x="56" y="788" class="t">weighted RRF fusion — 4 sources (024 → 029)</text>
+  <text x="56" y="806" class="k">score = Σ  w / (60 + rank + 1)</text>
+  <text x="56" y="822" class="s">lists: knowledge · facts · events · curated stratum (its members fuse from both lists)</text>
+  <text x="56" y="838" class="s">deterministic tie-break · magnitude lives in raw_score, not score</text>
+  <path class="fl" d="M300 732 L300 764"/>
+
+  <!-- fts joins fuse (routes left of the REST note) -->
+  <path class="fl" d="M690 356 C615 450 600 650 578 776"/>
+
+  <!-- page out -->
+  <rect x="40" y="892" width="538" height="82" rx="8" class="stage"/>
+  <text x="56" y="916" class="t">page → Vec&lt;ScoredMemory&gt;</text>
+  <text x="56" y="934" class="k">{ score (fused) · raw_score (cosine/ts_rank) · source_rank · memory: PublicMemory }</text>
+  <text x="56" y="952" class="s">truncated to top_k · PublicMemory carries author, copies[], heading_path, content_hash…</text>
+  <path class="fl" d="M300 860 L300 892"/>
+
+  <!-- logs -->
+  <rect x="640" y="892" width="290" height="82" rx="8" class="log"/>
+  <text x="656" y="916" class="t">instruments (026)</text>
+  <text x="656" y="934" class="s">search_sample: every search (query, caller,</text>
+  <text x="656" y="950" class="s">top raw, dup count) · search_miss: zero-hit</text>
+  <text x="656" y="966" class="s">or knowledge-top raw &lt; 0.45</text>
+  <path class="fl2" d="M578 930 L640 930"/>
+
+  <!-- REST divergence note -->
+  <rect x="640" y="498" width="560" height="234" rx="8" class="note"/>
+  <text x="656" y="522" class="t">⚠ the REST paths are NOT this pipeline (WI #730)</text>
+  <text x="656" y="544" class="s">POST /memory/search and /memory/context go through StoreHybridAdapter:</text>
+  <text x="656" y="562" class="s">same boost gate + dedupe collapse, but ×3 over-fetch, author-blind two-tier</text>
+  <text x="656" y="578" class="s">weights (extracts get 2.0), no curated stratum, no rerank stage, and</text>
+  <text x="656" y="594" class="s">/memory/search hardcodes default RRF (ignores [retrieval] fusion).</text>
+  <text x="656" y="616" class="s">Since 033: request filters are parsed and honored (they were silently</text>
+  <text x="656" y="632" class="s">discarded from sprint 005 to 032). /memory/context adds section budgets,</text>
+  <text x="656" y="648" class="s">token counting, and event-summary substitution on top of the adapter.</text>
+  <text x="656" y="670" class="s">memory_related is a bare nearest-neighbour walk — none of the above.</text>
+  <text x="656" y="692" class="s">Unification (extract this pipeline into klams-core, both surfaces call it)</text>
+  <text x="656" y="708" class="s">is filed with a measured plan: korg klams#730.</text>
+
+  <!-- corpus note -->
+  <rect x="884" y="76" width="316" height="280" rx="8" class="note"/>
+  <text x="900" y="100" class="t">what the searches run against</text>
+  <text x="900" y="122" class="s">knowledge_items_v2 · ~180k points · 1024-dim</text>
+  <text x="900" y="138" class="s">99.9% scanner bulk · ~97 hand-authored ·</text>
+  <text x="900" y="154" class="s">klams-mind session extracts in between</text>
+  <text x="900" y="176" class="s">one point per content: cross-host copies merged</text>
+  <text x="900" y="192" class="s">at ingest (machines[] list); residual duplicate</text>
+  <text x="900" y="208" class="s">groups (publish race, 0.11%) caught by the</text>
+  <text x="900" y="224" class="s">query-time collapse on the left</text>
+  <text x="900" y="246" class="s">superseded / soft-deleted points carry</text>
+  <text x="900" y="262" class="k">deleted_at (+ superseded_by pointer)</text>
+  <text x="900" y="278" class="s">and are excluded by every retrieve filter —</text>
+  <text x="900" y="294" class="s">a corrected memory disappears from results</text>
+  <text x="900" y="316" class="s">raw-score scale (Qwen3): junk ~0.35 ·</text>
+  <text x="900" y="332" class="s">genuine hits 0.55–0.88 (measured 07-28)</text>
+</svg>

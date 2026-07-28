@@ -1,0 +1,197 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 940" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif">
+  <!-- klams system topology — sprint 033 (#694). Hand-authored; every box corresponds
+       to a real unit, container, crate, or path. Verify against docs/architecture.md §1/§4. -->
+  <style>
+    svg { --bg:#ffffff; --ink:#1f2735; --muted:#5c6577; --line:#7d8aa0;
+          --host:#f4f6fa; --hostline:#aab4c4;
+          --bin:#dbe7fb; --binline:#4a76c9;
+          --ctr:#e9e2f8; --ctrline:#7e5fc4;
+          --store:#fdf0d3; --storeline:#c08a1e;
+          --gpu:#ddf2e4; --gpuline:#2e9e5b;
+          --agent:#d8f0f2; --agentline:#1e8a96;
+          --nas:#f2e4e0; --nasline:#b0614a; }
+    @media (prefers-color-scheme: dark) {
+      svg { --bg:#0d1117; --ink:#e6ecf5; --muted:#9aa6b8; --line:#8b98ac;
+            --host:#161d29; --hostline:#3d4a5e;
+            --bin:#1d3050; --binline:#6f9ae0;
+            --ctr:#2a2344; --ctrline:#a68ae0;
+            --store:#3a2e12; --storeline:#d9a83c;
+            --gpu:#15301f; --gpuline:#4dbd7d;
+            --agent:#0f3236; --agentline:#3cb2c0;
+            --nas:#392019; --nasline:#cf7f66; }
+    }
+    .h { fill:var(--host); stroke:var(--hostline); stroke-width:1.5; rx:10; }
+    .bin { fill:var(--bin); stroke:var(--binline); stroke-width:1.5; }
+    .ctr { fill:var(--ctr); stroke:var(--ctrline); stroke-width:1.5; }
+    .store { fill:var(--store); stroke:var(--storeline); stroke-width:1.5; }
+    .gpu { fill:var(--gpu); stroke:var(--gpuline); stroke-width:1.5; stroke-dasharray:5 3; }
+    .agent { fill:var(--agent); stroke:var(--agentline); stroke-width:1.5; }
+    .nas { fill:var(--nas); stroke:var(--nasline); stroke-width:1.5; }
+    .t { fill:var(--ink); font-size:14px; font-weight:600; }
+    .s { fill:var(--muted); font-size:11.5px; font-weight:400; }
+    .tt { fill:var(--ink); font-size:17px; font-weight:700; }
+    .lbl { fill:var(--muted); font-size:11px; font-style:italic; }
+    .fl { stroke:var(--line); stroke-width:1.6; fill:none; marker-end:url(#arr); }
+    .fl2 { stroke:var(--line); stroke-width:1.6; fill:none; stroke-dasharray:6 4; marker-end:url(#arr); }
+  </style>
+  <defs>
+    <marker id="arr" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="8" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 4 L0 8 z" fill="var(--line)"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="1240" height="940" fill="var(--bg)"/>
+  <text x="24" y="34" class="tt">klams — system topology</text>
+  <text x="24" y="52" class="s">as of 0.1.33 (sprint 033) · one box = one real unit/container/crate · see docs/architecture.md</text>
+
+  <!-- ===================== agents band ===================== -->
+  <rect x="24" y="72" width="620" height="96" rx="8" class="agent"/>
+  <text x="40" y="96" class="t">Agent clients (MCP)</text>
+  <text x="40" y="114" class="s">Claude Code sessions (any machine) · GitHub Copilot · klams-mind · bearer token → author identity</text>
+  <text x="40" y="132" class="s">MCP memory_* tools over Streamable HTTP at /mcp</text>
+  <text x="40" y="150" class="s">https://kubs0.encke-wahoo.ts.net:7777/mcp (tailscale serve; loopback on kubs0 itself)</text>
+
+  <rect x="668" y="72" width="270" height="96" rx="8" class="agent"/>
+  <text x="684" y="96" class="t">klams-viewport</text>
+  <text x="684" y="114" class="s">Tauri 2 + SvelteKit desktop UI</text>
+  <text x="684" y="132" class="s">runs on cleo (Windows)</text>
+  <text x="684" y="150" class="s">REST /memory/context, /v1/* (read scope)</text>
+
+  <rect x="962" y="72" width="254" height="96" rx="8" class="nas"/>
+  <text x="978" y="96" class="t">gratch (Unraid NAS)</text>
+  <text x="978" y="114" class="s">/gratch/klams-backup mount</text>
+  <text x="978" y="132" class="s">nightly: postgres dump +</text>
+  <text x="978" y="150" class="s">qdrant snapshot (retention-capped)</text>
+
+  <!-- ===================== kubs0 host ===================== -->
+  <rect x="24" y="200" width="800" height="600" class="h"/>
+  <text x="44" y="228" class="tt">kubs0 · Linux x86_64 · production host</text>
+
+  <!-- klams-service -->
+  <rect x="44" y="248" width="440" height="240" rx="6" class="bin"/>
+  <text x="60" y="272" class="t">klams-service — systemd, native binary, 127.0.0.1:7777</text>
+  <rect x="60" y="286" width="196" height="54" rx="4" class="bin"/>
+  <text x="70" y="306" class="t" font-size="12.5">klams-api</text>
+  <text x="70" y="322" class="s">axum REST · scopes · validation</text>
+  <rect x="268" y="286" width="196" height="54" rx="4" class="bin"/>
+  <text x="278" y="306" class="t" font-size="12.5">klams-mcp</text>
+  <text x="278" y="322" class="s">tool surface at /mcp (rmcp)</text>
+  <rect x="60" y="350" width="196" height="54" rx="4" class="bin"/>
+  <text x="70" y="370" class="t" font-size="12.5">klams-core</text>
+  <text x="70" y="386" class="s">write queue · fusion · provenance</text>
+  <rect x="268" y="350" width="196" height="54" rx="4" class="bin"/>
+  <text x="278" y="370" class="t" font-size="12.5">klams-store</text>
+  <text x="278" y="386" class="s">Postgres · Qdrant · TEI clients</text>
+  <text x="60" y="428" class="s">/healthz · /metrics · nightly backup task → gratch</text>
+  <text x="60" y="446" class="s">config: /etc/klams/klams.toml ([[auth.tokens]] hot-reload)</text>
+  <text x="60" y="464" class="s">version = sprint number (0.1.33) on /healthz + server_info</text>
+
+  <!-- scanner / monitor -->
+  <rect x="44" y="508" width="212" height="86" rx="6" class="bin"/>
+  <text x="58" y="530" class="t">klams-scanner</text>
+  <text x="58" y="548" class="s">systemd timer, hourly --once</text>
+  <text x="58" y="564" class="s">walks ~/src, chunks, publishes</text>
+  <text x="58" y="580" class="s">via REST ingest (own token)</text>
+
+  <rect x="44" y="608" width="212" height="72" rx="6" class="bin"/>
+  <text x="58" y="630" class="t">klams-monitor</text>
+  <text x="58" y="648" class="s">watches /healthz; publishes</text>
+  <text x="58" y="664" class="s">state transitions as events</text>
+
+  <!-- docker stack -->
+  <rect x="284" y="508" width="520" height="272" rx="6" class="h"/>
+  <text x="300" y="530" class="t">Docker Compose stack (deploy/docker-compose.yml)</text>
+
+  <rect x="300" y="544" width="232" height="86" rx="4" class="store"/>
+  <text x="312" y="564" class="t" font-size="12.5">klams-postgres</text>
+  <text x="312" y="580" class="s">facts · events · authors · dissents</text>
+  <text x="312" y="594" class="s">search_miss · search_sample</text>
+  <text x="312" y="608" class="s">oversize_write · summaries</text>
+
+  <rect x="548" y="544" width="240" height="86" rx="4" class="store"/>
+  <text x="560" y="564" class="t" font-size="12.5">klams-qdrant</text>
+  <text x="560" y="580" class="s">knowledge_items_v2</text>
+  <text x="560" y="594" class="s">~180k points · 1024-dim · cosine</text>
+  <text x="560" y="608" class="s">payload-indexed (content_hash…)</text>
+
+  <rect x="300" y="642" width="232" height="80" rx="4" class="ctr"/>
+  <text x="312" y="662" class="t" font-size="12.5">klams-tei · :7070</text>
+  <text x="312" y="678" class="s">Qwen/Qwen3-Embedding-0.6B</text>
+  <text x="312" y="692" class="s">32k-token ceiling · instruct</text>
+  <text x="312" y="706" class="s">prefix on queries only</text>
+
+  <rect x="548" y="642" width="240" height="80" rx="4" class="ctr"/>
+  <text x="560" y="662" class="t" font-size="12.5">klams-reranker · :7071</text>
+  <text x="560" y="678" class="s">BAAI/bge-reranker-v2-m3</text>
+  <text x="560" y="692" class="s">cross-encoder, best-effort stage</text>
+  <text x="560" y="706" class="s">(sprint 030)</text>
+
+  <rect x="300" y="730" width="488" height="40" rx="4" class="gpu"/>
+  <text x="312" y="748" class="t" font-size="12">RTX 4090 Super 16 GB — shared via CDI by tei + reranker</text>
+  <text x="312" y="763" class="s">prometheus + grafana also in compose (observability profile)</text>
+
+  <!-- ===================== kai host ===================== -->
+  <rect x="856" y="200" width="360" height="380" class="h"/>
+  <text x="876" y="228" class="tt">kai · Linux · GPU workstation</text>
+
+  <rect x="876" y="248" width="320" height="86" rx="6" class="bin"/>
+  <text x="890" y="270" class="t">klams-scanner (kai)</text>
+  <text x="890" y="288" class="s">same binary + timer; scans kai's synced ~/src</text>
+  <text x="890" y="304" class="s">publishes over the tailnet to kubs0:7777</text>
+  <text x="890" y="320" class="s">content-dedupe merges into machines[] lists</text>
+
+  <rect x="876" y="348" width="320" height="104" rx="6" class="agent"/>
+  <text x="890" y="370" class="t">klams-mind (Python, uv)</text>
+  <text x="890" y="388" class="s">owns the retrieval eval suite + runner</text>
+  <text x="890" y="404" class="s">(homelab-retrieval.toml, 27 cases · `just eval`)</text>
+  <text x="890" y="420" class="s">session extraction → memory_add as klams-mind</text>
+  <text x="890" y="436" class="s">reconciliation/consolidation queue (WI-259 split)</text>
+
+  <rect x="876" y="466" width="320" height="72" rx="6" class="ctr"/>
+  <text x="890" y="488" class="t">kvllm · :8000</text>
+  <text x="890" y="506" class="s">local model serving (vLLM, OpenAI-compat)</text>
+  <text x="890" y="522" class="s">klams-mind's LLM backend</text>
+
+  <!-- ===================== flows ===================== -->
+  <!-- agents -> service MCP -->
+  <path class="fl" d="M334 168 L334 248"/>
+  <text x="342" y="192" class="lbl">MCP /mcp (bearer)</text>
+  <!-- viewport -> service REST -->
+  <path class="fl" d="M760 168 C700 210 560 200 470 246"/>
+  <text x="600" y="205" class="lbl">REST over tailnet</text>
+  <!-- service -> postgres/qdrant -->
+  <path class="fl" d="M300 488 L380 544"/>
+  <path class="fl" d="M440 488 L620 544"/>
+  <text x="404" y="512" class="lbl">sqlx · gRPC</text>
+  <!-- service -> tei/reranker -->
+  <path class="fl" d="M360 488 C360 520 380 610 400 642"/>
+  <path class="fl" d="M470 470 C620 500 650 590 660 642"/>
+  <text x="560" y="500" class="lbl">HTTP embed / rerank</text>
+  <!-- scanner -> service -->
+  <path class="fl" d="M150 508 L150 488"/>
+  <text x="160" y="503" class="lbl">REST ingest (202 + queue)</text>
+  <!-- monitor -> service -->
+  <path class="fl2" d="M256 644 C300 630 320 560 330 490"/>
+  <!-- backup -> nas -->
+  <path class="fl" d="M600 200 C700 180 900 176 1036 170"/>
+  <text x="660" y="188" class="lbl">nightly backup pair</text>
+  <!-- kai scanner -> service -->
+  <path class="fl" d="M876 290 C700 300 560 320 484 340"/>
+  <text x="640" y="308" class="lbl">tailnet REST ingest</text>
+  <!-- klams-mind -> service -->
+  <path class="fl" d="M876 400 C740 430 560 430 484 420"/>
+  <text x="620" y="418" class="lbl">MCP writes · eval searches</text>
+  <!-- klams-mind -> kvllm -->
+  <path class="fl" d="M1030 452 L1030 466"/>
+
+  <!-- legend -->
+  <g transform="translate(856, 610)">
+    <rect x="0" y="0" width="360" height="170" rx="8" class="h"/>
+    <text x="16" y="24" class="t">Legend</text>
+    <rect x="16" y="38" width="26" height="16" class="bin"/><text x="52" y="51" class="s">Rust binary / crate (systemd-managed)</text>
+    <rect x="16" y="62" width="26" height="16" class="ctr"/><text x="52" y="75" class="s">inference container (TEI family)</text>
+    <rect x="16" y="86" width="26" height="16" class="store"/><text x="52" y="99" class="s">data store</text>
+    <rect x="16" y="110" width="26" height="16" class="agent"/><text x="52" y="123" class="s">agent / client surface</text>
+    <rect x="16" y="134" width="26" height="16" class="gpu"/><text x="52" y="147" class="s">shared GPU (CDI)</text>
+    <line x1="200" y1="142" x2="240" y2="142" class="fl2"/><text x="248" y="147" class="s">observe</text>
+  </g>
+</svg>

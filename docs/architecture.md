@@ -10,6 +10,12 @@ inline attributions here ("sprint 029, #644") where the trail matters.
 
 ## 1. Components
 
+![klams system topology — both hosts, all binaries and containers](diagrams/klams-topology.svg)
+
+*(Diagrams under [`docs/diagrams/`](diagrams/) are hand-authored SVG,
+sprint 033 #694 — theme-aware, self-contained, and drawn strictly from
+what exists; navigate the codebase by the names in the boxes.)*
+
 ```text
                        ┌─────────────────────────────┐
                        │  klams-viewport             │
@@ -139,6 +145,8 @@ regenerate after NVIDIA driver upgrades), not the legacy
 `deploy.resources` runtime form.
 
 ## 2. Data flow
+
+![klams write and ingest paths — agent writes vs scanner ingest](diagrams/klams-write-path.svg)
 
 ### 2.1 Write path — facts and events
 
@@ -394,6 +402,8 @@ and publishes a `kpidash:services:<name>:<host>` Redis card — an
 kwi #55 self-dependency. The section is inert when omitted.
 
 ### 2.5 Read path — MCP `memory_search`
+
+![klams read path — the post-030 retrieval pipeline](diagrams/klams-read-path.svg)
 
 The agent-facing, eval-measured retrieval pipeline
 ([`crates/klams-mcp/src/tools/memory_search.rs`](../crates/klams-mcp/src/tools/memory_search.rs)).

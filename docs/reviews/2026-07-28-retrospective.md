@@ -1,9 +1,9 @@
 # klams post-arc retrospective — 2026-07-28
 
-**Reviewer:** Claude (Fable 5), full-source session on kubs0, with live store access.
-**Scope:** sprint 033 (#692) — a retrospective of the 2026-07-25 → 07-27 arc itself: 025 authorization, 026 measurement, 027 ingest correctness, 028 embedder + corpus rebuild, 029 provenance ranking + lifecycle, 030 reranker, breathers A (korg:689) and B (korg:690). Not a bug hunt of old code (the [07-25 deep review](2026-07-25-deep-review.md) was that); a check of what the arc built and the thinking it built with.
-**Inputs:** the workspace at `0813303` (0.1.32 deployed), two delegated full-repo sweeps (retrieval-path divergence; swap leftovers + dead code), a full Qdrant corpus census (180,553 points scrolled), the `search_sample`/`search_miss` logs, live MCP probes with pre-gate curated-candidate visibility (a diagnostic the production pipeline doesn't expose), and a throwaway 0.1.33 service for counterfactual eval runs.
-**Status legend:** ✅ confirmed (code path cited or measured live) · ❓ suspected.
+**Reviewer:** Claude (Fable 5), full-source session on kubs0, with live store access.  
+**Scope:** sprint 033 (#692) — a retrospective of the 2026-07-25 → 07-27 arc itself: 025 authorization, 026 measurement, 027 ingest correctness, 028 embedder + corpus rebuild, 029 provenance ranking + lifecycle, 030 reranker, breathers A (korg:689) and B (korg:690). Not a bug hunt of old code (the [07-25 deep review](2026-07-25-deep-review.md) was that); a check of what the arc built and the thinking it built with.  
+**Inputs:** the workspace at `0813303` (0.1.32 deployed), two delegated full-repo sweeps (retrieval-path divergence; swap leftovers + dead code), a full Qdrant corpus census (180,553 points scrolled), the `search_sample`/`search_miss` logs, live MCP probes with pre-gate curated-candidate visibility (a diagnostic the production pipeline doesn't expose), and a throwaway 0.1.33 service for counterfactual eval runs.  
+**Status legend:** ✅ confirmed (code path cited or measured live) · ❓ suspected.  
 
 ---
 
