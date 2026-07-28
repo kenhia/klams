@@ -126,7 +126,7 @@
   <text x="560" y="706" class="s">(sprint 030)</text>
 
   <rect x="300" y="730" width="488" height="40" rx="4" class="gpu"/>
-  <text x="312" y="748" class="t" font-size="12">RTX 4090 Super 16 GB — shared via CDI by tei + reranker</text>
+  <text x="312" y="748" class="t" font-size="12">RTX 4080 SUPER 16 GB — shared via CDI by tei + reranker</text>
   <text x="312" y="763" class="s">prometheus + grafana also in compose (observability profile)</text>
 
   <!-- ===================== kai host ===================== -->

@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>klams — shared memory for a fleet of agents</title>
+<!-- Self-contained pitch page (sprint 033, korg #693). No external
+     assets; renders from file://. Every number is real, measured on
+     kubs0, and stamped with its as-of date. -->
+<style>
+  :root {
+    --bg: #f9fafc; --panel: #ffffff; --panel-edge: #dfe5ee;
+    --ink: #1c2433; --ink-2: #4b566b; --ink-3: #7a869c;
+    --accent: #4a76c9; --accent-ink: #33589f;
+    --k-knowledge: #4a76c9; --k-fact: #b07a10; --k-event: #2e9e5b;
+    --violet: #7e5fc4; --teal: #0f8fb3;
+    --wash-knowledge: #edf2fb; --wash-fact: #faf3e3; --wash-event: #e9f6ee;
+    --grid: #e6eaf2; --mono: ui-monospace, "Cascadia Code", "SF Mono", Consolas, Menlo, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #10151f; --panel: #171e2b; --panel-edge: #29334a;
+      --ink: #e7ecf5; --ink-2: #aab5c8; --ink-3: #76829a;
+      --accent: #5b87d6; --accent-ink: #8cabe8;
+      --k-knowledge: #5b87d6; --k-fact: #b8821a; --k-event: #35a865;
+      --violet: #987ad4; --teal: #2ba3c4;
+      --wash-knowledge: #1a2438; --wash-fact: #2b2210; --wash-event: #142b1d;
+      --grid: #232d42;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.55 var(--sans);
+  }
+  .page { max-width: 1060px; margin: 0 auto; padding: 40px 28px 56px; }
+
+  /* ---------- header ---------- */
+  header { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+  .wordmark { font: 700 34px/1 var(--mono); letter-spacing: -0.5px; }
+  .wordmark .cursor { color: var(--accent); }
+  .stamp { margin-left: auto; font: 12px var(--mono); color: var(--ink-3); }
+  .thesis {
+    margin: 22px 0 6px; font-size: 27px; font-weight: 650; line-height: 1.3;
+    letter-spacing: -0.3px; max-width: 30ch; text-wrap: balance;
+  }
+  .thesis em { font-style: normal; color: var(--accent-ink); }
+  .sub { color: var(--ink-2); max-width: 68ch; margin: 8px 0 0; }
+
+  /* ---------- shared bits ---------- */
+  section { margin-top: 44px; }
+  .eyebrow {
+    font: 600 11px/1 var(--sans); letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--ink-3); margin: 0 0 14px;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--panel-edge);
+    border-radius: 8px; padding: 18px 20px;
+  }
+  .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  code { font-family: var(--mono); font-size: 0.88em; background: var(--wash-knowledge);
+         padding: 1px 5px; border-radius: 4px; }
+
+  /* ---------- stat tiles ---------- */
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; }
+  .tile { background: var(--panel); border: 1px solid var(--panel-edge); border-radius: 8px;
+          padding: 16px 18px 14px; }
+  .tile .v { font: 640 32px/1.1 var(--mono); font-variant-numeric: tabular-nums; letter-spacing: -1px; }
+  .tile .l { font: 600 11.5px/1.3 var(--sans); letter-spacing: 0.1em; text-transform: uppercase;
+             color: var(--ink-3); margin-bottom: 8px; }
+  .tile .d { font-size: 12.5px; color: var(--ink-2); margin-top: 7px; line-height: 1.45; }
+
+  /* ---------- memory kinds ---------- */
+  .kinds { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+  .kind { border-radius: 8px; border: 1px solid var(--panel-edge); padding: 16px 18px; background: var(--panel); }
+  .kind h3 { margin: 0 0 2px; font-size: 16px; display: flex; align-items: center; gap: 9px; }
+  .kind .chip { width: 11px; height: 11px; border-radius: 3px; flex: none; }
+  .kind .count { margin-left: auto; font: 600 13px var(--mono); color: var(--ink-2); }
+  .kind p { margin: 8px 0 0; font-size: 13.5px; color: var(--ink-2); }
+  .kind.knowledge { background: var(--wash-knowledge); }
+  .kind.fact { background: var(--wash-fact); }
+  .kind.event { background: var(--wash-event); }
+
+  /* ---------- pipeline ---------- */
+  .pipe { display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch; }
+  .stage { background: var(--panel); border: 1px solid var(--panel-edge); border-radius: 7px;
+           padding: 10px 13px; flex: 1 1 150px; min-width: 148px; position: relative; }
+  .stage b { display: block; font-size: 13px; }
+  .stage span { font-size: 11.8px; color: var(--ink-2); line-height: 1.4; display: block; margin-top: 3px; }
+  .stage .n { position: absolute; top: -9px; left: 10px; background: var(--accent); color: #fff;
+              font: 700 10.5px/1 var(--mono); border-radius: 8px; padding: 3px 7px; }
+  .pipenote { font-size: 12.5px; color: var(--ink-3); margin-top: 10px; }
+
+  /* ---------- eval chart ---------- */
+  .evalwrap { display: grid; grid-template-columns: minmax(340px, 3fr) minmax(260px, 2fr); gap: 22px; align-items: start; }
+  @media (max-width: 760px) { .evalwrap { grid-template-columns: 1fr; } }
+  .chart svg { width: 100%; height: auto; display: block; }
+  .chart .bar { fill: var(--accent); rx: 4; }
+  .chart .bar:hover { fill: var(--accent-ink); }
+  .chart .cap { fill: var(--panel-edge); }
+  .chart text { font-family: var(--sans); }
+  .chart .val { font: 600 15px var(--mono); fill: var(--ink); }
+  .chart .xlab { font-size: 11px; fill: var(--ink-3); }
+  .chart .gline { stroke: var(--grid); stroke-width: 1; }
+  .evalstory p { margin: 0 0 10px; font-size: 14px; color: var(--ink-2); }
+  .evalstory p b { color: var(--ink); }
+
+  /* ---------- lifecycle ---------- */
+  .verbs { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
+  .verb { border-left: 3px solid var(--violet); padding: 2px 0 2px 14px; }
+  .verb b { font-size: 14px; display: block; font-family: var(--mono); font-weight: 600; }
+  .verb span { font-size: 13px; color: var(--ink-2); }
+
+  /* ---------- cast ---------- */
+  .cast { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+  .member { background: var(--panel); border: 1px solid var(--panel-edge); border-radius: 7px; padding: 12px 14px; }
+  .member b { font: 600 13.5px var(--mono); }
+  .member div { font-size: 12.5px; color: var(--ink-2); margin-top: 4px; line-height: 1.45; }
+
+  /* ---------- topology ---------- */
+  .topo svg { width: 100%; height: auto; display: block; }
+  .topo .hostbox { fill: none; stroke: var(--panel-edge); stroke-width: 1.5; }
+  .topo .unit { fill: var(--wash-knowledge); stroke: var(--k-knowledge); stroke-width: 1.2; }
+  .topo .datab { fill: var(--wash-fact); stroke: var(--k-fact); stroke-width: 1.2; }
+  .topo .infer { fill: var(--wash-event); stroke: var(--k-event); stroke-width: 1.2; }
+  .topo .tl { font: 600 12.5px var(--mono); fill: var(--ink); }
+  .topo .ts { font: 11px var(--sans); fill: var(--ink-2); }
+  .topo .th { font: 700 13px var(--sans); fill: var(--ink); }
+  .topo .edge { stroke: var(--ink-3); stroke-width: 1.4; fill: none; marker-end: url(#pa); }
+  .toponote { font-size: 12.5px; color: var(--ink-3); margin-top: 8px; }
+  .toponote a { color: var(--accent-ink); }
+
+  footer { margin-top: 52px; padding-top: 18px; border-top: 1px solid var(--panel-edge);
+           font-size: 12.5px; color: var(--ink-3); display: flex; gap: 18px; flex-wrap: wrap; }
+  footer .num { color: var(--ink-2); }
+  a { color: var(--accent-ink); }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header>
+  <div class="wordmark">klams<span class="cursor">▌</span></div>
+  <div class="stamp">v0.1.33 · numbers measured live on kubs0, 2026-07-28</div>
+</header>
+
+<p class="thesis">Shared, durable memory for <em>every agent</em> in the homelab.</p>
+<p class="sub">Claude Code sessions, Copilot, and pipeline agents all start from zero.
+klams is the store they check first and write back to — machines, services, past
+decisions, gotchas — so a lesson learned once, by anyone, is recallable by everyone,
+months later, from a two-line search. Rust service on kubs0; agents reach it over
+MCP; two scanners keep it fed with everything in the repos.</p>
+
+<section>
+  <p class="eyebrow">The store, today</p>
+  <div class="tiles">
+    <div class="tile">
+      <div class="l">Knowledge corpus</div>
+      <div class="v">180,553</div>
+      <div class="d">semantic points · 1024-dim Qwen3 embeddings · one point per
+        distinct content, wherever it appears (96,386 exist on both hosts — stored once)</div>
+    </div>
+    <div class="tile">
+      <div class="l">Retrieval eval</div>
+      <div class="v">26<span style="color:var(--ink-3)">/27</span></div>
+      <div class="d">golden queries green · the 27th is a deliberately-held-open
+        hard case — an eval that can't fail measures nothing</div>
+    </div>
+    <div class="tile">
+      <div class="l">Search, end to end</div>
+      <div class="v">~84 ms</div>
+      <div class="d">mean MCP search: embed + 3-way retrieval + dedupe +
+        cross-encoder rerank (~35 ms) + provenance-weighted fusion</div>
+    </div>
+    <div class="tile">
+      <div class="l">Curated memories</div>
+      <div class="v">102</div>
+      <div class="d">hand-written gotchas &amp; decisions — 0.06% of the corpus,
+        protected by their own retrieval stratum so bulk can never bury them</div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <p class="eyebrow">Three kinds of memory, three write disciplines</p>
+  <div class="kinds">
+    <div class="kind knowledge">
+      <h3><span class="chip" style="background:var(--k-knowledge)"></span>knowledge
+        <span class="count num">180,553</span></h3>
+      <p>Embedded semantic content. Two supplies: deliberate agent writes
+        (<code>memory_add</code>) and bulk scanner ingest from every repo on both
+        machines. Searched by meaning, ranked by provenance.</p>
+    </div>
+    <div class="kind fact">
+      <h3><span class="chip" style="background:var(--k-fact)"></span>facts
+        <span class="count num">38</span></h3>
+      <p>Typed, validated key/value state with versioned amendments, source-trust
+        ranking, and a dissent queue — a lower-trust writer can't silently
+        overwrite canon.</p>
+    </div>
+    <div class="kind event">
+      <h3><span class="chip" style="background:var(--k-event)"></span>events
+        <span class="count num">27</span></h3>
+      <p>Append-only observations: service state transitions, run reports.
+        Immutable by design — history, not belief.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <p class="eyebrow">The read path — what a search actually does</p>
+  <div class="pipe">
+    <div class="stage"><span class="n">1</span><b>embed</b><span>Qwen3-Embedding on the GPU, instruct prefix on the query</span></div>
+    <div class="stage"><span class="n">2</span><b>retrieve ×3</b><span>global ANN + a curated-only stratum + Postgres FTS for facts/events</span></div>
+    <div class="stage"><span class="n">3</span><b>gate &amp; weight</b><span>curated boost only when competitive (0.82 × top score); hand-written 2.0 · extracted 1.5 · bulk 1.0; stale volatile memories demoted</span></div>
+    <div class="stage"><span class="n">4</span><b>collapse</b><span>duplicates fold by content hash — the page never spends two slots on one fact</span></div>
+    <div class="stage"><span class="n">5</span><b>rerank</b><span>bge-reranker-v2-m3 cross-encoder re-reads the candidates · ~35 ms · best-effort</span></div>
+    <div class="stage"><span class="n">6</span><b>fuse</b><span>weighted reciprocal-rank fusion across all four lists → one ranked page</span></div>
+  </div>
+  <p class="pipenote">Every search is also logged (query, caller, scores) — the store
+  measures itself, and those logs are where the next eval cases come from.</p>
+</section>
+
+<section>
+  <p class="eyebrow">Proof it improves — the eval is the contract</p>
+  <div class="evalwrap">
+    <div class="chart card" role="img"
+         aria-label="Eval pass rate by version: 0.1.26 15 of 21, 0.1.28 18 of 21, 0.1.29 19 of 21, 0.1.30 21 of 21, 0.1.33 26 of 27">
+      <svg viewBox="0 0 520 240">
+        <line class="gline" x1="36" y1="200" x2="504" y2="200"/>
+        <!-- bars: value/cap heights scaled ×6.6 from pass counts -->
+        <g>
+          <title>0.1.26 — suite rewritten to measure real failures: 15/21</title>
+          <rect class="cap" x="44"  y="61.4" width="64" height="39.6" rx="4"/>
+          <rect class="bar" x="44"  y="101"  width="64" height="99" rx="4"/>
+          <text class="val" x="76"  y="92" text-anchor="middle">15</text>
+          <text class="xlab" x="76" y="220" text-anchor="middle">0.1.26</text>
+        </g>
+        <g>
+          <title>0.1.28 — Qwen3 embedder + corpus rebuild: 18/21</title>
+          <rect class="cap" x="140" y="61.4" width="64" height="19.8" rx="4"/>
+          <rect class="bar" x="140" y="81.2" width="64" height="118.8" rx="4"/>
+          <text class="val" x="172" y="72" text-anchor="middle">18</text>
+          <text class="xlab" x="172" y="220" text-anchor="middle">0.1.28</text>
+        </g>
+        <g>
+          <title>0.1.29 — provenance-weighted fusion + curated stratum: 19/21</title>
+          <rect class="cap" x="236" y="61.4" width="64" height="13.2" rx="4"/>
+          <rect class="bar" x="236" y="74.6" width="64" height="125.4" rx="4"/>
+          <text class="val" x="268" y="66" text-anchor="middle">19</text>
+          <text class="xlab" x="268" y="220" text-anchor="middle">0.1.29</text>
+        </g>
+        <g>
+          <title>0.1.30 — second-stage cross-encoder reranker: 21/21</title>
+          <rect class="bar" x="332" y="61.4" width="64" height="138.6" rx="4"/>
+          <text class="val" x="364" y="52" text-anchor="middle">21</text>
+          <text class="xlab" x="364" y="220" text-anchor="middle">0.1.30</text>
+        </g>
+        <g>
+          <title>0.1.33 — suite grown to 27 cases; 26 pass, 1 deliberately held open</title>
+          <rect class="cap" x="428" y="21.6" width="64" height="6.6" rx="4"/>
+          <rect class="bar" x="428" y="28.2" width="64" height="171.8" rx="4"/>
+          <text class="val" x="460" y="19" text-anchor="middle">26</text>
+          <text class="xlab" x="460" y="220" text-anchor="middle">0.1.33</text>
+        </g>
+        <text class="xlab" x="36" y="236">golden queries passed · grey cap = suite ceiling (21 cases → 27 in 0.1.33)</text>
+      </svg>
+    </div>
+    <div class="evalstory">
+      <p><b>Every ranking change is a measured change.</b> The suite is real agent
+      queries with pinned answers — "which memory must win, at what rank" — run
+      against the live corpus before anything merges.</p>
+      <p>When it saturated at 21/21, it was <b>grown until it could fail again</b>:
+      supersession under paraphrase, provenance repair bars, cases mined from live
+      traffic. Turn the reranker off and it drops to 24/27 — the instrument
+      discriminates.</p>
+      <p>Misses are logged, sampled, and harvested — the eval eats real traffic,
+      not invented benchmarks.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <p class="eyebrow">Memory that can change its mind</p>
+  <div class="verbs">
+    <div class="verb"><b>memory_supersede</b><span>one call replaces a stale record:
+      new one written, old one hidden with a pointer trail. A superseded belief stays
+      gone — even when you ask with different words.</span></div>
+    <div class="verb"><b>memory_update</b><span>authors fix their own records in
+      place; the text re-embeds automatically.</span></div>
+    <div class="verb"><b>similar-on-write</b><span>a new memory that near-duplicates
+      an existing one comes back with the match — reconcile at the only moment
+      it's cheap.</span></div>
+    <div class="verb"><b>volatility</b><span>declare a memory volatile (an IP, a
+      version) and it ages out of ranking on a half-life; stable truths never
+      decay.</span></div>
+  </div>
+</section>
+
+<section>
+  <p class="eyebrow">The cast</p>
+  <div class="cast">
+    <div class="member"><b>klams-service</b><div>the Rust core: REST + MCP surfaces,
+      scoped bearer auth, write queue, ranking</div></div>
+    <div class="member"><b>klams-scanner ×2</b><div>hourly on kubs0 and kai:
+      fence-aware chunking, content-dedupe across hosts</div></div>
+    <div class="member"><b>klams-monitor</b><div>watches health, writes state
+      transitions as events</div></div>
+    <div class="member"><b>klams-mind</b><div>the intelligence layer on kai: owns
+      the eval suite, extracts session learnings</div></div>
+    <div class="member"><b>viewport</b><div>Tauri desktop UI on Windows — browse,
+      search, resolve dissents</div></div>
+    <div class="member"><b>backups</b><div>nightly Postgres dump + Qdrant snapshot
+      to the NAS, restore-guarded</div></div>
+  </div>
+</section>
+
+<section class="topo">
+  <p class="eyebrow">Where it runs</p>
+  <div class="card">
+  <svg viewBox="0 0 1000 300">
+    <defs>
+      <marker id="pa" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="8" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0 0 L10 4 L0 8 z" fill="currentColor" style="fill:var(--ink-3)"/>
+      </marker>
+    </defs>
+    <!-- agents -->
+    <rect class="unit" x="16" y="20" width="250" height="64" rx="7"/>
+    <text class="th" x="32" y="44">agents, anywhere</text>
+    <text class="ts" x="32" y="62">Claude Code · Copilot · pipelines</text>
+    <text class="ts" x="32" y="76">MCP over the tailnet (HTTPS)</text>
+    <!-- kubs0 -->
+    <rect class="hostbox" x="316" y="12" width="400" height="276" rx="9"/>
+    <text class="th" x="334" y="38">kubs0 — production</text>
+    <rect class="unit" x="334" y="52" width="364" height="56" rx="6"/>
+    <text class="tl" x="348" y="74">klams-service :7777</text>
+    <text class="ts" x="348" y="92">REST + MCP · scopes · write queue · fusion</text>
+    <rect class="datab" x="334" y="122" width="176" height="58" rx="6"/>
+    <text class="tl" x="346" y="144">postgres</text>
+    <text class="ts" x="346" y="162">facts · events · logs</text>
+    <rect class="datab" x="522" y="122" width="176" height="58" rx="6"/>
+    <text class="tl" x="534" y="144">qdrant</text>
+    <text class="ts" x="534" y="162">180k vectors</text>
+    <rect class="infer" x="334" y="194" width="176" height="58" rx="6"/>
+    <text class="tl" x="346" y="216">tei · embed</text>
+    <text class="ts" x="346" y="234">Qwen3-0.6B · GPU</text>
+    <rect class="infer" x="522" y="194" width="176" height="58" rx="6"/>
+    <text class="tl" x="534" y="216">tei · rerank</text>
+    <text class="ts" x="534" y="234">bge-v2-m3 · GPU</text>
+    <text class="ts" x="334" y="274">one RTX 4080 SUPER, shared · nightly backups → NAS</text>
+    <!-- kai -->
+    <rect class="hostbox" x="766" y="12" width="218" height="276" rx="9"/>
+    <text class="th" x="784" y="38">kai — workstation</text>
+    <rect class="unit" x="784" y="52" width="182" height="52" rx="6"/>
+    <text class="tl" x="796" y="73">klams-scanner</text>
+    <text class="ts" x="796" y="90">scans, publishes over tailnet</text>
+    <rect class="unit" x="784" y="116" width="182" height="52" rx="6"/>
+    <text class="tl" x="796" y="137">klams-mind</text>
+    <text class="ts" x="796" y="154">evals · session extraction</text>
+    <rect class="infer" x="784" y="180" width="182" height="52" rx="6"/>
+    <text class="tl" x="796" y="201">kvllm :8000</text>
+    <text class="ts" x="796" y="218">local models (vLLM)</text>
+    <!-- edges -->
+    <path class="edge" d="M266 52 L334 74"/>
+    <path class="edge" d="M418 108 L418 122"/>
+    <path class="edge" d="M610 108 L610 122"/>
+    <path class="edge" d="M450 108 C440 150 430 170 424 194"/>
+    <path class="edge" d="M640 108 C630 150 620 170 614 194"/>
+    <path class="edge" d="M784 84 C740 90 716 84 698 80"/>
+    <path class="edge" d="M784 142 C750 140 720 120 698 96"/>
+  </svg>
+  </div>
+  <p class="toponote">Full hand-authored diagrams — topology, read path, write path —
+  live in <a href="../diagrams/">docs/diagrams/</a>; the design rationale in
+  <a href="../architecture.md">docs/architecture.md</a>.</p>
+</section>
+
+<section>
+  <p class="eyebrow">Why it's credible</p>
+  <div class="card" style="font-size:14px; color:var(--ink-2); line-height:1.65">
+    Built sprint by sprint since <span class="num">2026-05-16</span> — 33 sprints,
+    each a reviewed PR with its intent and outcome recorded in-repo. The store runs
+    its own instruments: every search sampled, misses classified, oversized writes
+    kept. When a deep review found the corpus 44% duplicates and the ranking
+    unmeasurable (2026-07-25), the next six sprints rebuilt the corpus
+    (44% → 0.11% duplicates), swapped the embedder onto the GPU, added provenance
+    ranking, lifecycle verbs, and a reranker — each step gated by the eval — and a
+    retrospective then re-derived every calibrated constant against live data.
+    The docs describe the system as it is; the diagrams are drawn from what exists.
+  </div>
+</section>
+
+<footer>
+  <span>as of <span class="num">2026-07-28</span>, klams <span class="num">0.1.33</span></span>
+  <span>corpus <span class="num">180,553</span> pts</span>
+  <span>eval <span class="num">26/27</span> (+1 held open)</span>
+  <span>search <span class="num">~84 ms</span></span>
+  <span>authors <span class="num">43</span></span>
+  <span style="margin-left:auto"><a href="../../README.md">README</a> · <a href="../architecture.md">architecture</a></span>
+</footer>
+
+</div>
+</body>
+</html>

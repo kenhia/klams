@@ -149,3 +149,30 @@ Full findings: [docs/reviews/2026-07-28-retrospective.md](../../docs/reviews/202
 - **Verification**: `just gate` green; docker-gated integration suite
   123 passed / 0 failed (stack brought up and torn down); eval 26/27 +
   1 known_open against live.
+
+### #694 — architecture & flow SVGs (2026-07-28)
+
+Three hand-authored SVGs under `docs/diagrams/`, embedded from
+architecture.md §1 / §2 / §2.5: topology (both hosts, all units,
+CDI-shared GPU, backups, tailnet surfaces), read path (the post-030
+pipeline with real constants + an honest REST-divergence callout), and
+write/ingest (agent writes vs scanner, lifecycle verbs). Theme-aware via
+`prefers-color-scheme` CSS inside each SVG; layout QA'd by rasterizing
+with the light palette inlined (cairosvg can't resolve CSS vars —
+`.scratch`-able trick: substitute, render, eyeball). One accuracy catch:
+the GPU is an **RTX 4080 SUPER** (nvidia-smi), not the "4090 Super" the
+07-25 review said — diagrams and pitch say 4080; the old review stays
+as written (it's a historical record).
+
+### #693 — the pitch (2026-07-28)
+
+`docs/pitch/klams-pitch.html`, linked from README. Self-contained
+(inline CSS, zero external assets, renders from file://), theme-aware,
+responsive. Numbers pulled live on 2026-07-28 and stamped: corpus
+180,553 / eval 26/27 with the 15→18→19→21→26 history as a small bar
+chart (grey caps show the suite ceiling growing 21→27) / ~84 ms mean
+MCP search / 102 curated memories / 43 authors. Palette derived from
+the diagrams' semantic colors and validated with the dataviz skill's
+six-check script in both light and dark (3-hue categorical trio;
+adjacent-pair CVD warnings covered by direct labels everywhere).
+Embeds a simplified derivative of the topology diagram.

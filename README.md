@@ -139,10 +139,17 @@ rollback path, ansible-k handoff) lives at
 [sprints/003-non-agentic-writes/quickstart.md](sprints/003-non-agentic-writes/quickstart.md).
 
 Architecture overview and component map:
-[docs/architecture.md](docs/architecture.md). Day-to-day operator
+[docs/architecture.md](docs/architecture.md) (with hand-authored
+topology/read-path/write-path diagrams under
+[docs/diagrams/](docs/diagrams/)). Day-to-day operator
 recipes: [docs/usage.md](docs/usage.md). Who can do what, and how
 tokens are granted: [docs/auth.md](docs/auth.md). Pointing an AI agent
 at the MCP surface: hand it [docs/klams-mcp-for-agents.md](docs/klams-mcp-for-agents.md).
+
+The elevator pitch — what klams is, why it exists, and what it
+demonstrably does, with real dated numbers — is a single self-contained
+page: [docs/pitch/klams-pitch.html](docs/pitch/klams-pitch.html)
+(open it straight from a checkout; it renders offline).
 
 ## License
 
