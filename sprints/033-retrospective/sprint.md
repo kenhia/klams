@@ -176,3 +176,21 @@ the diagrams' semantic colors and validated with the dataviz skill's
 six-check script in both light and dark (3-hue categorical trio;
 adjacent-pair CVD warnings covered by direct labels everywhere).
 Embeds a simplified derivative of the topology diagram.
+
+## Deployed 2026-07-28
+
+- Version `0.1.33` live on kubs0 (`/healthz` confirms; deployed from the
+  squash-merge `912464e`, PR #35).
+- Rollback target: `0.1.32` via `just rollback` (`.prev` binaries in place).
+- Migrations applied: none.
+- Verified live: `just verify` 7/7 (first run tripped the 01:01 nightly
+  backup's write-maintenance window — by design, retried clean after it
+  closed); REST `filters` fix exercised (malformed → 400, valid repo
+  filter → 200); eval 26/27 + 1 known_open, 0 regressions against the
+  deployed binary; units active, journal clean apart from the smoke's
+  own 503s during the backup window.
+- Config changes required: none (`/etc/klams/klams.toml` untouched;
+  reranker stage already configured).
+- Search-behavior memory (`019fa04a-ceac`, 0.1.30 note): NOT superseded —
+  MCP `memory_search` behavior is unchanged this sprint (constants all
+  kept; the filters fix is REST-only).
