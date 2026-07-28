@@ -67,8 +67,18 @@ const LOW_SCORE_THRESHOLD: f32 = 0.45;
 
 /// Over-fetch multiplier for the knowledge ANN search (sprint 026, #641).
 /// Query-time duplicate collapse discards hits, so fetching exactly
-/// `top_k` would return a short page. Measured: the dominant duplicate
-/// shape is a cross-host *pair*, so ×2 restores a full page.
+/// `top_k` would return a short page.
+///
+/// History: calibrated when the dominant duplicate shape was a
+/// cross-host *pair* (44% of the pre-028 corpus). The 028 ingest-time
+/// dedupe (#642) collapsed those into single points with a `machines[]`
+/// list, so the residue this now covers is the check-then-enqueue
+/// publish race (review F-4.3) plus same-content copies the race let
+/// through — re-measured 2026-07-28 (033 retrospective): 71 duplicate
+/// groups / 205 points in a 180k corpus, but they cluster on popular
+/// content, so 19% of live searches still collapse ≥1 hit. ×2 remains
+/// the right cheap insurance; the constant outlived its original
+/// rationale, not its usefulness.
 const KNOWLEDGE_OVERFETCH: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -788,8 +798,10 @@ fn apply_rerank_order(
 /// Label for the calling agent (sprint 026, #643). One helper so the
 /// miss log, the sample log, and the metric counter can never disagree
 /// about who ran a search — they used three different answers before
-/// (`"unknown"`, nothing, and the literal `"anonymous"`).
-fn caller_label(caller: Option<&str>) -> &str {
+/// (`"unknown"`, nothing, and the literal `"anonymous"`). Shared with
+/// `event_search` since 033 (#692): the 026 attribution fix never
+/// reached it, so its Grafana series stayed `"anonymous"`.
+pub(crate) fn caller_label(caller: Option<&str>) -> &str {
     match caller {
         Some(c) if !c.trim().is_empty() => c,
         _ => "unknown",

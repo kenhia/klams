@@ -228,19 +228,13 @@ impl TeiEmbedder {
     }
 
     /// Set the model's input ceiling (sprint 027). Defaults to
-    /// [`klams_types::DEFAULT_MAX_INPUT_TOKENS`], the deployed
-    /// bge-small-en-v1.5 limit; sprint 028's longer-context model sets
-    /// it from config instead.
+    /// [`klams_types::DEFAULT_MAX_INPUT_TOKENS`] (512, the retired
+    /// bge-small limit kept as a conservative fallback); the deployed
+    /// Qwen3 model's 32768 comes from config (sprint 028).
     #[must_use]
     pub fn with_limit(mut self, limit: EmbedLimit) -> Self {
         self.limit = limit;
         self
-    }
-
-    /// The configured ceiling, so ingest paths can gate against exactly
-    /// what the embedder will enforce.
-    pub fn limit(&self) -> EmbedLimit {
-        self.limit
     }
 }
 
@@ -417,12 +411,6 @@ impl OpenAiCompatEmbedder {
     pub fn with_limit(mut self, limit: EmbedLimit) -> Self {
         self.limit = limit;
         self
-    }
-
-    /// The configured ceiling, so ingest paths can gate against exactly
-    /// what the embedder will enforce.
-    pub fn limit(&self) -> EmbedLimit {
-        self.limit
     }
 
     fn authed(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {

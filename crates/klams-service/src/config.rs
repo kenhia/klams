@@ -191,7 +191,11 @@ pub struct QdrantConfig {
 }
 
 fn default_collection() -> String {
-    "knowledge_items".into()
+    // The live collection since the sprint 028 corpus rebuild (v1 was
+    // dropped in 032 #684). `QdrantStore::connect` creates-on-absence,
+    // so a stale default here doesn't fail — it silently manufactures
+    // an empty collection under the wrong name (033 retrospective).
+    "knowledge_items_v2".into()
 }
 
 /// Which wire dialect the embedding endpoint speaks (sprint 014).
@@ -228,8 +232,9 @@ pub struct EmbeddingsConfig {
     /// This is the number every ingest path gates against, so a text
     /// that would be refused by the embedder is refused at the boundary
     /// with an honest error instead of being accepted and dropped later.
-    /// Defaults to bge-small-en-v1.5's 512; sprint 028's longer-context
-    /// model raises it here rather than in code.
+    /// Defaults to 512 (the retired 027-era bge-small ceiling — a
+    /// deliberately conservative fallback); production sets the
+    /// deployed Qwen3 model's 32768 explicitly (sprint 028).
     #[serde(default = "default_max_input_tokens")]
     pub max_input_tokens: usize,
     /// How long to keep oversize-write log rows (sprint 027, #656).
@@ -561,6 +566,43 @@ mod tests {
         assert!(cfg.summarization.enabled);
         assert_eq!(cfg.summarization.event_cluster_min, 50);
         assert_eq!(cfg.embeddings.api, EmbeddingsApi::Tei);
+    }
+
+    /// Sprint 033 (#692 retrospective): a config that omits
+    /// `[qdrant] collection` must default to the LIVE collection.
+    /// Sprint 028 swapped production to `knowledge_items_v2` and 032
+    /// (#684) dropped v1 — but this serde default kept pointing at the
+    /// retired name, and `QdrantStore::connect` creates-on-absence, so
+    /// the old default silently manufactured an empty, wrongly-named
+    /// collection instead of failing loudly.
+    #[test]
+    fn default_collection_is_the_live_v2_collection() {
+        let toml = r#"
+            [server]
+            listen_addr = "127.0.0.1"
+            port = 7777
+            [auth]
+            bearer_token = "test"
+            [postgres]
+            url = "postgres://x/y"
+            [qdrant]
+            grpc_url = "http://127.0.0.1:6334"
+            [embeddings]
+            url = "http://127.0.0.1:7070"
+            model_id = "Qwen/Qwen3-Embedding-0.6B"
+            vector_dim = 1024
+            [queue]
+            capacity = 64
+            workers = 1
+            [logging]
+            format = "json"
+            level = "info"
+        "#;
+        let cfg: Config = Figment::new()
+            .merge(Toml::string(toml))
+            .extract()
+            .expect("parse");
+        assert_eq!(cfg.qdrant.collection, "knowledge_items_v2");
     }
 
     /// Sprint 014 — `[embeddings] api` selector defaults to `tei` and

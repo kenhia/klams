@@ -1,4 +1,9 @@
-//! `klams-bench run` — 100-call `memory_search` latency harness (US5).
+//! `klams-bench run` — 100-call search latency harness (US5).
+//!
+//! Measures REST `POST /memory/search` via `Client::search` — NOT the
+//! MCP `memory_search` pipeline, which since 029/030 additionally runs
+//! the curated stratum and the cross-encoder rerank stage. Treat these
+//! numbers as the REST path's, not retrieval's (033 retrospective).
 //!
 //! Per FR-022 this binary always exits 0; it surfaces the measurement
 //! to `perf-baseline.md` but never gates `just gate`.

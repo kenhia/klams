@@ -1,6 +1,8 @@
 //! Sprint 009 (FR-013…016) — one-shot re-attribution repair.
 //!
-//! Walks every `facts`, `events`, and `knowledge_items` row stamped
+//! Walks every fact and event row (Postgres) and knowledge point (the
+//! configured Qdrant collection; the JSON report key stays
+//! `knowledge_items` for output compatibility) stamped
 //! with `SYSTEM_AUTHOR_ID` and reassigns it to its true author when
 //! provenance is unambiguous (see [`research.md`] R4). Rows whose
 //! provenance is missing, conflicting, or points at a deleted

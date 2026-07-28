@@ -1,0 +1,165 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 1010" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif">
+  <!-- klams write & ingest paths — sprint 033 (#694).
+       Left: agent writes over MCP (unified with REST policy in 031 #645).
+       Right: scanner ingest. Verify against docs/architecture.md §2.1–2.4. -->
+  <style>
+    svg { --bg:#ffffff; --ink:#1f2735; --muted:#5c6577; --line:#7d8aa0;
+          --stage:#dbe7fb; --stageline:#4a76c9;
+          --store:#fdf0d3; --storeline:#c08a1e;
+          --scan:#e9e2f8; --scanline:#7e5fc4;
+          --auth:#f2e4e0; --authline:#b0614a;
+          --note:#f4f6fa; --noteline:#aab4c4;
+          --cur:#ddf2e4; --curline:#2e9e5b; }
+    @media (prefers-color-scheme: dark) {
+      svg { --bg:#0d1117; --ink:#e6ecf5; --muted:#9aa6b8; --line:#8b98ac;
+            --stage:#1d3050; --stageline:#6f9ae0;
+            --store:#3a2e12; --storeline:#d9a83c;
+            --scan:#2a2344; --scanline:#a68ae0;
+            --auth:#392019; --authline:#cf7f66;
+            --note:#161d29; --noteline:#3d4a5e;
+            --cur:#15301f; --curline:#4dbd7d; }
+    }
+    .stage { fill:var(--stage); stroke:var(--stageline); stroke-width:1.5; }
+    .store { fill:var(--store); stroke:var(--storeline); stroke-width:1.5; }
+    .scan { fill:var(--scan); stroke:var(--scanline); stroke-width:1.5; }
+    .auth { fill:var(--auth); stroke:var(--authline); stroke-width:1.5; }
+    .note { fill:var(--note); stroke:var(--noteline); stroke-width:1.2; }
+    .cur { fill:var(--cur); stroke:var(--curline); stroke-width:1.5; }
+    .t { fill:var(--ink); font-size:14px; font-weight:600; }
+    .s { fill:var(--muted); font-size:11.5px; }
+    .tt { fill:var(--ink); font-size:17px; font-weight:700; }
+    .k { fill:var(--muted); font-size:11px; font-family:ui-monospace,'Cascadia Code',Consolas,monospace; }
+    .fl { stroke:var(--line); stroke-width:1.7; fill:none; marker-end:url(#arr3); }
+    .fl2 { stroke:var(--line); stroke-width:1.5; fill:none; stroke-dasharray:6 4; marker-end:url(#arr3); }
+  </style>
+  <defs>
+    <marker id="arr3" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="8" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 4 L0 8 z" fill="var(--line)"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="1240" height="1010" fill="var(--bg)"/>
+  <text x="24" y="34" class="tt">klams — write &amp; ingest paths</text>
+  <text x="24" y="52" class="s">left: deliberate agent writes (MCP; one policy with REST since 031) · right: bulk scanner ingest · both end in the same stores</text>
+
+  <!-- ============ left column: agent writes ============ -->
+  <text x="40" y="92" class="tt" font-size="15">agent writes (MCP)</text>
+
+  <rect x="40" y="104" width="500" height="70" rx="8" class="stage"/>
+  <text x="56" y="128" class="t">memory_add · memory_supersede · memory_update · memory_delete</text>
+  <text x="56" y="146" class="s">+ facts (typed, validated) and events (append-only) — deliberate, one-record writes</text>
+  <text x="56" y="162" class="s">similar_existing in the memory_add response nudges supersede over near-duplicates</text>
+
+  <rect x="40" y="202" width="500" height="88" rx="8" class="auth"/>
+  <text x="56" y="226" class="t">auth &amp; attribution (025)</text>
+  <text x="56" y="244" class="s">bearer token → scopes (Read / Write / Admin) + bound author identity</text>
+  <text x="56" y="260" class="s">delete / supersede / update check ownership; admin verbs Admin-only</text>
+  <text x="56" y="276" class="s">hot-reloadable [[auth.tokens]] — no restart to rotate</text>
+  <path class="fl" d="M290 174 L290 202"/>
+
+  <rect x="40" y="318" width="500" height="106" rx="8" class="stage"/>
+  <text x="56" y="342" class="t">one write policy — shared core layer (031, #645)</text>
+  <text x="56" y="360" class="s">MCP and REST run the same pipeline (McpState is generic over Store; a test</text>
+  <text x="56" y="376" class="s">forbids concrete reach-throughs):  fact validation registry → trust-ranked</text>
+  <text x="56" y="392" class="s">upsert v2 (a lower-trust contradiction diverts to the dissent queue) ·</text>
+  <text x="56" y="408" class="s">knowledge: normalize · tags · token-aware size gate · dedupe probe</text>
+  <path class="fl" d="M290 290 L290 318"/>
+
+  <rect x="40" y="452" width="240" height="96" rx="8" class="cur"/>
+  <text x="56" y="476" class="t">size gate (027)</text>
+  <text x="56" y="494" class="s">estimate + exact TEI /tokenize;</text>
+  <text x="56" y="510" class="s">over-limit → honest PAYLOAD_TOO_</text>
+  <text x="56" y="526" class="s">LARGE {limit, submitted} + full</text>
+  <text x="56" y="542" class="s">text into the oversize_write log</text>
+
+  <rect x="300" y="452" width="240" height="96" rx="8" class="cur"/>
+  <text x="316" y="476" class="t">similar-on-write (029)</text>
+  <text x="316" y="494" class="s">the fresh embedding searches the</text>
+  <text x="316" y="510" class="s">curated stratum; strong matches</text>
+  <text x="316" y="526" class="s">(≥0.85) returned to the writer —</text>
+  <text x="316" y="542" class="s">the cheap moment to reconcile</text>
+  <path class="fl" d="M180 424 L166 452"/>
+  <path class="fl" d="M400 424 L414 452"/>
+
+  <rect x="40" y="576" width="500" height="78" rx="8" class="stage"/>
+  <text x="56" y="600" class="t">bounded queue → worker pool</text>
+  <text x="56" y="618" class="s">mpsc capacity 1024, 4 workers · backpressure = 429, never silent drop</text>
+  <text x="56" y="634" class="s">worker failures counted (writes_failed) — the 027 silent-loss triangle is closed</text>
+  <path class="fl" d="M166 548 L200 576"/>
+  <path class="fl" d="M414 548 L380 576"/>
+
+  <!-- lifecycle note -->
+  <rect x="40" y="686" width="500" height="120" rx="8" class="note"/>
+  <text x="56" y="710" class="t">lifecycle (029, #638)</text>
+  <text x="56" y="730" class="s">supersede — atomic: new record written, old one hidden with</text>
+  <text x="56" y="746" class="k">deleted_at + superseded_by:new / supersedes:old</text>
+  <text x="56" y="762" class="s">update — author fixes own record, re-embed on text change</text>
+  <text x="56" y="778" class="s">volatility: "volatile" declared at write time → age demotion at read time</text>
+  <text x="56" y="794" class="s">soft delete everywhere; Admin restore / hard-delete exist</text>
+
+  <!-- ============ right column: scanner ============ -->
+  <text x="620" y="92" class="tt" font-size="15">scanner ingest (bulk)</text>
+
+  <rect x="620" y="104" width="500" height="88" rx="8" class="scan"/>
+  <text x="636" y="128" class="t">klams-scanner — systemd timer, hourly, kubs0 + kai</text>
+  <text x="636" y="146" class="s">walks configured roots (~/src on both hosts, synced) · honours</text>
+  <text x="636" y="162" class="s">.gitignore / .klamsignore + allowlist · per-host cursor DB, resumes</text>
+  <text x="636" y="178" class="s">incrementally · a removed root prunes via the multi-root guard</text>
+
+  <rect x="620" y="220" width="500" height="96" rx="8" class="scan"/>
+  <text x="636" y="244" class="t">fence-aware markdown chunking (028, #639)</text>
+  <text x="636" y="262" class="s">``` fences tracked — a # comment inside a bash block is body text, not a</text>
+  <text x="636" y="278" class="s">heading (the 07-25 review's junk-fragment factory, killed) · ~800-char chunks</text>
+  <text x="636" y="294" class="s">with heading-path breadcrumbs · token gate refuses over-budget chunks</text>
+  <path class="fl" d="M870 192 L870 220"/>
+
+  <rect x="620" y="344" width="500" height="88" rx="8" class="scan"/>
+  <text x="636" y="368" class="t">publish — REST /memory/knowledge/index (scanner token)</text>
+  <text x="636" y="386" class="s">202 + enqueue (same worker pool as agent writes) · delete-before-reindex</text>
+  <text x="636" y="402" class="s">on changed files · prune on vanished files · the scanner never talks to</text>
+  <text x="636" y="418" class="s">Qdrant directly</text>
+  <path class="fl" d="M870 316 L870 344"/>
+
+  <rect x="620" y="460" width="500" height="110" rx="8" class="cur"/>
+  <text x="636" y="484" class="t">content-only ingest dedupe (028, #642)</text>
+  <text x="636" y="502" class="s">one point per content_hash, wherever the content appears:</text>
+  <text x="636" y="518" class="s">an existing live point absorbs the copy —</text>
+  <text x="636" y="534" class="k">attach_copy → copies[{machine,file,repo}] + machines[] + files[]</text>
+  <text x="636" y="550" class="s">host-scoped delete removes a host from the list; the point dies with its last</text>
+  <text x="636" y="566" class="s">copy · the publish race leaves ~0.11% duplicates — collapsed at query time</text>
+  <path class="fl" d="M870 432 L870 460"/>
+
+  <!-- ============ stores ============ -->
+  <rect x="300" y="852" width="290" height="120" rx="8" class="store"/>
+  <text x="316" y="876" class="t">Postgres</text>
+  <text x="316" y="894" class="s">facts (versioned, trust-ranked, decayed)</text>
+  <text x="316" y="910" class="s">events (append-only) · authors · dissents</text>
+  <text x="316" y="926" class="s">search_miss · search_sample · oversize_write</text>
+  <text x="316" y="942" class="s">summaries</text>
+  <text x="316" y="960" class="s">nightly dump → /gratch/klams-backup</text>
+
+  <rect x="640" y="852" width="330" height="120" rx="8" class="store"/>
+  <text x="656" y="876" class="t">Qdrant — knowledge_items_v2</text>
+  <text x="656" y="894" class="s">1024-dim Qwen3 vectors (TEI :7070 embeds both</text>
+  <text x="656" y="910" class="s">paths' text; documents get no instruct prefix)</text>
+  <text x="656" y="926" class="s">payload: source, author_id, machines[], copies[],</text>
+  <text x="656" y="942" class="s">content_hash, heading_path, volatility, deleted_at…</text>
+  <text x="656" y="960" class="s">nightly snapshot → /gratch/klams-backup</text>
+
+  <path class="fl" d="M520 654 C580 720 580 800 460 852"/>
+  <text x="588" y="742" class="s">facts · events</text>
+  <path class="fl" d="M540 632 C640 690 680 780 706 852"/>
+  <text x="700" y="800" class="s">knowledge (embed → upsert)</text>
+  <path class="fl" d="M870 570 C870 680 850 790 830 852"/>
+  <text x="736" y="664" class="s">absorbed or</text>
+  <text x="736" y="680" class="s">embedded → upserted</text>
+
+  <!-- monitor/events note -->
+  <rect x="1000" y="600" width="216" height="120" rx="8" class="note"/>
+  <text x="1016" y="624" class="t">also writing</text>
+  <text x="1016" y="644" class="s">klams-monitor publishes</text>
+  <text x="1016" y="660" class="s">service state transitions</text>
+  <text x="1016" y="676" class="s">as events; kyac and other</text>
+  <text x="1016" y="692" class="s">automations write run</text>
+  <text x="1016" y="708" class="s">reports the same way</text>
+  <path class="fl2" d="M1060 720 C1020 780 960 830 930 852"/>
+</svg>

@@ -9,18 +9,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
-name = "ahash"
-version = "0.8.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a15f179cd60c4584b8a8c596927aadc462e27f2ca70c04e0071964a73ba7a75"
-dependencies = [
- "cfg-if",
- "once_cell",
- "version_check",
- "zerocopy",
-]
-
-[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2130,21 +2118,21 @@ dependencies = [
 
 [[package]]
 name = "klams-client"
-version = "0.1.0"
+version = "0.1.33"
 dependencies = [
  "klams-core",
  "klams-types",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "url",
  "uuid",
 ]
 
 [[package]]
 name = "klams-core"
-version = "0.1.0"
+version = "0.1.33"
 dependencies = [
  "async-trait",
  "klams-store",
@@ -2154,7 +2142,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tiktoken-rs",
  "time",
  "tokio",
@@ -2165,7 +2153,7 @@ dependencies = [
 
 [[package]]
 name = "klams-store"
-version = "0.1.0"
+version = "0.1.33"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2178,7 +2166,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sqlx",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "time",
  "tokio",
  "tokio-util",
@@ -2188,16 +2176,17 @@ dependencies = [
 
 [[package]]
 name = "klams-types"
-version = "0.1.0"
+version = "0.1.33"
 dependencies = [
  "chrono",
  "humantime-serde",
  "serde",
  "serde_json",
  "sha2",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "time",
  "ulid",
+ "unicode-normalization",
  "uuid",
 ]
 
@@ -2395,12 +2384,12 @@ dependencies = [
 
 [[package]]
 name = "metrics"
-version = "0.23.1"
+version = "0.24.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3045b4193fbdc5b5681f32f11070da9be3609f189a79f3390706d42587f46bb5"
+checksum = "89550ee9f79e88fef3119de263694973a8adb26c21d75322164fb8c493039fe2"
 dependencies = [
- "ahash",
  "portable-atomic",
+ "rapidhash",
 ]
 
 [[package]]
@@ -3301,6 +3290,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "76afc826de14238e6e8c374ddcc1fa19e374fd8dd986b0d2af0d02377261d83c"
 dependencies = [
  "getrandom 0.3.4",
+]
+
+[[package]]
+name = "rapidhash"
+version = "4.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5da7e78a036ce858e8d55b7e7dc8ba3a88b78350fd2155d3591bbd966b58589e"
+dependencies = [
+ "rustversion",
 ]
 
 [[package]]
