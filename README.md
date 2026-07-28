@@ -149,7 +149,8 @@ at the MCP surface: hand it [docs/klams-mcp-for-agents.md](docs/klams-mcp-for-ag
 The elevator pitch — what klams is, why it exists, and what it
 demonstrably does, with real dated numbers — is a single self-contained
 page: [docs/pitch/klams-pitch.html](docs/pitch/klams-pitch.html)
-(open it straight from a checkout; it renders offline).
+([rendered preview](https://htmlpreview.github.io/?https://github.com/kenhia/klams/blob/main/docs/pitch/klams-pitch.html)).
+Open it straight from a checkout too — it renders offline.
 
 ## License
 
