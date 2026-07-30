@@ -107,6 +107,21 @@ box's harness-eval tenants untouched. Footprint + exact resume/removal
 commands: **k-homelab #787** (the record-machine-change note the WI
 comment required).
 
+## Deployed 2026-07-30
+
+- Version `0.1.35` live on kubs0 (`/healthz` confirms; was `0.1.34`).
+- Rollback target: `0.1.34` via `just rollback` (`.prev` binaries in
+  place, rotated 2026-07-30).
+- Migrations applied: none this sprint.
+- Verified live: `just health` (2/2), **`just smoke`** — this sprint's
+  own deliverable — 7 passed / 0 failed against the deployed service;
+  the deployed `klams-scanner` binary refuses a nonexistent root with
+  the new actionable error (#776 fail-loudly behavior). Units
+  `klams-service` / `klams-monitor` / `klams-scanner.timer` all
+  active; journal clean.
+- Config changes required: none (`/etc/klams/*.toml` untouched; no new
+  scopes or sections).
+
 ## Outcome
 
 - `just gate` ✓, `just gate-viewport` ✓, `just test-integration` ✓
