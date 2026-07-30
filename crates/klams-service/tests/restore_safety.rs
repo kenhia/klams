@@ -15,53 +15,15 @@ use common::fixture::{generate_with_seed, FixtureScale};
 use common::{seed, TestServer};
 use klams_service::backup::restore::{run_from, RestoreError};
 use klams_service::backup::{run_once, MaintenanceState, OrchestratorDeps};
-use klams_store::QdrantStore;
 use klams_types::SameDayStrategy;
 use tempfile::tempdir;
 
 const TEST_COLLECTION: &str = "klams_restore_safety_test";
 
-fn pg_url() -> String {
-    std::env::var("TEST_DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://klams:klams_test@127.0.0.1:55432/klams".into())
-}
-
-fn qdrant_grpc_url() -> String {
-    std::env::var("TEST_QDRANT_URL").unwrap_or_else(|_| "http://127.0.0.1:56334".into())
-}
-
-fn qdrant_rest_url() -> String {
-    std::env::var("TEST_QDRANT_REST_URL").unwrap_or_else(|_| "http://127.0.0.1:56333".into())
-}
-
+/// Drop-then-create: a restored-into collection poisons later snapshot
+/// runs on a long-lived stack — see `common::ensure_collection`.
 async fn ensure_collection() {
-    // Sprint 031 (#679/#687): DROP then create, rather than
-    // create-if-missing.
-    //
-    // Restoring a snapshot into a collection leaves qdrant 1.18 unable
-    // to create new snapshots from it — every later run of this file
-    // then fails with `Failed to get_snapshot_creator, Failed to
-    // restore local replica`, surfacing two steps downstream as a
-    // baffling `ArtifactMissing { kind: Qdrant }`. Because the test
-    // stack is long-lived, one restore run poisons every run after it
-    // until somebody deletes the collection by hand.
-    //
-    // These collections hold nothing but this file's fixture, so
-    // dropping is free.
-    let rest = qdrant_rest_url();
-    let _ = reqwest::Client::new()
-        .delete(format!("{rest}/collections/{TEST_COLLECTION}"))
-        .send()
-        .await;
-    QdrantStore::connect(&qdrant_grpc_url(), TEST_COLLECTION, 384)
-        .await
-        .expect("create collection");
-}
-
-/// See `restore_roundtrip::pg_bin_dir` — same rationale.
-fn pg_bin_dir() -> Option<std::path::PathBuf> {
-    let candidate = std::path::PathBuf::from("/usr/lib/postgresql/16/bin");
-    candidate.is_dir().then_some(candidate)
+    common::ensure_collection(TEST_COLLECTION, true).await;
 }
 
 async fn count_facts(pool: &sqlx::PgPool) -> i64 {
@@ -74,9 +36,9 @@ async fn count_facts(pool: &sqlx::PgPool) -> i64 {
 fn deps_for(dir: &std::path::Path, state: &MaintenanceState) -> OrchestratorDeps {
     OrchestratorDeps {
         backup_dir: dir.to_path_buf(),
-        pg_url: pg_url(),
-        pg_bin_dir: pg_bin_dir(),
-        qdrant_rest_url: qdrant_rest_url(),
+        pg_url: common::test_pg_url(),
+        pg_bin_dir: common::pg16_bin_dir(),
+        qdrant_rest_url: common::test_qdrant_rest_url(),
         qdrant_collection: TEST_COLLECTION.into(),
         daily_count: 14,
         weekly_count: 4,
@@ -97,7 +59,7 @@ async fn restore_refuses_non_empty_without_force() {
     let dir = tempdir().unwrap();
     let state = MaintenanceState::new();
     let server = TestServer::spawn().await;
-    let pool = sqlx::PgPool::connect(&pg_url()).await.unwrap();
+    let pool = sqlx::PgPool::connect(&common::test_pg_url()).await.unwrap();
     sqlx::query("TRUNCATE facts, events, summaries CASCADE")
         .execute(&pool)
         .await
@@ -134,7 +96,7 @@ async fn restore_with_force_overwrites_non_empty() {
     let dir = tempdir().unwrap();
     let state = MaintenanceState::new();
     let server = TestServer::spawn().await;
-    let pool = sqlx::PgPool::connect(&pg_url()).await.unwrap();
+    let pool = sqlx::PgPool::connect(&common::test_pg_url()).await.unwrap();
     sqlx::query("TRUNCATE facts, events, summaries CASCADE")
         .execute(&pool)
         .await
@@ -184,7 +146,7 @@ async fn restore_truncated_dump_rolls_back() {
     let dir = tempdir().unwrap();
     let state = MaintenanceState::new();
     let server = TestServer::spawn().await;
-    let pool = sqlx::PgPool::connect(&pg_url()).await.unwrap();
+    let pool = sqlx::PgPool::connect(&common::test_pg_url()).await.unwrap();
     sqlx::query("TRUNCATE facts, events, summaries CASCADE")
         .execute(&pool)
         .await

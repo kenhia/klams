@@ -22,25 +22,12 @@ use klams_mcp::tools::{
     memory_admin_hard_delete::{run as hard_delete, MemoryAdminHardDeleteArgs},
     memory_admin_list_deleted::{run as list_deleted, MemoryAdminListDeletedArgs},
     memory_admin_restore::{run as restore, MemoryAdminRestoreArgs},
-    memory_delete::{run as memory_delete, DeleteCaller, MemoryDeleteArgs},
+    memory_delete::{run as memory_delete, MemoryDeleteArgs},
     memory_related::{run as memory_related, MemoryRelatedArgs},
     memory_search::{run as memory_search, MemorySearchArgs},
-    McpState,
 };
-use klams_types::{MaintenanceState, Scope};
-use std::sync::Arc;
-use support::MemStore;
+use support::{curator, state, writer};
 use uuid::Uuid;
-
-fn state() -> (McpState<MemStore>, Arc<MemStore>) {
-    let store = Arc::new(MemStore::new());
-    let st = McpState::new(
-        Arc::clone(&store),
-        Arc::new(MaintenanceState::default()),
-        klams_types::ApiConfig::default(),
-    );
-    (st, store)
-}
 
 fn search_args(query: &str) -> MemorySearchArgs {
     MemorySearchArgs {
@@ -55,23 +42,6 @@ fn delete_args(id: Uuid) -> MemoryDeleteArgs {
     MemoryDeleteArgs {
         author_id: None,
         id,
-    }
-}
-
-/// A caller holding exactly `[read, write]` — the ordinary agent tier.
-fn writer(author_id: Uuid) -> DeleteCaller {
-    DeleteCaller {
-        author_id,
-        scopes: vec![Scope::Read, Scope::Write],
-    }
-}
-
-/// A caller that also holds `manage`, the cross-author curation tier
-/// (sprint 025 #633).
-fn curator(author_id: Uuid) -> DeleteCaller {
-    DeleteCaller {
-        author_id,
-        scopes: vec![Scope::Read, Scope::Write, Scope::Manage],
     }
 }
 

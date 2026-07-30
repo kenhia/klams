@@ -36,12 +36,20 @@ LimitNOFILE=65536
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-# Sprint 020: ProtectSystem=strict makes the whole FS read-only for the
-# service; the backup dir must be granted back explicitly or every
-# nightly run dies on the lockfile with EROFS (this silently broke
-# backups from 2026-05-31, when the hardened unit shipped, until 020).
-# Keep in sync with [backup].backup_dir in /etc/klams/klams.toml.
-ReadWritePaths=/gratch/klams-backup
+# ProtectSystem=strict makes the whole FS read-only for the service.
+# If you enable [backup] in /etc/klams/klams.toml, grant the backup
+# dir back via a DROP-IN — do not edit this unit. systemd refuses to
+# start a unit whose ReadWritePaths is absent, so hardcoding a path
+# here breaks every host that lacks it (sprint 034 #774; the path
+# used to be baked in, and the unit only started on Ken's kubs0).
+#
+#   # /etc/systemd/system/klams-service.service.d/backup.conf
+#   [Service]
+#   ReadWritePaths=/path/to/backup_dir
+#
+# Sprint 020 context: without this grant every nightly run dies on the
+# lockfile with EROFS. If backup_dir is a network mount, add
+# RequiresMountsFor=/path/to/backup_dir in the same drop-in.
 ProtectHome=true
 ProtectKernelTunables=true
 ProtectKernelModules=true

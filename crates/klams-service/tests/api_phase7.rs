@@ -6,43 +6,13 @@
 
 mod common;
 
-use common::TestServer;
+use common::{make_author, mcp_state_from, TestServer};
 use klams_mcp::tools::{
     memory_add::{run as memory_add, FactTypeArg, MemoryAddArgs},
     memory_append_event::{run as append_event, MemoryAppendEventArgs},
-    register_author::{run as register, RegisterAuthorInput},
-    McpState,
 };
-use klams_types::MaintenanceState;
 use serde_json::Value;
-use std::sync::Arc;
 use uuid::Uuid;
-
-fn mcp_state_from(server: &TestServer) -> McpState {
-    McpState::new(
-        Arc::clone(&server.store),
-        Arc::new(MaintenanceState::default()),
-        klams_types::ApiConfig::default(),
-    )
-}
-
-async fn make_author(state: &McpState, name: &str) -> Uuid {
-    register(
-        state,
-        RegisterAuthorInput {
-            agent_name: name.into(),
-            model: Some("test-model".into()),
-            session_title: Some("phase-7".into()),
-            repo: Some("/tmp/test".into()),
-            client_app: None,
-            client_version: None,
-            extra: Value::Null,
-        },
-    )
-    .await
-    .expect("register_author")
-    .author_id
-}
 
 async fn http_get(server: &TestServer, path: &str) -> (reqwest::StatusCode, Value) {
     let url = format!("http://{}{}", server.addr, path);

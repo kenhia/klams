@@ -41,7 +41,7 @@ agent_name = "claude"                        # binds an identity; optional
 | `token` | yes | Minimum 16 characters. Compared in constant time. |
 | `scopes` | yes | Non-empty. See the table below. |
 | `label` | no | Appears in startup logs; not security-relevant. |
-| `agent_name` | no | 2–64 chars of `[a-z0-9_-]`. Resolved to an author row at startup. Unset ⇒ writes attribute to the seeded `system` author. |
+| `agent_name` | see notes | 2–64 chars of `[a-z0-9_-]`. Resolved to an author row at startup. **Required when `scopes` includes `manage` or `admin`** (sprint 034, #703) — privileged actions must be attributable. Optional otherwise; unset ⇒ writes attribute to the seeded `system` author. |
 
 `agent_name` is what makes a token an *identity*, not just a key. It is
 resolved to an `author_id` at startup and on every reload; every write
@@ -54,34 +54,33 @@ Edit `[[auth.tokens]]` and send `SIGHUP`; the grant table swaps
 atomically with no restart and no dropped in-flight requests. Rotating
 or revoking a token takes effect on the next request.
 
-### The legacy `auth.bearer_token`
+### The legacy `auth.bearer_token` — RETIRED (sprint 034)
 
-The single pre-sprint-007 `bearer_token` still works and materializes as
-one grant carrying **all four** scopes. It is the "everything" token by
-construction, and sprint 032 (#670) deliberately left its scope set
-alone: narrowing it would silently strip capability from a deployment
-whose only credential it is, which is a worse failure than the one being
-avoided.
+The single pre-sprint-007 `bearer_token` is **retired**. It
+materialized one grant carrying all four scopes with no `agent_name` —
+an unattributable privileged credential, which is exactly what the
+sprint-034 rule above forbids. Its history, for the record: sprint 032
+(#670) stopped provisioning one by default and migrated kubs0 to
+scoped grants only; sprint 034 (#703) closed the path entirely.
 
-What sprint 032 changed is that **it is no longer the default**.
-`deploy/config/klams.example.toml` used to lead with a rendered
-`bearer_token`, so every fresh install began holding a full-admin
-credential nobody had chosen. The example now ships it commented out and
-leads with scoped `[[auth.tokens]]`; a config with neither refuses to
-start, which makes the choice deliberate rather than inherited. kubs0
-itself was migrated to scoped grants only in the same sprint.
+**Migration note.** A config that still sets `bearer_token` refuses to
+start (and refuses `--validate-config`, and a SIGHUP reload keeps the
+previous table) with an error pointing here. This is deliberate: the
+key is still *parsed* precisely so it can be refused loudly — silently
+ignoring a credential the operator believes is live would surface as
+unexplained 401s instead. To migrate, express the same capability as an
+attributed grant:
 
-Two properties the legacy token cannot have, and the reason it should
-not be anyone's daily driver:
+```toml
+[[auth.tokens]]
+token      = "<your old bearer_token value>"
+scopes     = ["read", "write", "manage", "admin"]
+label      = "break-glass"
+agent_name = "operator"
+```
 
-- It declares no `agent_name`, so writes through it attribute to the
-  seeded `system` author rather than to anything traceable.
-- It carries `manage` + `admin`, so it can cross-author delete,
-  hard-delete, restore, and run the author lifecycle verbs.
-
-A scoped grant with an `agent_name` gives the same power where you
-actually want it, and attribution everywhere. Keep the legacy token, if
-at all, as break-glass.
+Same power, but every action through it lands in the audit trail under
+`operator` instead of vanishing into `system`.
 
 ## What each scope authorizes
 

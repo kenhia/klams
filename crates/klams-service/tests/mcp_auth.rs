@@ -13,10 +13,7 @@
 
 mod common;
 
-use common::TestServer;
-
-/// JSON-RPC init payload used by every probe below.
-const INIT_BODY: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}"#;
+use common::{parse_sse_json, TestServer, INIT_BODY};
 
 async fn post_mcp(addr: std::net::SocketAddr, auth: Option<&str>) -> reqwest::Response {
     let mut req = reqwest::Client::new()
@@ -28,25 +25,6 @@ async fn post_mcp(addr: std::net::SocketAddr, auth: Option<&str>) -> reqwest::Re
         req = req.header("Authorization", format!("Bearer {token}"));
     }
     req.send().await.expect("POST /mcp")
-}
-
-/// Parse a Streamable-HTTP SSE response body into its JSON-RPC payload.
-fn parse_sse_json(body: &str) -> serde_json::Value {
-    // SSE: lines like `data: {...}` separated by `\n\n`. May also be
-    // bare JSON if the server picked the json_response path.
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(body.trim()) {
-        return v;
-    }
-    // SSE bodies may include keep-alive `data:` pings with empty
-    // payloads. Take the first `data:` line that successfully parses.
-    for line in body.lines() {
-        if let Some(rest) = line.strip_prefix("data: ") {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(rest) {
-                return v;
-            }
-        }
-    }
-    panic!("no JSON / data: line in body (len={}):\n{body}", body.len());
 }
 
 /// Drive a full MCP handshake (initialize + initialized notify) and

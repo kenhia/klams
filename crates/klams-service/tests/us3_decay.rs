@@ -21,24 +21,35 @@ async fn connect() -> PostgresStore {
         .expect("connect to test postgres")
 }
 
+/// Seed one fact and unwrap the `Persisted` outcome — these seeds are
+/// fresh rows, so any other outcome is a test bug.
+async fn seed_fact(store: &PostgresStore, req: UpsertFact) -> klams_types::Fact {
+    match store.upsert_fact_v2(req).await.expect("seed fact") {
+        klams_types::FactWriteOutcome::Persisted { fact } => fact,
+        other => panic!("seed expected Persisted, got {other:?}"),
+    }
+}
+
 #[tokio::test]
 #[ignore = "requires docker-compose.test.yml stack"]
 async fn task_fact_decays_faster_than_user_fact() {
     let store = Arc::new(connect().await);
     // Seed two facts of different types sharing a search term.
-    let user = store
-        .upsert_fact(UpsertFact {
+    let user = seed_fact(
+        &store,
+        UpsertFact {
             fact_type: FactType::UserFact,
             payload: json!({"name": "alpha-shared-decay-term"}),
             source: Source::User,
             explicit_id: None,
             expected_version: None,
             author_id: klams_types::SYSTEM_AUTHOR_ID,
-        })
-        .await
-        .expect("user upsert");
-    let task = store
-        .upsert_fact(UpsertFact {
+        },
+    )
+    .await;
+    let task = seed_fact(
+        &store,
+        UpsertFact {
             fact_type: FactType::TaskFact,
             payload: json!({
                 "title": "alpha-shared-decay-term",
@@ -49,9 +60,9 @@ async fn task_fact_decays_faster_than_user_fact() {
             explicit_id: None,
             expected_version: None,
             author_id: klams_types::SYSTEM_AUTHOR_ID,
-        })
-        .await
-        .expect("task upsert");
+        },
+    )
+    .await;
     // Backdate last_used_at by 7 days for both.
     let seven_days_ago = OffsetDateTime::now_utc() - TDuration::days(7);
     sqlx::query("UPDATE facts SET last_used_at = $1 WHERE id IN ($2, $3)")
@@ -102,8 +113,9 @@ async fn task_fact_decays_faster_than_user_fact() {
 #[ignore = "requires docker-compose.test.yml stack"]
 async fn tick_is_monotonically_non_increasing() {
     let store = Arc::new(connect().await);
-    let _ = store
-        .upsert_fact(UpsertFact {
+    let _ = seed_fact(
+        &store,
+        UpsertFact {
             fact_type: FactType::TaskFact,
             payload: json!({
                 "title": "monotone-decay-test",
@@ -114,9 +126,9 @@ async fn tick_is_monotonically_non_increasing() {
             explicit_id: None,
             expected_version: None,
             author_id: klams_types::SYSTEM_AUTHOR_ID,
-        })
-        .await
-        .expect("seed");
+        },
+    )
+    .await;
     let cfg = DecayConfig::default();
     let mut decay = DecayTask::new(cfg, Arc::clone(&store));
     decay.tick_once().await.expect("tick 1");
@@ -159,19 +171,21 @@ async fn tick_is_monotonically_non_increasing() {
 async fn search_orders_user_above_task_for_shared_term() {
     let store = Arc::new(connect().await);
     let term = "shared-search-decay-term-9213";
-    let user = store
-        .upsert_fact(UpsertFact {
+    let user = seed_fact(
+        &store,
+        UpsertFact {
             fact_type: FactType::UserFact,
             payload: json!({"name": term}),
             source: Source::User,
             explicit_id: None,
             expected_version: None,
             author_id: klams_types::SYSTEM_AUTHOR_ID,
-        })
-        .await
-        .expect("user");
-    let task = store
-        .upsert_fact(UpsertFact {
+        },
+    )
+    .await;
+    let task = seed_fact(
+        &store,
+        UpsertFact {
             fact_type: FactType::TaskFact,
             payload: json!({
                 "title": term,
@@ -182,9 +196,9 @@ async fn search_orders_user_above_task_for_shared_term() {
             explicit_id: None,
             expected_version: None,
             author_id: klams_types::SYSTEM_AUTHOR_ID,
-        })
-        .await
-        .expect("task");
+        },
+    )
+    .await;
     let seven_days_ago = OffsetDateTime::now_utc() - TDuration::days(7);
     sqlx::query("UPDATE facts SET last_used_at = $1 WHERE id IN ($2, $3)")
         .bind(seven_days_ago)

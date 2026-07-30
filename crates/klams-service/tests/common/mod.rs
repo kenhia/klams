@@ -53,6 +53,95 @@ pub mod seed;
 
 pub type TestStore = CompositeStore;
 
+/// Vector dimension of the embedder the docker-compose **test stack**
+/// serves.
+///
+/// This is `BAAI/bge-small-en-v1.5` (384) and NOT the production
+/// embedder (Qwen3-Embedding-0.6B, 1024, since sprint 028) — a
+/// deliberate decision, not drift (#732): CI runs on CPU-only runners
+/// and Qwen3-0.6B needs a GPU to embed at test-suite speed. Everything
+/// dimension-shaped in this suite derives from this ONE constant, so
+/// pointing the stack at a different model is a one-line change here
+/// plus `tests/docker-compose.test.yml`. The *production* shape is
+/// pinned hermetically in `klams-service/src/config.rs` tests, which
+/// is where a dim mismatch would be caught.
+pub const TEST_EMBED_DIM: usize = 384;
+
+pub fn test_pg_url() -> String {
+    std::env::var("TEST_DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://klams:klams_test@127.0.0.1:55432/klams".into())
+}
+
+pub fn test_qdrant_grpc_url() -> String {
+    std::env::var("TEST_QDRANT_URL").unwrap_or_else(|_| "http://127.0.0.1:56334".into())
+}
+
+pub fn test_qdrant_rest_url() -> String {
+    std::env::var("TEST_QDRANT_REST_URL").unwrap_or_else(|_| "http://127.0.0.1:56333".into())
+}
+
+pub fn test_tei_url() -> String {
+    std::env::var("TEST_TEI_URL").unwrap_or_else(|_| "http://127.0.0.1:57070".into())
+}
+
+/// Optional pg-16 client tools directory (host `pg_dump` 18 emits
+/// `transaction_timeout` SETs which the test compose's pg 16 rejects).
+pub fn pg16_bin_dir() -> Option<std::path::PathBuf> {
+    let candidate = std::path::PathBuf::from("/usr/lib/postgresql/16/bin");
+    candidate.is_dir().then_some(candidate)
+}
+
+/// Create `collection` on the test stack at [`TEST_EMBED_DIM`].
+///
+/// `drop_first` recreates it from empty (sprint 031 #679/#687):
+/// restoring a snapshot into a collection leaves qdrant unable to
+/// create new snapshots from it, so every snapshot/restore test must
+/// start from a fresh collection or one poisoned run breaks every run
+/// after it on a long-lived stack.
+pub async fn ensure_collection(collection: &str, drop_first: bool) {
+    if drop_first {
+        let rest = test_qdrant_rest_url();
+        let _ = reqwest::Client::new()
+            .delete(format!("{rest}/collections/{collection}"))
+            .send()
+            .await;
+    }
+    QdrantStore::connect(&test_qdrant_grpc_url(), collection, TEST_EMBED_DIM as u64)
+        .await
+        .expect("create collection");
+}
+
+/// Fresh `McpState` over this server's store — for driving tool
+/// handlers directly (six files carried byte-identical copies of this
+/// before sprint 034).
+pub fn mcp_state_from(server: &TestServer) -> klams_mcp::tools::McpState {
+    klams_mcp::tools::McpState::new(
+        Arc::clone(&server.store),
+        Arc::new(klams_types::MaintenanceState::default()),
+        klams_types::ApiConfig::default(),
+    )
+}
+
+/// Register a fresh author via the real `register_author` tool and
+/// return its id. Metadata is all-`None`; no test asserts on it.
+pub async fn make_author(state: &klams_mcp::tools::McpState, name: &str) -> Uuid {
+    klams_mcp::tools::register_author::run(
+        state,
+        klams_mcp::tools::register_author::RegisterAuthorInput {
+            agent_name: name.to_string(),
+            model: None,
+            session_title: None,
+            repo: None,
+            client_app: None,
+            client_version: None,
+            extra: serde_json::Value::Null,
+        },
+    )
+    .await
+    .expect("register_author")
+    .author_id
+}
+
 /// Look up (or create) an author row for a test-token binding, mirroring
 /// `main.rs`'s `resolve_token_author`. Idempotent across `spawn_inner`
 /// calls that share the Postgres fixture.
@@ -279,12 +368,9 @@ impl TestServer {
         isolate: bool,
         reranker_url: Option<String>,
     ) -> Self {
-        let pg_url = std::env::var("TEST_DATABASE_URL")
-            .unwrap_or_else(|_| "postgres://klams:klams_test@127.0.0.1:55432/klams".into());
-        let qdrant_url =
-            std::env::var("TEST_QDRANT_URL").unwrap_or_else(|_| "http://127.0.0.1:56334".into());
-        let tei_url =
-            std::env::var("TEST_TEI_URL").unwrap_or_else(|_| "http://127.0.0.1:57070".into());
+        let pg_url = test_pg_url();
+        let qdrant_url = test_qdrant_grpc_url();
+        let tei_url = test_tei_url();
         let bearer = "test-token-do-not-use-in-prod".to_string();
         let read_token = "test-token-read-only".to_string();
         let write_token = "test-token-write".to_string();
@@ -327,10 +413,10 @@ impl TestServer {
             .execute(&mut lock)
             .await;
         let postgres = postgres.expect("postgres connect");
-        let qdrant = QdrantStore::connect(&qdrant_url, &qdrant_collection, 384)
+        let qdrant = QdrantStore::connect(&qdrant_url, &qdrant_collection, TEST_EMBED_DIM as u64)
             .await
             .expect("qdrant connect");
-        let embedder = Arc::new(TeiEmbedder::new(tei_url, 384).expect("tei client"));
+        let embedder = Arc::new(TeiEmbedder::new(tei_url, TEST_EMBED_DIM).expect("tei client"));
         let store = Arc::new(CompositeStore::new(postgres, qdrant, embedder));
 
         // Sprint 018 (WI #62) — mirror main.rs's resolve_token_author:
@@ -506,10 +592,10 @@ pub struct McpSession {
     session_id: String,
 }
 
-const INIT_BODY: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}"#;
+pub const INIT_BODY: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}"#;
 
 /// Parse a Streamable-HTTP SSE (or bare-JSON) body into its JSON-RPC payload.
-fn parse_sse_json(body: &str) -> serde_json::Value {
+pub fn parse_sse_json(body: &str) -> serde_json::Value {
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(body.trim()) {
         return v;
     }
@@ -598,6 +684,43 @@ impl McpSession {
     /// the wire, so read that.
     pub fn error_code(v: &serde_json::Value) -> Option<&str> {
         v["_meta"]["error_code"].as_str()
+    }
+
+    /// Write a knowledge memory through this session; returns its id.
+    pub async fn seed_knowledge(&self, text: &str, tags: &[&str]) -> String {
+        let out = self
+            .call_tool(
+                "memory_add",
+                serde_json::json!({
+                    "kind": "knowledge",
+                    "text": text,
+                    "tags": tags,
+                }),
+            )
+            .await;
+        out["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("no id in memory_add output: {out}"))
+            .to_string()
+    }
+
+    /// Write an `EnvFact` through this session; returns its id.
+    pub async fn seed_fact(&self, key: &str, value: &str) -> String {
+        let out = self
+            .call_tool(
+                "memory_add",
+                serde_json::json!({
+                    "kind": "fact",
+                    "fact_type": "EnvFact",
+                    "payload": {"key": key, "value": value},
+                }),
+            )
+            .await;
+        out["memory"]["id"]
+            .as_str()
+            .or_else(|| out["id"].as_str())
+            .unwrap_or_else(|| panic!("no id in memory_add output: {out}"))
+            .to_string()
     }
 
     /// Names of the tools this session's token may see.

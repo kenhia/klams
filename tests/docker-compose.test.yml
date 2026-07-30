@@ -55,6 +55,15 @@ services:
   tei:
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.7
     networks: [klams-test-net]
+    # bge-small-en-v1.5 (384-dim) is NOT the production embedder
+    # (Qwen3-Embedding-0.6B, 1024-dim, since sprint 028). This is a
+    # decision, not drift (#732): the stack must embed at CPU speed on
+    # GitHub runners, and Qwen3-0.6B cannot. Everything dim-shaped in
+    # the suite follows TEST_EMBED_DIM in
+    # crates/klams-service/tests/common/mod.rs — change the model here
+    # and there together. The production 1024/prefix contract is pinned
+    # hermetically in klams-store (embeddings.rs, composite.rs) and
+    # klams-service (config.rs example-toml test).
     command: ["--model-id", "BAAI/bge-small-en-v1.5"]
     ports:
       - "127.0.0.1:57070:80"

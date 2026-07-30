@@ -13,7 +13,7 @@ pub async fn load(store: &Arc<super::TestStore>, fixture: &Fixture) -> SeedRepor
     let mut report = SeedReport::default();
 
     for fact in &fixture.facts {
-        store.upsert_fact(fact.clone()).await.expect("seed fact");
+        store.upsert_fact_v2(fact.clone()).await.expect("seed fact");
         report.facts += 1;
     }
 

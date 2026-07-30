@@ -17,42 +17,10 @@
 
 mod common;
 
-use common::TestServer;
-use klams_mcp::tools::{
-    memory_add::{run as memory_add, FactTypeArg, MemoryAddArgs},
-    register_author::run as register_author,
-    McpState,
-};
+use common::{make_author, mcp_state_from, TestServer};
+use klams_mcp::tools::memory_add::{run as memory_add, FactTypeArg, MemoryAddArgs};
 use klams_store::{DissentQuery, Store};
-use klams_types::{DissentStatus, MaintenanceState, PublicMemoryContent, Source};
-use std::sync::Arc;
-use uuid::Uuid;
-
-fn mcp_state_from(server: &TestServer) -> McpState {
-    McpState::new(
-        Arc::clone(&server.store),
-        Arc::new(MaintenanceState::default()),
-        klams_types::ApiConfig::default(),
-    )
-}
-
-async fn make_author(state: &McpState, name: &str) -> Uuid {
-    register_author(
-        state,
-        klams_mcp::tools::register_author::RegisterAuthorInput {
-            agent_name: name.to_string(),
-            model: None,
-            session_title: Some("031 write policy".into()),
-            repo: None,
-            client_app: Some("klams-service-tests".into()),
-            client_version: None,
-            extra: serde_json::json!({}),
-        },
-    )
-    .await
-    .expect("register_author")
-    .author_id
-}
+use klams_types::{DissentStatus, PublicMemoryContent, Source};
 
 /// Pull `payload.value` off a fact projection.
 fn fact_value(m: &klams_types::PublicMemory) -> &serde_json::Value {
@@ -112,9 +80,9 @@ async fn agent_amending_a_higher_trust_fact_lands_as_a_dissent() {
 
     // Canonical fact from a trusted source, written the way the REST
     // surface would write it.
-    let canonical = state
+    let canonical = match state
         .store
-        .upsert_fact(klams_types::UpsertFact {
+        .upsert_fact_v2(klams_types::UpsertFact {
             fact_type: klams_types::FactType::EnvFact,
             payload: serde_json::json!({"key": "S031_TRUST", "value": "operator-set"}),
             source: Source::User,
@@ -123,7 +91,11 @@ async fn agent_amending_a_higher_trust_fact_lands_as_a_dissent() {
             author_id: author,
         })
         .await
-        .expect("seed canonical fact");
+        .expect("seed canonical fact")
+    {
+        klams_types::FactWriteOutcome::Persisted { fact } => fact,
+        other => panic!("seed expected Persisted, got {other:?}"),
+    };
 
     // The agent disagrees and amends it.
     let out = memory_add(

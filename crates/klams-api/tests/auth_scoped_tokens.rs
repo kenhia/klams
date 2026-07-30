@@ -1,44 +1,43 @@
 //! Sprint 007 T027 (foundational) — scoped multi-token auth.
 //!
-//! Exercises `klams_api::auth::AuthState` directly: legacy single
-//! `bearer_token` config still authenticates with full scope, and a
-//! grant list dispatches scoped tokens correctly. The full MCP-level
-//! integration arrives in Phase 3 when tools exist; this test pins
-//! the foundational invariants.
+//! Exercises `klams_api::auth::AuthState` directly: a grant list
+//! dispatches scoped tokens correctly, and (sprint 034, #703) the
+//! config-side rule that privileged grants must be attributable is
+//! pinned where the runtime grant table is built.
 
 use klams_api::auth::{AuthState, TokenGrant};
-use klams_types::Scope;
+use klams_types::{AuthConfigError, Scope, TokenGrantConfig};
 use std::sync::Arc;
 
+/// Sprint 034 (#703): the `[auth] bearer_token` config path is retired
+/// — it materialized exactly this shape: all four scopes, `system`
+/// binding, no `agent_name`. The same shape expressed as a
+/// `[[auth.tokens]]` grant must now be refused by validation, which is
+/// what makes the retirement complete rather than cosmetic. (The
+/// in-code `AuthState::new` single-token constructor remains as a test
+/// convenience only; `main.rs` builds grants exclusively from
+/// validated `[[auth.tokens]]` entries.)
 #[test]
-fn legacy_bearer_grants_full_scope_label() {
-    let state = AuthState::new("super-secret");
-    // Legacy path: AuthState::new must construct a grant with all
-    // scopes so existing single-token deployments keep working.
-    //
-    // Sprint 032 (#670): this is the drift pin for a decision, not just
-    // a description. The legacy grant is the "everything" token by
-    // construction and stays that way — the posture change was to stop
-    // *provisioning* one by default, not to narrow it, because
-    // narrowing removes capability from deployments whose only
-    // credential it is. `Manage` was missing from this assertion, which
-    // is exactly how the set could have drifted unnoticed; all four are
-    // pinned now.
-    let grants = state.grants_for_test();
-    assert_eq!(grants.len(), 1);
-    let scopes: &[Scope] = &grants[0].scopes;
-    assert!(scopes.contains(&Scope::Read));
-    assert!(scopes.contains(&Scope::Write));
-    assert!(scopes.contains(&Scope::Manage));
-    assert!(scopes.contains(&Scope::Admin));
-    assert_eq!(
-        scopes.len(),
-        4,
-        "legacy grant must carry exactly the four scopes"
-    );
-    assert_eq!(grants[0].label.as_deref(), Some("legacy"));
-    // It cannot be attributable: no agent_name to declare.
-    assert_eq!(&*grants[0].agent_name, "system");
+fn an_unattributed_full_scope_grant_is_no_longer_expressible() {
+    let legacy_shape = TokenGrantConfig {
+        token: "super-secret-legacy-token".into(),
+        scopes: vec![Scope::Read, Scope::Write, Scope::Manage, Scope::Admin],
+        label: Some("legacy".into()),
+        agent_name: None,
+    };
+    assert!(matches!(
+        legacy_shape.validate(),
+        Err(AuthConfigError::PrivilegedGrantNeedsAgentName)
+    ));
+
+    // The attributable equivalent (what kubs0 actually runs, e.g. the
+    // `ken-admin` grant) stays valid — the retirement removes the
+    // unattributable credential, not the capability.
+    let attributed = TokenGrantConfig {
+        agent_name: Some("ken_admin".into()),
+        ..legacy_shape
+    };
+    attributed.validate().expect("attributed full-scope grant");
 }
 
 #[test]

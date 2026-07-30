@@ -29,15 +29,63 @@
 #![allow(dead_code)]
 
 use async_trait::async_trait;
+use klams_mcp::tools::{memory_delete::DeleteCaller, McpState};
 use klams_store::{EventQuery, FactQuery, Store, StoreError, StoreResult, TextHit};
 use klams_types::{
-    AppendEvent, AuthorRecord, Event, Fact, IndexKnowledge, KnowledgeItem, RegisterAuthorArgs,
-    UpsertFact,
+    AppendEvent, AuthorRecord, Event, Fact, FactWriteOutcome, IndexKnowledge, KnowledgeItem,
+    MaintenanceState, RegisterAuthorArgs, Scope, UpsertFact,
 };
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use time::OffsetDateTime;
 use uuid::Uuid;
+
+/// Dimension of the zero vectors `MemStore` hands back. Hermetic tests
+/// never inspect the values — the constant exists so the suite carries
+/// ONE dim, matching the deployed embedder shape (Qwen3-Embedding-0.6B,
+/// 1024, sprint 028) instead of scattering the retired 384.
+pub const TEST_EMBED_DIM: usize = 1024;
+
+/// Fresh `McpState` over a fresh `MemStore` — the shared hermetic
+/// harness entry point (sprint 034, was copied per-file before).
+pub fn state() -> (McpState<MemStore>, Arc<MemStore>) {
+    let store = Arc::new(MemStore::new());
+    let st = McpState::new(
+        Arc::clone(&store),
+        Arc::new(MaintenanceState::default()),
+        klams_types::ApiConfig::default(),
+    );
+    (st, store)
+}
+
+/// A `memory_delete` caller with an explicit scope set.
+pub fn caller(author_id: Uuid, scopes: Vec<Scope>) -> DeleteCaller {
+    DeleteCaller { author_id, scopes }
+}
+
+/// A caller holding `[read, write]` — may only curate its own rows.
+pub fn writer(author_id: Uuid) -> DeleteCaller {
+    caller(author_id, vec![Scope::Read, Scope::Write])
+}
+
+/// A caller that also holds `manage`, the cross-author curation tier
+/// (sprint 025 #633).
+pub fn curator(author_id: Uuid) -> DeleteCaller {
+    caller(author_id, vec![Scope::Read, Scope::Write, Scope::Manage])
+}
+
+/// An all-`None` `register_author` input for `agent_name`.
+pub fn author_input(agent_name: &str) -> klams_mcp::tools::register_author::RegisterAuthorInput {
+    klams_mcp::tools::register_author::RegisterAuthorInput {
+        agent_name: agent_name.to_string(),
+        model: None,
+        session_title: None,
+        repo: None,
+        client_app: None,
+        client_version: None,
+        extra: serde_json::json!({}),
+    }
+}
 
 #[derive(Default)]
 struct Inner {
@@ -178,7 +226,9 @@ fn unsupported(what: &str) -> StoreError {
 
 #[async_trait]
 impl Store for MemStore {
-    async fn upsert_fact(&self, req: UpsertFact) -> StoreResult<Fact> {
+    async fn upsert_fact_v2(&self, req: UpsertFact) -> StoreResult<FactWriteOutcome> {
+        // Trust-rank dissent diversion is a backend concern (see the
+        // module doc): every mock write persists.
         let now = OffsetDateTime::now_utc();
         let id = req.explicit_id.unwrap_or_else(Uuid::now_v7);
         let fact = Fact {
@@ -199,7 +249,7 @@ impl Store for MemStore {
         g.fact_authors.insert(id, req.author_id);
         g.facts.retain(|f| f.id != id);
         g.facts.push(fact.clone());
-        Ok(fact)
+        Ok(FactWriteOutcome::Persisted { fact })
     }
 
     async fn append_event(&self, req: AppendEvent) -> StoreResult<Event> {
@@ -264,11 +314,11 @@ impl Store for MemStore {
     }
 
     async fn embed_query(&self, _query: &str) -> StoreResult<Vec<f32>> {
-        Ok(vec![0.0; 384])
+        Ok(vec![0.0; TEST_EMBED_DIM])
     }
 
     async fn embed_document(&self, _text: &str) -> StoreResult<Vec<f32>> {
-        Ok(vec![0.0; 384])
+        Ok(vec![0.0; TEST_EMBED_DIM])
     }
 
     async fn touch_author_last_seen_at(&self, id: Uuid) -> StoreResult<u64> {
@@ -470,6 +520,6 @@ impl Store for MemStore {
             .knowledge
             .iter()
             .any(|k| k.id == id)
-            .then(|| vec![0.0; 384]))
+            .then(|| vec![0.0; TEST_EMBED_DIM]))
     }
 }

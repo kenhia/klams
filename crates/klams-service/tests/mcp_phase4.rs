@@ -6,24 +6,14 @@
 
 mod common;
 
-use common::TestServer;
+use common::{mcp_state_from, TestServer};
 use klams_mcp::tools::{
     memory_add::{run as memory_add, FactTypeArg, MemoryAddArgs},
     memory_related::{run as memory_related, MemoryRelatedArgs},
     memory_search::{run as memory_search, MemoryKindFilter, MemorySearchArgs},
     register_author::{run as register, RegisterAuthorInput},
-    McpState,
 };
-use klams_types::{MaintenanceState, MemoryKind};
-use std::sync::Arc;
-
-fn mcp_state_from(server: &TestServer) -> McpState {
-    McpState::new(
-        Arc::clone(&server.store),
-        Arc::new(MaintenanceState::default()),
-        klams_types::ApiConfig::default(),
-    )
-}
+use klams_types::MemoryKind;
 
 #[ignore = "requires docker compose stack"]
 #[tokio::test]

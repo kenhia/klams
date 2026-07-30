@@ -15,7 +15,7 @@ for the rationale.
 ```text
 $KLAMS_ROOT/                  (default /ai/klams)
 ├── config/
-│   ├── klams.toml            # service config (incl. bearer token)
+│   ├── klams.toml            # service config (incl. [[auth.tokens]] grants)
 │   └── compose.env           # KLAMS_DATA_ROOT, image tags, secrets
 ├── data/                     # bind-mounted into containers
 │   ├── postgres/
@@ -43,8 +43,20 @@ The repo ships `scripts/provision-storage-root.sh` which:
 2. Ensures the tree is owned by the invoking user.
 3. Renders `$KLAMS_ROOT/config/klams.toml` and `compose.env` from the
    `deploy/` examples *only if absent* (idempotent).
-4. Generates a fresh 32-byte hex bearer token and a Postgres password
-   and injects them into both rendered files.
+4. Generates a fresh Postgres password (injected into both rendered
+   files) and a 32-byte hex operator token, appended to the rendered
+   `klams.toml` as a scoped `[[auth.tokens]]` grant —
+   `scopes = ["read", "write", "manage"]`, `label = "operator"`,
+   `agent_name = "operator"` — and printed once at the end of the run.
+   The printed next steps close with a
+   `curl -H "Authorization: Bearer <token>" /healthz` round-trip, so a
+   fresh provision is verified working rather than assumed.
+
+Sprint 034 (#773) fixed step 4: between sprints 032 and 034 the script
+sed'd a token placeholder that no longer existed in
+`klams.example.toml` (every token form there ships commented out since
+#670), so the rendered config had **no** active grant and the service
+refused to start (`AuthConfigError::NoTokens`).
 
 ```bash
 # default root (/ai/klams)
@@ -55,8 +67,9 @@ KLAMS_ROOT=$HOME/.local/share/klams ./scripts/provision-storage-root.sh
 ```
 
 After running, `$KLAMS_ROOT/config/klams.toml` and
-`$KLAMS_ROOT/config/compose.env` are both `0600` and contain the same
-generated secrets. Adjust them with your editor before bringing up
+`$KLAMS_ROOT/config/compose.env` are both `0600`; the Postgres
+password lands in both, the operator token only in `klams.toml` (and
+once on stdout). Adjust them with your editor before bringing up
 services.
 
 ## Overriding the root
@@ -75,6 +88,27 @@ KLAMS_CONFIG=$KLAMS_ROOT/config/klams.toml \
 
 The compose file references `${KLAMS_DATA_ROOT}` for bind mounts, so
 the data volumes follow the override automatically.
+
+### How `klams-service` finds its config (sprint 034, #775)
+
+`klams-service` resolves its config path in order:
+
+1. `$KLAMS_CONFIG`, when set — always wins. The shipped systemd unit
+   sets it to `/etc/klams/klams.toml`, so hardened installs are
+   unaffected by the fallbacks below.
+2. `/ai/klams/config/klams.toml`, when that file exists — the
+   storage-root default the provision script renders.
+3. `$XDG_CONFIG_HOME/klams/klams.toml` (default
+   `~/.config/klams/klams.toml`; an empty `XDG_CONFIG_HOME` counts as
+   unset, per the XDG spec).
+
+If none exists the startup error names both tried paths. Before
+sprint 034 the docs treated `/ai/klams/config/klams.toml` as the one
+true default, which left dev hosts without a storage root exporting
+`KLAMS_CONFIG` by hand for every command. The `justfile` mirrors the
+same rule via its `klams_config` variable, so `just run`,
+`just backup-validate-config`, and the service agree on which file
+they read.
 
 ## The reranker service (sprint 030)
 
@@ -195,6 +229,30 @@ The script is **idempotent** and:
    `/etc/systemd/system/`.
 5. `systemctl daemon-reload` then `enable --now` the service, timer,
    and monitor units.
+
+### Enabling `[backup]` needs a `ReadWritePaths=` drop-in (sprint 034, #774)
+
+`klams-service.service` runs under `ProtectSystem=strict`, so every
+writable path outside `StateDirectory` needs an explicit
+`ReadWritePaths=` grant — and since sprint 034 (#774) the shipped unit
+carries **none**. It used to hardcode `ReadWritePaths=/gratch/klams-backup`,
+and systemd refuses to start a unit whose `ReadWritePaths` target is
+missing on the host, so the shipped unit only started on kubs0. Hosts
+that enable `[backup]` add the grant back as a drop-in instead of
+editing the unit (kubs0 already carries this drop-in, pointing at
+`/gratch/klams-backup`):
+
+```ini
+# /etc/systemd/system/klams-service.service.d/backup.conf
+[Service]
+ReadWritePaths=/path/to/backup_dir
+```
+
+Then `systemctl daemon-reload && systemctl restart klams-service`. If
+`backup_dir` is a network mount, add
+`RequiresMountsFor=/path/to/backup_dir` in the same drop-in. Without
+the grant, every nightly backup dies on the lockfile with `EROFS` —
+the sprint 020 failure mode.
 
 ### Upgrading an already-running install: `just restart` is required
 
@@ -615,8 +673,10 @@ is overriding the value. Check with
 
 ### Token attribution (`agent_name`)
 
-Each `[[auth.tokens]]` entry in `klams.toml` now accepts an optional
-`agent_name` field. The agent name is resolved to an `author_id` at
+Each `[[auth.tokens]]` entry in `klams.toml` accepts an `agent_name`
+field (optional for `read`/`write`-only grants; mandatory when the
+grant holds `manage` or `admin` — sprint 034, #703, see the rules
+below). The agent name is resolved to an `author_id` at
 service startup (the row is created in the `authors` table if it
 doesn't already exist) and again on each [auth reload](#hot-reloading-authtokens).
 Every REST write under that bearer is then attributed to the
@@ -657,10 +717,18 @@ violation):
 - Multiple tokens may share an `agent_name` — they all resolve to
   the same `author_id`. Useful for rotating tokens without losing
   attribution continuity.
-- Tokens without `agent_name` fall back to the seeded `system`
-  author so existing deployments keep working unchanged.
-- The legacy single `[auth].bearer_token` field is always
-  materialized as a `system`-bound grant.
+- Tokens without `agent_name` fall back to the seeded `system` author
+  — but only for unprivileged grants: since sprint 034 (#703) a grant
+  holding `manage` or `admin` must declare `agent_name`, so privileged
+  actions are attributable.
+- The legacy single `[auth].bearer_token` field is **retired**
+  (sprint 034, #703). It used to materialize as a `system`-bound
+  all-scope grant — exactly the unattributable privileged credential
+  the previous rule forbids. The key still parses so it can be
+  refused loudly: a config that sets it fails startup,
+  `--validate-config`, and SIGHUP reload alike. Migration note:
+  [auth.md](auth.md). At least one `[[auth.tokens]]` grant is now
+  required.
 
 ### Hot-reloading `[[auth.tokens]]`
 
@@ -683,7 +751,8 @@ Semantics:
   normally.
 - Only the `[auth]` block is applied. Changes to any other section
   (postgres, qdrant, embeddings, backup, …) still require a restart.
-- A reload that fails (unparseable TOML, empty `[auth]`, invalid
+- A reload that fails (unparseable TOML, no `[[auth.tokens]]` grants,
+  a still-set retired `bearer_token`, invalid or missing
   `agent_name`) is logged as an error and the **previous token table
   stays active** — a broken edit can't lock every caller out. Check
   `journalctl -u klams-service -g SIGHUP` for the outcome; run

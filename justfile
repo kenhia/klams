@@ -21,6 +21,11 @@ klams_url     := env_var_or_default('KLAMS_URL',   'http://127.0.0.1:7777')
 klams_token   := env_var_or_default('KLAMS_TOKEN', '')
 compose_file  := 'deploy/docker-compose.yml'
 
+# Config path, resolved the same way klams-service does (sprint 034,
+# #775): $KLAMS_CONFIG wins; else the storage-root default if present;
+# else $XDG_CONFIG_HOME/klams/klams.toml (~/.config fallback).
+klams_config  := env_var_or_default('KLAMS_CONFIG', if path_exists('/ai/klams/config/klams.toml') == 'true' { '/ai/klams/config/klams.toml' } else { env_var_or_default('XDG_CONFIG_HOME', home_directory() / '.config') / 'klams/klams.toml' })
+
 # klams-mind checkout — it owns the retrieval eval suite + runner (the
 # TOML and the Python harness live there; the gate lives here, because
 # klams is what regresses). Override if your checkout is elsewhere.
@@ -59,11 +64,11 @@ run:
 # Quickstart-friendly alias for `run`.
 service-run: run
 
-# sprint 007 — validate [auth] / [backup] / [decay] in $KLAMS_CONFIG
-# (or /ai/klams/config/klams.toml) without contacting any backend.
-# Exits 0 on success, 2 on the first error; warnings go to stderr.
+# sprint 007 — validate [auth] / [backup] / [decay] in {{klams_config}}
+# without contacting any backend. Exits 0 on success, 2 on the first
+# error; warnings go to stderr.
 service-validate-config:
-    KLAMS_CONFIG=${KLAMS_CONFIG:-/ai/klams/config/klams.toml} \
+    KLAMS_CONFIG={{klams_config}} \
         cargo run --quiet -p klams-service -- --validate-config
 
 # Workspace-wide tests (excludes #[ignore]'d cases).
@@ -138,7 +143,7 @@ health:
 # Postgres without starting the HTTP server. Idempotent — `sqlx`
 # tracks applied versions in `_sqlx_migrations` so reruns are no-ops.
 db-migrate:
-    KLAMS_CONFIG=${KLAMS_CONFIG:-/ai/klams/config/klams.toml} \
+    KLAMS_CONFIG={{klams_config}} \
         cargo run --quiet -p klams-service -- --migrate-only
 
 # Shell into the compose Postgres as the klams user. Forwards extra
@@ -262,7 +267,7 @@ backup-validate-config:
 
 # sprint 006 — verify a committed backup pair is readable + intact
 # without actually restoring it. Reads `[backup].backup_dir` from
-# $KLAMS_CONFIG (defaults /ai/klams/config/klams.toml).
+# {{klams_config}} (see the resolution rule at the top).
 #
 #   just backup-verify                # today's UTC date
 #   just backup-verify 2026-05-24     # explicit UTC date
@@ -277,7 +282,7 @@ backup-validate-config:
 backup-verify date="":
     #!/usr/bin/env bash
     set -euo pipefail
-    cfg="${KLAMS_CONFIG:-/ai/klams/config/klams.toml}"
+    cfg="{{klams_config}}"
     if [[ ! -r "$cfg" ]]; then echo "backup-verify: $cfg not readable" >&2; exit 1; fi
     backup_dir=$(awk -F '"' '/^[[:space:]]*backup_dir[[:space:]]*=/{print $2; exit}' "$cfg")
     if [[ -z "$backup_dir" ]]; then echo "backup-verify: [backup].backup_dir unset in $cfg" >&2; exit 1; fi
@@ -311,10 +316,10 @@ backup-verify date="":
 # sprint 006 T015 — load the scale fixture, run one backup, print
 # `kind | bytes | seconds` and append a dated entry to sizing.md.
 # Requires the docker-compose.test.yml stack to be running and a
-# config file at $KLAMS_CONFIG (or /ai/klams/config/klams.toml).
+# config file at {{klams_config}} (see the resolution rule at the top).
 backup-size:
     @set -eu; \
-    cfg="$${KLAMS_CONFIG:-/ai/klams/config/klams.toml}"; \
+    cfg="{{klams_config}}"; \
     if [[ ! -r "$$cfg" ]]; then echo "backup-size: $$cfg not readable" >&2; exit 1; fi; \
     backup_dir=$$(awk -F '"' '/^[[:space:]]*backup_dir[[:space:]]*=/{print $$2; exit}' "$$cfg"); \
     if [[ -z "$$backup_dir" ]]; then echo "backup-size: [backup].backup_dir unset in $$cfg" >&2; exit 1; fi; \

@@ -4,7 +4,9 @@
 use async_trait::async_trait;
 use klams_core::{spawn_workers, MemoryQueue, WriteJob};
 use klams_store::{EventQuery, FactQuery, Store, StoreError, StoreResult, TextHit};
-use klams_types::{AppendEvent, Event, Fact, IndexKnowledge, KnowledgeItem, Source, UpsertFact};
+use klams_types::{
+    AppendEvent, Event, Fact, FactWriteOutcome, IndexKnowledge, KnowledgeItem, Source, UpsertFact,
+};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -17,7 +19,7 @@ struct RecordingStore {
 
 #[async_trait]
 impl Store for RecordingStore {
-    async fn upsert_fact(&self, _req: UpsertFact) -> StoreResult<Fact> {
+    async fn upsert_fact_v2(&self, _req: UpsertFact) -> StoreResult<FactWriteOutcome> {
         Err(StoreError::Other("not used".into()))
     }
 

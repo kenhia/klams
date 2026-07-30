@@ -6,7 +6,7 @@
 
 mod common;
 
-use common::TestServer;
+use common::{make_author, mcp_state_from, TestServer};
 use klams_mcp::tools::{
     memory_add::{run as memory_add, FactTypeArg, MemoryAddArgs},
     memory_admin_hard_delete::{run as admin_hard_delete, MemoryAdminHardDeleteArgs},
@@ -15,11 +15,7 @@ use klams_mcp::tools::{
     memory_append_event::{run as append_event, MemoryAppendEventArgs},
     memory_delete::{run as memory_delete, DeleteCaller, MemoryDeleteArgs},
     memory_search::{run as memory_search, MemorySearchArgs},
-    register_author::{run as register, RegisterAuthorInput},
-    McpState,
 };
-use klams_types::MaintenanceState;
-use std::sync::Arc;
 use uuid::Uuid;
 
 /// Sprint 025 (#633): these tests delete memories they authored
@@ -30,32 +26,6 @@ fn owner_caller(author_id: Uuid) -> DeleteCaller {
         author_id,
         scopes: vec![klams_types::Scope::Read, klams_types::Scope::Write],
     }
-}
-
-fn mcp_state_from(server: &TestServer) -> McpState {
-    McpState::new(
-        Arc::clone(&server.store),
-        Arc::new(MaintenanceState::default()),
-        klams_types::ApiConfig::default(),
-    )
-}
-
-async fn make_author(state: &McpState, name: &str) -> Uuid {
-    register(
-        state,
-        RegisterAuthorInput {
-            agent_name: name.into(),
-            model: None,
-            session_title: None,
-            repo: None,
-            client_app: None,
-            client_version: None,
-            extra: serde_json::Value::Null,
-        },
-    )
-    .await
-    .expect("register_author")
-    .author_id
 }
 
 #[ignore = "requires docker compose stack"]

@@ -16,35 +16,10 @@ mod support;
 use klams_mcp::tools::{
     memory_add::{run as memory_add, FactTypeArg, MemoryAddArgs},
     memory_append_event::{run as append_event, MemoryAppendEventArgs},
-    register_author::{run as register_author, RegisterAuthorInput},
-    McpState,
+    register_author::run as register_author,
 };
-use klams_types::MaintenanceState;
-use std::sync::Arc;
-use support::MemStore;
+use support::{author_input as input, state};
 use uuid::Uuid;
-
-fn state() -> (McpState<MemStore>, Arc<MemStore>) {
-    let store = Arc::new(MemStore::new());
-    let st = McpState::new(
-        Arc::clone(&store),
-        Arc::new(MaintenanceState::default()),
-        klams_types::ApiConfig::default(),
-    );
-    (st, store)
-}
-
-fn input(agent_name: &str) -> RegisterAuthorInput {
-    RegisterAuthorInput {
-        agent_name: agent_name.to_string(),
-        model: None,
-        session_title: None,
-        repo: None,
-        client_app: None,
-        client_version: None,
-        extra: serde_json::json!({}),
-    }
-}
 
 // ---------------------------------------------------------------- authors
 

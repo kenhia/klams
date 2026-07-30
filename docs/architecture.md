@@ -609,7 +609,13 @@ All in-process in `klams-service`; no external scheduler.
   `ProtectSystem=strict` in the hardened units: any writable path
   outside `StateDirectory` needs an explicit `ReadWritePaths=` — the
   backup dir gained one in sprint 020 after the hardened unit silently
-  broke nightly backups for 40 days.
+  broke nightly backups for 40 days, then lost it from the *shipped*
+  unit in sprint 034 (#774): systemd refuses to start a unit whose
+  `ReadWritePaths` target is missing on the host, so the hardcoded
+  `/gratch/klams-backup` made the shipped unit kubs0-only. Hosts
+  enabling `[backup]` now grant the dir back via a per-host drop-in
+  (`klams-service.service.d/backup.conf` — recipe in
+  [setup.md](setup.md)).
 * **Oversize-log prune** — daily timer, §2.2.
 * **Auth reload** — SIGHUP re-reads `[[auth.tokens]]` and atomically
   swaps the grant table (WI #61); token rotation needs no restart.
@@ -705,12 +711,17 @@ route (previously exactly one route checked, so any valid bearer could
 bulk-delete knowledge) — see the route table in
 [`crates/klams-api/src/router.rs`](../crates/klams-api/src/router.rs).
 
-**Tokens.** `[[auth.tokens]]` issues per-purpose bearer tokens with a
-scope list and an optional `agent_name` (strict charset, validated at
-startup). The legacy single `bearer_token` is materialized as a grant
-with all scopes, bound to `system`. Tokens hot-reload on SIGHUP
-(§2.8). Multiple tokens may share an `agent_name` and resolve to the
-same author.
+**Tokens.** `[[auth.tokens]]` grants are the only token source, and at
+least one must be set. Each issues a per-purpose bearer token with a
+scope list and an `agent_name` (strict charset, validated at startup;
+optional only for grants without `manage`/`admin` — a privileged grant
+must declare one so its actions are attributable, sprint 034 #703).
+The legacy single `bearer_token` is retired (sprint 034, #703): it
+materialized as an all-scope grant bound to `system`, and a config
+that still sets it now refuses to load — at startup,
+`--validate-config`, and SIGHUP alike (migration note in
+[auth.md](auth.md)). Tokens hot-reload on SIGHUP (§2.8). Multiple
+tokens may share an `agent_name` and resolve to the same author.
 
 **Attribution** (sprints 007/009/018). The `authors` table attributes
 every memory to the agent that wrote it; `facts.author_id` /
