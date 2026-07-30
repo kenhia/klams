@@ -9,21 +9,18 @@ global:
 # service is reachable as `host.docker.internal:7777` from the Prometheus
 # container.
 #
-# In the production deployment the klams Grafana/Prometheus run on a separate
-# host (kubsdb) and scrape the service on its real host:port (e.g.
-# `kubs0:7777`) via a `klams-service` job whose target resolves through the
-# Prometheus container's `extra_hosts`. Keep the job name + labels identical
-# (`job=klams-service`, `service=klams-service`) so the shared dashboard
-# (`deploy/grafana/klams.json`) works against either Prometheus. The
-# infra-as-code source for the production scrape config lives in the ansible-k
-# repo (`roles/prometheus/templates/prometheus.yml.j2`).
+# If your Grafana/Prometheus run on a separate host, scrape the service on
+# its real host:port via a `klams-service` job whose target resolves through
+# the Prometheus container's `extra_hosts`. Keep the job name + labels
+# identical (`job=klams-service`, `service=klams-service`) so the shared
+# dashboard (`deploy/grafana/klams.json`) works against either Prometheus.
 scrape_configs:
   - job_name: klams-service
     metrics_path: /metrics
     scheme: http
     static_configs:
-      # Bundled-compose target. For a host-network deployment use `kubs0:7777`
-      # (or the actual service host:port) instead.
+      # Bundled-compose target. For a host-network deployment use the
+      # actual service host:port instead.
       - targets:
           - host.docker.internal:7777
         labels:

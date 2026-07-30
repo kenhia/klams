@@ -1,156 +1,88 @@
-# klams — Ken's Local Agent Memory System
+# klams — Local Agent Memory System
 
-> **Disclaimer:** This project is purpose-built for Ken's specific hardware
-> and homelab environment (notably the `kubs0` and `kai` machines, a
-> particular Postgres/Qdrant/GPU layout, and Ken's controller + GHCP agent
-> setup). It is **not** intended as a general-purpose agent memory system.
-> Paths, hostnames, services, and assumptions throughout the code and docs
-> reflect that environment and will not work elsewhere without
-> non-trivial changes.
+`klams` is a self-hosted, personal memory service for AI agents: one
+durable, observable place where every agent you run — Claude Code,
+GitHub Copilot, anything MCP-capable — reads and writes shared memory,
+so what one agent learns another can recall. It grew up in one
+specific homelab (the "k" is its author, Ken) and is developed against
+that environment, but it installs anywhere Linux, Docker, and a Rust
+toolchain are available — see [docs/install.md](docs/install.md).
 
 ## What it is
 
-`klams` is a controller-centric, shared memory service for Ken's homelab
-agent ecosystem. It provides a unified, durable, and observable place to
-read and write three kinds of memory:
+klams stores three kinds of memory behind one HTTP + MCP surface:
 
-- **User memory** — stable facts about Ken, his machines, and preferences.
-- **Task memory** — repos, services, sprint state, execution traces, events.
-- **Knowledge memory** — semantic content from the Obsidian vault, specs,
-  READMEs, and troubleshooting notes.
+- **User memory** — stable facts about you, your machines, and
+  preferences.
+- **Task memory** — repos, services, sprint state, execution traces,
+  events.
+- **Knowledge memory** — semantic content scanned from your code and
+  notes, plus prose findings agents write back.
 
-A companion Tauri + Svelte desktop **viewport** runs on Windows and is the
-human-facing window into klams state.
+Retrieval is hybrid: dense vectors (Qdrant + a text-embeddings
+server), Postgres full-text, and a curated stratum, fused with
+reciprocal rank fusion and re-ranked by a cross-encoder. Agents talk
+to it over MCP (Streamable HTTP) with scoped, attributed bearer
+tokens; writes carry their author.
 
-## Status
+Alongside the service run three companions:
 
-Initial MVP shipped. The service runs under systemd on `kubs0` and the
-Windows viewport reads facts, events, and knowledge over the LAN.
+- **klams-scanner** — walks your configured roots and keeps the
+  knowledge corpus in sync with your files.
+- **klams-monitor** — turns systemd unit state edges into events.
+- **viewport** — a Tauri + Svelte desktop app; the human-facing
+  window into (and curation surface for) klams state.
 
-- [sprints/001-initial-mvp/spec.md](sprints/001-initial-mvp/spec.md) —
-  MVP specification + success criteria (SC-001..SC-009).
-- [sprints/001-initial-mvp/plan.md](sprints/001-initial-mvp/plan.md) —
-  implementation plan.
-- [sprints/001-initial-mvp/tasks.md](sprints/001-initial-mvp/tasks.md) —
-  task ledger.
-- [Performance baseline](sprints/008-activity-observability/perf-baseline.md) —
-  sprint 008 `memory_search` latency snapshot.
-- [AGENTS.md](AGENTS.md) — project working agreement (principles,
-  quality gate, sprint workflow).
+## Getting started
 
-## Running the MVP
+**[docs/install.md](docs/install.md)** is the one guide: host
+prerequisites, the GPU/CPU/OpenAI-compatible-endpoint decision tree,
+provisioning, first tokens, connecting an agent, and the first-run
+smoke check (`just smoke`) that proves the install end-to-end.
 
-Full end-to-end provisioning, build, and smoke checks are in the
-quickstart. The short version:
+Then, going deeper:
 
-1. **Provision `kubs0`**: install Docker + systemd, then run the
-   storage-root + Compose bootstrap per
-   [docs/setup.md](docs/setup.md).
-2. **Bring up dependencies**:
-
-   ```sh
-   cd deploy
-   docker compose --env-file compose.env up -d
-   ```
-
-3. **Run migrations and start the service**:
-
-   ```sh
-   cargo run -p klams-service --release   # or: systemctl start klams
-   ```
-
-4. **Build the Windows viewport** from any Linux host with
-   `cargo-xwin` installed:
-
-   ```sh
-   cd viewport/src-tauri
-   cargo xwin build --release --target x86_64-pc-windows-msvc \
-     --features custom-protocol
-   ```
-
-   Copy the resulting `klams-viewport.exe` to the Windows machine, set
-   the bearer once via the in-app config dialog (stored in the Windows
-   Credential Manager), and launch. Add `--debug` to open WebView
-   devtools and enable diagnostic logging.
-
-5. **Smoke-test** against the success criteria using
-   [sprints/001-initial-mvp/quickstart.md §9](sprints/001-initial-mvp/quickstart.md#9-smoke-test-the-user-stories).
-
-### Sprint 002 quick reference
-
-Sprint 002 (`sprints/002-safety-and-write-ops/`) adds a top-level
-[`justfile`](justfile) so every routine task — bringing the stack up,
-running the service, exercising the pre-commit gate, smoke-testing
-the API — is a single discoverable recipe and is the same command CI
-invokes. Install [`just`](https://github.com/casey/just) once
-(`cargo install just`), then:
-
-```sh
-$ just --list
-Available recipes:
-    build           # Release build of the service binary.
-    compose-down    # Stop and remove the stack (keeps volumes).
-    compose-rebuild # Force a clean rebuild of all compose images.
-    compose-up      # Bring the Postgres+Qdrant+TEI stack up in the background.
-    default         # Default recipe shows the menu so a bare `just` is friendly.
-    gate            # CI invokes exactly this recipe (no inline duplication).
-    health          # Quick liveness probe + light verification round-trip.
-    run             # Run the service in the foreground; logs go to stderr.
-    test            # Workspace-wide tests (excludes #[ignore]'d cases).
-    verify          # Full SC-001..SC-009 functional smoke (slower than `health`).
-    viewport-build  # Cross-compile the viewport for Windows (requires cargo-xwin).
-```
-
-The full sprint 002 walkthrough (validation, dissents, decay,
-viewport curation, `just gate`) lives at
-[sprints/002-safety-and-write-ops/quickstart.md](sprints/002-safety-and-write-ops/quickstart.md).
-
-### Sprint 003 quick reference
-
-Sprint 003 (`sprints/003-non-agentic-writes/`) ships two new binaries —
-`klams-scanner` (filesystem indexer, hourly via a systemd timer) and
-`klams-monitor` (systemd-state edge-transition poller) — plus the
-unit files + `install-systemd.sh` helper to land all three klams
-binaries under systemd on `kubs0`. The `justfile` gains four
-recipes:
-
-```sh
-$ just --list
-Available recipes:
-    build           # Release build of the service binary.
-    compose-down    # Stop and remove the stack (keeps volumes).
-    compose-rebuild # Force a clean rebuild of all compose images.
-    compose-up      # Bring the Postgres+Qdrant+TEI stack up in the background.
-    default         # Default recipe shows the menu so a bare `just` is friendly.
-    gate            # CI invokes exactly this recipe (no inline duplication).
-    health          # Quick liveness probe + light verification round-trip.
-    install-systemd # sprint-003 — build + run deploy/install-systemd.sh.
-    monitor-once    # sprint-003 — ad-hoc systemd-state probe.
-    rollback        # sprint-003 — swap *.prev binaries back into place.
-    run             # Run the service in the foreground; logs go to stderr.
-    scanner-once    # sprint-003 — ad-hoc scan of the configured roots.
-    test            # Workspace-wide tests (excludes #[ignore]'d cases).
-    verify          # Full SC-001..SC-009 functional smoke (slower than `health`).
-    viewport-build  # Cross-compile the viewport for Windows (requires cargo-xwin).
-```
-
-The full sprint 003 walkthrough (scanner, monitor, systemd install,
-rollback path, ansible-k handoff) lives at
-[sprints/003-non-agentic-writes/quickstart.md](sprints/003-non-agentic-writes/quickstart.md).
-
-Architecture overview and component map:
-[docs/architecture.md](docs/architecture.md) (with hand-authored
-topology/read-path/write-path diagrams under
-[docs/diagrams/](docs/diagrams/)). Day-to-day operator
-recipes: [docs/usage.md](docs/usage.md). Who can do what, and how
-tokens are granted: [docs/auth.md](docs/auth.md). Pointing an AI agent
-at the MCP surface: hand it [docs/klams-mcp-for-agents.md](docs/klams-mcp-for-agents.md).
+- [docs/architecture.md](docs/architecture.md) — design and component
+  map (diagrams under [docs/diagrams/](docs/diagrams/)).
+- [docs/usage.md](docs/usage.md) — day-to-day operator recipes.
+- [docs/auth.md](docs/auth.md) — who can do what; how tokens are
+  granted.
+- [docs/klams-mcp-for-agents.md](docs/klams-mcp-for-agents.md) — hand
+  this to an AI agent to wire it up, including the routing-policy
+  blurb that makes agents actually use the store.
+- [docs/setup.md](docs/setup.md) — the reference deployment's
+  operational record.
+- [AGENTS.md](AGENTS.md) — the working agreement for humans and
+  agents changing this repo.
 
 The elevator pitch — what klams is, why it exists, and what it
-demonstrably does, with real dated numbers — is a single self-contained
-page: [docs/pitch/klams-pitch.html](docs/pitch/klams-pitch.html)
+demonstrably does, with real dated numbers — is a single
+self-contained page: [docs/pitch/klams-pitch.html](docs/pitch/klams-pitch.html)
 ([rendered preview](https://htmlpreview.github.io/?https://github.com/kenhia/klams/blob/main/docs/pitch/klams-pitch.html)).
-Open it straight from a checkout too — it renders offline.
+It renders offline straight from a checkout too.
+
+## Support & posture
+
+- **Support**: best effort, no SLA. Issues are welcome; PRs are
+  better. This is one person's production system that happens to be
+  installable — expect honest docs, not a support organization.
+- **Hardware**: the embedding backend must be one of NVIDIA CUDA
+  (TEI GPU image), CPU (TEI `cpu-*` image), or any OpenAI-compatible
+  embeddings endpoint you bring (vLLM, Ollama, a cloud API). Nothing
+  else is supported — in particular there is no first-party ROCm or
+  Metal path; on those machines, bring an OpenAI-compatible endpoint.
+- **Versioning / upgrades**: the version's PATCH segment is a sprint
+  number, not a compatibility signal — `0.1.34 → 0.1.35` says "one
+  sprint later", nothing more. Postgres migrations are forward-only
+  and run automatically at service start. Corpus-shape changes
+  (embedding model or collection swaps) have no upgrade path except
+  re-scanning, which is cheap by design. The policy, honestly stated:
+  **run `main`, expect to re-scan occasionally.** No release tags are
+  cut yet; that starts when there's a second operator who needs them.
+- **Contributing**: deliberately deferred — no CONTRIBUTING.md, issue
+  templates, or PR policy until a real contributor materializes
+  (recorded in sprint 035 so it isn't re-litigated). If that's you,
+  open an issue and say hi.
 
 ## License
 

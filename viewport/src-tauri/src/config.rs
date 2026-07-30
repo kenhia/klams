@@ -19,7 +19,9 @@ pub struct StoredConfig {
 }
 
 fn default_url() -> String {
-    "http://kubs0:7777".into()
+    // Loopback, not a homelab hostname (sprint 035, #776): the first
+    // thing a new operator sees must not be someone else's machine.
+    "http://127.0.0.1:7777".into()
 }
 fn default_interval() -> u32 {
     10

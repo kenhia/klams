@@ -1,4 +1,4 @@
-# klams production stack on kubs0.
+# klams backing-services stack (postgres, qdrant, embedder, reranker).
 #
 # All services attach to the single user-defined bridge network
 # `klams-net` with DNS aliases matching the service name. See

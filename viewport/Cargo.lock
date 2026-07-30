@@ -2118,7 +2118,7 @@ dependencies = [
 
 [[package]]
 name = "klams-client"
-version = "0.1.33"
+version = "0.1.35"
 dependencies = [
  "klams-core",
  "klams-types",
@@ -2132,7 +2132,7 @@ dependencies = [
 
 [[package]]
 name = "klams-core"
-version = "0.1.33"
+version = "0.1.35"
 dependencies = [
  "async-trait",
  "klams-store",
@@ -2153,7 +2153,7 @@ dependencies = [
 
 [[package]]
 name = "klams-store"
-version = "0.1.33"
+version = "0.1.35"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2176,7 +2176,7 @@ dependencies = [
 
 [[package]]
 name = "klams-types"
-version = "0.1.33"
+version = "0.1.35"
 dependencies = [
  "chrono",
  "humantime-serde",

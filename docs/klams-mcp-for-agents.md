@@ -2,27 +2,30 @@
 
 You (an AI coding agent — Claude Code, GitHub Copilot, or any
 MCP-capable client) have been pointed at this document to wire
-yourself up to **klams**, the homelab's shared memory store, and to
-start using it as **cross-agent memory**. Everything you need is
-below; ask Ken only for a bearer token if one hasn't been provided.
+yourself up to **klams**, this installation's shared memory store,
+and to start using it as **cross-agent memory**. Everything you need
+is below; ask your operator only for the endpoint URL and a bearer
+token if they haven't been provided. This document uses
+`<klams-url>` as a placeholder — `http://127.0.0.1:7777` when the
+agent runs on the klams host itself, or whatever HTTPS front door the
+operator provides across machines (see
+[install.md § The networking truth](install.md#the-networking-truth)).
 
 ## The server
 
 | | |
 |---|---|
-| Endpoint | `https://kubs0.encke-wahoo.ts.net:7777/mcp` (from anywhere on the tailnet)<br>`http://localhost:7777/mcp` (on kubs0 itself) |
+| Endpoint | `<klams-url>/mcp` |
 | Transport | MCP Streamable HTTP (rmcp; HTTP+SSE fallback on the same mount) |
 | Auth | `Authorization: Bearer <token>` — required on every request |
 | Server name | `klams-mcp` |
 
-Tokens are `[[auth.tokens]]` entries in `/etc/klams/klams.toml` on
-`kubs0`, each with a `scopes` list and an `agent_name` that writes
-are attributed to — see
-[setup.md § Token attribution](setup.md#token-attribution-agent_name).
-Each agent should get its **own token** (read+write, distinct
-`agent_name`) so its memories are attributable. Since sprint 018 a
-token edit takes effect with `sudo systemctl reload klams-service` —
-no restart.
+Tokens are `[[auth.tokens]]` entries in the service's `klams.toml`,
+each with a `scopes` list and an `agent_name` that writes are
+attributed to — see [auth.md](auth.md). Each agent should get its
+**own token** (read+write, distinct `agent_name`) so its memories are
+attributable. Since sprint 018 a token edit takes effect with
+`sudo systemctl reload klams-service` — no restart.
 
 ## Enable it — Claude Code
 
@@ -30,7 +33,7 @@ no restart.
 of any repo. Recommended:
 
 ```bash
-claude mcp add --scope user --transport http klams https://kubs0.encke-wahoo.ts.net:7777/mcp \
+claude mcp add --scope user --transport http klams <klams-url>/mcp \
   --header "Authorization: Bearer <token>"
 ```
 
@@ -43,7 +46,7 @@ environment variable instead of inlining it:
   "mcpServers": {
     "klams": {
       "type": "http",
-      "url": "https://kubs0.encke-wahoo.ts.net:7777/mcp",
+      "url": "<klams-url>/mcp",
       "headers": { "Authorization": "Bearer ${KLAMS_MCP_TOKEN}" }
     }
   }
@@ -74,7 +77,7 @@ nothing secret lands in git:
   "servers": {
     "klams": {
       "type": "http",
-      "url": "https://kubs0.encke-wahoo.ts.net:7777/mcp",
+      "url": "<klams-url>/mcp",
       "headers": { "Authorization": "Bearer ${input:klams-token}" }
     }
   }
@@ -177,8 +180,30 @@ before grep/web.
 > - **Don't** store secrets, or anything already in the repo you're in.
 
 Propagate this blurb to the instruction files on every machine an agent
-runs from (currently `cleo`, `kai`, `kubs0`) so the routing rule is in
-force everywhere, not just where it was first added.
+runs from, so the routing rule is in force everywhere — not just where
+it was first added.
+
+### If your harness defers MCP tool schemas (Claude Code)
+
+Some harnesses load MCP tool schemas lazily: a session starts with only
+a reminder listing tool *names* and no schemas, so the tools are
+uncallable until loaded (in Claude Code, via `ToolSearch` with
+`select:<name>[,<name>...]`). An empty tool list then has two
+look-alike causes with different fixes — worth adding to the agent's
+instructions alongside the routing blurb:
+
+> | Signal | Deferred, not loaded | Genuinely disconnected |
+> |---|---|---|
+> | `ToolSearch select:<names>` | **returns schemas** → use them | **`No matching deferred tools found`** |
+> | Harness notice | none | explicit `(MCP server disconnected)` |
+> | curl probe of the server | healthy | **also healthy** ← the trap |
+> | Fix | load via ToolSearch | restart the client app |
+>
+> Don't declare a fault until a loaded call has actually failed; don't
+> keep retrying ToolSearch once it has explicitly returned no match.
+> Loading a schema is not proof of connectivity — confirm with one real
+> round-trip before trusting it. (Probing klams without a bearer token
+> returning `401` is the server *working*, not down.)
 
 ## Smoke check
 
@@ -206,7 +231,7 @@ a human `message`, and — **only when retrying can actually help** —
 | `PAYLOAD_TOO_LARGE` | no | The text exceeds the model's token ceiling. The message names the limit — **split the content and write the pieces**. Do not drop it. |
 | `EMBEDDING_REJECTED` | no | The embedder refused the input for a non-size reason. Fix the input. |
 | `EMPTY_QUERY`, `INVALID_TOP_K`, `INVALID_LIMIT`, `INVALID_WINDOW`, `WINDOW_TOO_LARGE`, `INVALID_KIND`, `INVALID_CATEGORY`, `SCHEMA_VALIDATION_FAILED`, `INVALID_AGENT_NAME`, `INVALID_REPO_PATH`, `EXTRA_TOO_LARGE` | no | Your arguments are wrong. The message says how. |
-| `INSUFFICIENT_SCOPE` | no | Your token lacks the scope. Ask Ken; do not retry. |
+| `INSUFFICIENT_SCOPE` | no | Your token lacks the scope. Ask your operator; do not retry. |
 | `NOT_FOUND`, `NOT_SOFT_DELETED` | no | The target isn't there (or isn't in the state the verb needs). |
 | `NOT_AGENT_AUTHORED` | no | The target is scanner-ingested derived data. Fix the source file and let the re-scan update the store. |
 | `EVENTS_NOT_DELETABLE` | no | Events are append-only by design. |

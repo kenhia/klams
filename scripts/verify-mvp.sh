@@ -7,10 +7,14 @@
 #   KLAMS_TOKEN   bearer token                       (required)
 #
 # Flags:
-#   --light    Run only /healthz + a single fact write/read round-trip
-#              (skips SC-002 knowledge indexing, SC-003 perf seeding,
-#              SC-007/008/009 doc + dependency walks). Intended for
-#              the `just health` recipe and CI smoke after compose-up.
+#   --light      Run only /healthz + a single fact write/read round-trip
+#                (skips SC-002 knowledge indexing, SC-003 perf seeding,
+#                SC-007/008/009 doc + dependency walks). Intended for
+#                the `just health` recipe and CI smoke after compose-up.
+#   --first-run  Full run with a plain-language verdict at the end
+#                (sprint 035, #779). This is `just smoke` — the check
+#                docs/install.md ends with. Valid on a completely
+#                empty store: every check creates its own data.
 #
 # This is a thin functional smoke test, NOT a load/perf benchmark.
 # Perf claims (SC-002 10s p95, SC-003 500ms p95) are covered by the
@@ -27,16 +31,23 @@ set -o pipefail
 # reason teaches you to re-run it rather than read it.
 
 LIGHT=0
+FIRST_RUN=0
 for arg in "$@"; do
   case "$arg" in
     --light) LIGHT=1 ;;
+    --first-run) FIRST_RUN=1 ;;
     -h|--help)
-      sed -n '2,18p' "$0"
+      sed -n '2,22p' "$0"
       exit 0
       ;;
     *) echo "unknown arg: $arg" >&2; exit 2 ;;
   esac
 done
+
+if (( LIGHT && FIRST_RUN )); then
+  echo "--light and --first-run are mutually exclusive (the first-run smoke is a full run)" >&2
+  exit 2
+fi
 
 URL="${KLAMS_URL:-http://127.0.0.1:7777}"
 TOKEN="${KLAMS_TOKEN:-}"
@@ -61,9 +72,15 @@ color() {
 }
 
 # record SC outcome: $1=id $2=status (pass|fail|skip) $3=detail
+# $4 (optional) = first-run hint: what to check when this fails
+# (sprint 035, #779 — a stranger's failure needs a next step, not
+# just a status code).
 record() {
-  local id="$1" status="$2" detail="$3"
+  local id="$1" status="$2" detail="$3" hint="${4:-}"
   printf '  %s %s — %s\n' "$(color "$status" "[$status]")" "$id" "$detail"
+  if [[ "$status" == fail && -n "$hint" ]]; then
+    printf '        ↳ check: %s\n' "$hint"
+  fi
   case "$status" in
     pass) PASS+=("$id") ;;
     fail) FAIL+=("$id $detail") ;;
@@ -91,7 +108,11 @@ curl_api() {
 
 # `${LIGHT:+...}` tested for non-EMPTY, and LIGHT is `0` in full runs —
 # so every run announced itself as light mode. Test the value.
-echo "klams MVP verification against $URL$( ((LIGHT)) && echo ' (light mode)' )"
+if ((FIRST_RUN)); then
+  echo "klams first-run smoke against $URL"
+else
+  echo "klams MVP verification against $URL$( ((LIGHT)) && echo ' (light mode)' )"
+fi
 echo
 
 # ---------------------------------------------------------------------- /healthz
@@ -101,7 +122,8 @@ hcode=$(curl -sS -o /tmp/verify-mvp.health -w '%{http_code}' "$URL/healthz" || e
 if [[ "$hcode" =~ ^2 ]]; then
   record HEALTHZ pass "/healthz $hcode"
 else
-  record HEALTHZ fail "/healthz status=$hcode"
+  record HEALTHZ fail "/healthz status=$hcode" \
+    "is klams-service running? (\`just run\` in another shell, or \`systemctl status klams-service\`) — and is KLAMS_URL right? (currently $URL)"
 fi
 
 # ---------------------------------------------------------------------- SC-001
@@ -145,13 +167,15 @@ JSON
       record SC-001 fail "fact round-trip took ${elapsed_ms}ms (>= 2000ms)"
     fi
   else
-    record SC-001 fail "search did not return marker (status=$scode)"
+    record SC-001 fail "search did not return marker (status=$scode)" \
+      "read the service logs; the /healthz body names any sick dependency (postgres)"
   fi
 else
   # Carry the response body, not just the status. #682 sat undiagnosed
   # partly because "status=422" says nothing about *which* field the
   # service rejected — and the service does return that detail.
-  record SC-001 fail "fact write failed (status=$code): $(echo "$status_body" | tail -n +2 | head -c 300)"
+  record SC-001 fail "fact write failed (status=$code): $(echo "$status_body" | tail -n +2 | head -c 300)" \
+    "401/403 → wrong KLAMS_TOKEN (grants are [[auth.tokens]] in klams.toml); 5xx → service logs"
 fi
 
 # ---------------------------------------------------------------------- SC-002
@@ -205,10 +229,12 @@ if [[ "$kcode" =~ ^2 ]]; then
   if [[ -n "$found" ]]; then
     record SC-002 pass "knowledge searchable after ${elapsed_s}s"
   else
-    record SC-002 fail "knowledge not searchable after 10s polls"
+    record SC-002 fail "knowledge not searchable after 10s polls" \
+      "embedding can be slow on CPU — re-run once; then check the tei + qdrant containers (docker compose ps) and the service logs"
   fi
 else
-  record SC-002 fail "knowledge index failed (status=$kcode): $(echo "$kresp" | tail -n +2 | head -c 300)"
+  record SC-002 fail "knowledge index failed (status=$kcode): $(echo "$kresp" | tail -n +2 | head -c 300)" \
+    "is the embedder container healthy? (docker compose ps — tei should be 'healthy'); 401 → wrong KLAMS_TOKEN"
 fi
 
 # ---------------------------------------------------------------------- SC-003
@@ -255,7 +281,8 @@ hbody=$(cat /tmp/verify-mvp.health 2>/dev/null || true)
 if [[ "$hresp" =~ ^2 ]] && grep -qiE 'postgres|qdrant|ok|healthy' <<<"$hbody"; then
   record SC-008 pass "/healthz reachable and reports per-dependency state"
 else
-  record SC-008 fail "/healthz status=$hresp body=$hbody"
+  record SC-008 fail "/healthz status=$hresp body=$hbody" \
+    "the /healthz body names the sick dependency — check that container (docker compose ps)"
 fi
 
 # ---------------------------------------------------------------------- SC-009
@@ -278,6 +305,18 @@ printf '  %s %d passed   %s %d failed   %s %d skipped\n' \
 if (( ${#FAIL[@]} > 0 )); then
   printf '\nFailed:\n'
   for f in "${FAIL[@]}"; do printf '  - %s\n' "$f"; done
+  if ((FIRST_RUN)); then
+    echo
+    echo "$(color fail '✗') Your install is not working yet — start with the ↳ hints above."
+  fi
   exit 1
+fi
+if ((FIRST_RUN)); then
+  echo
+  echo "$(color pass '✓') Your install works: klams answered health, stored and"
+  echo "  recalled both a fact and a knowledge chunk (write → embed → search),"
+  echo "  rejected malformed input with a useful error, and exposed metrics."
+  echo "  Next: point the scanner at your files and connect an agent"
+  echo "  (docs/install.md §7–8)."
 fi
 exit 0

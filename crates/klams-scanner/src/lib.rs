@@ -31,6 +31,35 @@ pub fn default_host() -> String {
     std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".into())
 }
 
+/// Validate configured scan roots before any scanning starts (sprint
+/// 035 #776). Every root must exist and be a directory; a root that
+/// doesn't exist is a configuration error, not a per-cycle warning —
+/// `scanner.example.toml` shipping another machine's path used to
+/// "work" by silently scanning nothing forever. The error names every
+/// offending root and says where to fix it.
+pub fn validate_roots(roots: &[std::path::PathBuf]) -> Result<()> {
+    if roots.is_empty() {
+        anyhow::bail!(
+            "no scan roots configured — set `roots` in the scanner config \
+             (absolute paths) or pass --root"
+        );
+    }
+    let missing: Vec<String> = roots
+        .iter()
+        .filter(|r| !r.is_dir())
+        .map(|r| r.display().to_string())
+        .collect();
+    if !missing.is_empty() {
+        anyhow::bail!(
+            "scan root(s) do not exist or are not directories: {} — edit \
+             `roots` in the scanner config to absolute paths that exist \
+             on this machine",
+            missing.join(", ")
+        );
+    }
+    Ok(())
+}
+
 /// Derive the repo name for a file under a scan root (sprint 028 #640).
 ///
 /// The deepest ancestor directory (from the file's parent down to and
@@ -248,8 +277,8 @@ fn now_seconds_i64() -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_host, derive_repo};
-    use std::path::Path;
+    use super::{default_host, derive_repo, validate_roots};
+    use std::path::{Path, PathBuf};
 
     // -----------------------------------------------------------------
     // Sprint 028 (#640) — the recorded repo must be the actual repo, not
@@ -328,6 +357,45 @@ mod tests {
             derive_repo(Path::new("/a/src"), Path::new("/elsewhere/x.md")),
             "src"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // Sprint 035 (#776) — misconfigured roots abort startup with an
+    // actionable error instead of warn-and-scan-nothing.
+
+    #[test]
+    fn validate_roots_accepts_existing_directories() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(validate_roots(&[tmp.path().to_path_buf()]).is_ok());
+    }
+
+    #[test]
+    fn validate_roots_rejects_empty_list() {
+        let err = validate_roots(&[]).unwrap_err().to_string();
+        assert!(err.contains("no scan roots configured"), "{err}");
+    }
+
+    #[test]
+    fn validate_roots_names_every_missing_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let good = tmp.path().to_path_buf();
+        let bad1 = PathBuf::from("/CHANGE-ME/projects");
+        let bad2 = tmp.path().join("nope");
+        let err = validate_roots(&[good, bad1, bad2.clone()])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("/CHANGE-ME/projects"), "{err}");
+        assert!(err.contains(&bad2.display().to_string()), "{err}");
+        assert!(err.contains("edit `roots`"), "{err}");
+    }
+
+    #[test]
+    fn validate_roots_rejects_a_file_as_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("not-a-dir");
+        std::fs::write(&file, "x").unwrap();
+        let err = validate_roots(&[file]).unwrap_err().to_string();
+        assert!(err.contains("not directories"), "{err}");
     }
 
     #[test]
