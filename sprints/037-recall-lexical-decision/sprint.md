@@ -180,3 +180,24 @@ data, not vibes.
   README's hybrid-retrieval line, SVG subtitle notes the diagram
   predates 037 (a redraw rides the next diagram pass — the 033 retro
   harness has the render QA tooling).
+
+### Gates (2026-07-30)
+
+- `just gate` green; `just test-integration` green including the new
+  `lexical_search` test (real-Qdrant AND semantics, case-insensitivity,
+  distractor-tops-ANN sanity); test stack torn down after.
+- **After-eval via the throwaway pattern** (029 precedent): release
+  0.1.37 booted on :7787 against the live Postgres/Qdrant/TEI (config
+  copy of the production toml, port swapped). Its connect built the
+  full-text index over the 180,859-point live collection —
+  status back to `green` within seconds. Eval:
+  **27/27, 0 regressions, 1 newly fixed** — the `known_open`
+  "klams gotcha" case. The gotcha page now leads with curated
+  memories; rank 5 is this sprint's own scanner-ingested sprint.md
+  (it literally contains the query terms — lexical matching, working).
+- Suite promotion: "klams gotcha" → `expect = "pass"` in klams-mind
+  (5003d5c, pushed); clean 27/27 re-run against the throwaway with the
+  raised bar. Throwaway killed.
+- WIs #333 / #729 / #632 resolved with outcome comments; new #799
+  filed (tags-filter pushdown, measured separately); k-homelab #798
+  records the OpenSearch removal.
