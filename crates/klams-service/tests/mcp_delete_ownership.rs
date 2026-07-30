@@ -18,25 +18,6 @@ mod common;
 
 use common::{McpSession, TestServer};
 
-/// Write a fact through `session` and return its id.
-async fn seed_fact(session: &McpSession, key: &str) -> String {
-    let out = session
-        .call_tool(
-            "memory_add",
-            serde_json::json!({
-                "kind": "fact",
-                "fact_type": "EnvFact",
-                "payload": {"key": key, "value": "sprint025"},
-            }),
-        )
-        .await;
-    out["memory"]["id"]
-        .as_str()
-        .or_else(|| out["id"].as_str())
-        .unwrap_or_else(|| panic!("no id in memory_add output: {out}"))
-        .to_string()
-}
-
 /// **The sprint's reason for existing.** A write-scoped token must not
 /// be able to delete a memory written by another author.
 #[ignore = "requires docker compose test stack"]
@@ -46,7 +27,7 @@ async fn write_scoped_caller_cannot_delete_another_authors_memory() {
     let owner = McpSession::handshake(server.addr, &server.author_token).await;
     let intruder = McpSession::handshake(server.addr, &server.other_write_token).await;
 
-    let id = seed_fact(&owner, "S025_CROSS_AUTHOR").await;
+    let id = owner.seed_fact("S025_CROSS_AUTHOR", "sprint025").await;
     let out = intruder
         .call_tool("memory_delete", serde_json::json!({ "id": id }))
         .await;
@@ -68,7 +49,7 @@ async fn register_author_backdoor_is_closed() {
     let owner = McpSession::handshake(server.addr, &server.author_token).await;
     let intruder = McpSession::handshake(server.addr, &server.other_write_token).await;
 
-    let id = seed_fact(&owner, "S025_BACKDOOR").await;
+    let id = owner.seed_fact("S025_BACKDOOR", "sprint025").await;
 
     // Mint a fresh identity, exactly as the original session did.
     let minted = intruder
@@ -103,7 +84,7 @@ async fn author_may_delete_its_own_memory_without_author_id() {
     let server = TestServer::spawn_isolated().await;
     let owner = McpSession::handshake(server.addr, &server.author_token).await;
 
-    let id = seed_fact(&owner, "S025_SELF_MANAGE").await;
+    let id = owner.seed_fact("S025_SELF_MANAGE", "sprint025").await;
     let out = owner
         .call_tool("memory_delete", serde_json::json!({ "id": id }))
         .await;
@@ -130,7 +111,7 @@ async fn manage_scoped_caller_may_curate_across_authors() {
     let owner = McpSession::handshake(server.addr, &server.author_token).await;
     let curator = McpSession::handshake(server.addr, &server.manage_token).await;
 
-    let id = seed_fact(&owner, "S025_CURATE").await;
+    let id = owner.seed_fact("S025_CURATE", "sprint025").await;
     let out = curator
         .call_tool("memory_delete", serde_json::json!({ "id": id }))
         .await;
@@ -153,7 +134,7 @@ async fn manage_scoped_caller_still_cannot_impersonate() {
     let owner = McpSession::handshake(server.addr, &server.author_token).await;
     let curator = McpSession::handshake(server.addr, &server.manage_token).await;
 
-    let id = seed_fact(&owner, "S025_NO_IMPERSONATION").await;
+    let id = owner.seed_fact("S025_NO_IMPERSONATION", "sprint025").await;
     let out = curator
         .call_tool(
             "memory_delete",

@@ -14,24 +14,6 @@ mod common;
 use common::{McpSession, TestServer};
 use uuid::Uuid;
 
-/// Write a knowledge memory through `session`, return its id.
-async fn seed_knowledge(session: &McpSession, text: &str) -> String {
-    let out = session
-        .call_tool(
-            "memory_add",
-            serde_json::json!({
-                "kind": "knowledge",
-                "text": text,
-                "tags": ["s029", "lifecycle"],
-            }),
-        )
-        .await;
-    out["id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("no id in memory_add output: {out}"))
-        .to_string()
-}
-
 fn same_uuid(a: &str, b: &str) -> bool {
     match (Uuid::parse_str(a), Uuid::parse_str(b)) {
         (Ok(x), Ok(y)) => x == y,
@@ -48,11 +30,12 @@ async fn supersede_replaces_hides_and_links() {
     let server = TestServer::spawn_isolated().await;
     let owner = McpSession::handshake(server.addr, &server.author_token).await;
 
-    let old_id = seed_knowledge(
-        &owner,
-        "s029 zebra-quokka fact: rpidash3 is NOT yet on tailscale",
-    )
-    .await;
+    let old_id = owner
+        .seed_knowledge(
+            "s029 zebra-quokka fact: rpidash3 is NOT yet on tailscale",
+            &["s029", "lifecycle"],
+        )
+        .await;
     let out = owner
         .call_tool(
             "memory_supersede",
@@ -140,7 +123,9 @@ async fn cross_author_supersede_requires_manage() {
     let intruder = McpSession::handshake(server.addr, &server.other_write_token).await;
     let curator = McpSession::handshake(server.addr, &server.manage_token).await;
 
-    let id = seed_knowledge(&owner, "s029 cross-author supersede target").await;
+    let id = owner
+        .seed_knowledge("s029 cross-author supersede target", &["s029", "lifecycle"])
+        .await;
 
     let refused = intruder
         .call_tool(
@@ -177,7 +162,9 @@ async fn superseding_an_already_superseded_memory_is_refused() {
     let server = TestServer::spawn_isolated().await;
     let owner = McpSession::handshake(server.addr, &server.author_token).await;
 
-    let id = seed_knowledge(&owner, "s029 double-supersede target").await;
+    let id = owner
+        .seed_knowledge("s029 double-supersede target", &["s029", "lifecycle"])
+        .await;
     let first = owner
         .call_tool(
             "memory_supersede",
@@ -209,7 +196,12 @@ async fn update_edits_in_place_with_a_stable_id() {
     let server = TestServer::spawn_isolated().await;
     let owner = McpSession::handshake(server.addr, &server.author_token).await;
 
-    let id = seed_knowledge(&owner, "s029 update target with a typo: kbus0").await;
+    let id = owner
+        .seed_knowledge(
+            "s029 update target with a typo: kbus0",
+            &["s029", "lifecycle"],
+        )
+        .await;
 
     let out = owner
         .call_tool(
@@ -277,7 +269,9 @@ async fn update_authorization_and_empty_change_validation() {
     let owner = McpSession::handshake(server.addr, &server.author_token).await;
     let intruder = McpSession::handshake(server.addr, &server.other_write_token).await;
 
-    let id = seed_knowledge(&owner, "s029 update authz target").await;
+    let id = owner
+        .seed_knowledge("s029 update authz target", &["s029", "lifecycle"])
+        .await;
 
     let refused = intruder
         .call_tool(
@@ -377,7 +371,7 @@ async fn memory_add_nudges_on_a_near_duplicate() {
     let owner = McpSession::handshake(server.addr, &server.author_token).await;
 
     let text = "s029 similar-on-write: the klams backup path is /gratch/klams-backup";
-    let first_id = seed_knowledge(&owner, text).await;
+    let first_id = owner.seed_knowledge(text, &["s029", "lifecycle"]).await;
 
     // Sprint 031 (#645): BYTE-identical text no longer reaches the
     // nudge — the content-hash dedupe probe the REST path has always

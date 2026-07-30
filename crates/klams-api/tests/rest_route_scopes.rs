@@ -19,7 +19,9 @@ use klams_api::auth::{AuthState, TokenGrant};
 use klams_api::{build_router_with_auth, ApiState};
 use klams_core::MemoryQueue;
 use klams_store::{EventQuery, FactQuery, Store, StoreResult, TextHit};
-use klams_types::{AppendEvent, Event, Fact, IndexKnowledge, KnowledgeItem, Scope, UpsertFact};
+use klams_types::{
+    AppendEvent, Event, Fact, FactWriteOutcome, IndexKnowledge, KnowledgeItem, Scope, UpsertFact,
+};
 use std::sync::Arc;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -33,7 +35,7 @@ struct PanicStore;
 
 #[async_trait]
 impl Store for PanicStore {
-    async fn upsert_fact(&self, _req: UpsertFact) -> StoreResult<Fact> {
+    async fn upsert_fact_v2(&self, _req: UpsertFact) -> StoreResult<FactWriteOutcome> {
         unimplemented!("handler must not be reached")
     }
     async fn append_event(&self, _req: AppendEvent) -> StoreResult<Event> {

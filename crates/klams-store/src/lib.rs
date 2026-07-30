@@ -293,17 +293,11 @@ pub struct SearchSample {
 /// Single trait the worker pool uses for all persistence.
 #[async_trait]
 pub trait Store: Send + Sync + 'static {
-    async fn upsert_fact(&self, req: UpsertFact) -> StoreResult<Fact>;
-    /// Sprint-002 canonical write entry point. Returns a tagged
-    /// `FactWriteOutcome` so the handler can map persisted / dissented
-    /// / version-conflict to the right HTTP status. Default impl
-    /// delegates to `upsert_fact` and always returns `Persisted` for
-    /// mock stores; the real Postgres impl overrides this.
-    async fn upsert_fact_v2(&self, req: UpsertFact) -> StoreResult<FactWriteOutcome> {
-        self.upsert_fact(req)
-            .await
-            .map(|f| FactWriteOutcome::Persisted { fact: f })
-    }
+    /// Canonical fact-write entry point (sprint 002, sole survivor
+    /// since 034 — the pre-031 `upsert_fact` rung is gone). Returns a
+    /// tagged `FactWriteOutcome` so the handler can map persisted /
+    /// dissented / version-conflict to the right HTTP status.
+    async fn upsert_fact_v2(&self, req: UpsertFact) -> StoreResult<FactWriteOutcome>;
     async fn append_event(&self, req: AppendEvent) -> StoreResult<Event>;
     async fn index_knowledge(&self, req: IndexKnowledge) -> StoreResult<KnowledgeItem>;
     async fn list_facts(&self, q: FactQuery) -> StoreResult<(Vec<Fact>, Option<String>)>;

@@ -18,14 +18,11 @@ use klams_mcp::tools::{
     memory_add::{run as memory_add, MemoryAddArgs},
     memory_admin_hard_delete::{run as hard_delete, MemoryAdminHardDeleteArgs},
     memory_admin_restore::{run as restore, MemoryAdminRestoreArgs},
-    memory_delete::{run as memory_delete, DeleteCaller, MemoryDeleteArgs},
+    memory_delete::{run as memory_delete, MemoryDeleteArgs},
     memory_search::{run as memory_search, MemorySearchArgs},
-    McpState,
 };
-use klams_types::{MaintenanceState, Scope};
-use std::sync::Arc;
-use support::MemStore;
-use uuid::Uuid;
+use klams_types::Scope;
+use support::{caller, state};
 
 fn search(query: &str) -> MemorySearchArgs {
     MemorySearchArgs {
@@ -36,18 +33,9 @@ fn search(query: &str) -> MemorySearchArgs {
     }
 }
 
-fn caller(author_id: Uuid, scopes: Vec<Scope>) -> DeleteCaller {
-    DeleteCaller { author_id, scopes }
-}
-
 #[tokio::test]
 async fn a_rogue_memory_can_be_found_retracted_and_reinstated() {
-    let store = Arc::new(MemStore::new());
-    let st = McpState::new(
-        Arc::clone(&store),
-        Arc::new(MaintenanceState::default()),
-        klams_types::ApiConfig::default(),
-    );
+    let (st, store) = state();
 
     let rogue_agent = store.seed_author("s031-rogue");
     let operator = store.seed_author("s031-operator");

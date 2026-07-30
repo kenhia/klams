@@ -11,7 +11,9 @@ use axum::http::{Method, Request, StatusCode};
 use klams_api::{build_router, ApiState};
 use klams_core::MemoryQueue;
 use klams_store::{EventQuery, FactQuery, Store, StoreResult, TextHit};
-use klams_types::{AppendEvent, Event, Fact, IndexKnowledge, KnowledgeItem, UpsertFact};
+use klams_types::{
+    AppendEvent, Event, Fact, FactWriteOutcome, IndexKnowledge, KnowledgeItem, UpsertFact,
+};
 use std::sync::Arc;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -21,7 +23,7 @@ struct HealthyStore;
 
 #[async_trait]
 impl Store for HealthyStore {
-    async fn upsert_fact(&self, _req: UpsertFact) -> StoreResult<Fact> {
+    async fn upsert_fact_v2(&self, _req: UpsertFact) -> StoreResult<FactWriteOutcome> {
         unimplemented!()
     }
     async fn append_event(&self, _req: AppendEvent) -> StoreResult<Event> {

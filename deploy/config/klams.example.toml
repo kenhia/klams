@@ -10,33 +10,28 @@ listen_addr = "127.0.0.1"
 port = 7777
 
 [auth]
-# Sprint 032 (#670) — this block used to LEAD with a `bearer_token`
-# line, so every fresh install started life holding a full-admin
-# credential nobody chose. It doesn't any more: scoped
-# `[[auth.tokens]]` below are the path of least resistance, and the
-# legacy form is opt-in break-glass.
+# Sprint 034 (#703) — the legacy `bearer_token` form is RETIRED. It
+# materialized one grant carrying every scope with no `agent_name`, so
+# every action through it was unattributable — and privileged scopes
+# (`manage`/`admin`) now require attribution. A config that still sets
+# `bearer_token` refuses to start with a migration note (deliberately:
+# a credential silently ignored is worse than a loud refusal). To
+# migrate, express it as a scoped grant instead — same capability,
+# attributed:
 #
-# The legacy `[auth] bearer_token` still works and still materializes
-# ONE grant carrying every scope — read + write + manage + admin. That
-# is what it is for; it is deliberately not narrowed, because narrowing
-# would silently strip capability from a deployment whose only
-# credential it is. What changed is that you now have to ask for it.
+#   [[auth.tokens]]
+#   token      = "<your old bearer_token value>"
+#   scopes     = ["read", "write", "manage", "admin"]
+#   label      = "break-glass"
+#   agent_name = "operator"
 #
-# Two properties it cannot give you, which is why it should not be your
-# daily driver:
-#   * It declares no `agent_name`, so every write through it attributes
-#     to the seeded `system` author rather than to anything traceable.
-#   * It carries `manage` + `admin`, so it can cross-author delete,
-#     hard-delete, restore, and run the author lifecycle.
-# A scoped grant with `agent_name` gives you the same power where you
-# want it and attribution everywhere.
-#
-# bearer_token = "changeme-32-byte-hex"   # break-glass only; see docs/auth.md
+# (Sprint 032 (#670) had already stopped provisioning one by default;
+# this closes the path entirely.)
 
-# Sprint 007 — scoped MCP tokens. THE DEFAULT. At least one of
-# `bearer_token` or `[[auth.tokens]]` must be set or the service
-# refuses to start. Every token MUST be ≥ 16 characters; `scopes`
-# MUST be non-empty.
+# Sprint 007 — scoped MCP tokens. At least one `[[auth.tokens]]` grant
+# must be set or the service refuses to start. Every token MUST be
+# ≥ 16 characters; `scopes` MUST be non-empty; grants holding `manage`
+# or `admin` MUST declare `agent_name` (sprint 034, #703).
 #
 # SCOPES ARE FLAT, NOT HIERARCHICAL: "write" does not imply "read",
 # and "admin" does not imply "write". List every scope a token needs.
@@ -77,9 +72,10 @@ port = 7777
 # agent_name = "klams-scanner"
 #
 # [[auth.tokens]]
-# token  = "ken-admin-XXXXXXXXXXXXXXXXXX"
-# scopes = ["read", "write", "manage", "admin"]
-# label  = "ken-admin"
+# token      = "ken-admin-XXXXXXXXXXXXXXXXXX"
+# scopes     = ["read", "write", "manage", "admin"]
+# label      = "ken-admin"
+# agent_name = "ken_admin"
 #
 # Sprint 015 — the klams-mind companion gets its own read+write grant.
 # `agent_name` binds REST writes to the klams-mind author (sprint 009);

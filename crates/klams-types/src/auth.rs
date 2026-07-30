@@ -77,7 +77,7 @@ pub struct TokenGrantConfig {
 /// Validation errors for a bearer-token configuration.
 #[derive(Debug, thiserror::Error)]
 pub enum AuthConfigError {
-    #[error("auth: at least one of `bearer_token` or `tokens` must be set")]
+    #[error("auth: at least one `[[auth.tokens]]` grant must be set")]
     NoTokens,
     #[error("auth: token must be at least 16 characters")]
     TokenTooShort,
@@ -85,6 +85,22 @@ pub enum AuthConfigError {
     EmptyScopes,
     #[error("auth: token grant `agent_name` is invalid ({reason})")]
     InvalidAgentName { reason: AgentNameInvalidReason },
+    /// Sprint 034 (#703): every privileged action must be attributable
+    /// — the property sprint 025 was built around, closed here.
+    #[error(
+        "auth: a grant holding `manage` or `admin` must declare `agent_name` \
+         so privileged actions are attributable"
+    )]
+    PrivilegedGrantNeedsAgentName,
+    /// Sprint 034 (#703): the legacy single-token form is retired — it
+    /// materialized a full-scope grant that could not declare an
+    /// `agent_name`, which the rule above now forbids.
+    #[error(
+        "auth: `bearer_token` is retired (sprint 034); replace it with a \
+         `[[auth.tokens]]` grant carrying `agent_name` — see docs/auth.md \
+         for the migration note"
+    )]
+    LegacyBearerTokenRetired,
 }
 
 /// Reason an `agent_name` failed validation.
@@ -134,14 +150,18 @@ pub fn validate_agent_name(name: &str) -> Result<(), AgentNameInvalidReason> {
 
 impl TokenGrantConfig {
     /// Apply per-grant validation (length + non-empty scope set,
-    /// plus optional `agent_name` charset/length).
+    /// `agent_name` charset/length when present, and — sprint 034
+    /// #703 — `agent_name` *required* on grants holding `manage` or
+    /// `admin`, so every privileged action is attributable).
     ///
     /// # Errors
     /// Returns [`AuthConfigError::TokenTooShort`] if the token is under
     /// 16 characters, [`AuthConfigError::EmptyScopes`] if `scopes` is
-    /// empty, or [`AuthConfigError::InvalidAgentName`] if a non-None
+    /// empty, [`AuthConfigError::InvalidAgentName`] if a non-None
     /// `agent_name` fails the rules in
-    /// `sprints/009-stability-attribution/contracts/token-grant-config.md`.
+    /// `sprints/009-stability-attribution/contracts/token-grant-config.md`,
+    /// or [`AuthConfigError::PrivilegedGrantNeedsAgentName`] if a
+    /// `manage`/`admin` grant declares none.
     pub fn validate(&self) -> Result<(), AuthConfigError> {
         if self.token.len() < 16 {
             return Err(AuthConfigError::TokenTooShort);
@@ -149,9 +169,20 @@ impl TokenGrantConfig {
         if self.scopes.is_empty() {
             return Err(AuthConfigError::EmptyScopes);
         }
-        if let Some(name) = &self.agent_name {
-            if let Err(reason) = validate_agent_name(name) {
-                return Err(AuthConfigError::InvalidAgentName { reason });
+        match &self.agent_name {
+            Some(name) => {
+                if let Err(reason) = validate_agent_name(name) {
+                    return Err(AuthConfigError::InvalidAgentName { reason });
+                }
+            }
+            None => {
+                if self
+                    .scopes
+                    .iter()
+                    .any(|s| matches!(s, Scope::Manage | Scope::Admin))
+                {
+                    return Err(AuthConfigError::PrivilegedGrantNeedsAgentName);
+                }
             }
         }
         Ok(())
@@ -208,14 +239,60 @@ mod tests {
     fn manage_scope_round_trips_through_toml_lowercase() {
         let grant: TokenGrantConfig = toml::from_str(
             r#"
-            token  = "abcdefghijklmnop"
-            scopes = ["read", "write", "manage"]
-            label  = "claude"
+            token      = "abcdefghijklmnop"
+            scopes     = ["read", "write", "manage"]
+            label      = "claude"
+            agent_name = "claude"
             "#,
         )
         .expect("manage must parse as a scope in [[auth.tokens]]");
         assert_eq!(grant.scopes, vec![Scope::Read, Scope::Write, Scope::Manage]);
         grant.validate().unwrap();
+    }
+
+    /// Sprint 034 (#703): a grant holding `manage` or `admin` without
+    /// an `agent_name` is a config error — privileged actions must be
+    /// attributable (the property sprint 025 built and #670 Q4 asked
+    /// to close).
+    #[test]
+    fn privileged_grant_without_agent_name_is_rejected() {
+        for privileged in [Scope::Manage, Scope::Admin] {
+            let g = TokenGrantConfig {
+                token: "abcdefghijklmnop".into(),
+                scopes: vec![Scope::Read, Scope::Write, privileged],
+                label: Some("unattributed".into()),
+                agent_name: None,
+            };
+            assert!(
+                matches!(
+                    g.validate(),
+                    Err(AuthConfigError::PrivilegedGrantNeedsAgentName)
+                ),
+                "{privileged} without agent_name must be rejected"
+            );
+        }
+    }
+
+    /// The counterpart boundaries: read/write-only grants stay valid
+    /// without an `agent_name` (back-compat for tokens issued before
+    /// sprint 009), and a privileged grant WITH one is accepted.
+    #[test]
+    fn privileged_grant_rule_boundaries() {
+        let unprivileged = TokenGrantConfig {
+            token: "abcdefghijklmnop".into(),
+            scopes: vec![Scope::Read, Scope::Write],
+            label: None,
+            agent_name: None,
+        };
+        unprivileged.validate().unwrap();
+
+        let attributed = TokenGrantConfig {
+            token: "abcdefghijklmnop".into(),
+            scopes: vec![Scope::Read, Scope::Write, Scope::Manage, Scope::Admin],
+            label: Some("ken-admin".into()),
+            agent_name: Some("ken_admin".into()),
+        };
+        attributed.validate().unwrap();
     }
 
     #[test]

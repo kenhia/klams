@@ -162,12 +162,18 @@ pub struct ServerConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthConfig {
-    /// Legacy single-token form. When non-empty, behaves as a grant with
-    /// all scopes set. New deployments should prefer [`Self::tokens`].
+    /// RETIRED legacy single-token form (sprint 034, #703). It
+    /// materialized a full-scope grant that could not declare an
+    /// `agent_name`, which privileged grants now require. The field
+    /// still parses — deliberately: a config that carries one refuses
+    /// to start with the migration note instead of silently ignoring a
+    /// credential the operator believes is live.
     #[serde(default)]
     pub bearer_token: String,
 
-    /// Multi-token form. Each entry carries its own scope set.
+    /// Token grants (`[[auth.tokens]]`). Each entry carries its own
+    /// scope set; grants holding `manage`/`admin` must declare an
+    /// `agent_name` (#703).
     #[serde(default)]
     pub tokens: Vec<klams_types::TokenGrantConfig>,
 }
@@ -633,8 +639,8 @@ mod tests {
             r#"{base}
             [embeddings]
             url = "http://127.0.0.1:7070"
-            model_id = "BAAI/bge-small-en-v1.5"
-            vector_dim = 384
+            model_id = "Qwen/Qwen3-Embedding-0.6B"
+            vector_dim = 1024
         "#
         );
         let cfg: Config = Figment::new()
@@ -649,8 +655,8 @@ mod tests {
             r#"{base}
             [embeddings]
             url = "http://kai:8000/v1"
-            model_id = "BAAI/bge-small-en-v1.5"
-            vector_dim = 384
+            model_id = "Qwen/Qwen3-Embedding-0.6B"
+            vector_dim = 1024
             api = "openai"
             api_key = "sk-test"
         "#
@@ -672,7 +678,7 @@ mod tests {
             [embeddings]
             url = "http://127.0.0.1:7070"
             model_id = "m"
-            vector_dim = 384
+            vector_dim = 1024
             [summarization]
             event_cluster_min = 25
             ollama_url = "http://kubs0:11434/v1"
@@ -707,8 +713,8 @@ mod tests {
             grpc_url = "http://127.0.0.1:6334"
             [embeddings]
             url = "http://127.0.0.1:7070"
-            model_id = "BAAI/bge-small-en-v1.5"
-            vector_dim = 384
+            model_id = "Qwen/Qwen3-Embedding-0.6B"
+            vector_dim = 1024
             [queue]
             capacity = 64
             workers = 1
@@ -741,8 +747,8 @@ mod tests {
             grpc_url = "http://127.0.0.1:6334"
             [embeddings]
             url = "http://127.0.0.1:7070"
-            model_id = "BAAI/bge-small-en-v1.5"
-            vector_dim = 384
+            model_id = "Qwen/Qwen3-Embedding-0.6B"
+            vector_dim = 1024
             [queue]
             capacity = 64
             workers = 1
@@ -784,8 +790,8 @@ mod tests {
             grpc_url = "http://127.0.0.1:6334"
             [embeddings]
             url = "http://127.0.0.1:7070"
-            model_id = "BAAI/bge-small-en-v1.5"
-            vector_dim = 384
+            model_id = "Qwen/Qwen3-Embedding-0.6B"
+            vector_dim = 1024
             [queue]
             capacity = 64
             workers = 1

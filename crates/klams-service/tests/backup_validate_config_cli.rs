@@ -8,6 +8,8 @@
 
 #![cfg(test)]
 
+mod common;
+
 use std::io::Write;
 use std::process::Command;
 use tempfile::NamedTempFile;
@@ -22,6 +24,7 @@ fn write_cfg(body: &str) -> NamedTempFile {
 fn minimal_cfg(extra: &str) -> String {
     // Mirrors deploy/config/klams.example.toml — only the blocks
     // required by Config deserialization plus whatever `extra` adds.
+    let dim = common::TEST_EMBED_DIM;
     format!(
         r#"
 [server]
@@ -42,7 +45,7 @@ collection = "knowledge_items"
 [embeddings]
 url = "http://127.0.0.1:7070"
 model_id = "BAAI/bge-small-en-v1.5"
-vector_dim = 384
+vector_dim = {dim}
 
 [queue]
 capacity = 256

@@ -700,6 +700,49 @@ mod tests {
         assert!(err.to_string().contains("expected dim 3"), "{err}");
     }
 
+    /// Sprint 034 (#732): the production dim, hermetically. Production
+    /// has run Qwen3-Embedding at 1024 since sprint 028 while the
+    /// docker test stack still serves bge-small at 384 (a CPU-runner
+    /// decision — see `klams-service/tests/common`), so this is where
+    /// the 1024 wiring is exercised without a GPU: a client configured
+    /// for 1024 accepts exactly 1024-wide vectors.
+    #[tokio::test]
+    async fn tei_embed_accepts_the_production_1024_dim_shape() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/embed"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([vec![0.25f32; 1024]])),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let e = TeiEmbedder::new(server.uri(), 1024).unwrap();
+        let v = e.embed("hi").await.unwrap();
+        assert_eq!(v.len(), 1024);
+    }
+
+    /// ...and refuses the retired 384 shape. A 1024 config pointed at a
+    /// 384 model (or the reverse) must fail loudly on the first embed
+    /// instead of quietly persisting unsearchable vectors — the exact
+    /// regression class #732 exists to keep out of production.
+    #[tokio::test]
+    async fn tei_embed_rejects_a_dim_mismatch_against_1024_config() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/embed"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([vec![0.25f32; 384]])),
+            )
+            .mount(&server)
+            .await;
+
+        let e = TeiEmbedder::new(server.uri(), 1024).unwrap();
+        let err = e.embed("hi").await.unwrap_err();
+        assert!(err.to_string().contains("expected dim 1024"), "{err}");
+    }
+
     #[tokio::test]
     async fn openai_embed_sends_bearer_when_key_configured() {
         let server = MockServer::start().await;

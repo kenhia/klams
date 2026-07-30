@@ -19,11 +19,46 @@ use tracing::info;
 
 use klams_service::config::LogResolvedDecay;
 
+/// Storage-root config location — kubs0's layout, first preference.
+const ROOT_CONFIG: &str = "/ai/klams/config/klams.toml";
+
+/// Resolve the config path (sprint 034, #775). `KLAMS_CONFIG` always
+/// wins; otherwise prefer the storage-root default and fall back to
+/// `$XDG_CONFIG_HOME/klams/klams.toml` (default
+/// `~/.config/klams/klams.toml`) so a host without `/ai/klams` can
+/// still run from a conventional location. When neither file exists
+/// the error names both, so the operator knows every place that was
+/// tried. The justfile recipes mirror this resolution.
+fn resolve_config_path() -> Result<String> {
+    if let Ok(p) = std::env::var("KLAMS_CONFIG") {
+        return Ok(p);
+    }
+    if std::path::Path::new(ROOT_CONFIG).exists() {
+        return Ok(ROOT_CONFIG.to_string());
+    }
+    // Per the XDG spec an empty XDG_CONFIG_HOME is treated as unset.
+    let xdg_base = std::env::var("XDG_CONFIG_HOME")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .map_or_else(
+            || std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config"),
+            std::path::PathBuf::from,
+        );
+    let xdg = xdg_base.join("klams").join("klams.toml");
+    if xdg.exists() {
+        return Ok(xdg.to_string_lossy().into_owned());
+    }
+    anyhow::bail!(
+        "no config found: tried {ROOT_CONFIG} and {xdg} — set KLAMS_CONFIG, \
+         or create one from deploy/config/klams.example.toml (see docs/setup.md)",
+        xdg = xdg.display()
+    )
+}
+
 #[allow(clippy::too_many_lines)]
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config_path =
-        std::env::var("KLAMS_CONFIG").unwrap_or_else(|_| "/ai/klams/config/klams.toml".to_string());
+    let config_path = resolve_config_path()?;
 
     // Sprint 006 (T013) — `--validate-backup-config` early-out.
     // Loads the config, prints a single line, exits 0/2 without
@@ -411,31 +446,36 @@ async fn shutdown_signal() {
     }
 }
 
-/// Materialize the full grant list from an `[auth]` config block:
-/// the legacy `bearer_token` (all scopes) plus each `[[auth.tokens]]`
-/// entry with its author binding resolved. Used at startup and by the
-/// SIGHUP reload path (sprint 018, WI #61).
+/// Materialize the full grant list from an `[auth]` config block: each
+/// `[[auth.tokens]]` entry, validated, with its author binding
+/// resolved. Used at startup and by the SIGHUP reload path (sprint
+/// 018, WI #61) — one function, so both enforce the same rules.
+///
+/// Sprint 034 (#703): the legacy `bearer_token` form is retired here
+/// rather than silently ignored — an operator who still carries one
+/// believes they hold a working credential, so the honest failure is
+/// refusing to start with the migration note, not 401ing mysteriously.
 async fn build_auth_grants(
     store: &Arc<CompositeStore>,
     auth: &config::AuthConfig,
 ) -> Result<Vec<klams_api::auth::TokenGrant>> {
-    let mut all_grants: Vec<klams_api::auth::TokenGrant> = Vec::new();
     if !auth.bearer_token.is_empty() {
-        all_grants.push(klams_api::auth::TokenGrant::new(
-            auth.bearer_token.clone(),
-            // Sprint 025: `Manage` included — the legacy bearer is the
-            // "everything" token, and scopes are flat, so leaving it out
-            // would silently strip cross-author curation on upgrade.
-            vec![
-                klams_types::Scope::Read,
-                klams_types::Scope::Write,
-                klams_types::Scope::Manage,
-                klams_types::Scope::Admin,
-            ],
-            Some("legacy".into()),
-        ));
+        anyhow::bail!(
+            "[auth]: {}",
+            klams_types::AuthConfigError::LegacyBearerTokenRetired
+        );
     }
-    for g in &auth.tokens {
+    if auth.tokens.is_empty() {
+        anyhow::bail!("[auth]: {}", klams_types::AuthConfigError::NoTokens);
+    }
+    let mut all_grants: Vec<klams_api::auth::TokenGrant> = Vec::new();
+    for (i, g) in auth.tokens.iter().enumerate() {
+        if let Err(e) = g.validate() {
+            anyhow::bail!(
+                "[auth.tokens[{i}]] ({label}): {e}",
+                label = g.label.as_deref().unwrap_or("<no label>")
+            );
+        }
         let (author_id, agent_name) = resolve_token_author(store, g).await?;
         tracing::info!(
             token_label = %g.label.as_deref().unwrap_or(""),
@@ -496,19 +536,9 @@ async fn reload_auth_grants(
 ) -> Result<Vec<klams_api::auth::TokenGrant>> {
     let cfg = config::Config::from_path(config_path)
         .with_context(|| format!("re-loading config from {config_path}"))?;
-    // Same [auth] checks as `--validate-config`: at least one token
-    // form, and every scoped grant individually valid.
-    if cfg.auth.bearer_token.is_empty() && cfg.auth.tokens.is_empty() {
-        anyhow::bail!("[auth]: {}", klams_types::AuthConfigError::NoTokens);
-    }
-    for (i, g) in cfg.auth.tokens.iter().enumerate() {
-        if let Err(e) = g.validate() {
-            anyhow::bail!(
-                "[auth.tokens[{i}]] ({label}): {e}",
-                label = g.label.as_deref().unwrap_or("<no label>")
-            );
-        }
-    }
+    // All [auth] validation (no retired bearer_token, at least one
+    // grant, every grant individually valid) lives in
+    // `build_auth_grants`, shared with the startup path.
     build_auth_grants(store, &cfg.auth).await
 }
 
@@ -569,9 +599,16 @@ fn validate_config_cli(config_path: &str) -> ! {
     let mut errors: Vec<String> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
 
-    // [auth] — at least one token form must be present; each scoped
-    // grant must individually validate.
-    if cfg.auth.bearer_token.is_empty() && cfg.auth.tokens.is_empty() {
+    // [auth] — no retired `bearer_token` (sprint 034 #703), at least
+    // one scoped grant, and each grant individually valid. Mirrors
+    // `build_auth_grants` so a config this accepts also boots.
+    if !cfg.auth.bearer_token.is_empty() {
+        errors.push(format!(
+            "[auth]: {}",
+            klams_types::AuthConfigError::LegacyBearerTokenRetired
+        ));
+    }
+    if cfg.auth.tokens.is_empty() {
         errors.push(format!(
             "[auth]: {}",
             klams_types::AuthConfigError::NoTokens
@@ -590,15 +627,8 @@ fn validate_config_cli(config_path: &str) -> ! {
             ));
         }
     }
-    if !cfg.auth.bearer_token.is_empty() && cfg.auth.bearer_token.len() < 16 {
-        warnings.push("[auth].bearer_token is shorter than 16 chars".into());
-    }
     if errors.is_empty() {
-        println!(
-            "OK: [auth] legacy_token={}, scoped_grants={}",
-            !cfg.auth.bearer_token.is_empty(),
-            cfg.auth.tokens.len()
-        );
+        println!("OK: [auth] scoped_grants={}", cfg.auth.tokens.len());
     }
 
     // [backup]

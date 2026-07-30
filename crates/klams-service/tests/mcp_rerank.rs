@@ -18,23 +18,6 @@ mod common;
 
 use common::{McpSession, TestServer};
 
-async fn seed(session: &McpSession, text: &str) -> String {
-    let out = session
-        .call_tool(
-            "memory_add",
-            serde_json::json!({
-                "kind": "knowledge",
-                "text": text,
-                "tags": ["s030", "rerank"],
-            }),
-        )
-        .await;
-    out["id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("no id in memory_add output: {out}"))
-        .to_string()
-}
-
 async fn search_ids(session: &McpSession, query: &str) -> Vec<String> {
     let hits = session
         .call_tool(
@@ -73,7 +56,7 @@ async fn a_dead_reranker_never_fails_a_search() {
 
     let mut seeded = Vec::new();
     for text in SEEDS {
-        seeded.push(seed(&session, text).await);
+        seeded.push(session.seed_knowledge(text, &["s030", "rerank"]).await);
     }
     let ids = search_ids(&session, "s030 xylophone-badger reranker").await;
     assert!(
@@ -98,7 +81,7 @@ async fn a_live_rerank_permutes_but_never_drops_or_duplicates() {
 
     let mut seeded = Vec::new();
     for text in SEEDS {
-        seeded.push(seed(&session, text).await);
+        seeded.push(session.seed_knowledge(text, &["s030", "rerank"]).await);
     }
     let ids = search_ids(&session, "s030 xylophone-badger reranker").await;
     for want in &seeded {

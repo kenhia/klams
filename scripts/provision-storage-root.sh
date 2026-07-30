@@ -59,15 +59,33 @@ if [[ -f "$TOKEN_FILE" || -f "$ENV_FILE" ]]; then
     echo "    klams.toml:   $TOKEN_FILE"
     echo "    compose.env:  $ENV_FILE"
 else
-    BEARER_TOKEN="$(generate_token)"
+    OPERATOR_TOKEN="$(generate_token)"
     PG_PASSWORD="$(generate_password)"
 
     echo "==> Rendering $TOKEN_FILE"
     cp "$EXAMPLE_TOML" "$TOKEN_FILE"
     sed -i \
-        -e "s|changeme-rendered-by-provision-script|$BEARER_TOKEN|" \
         -e "s|postgres://klams:changeme@127.0.0.1:5432/klams|postgres://klams:$PG_PASSWORD@127.0.0.1:5432/klams|" \
         "$TOKEN_FILE"
+    # Sprint 034 (#773): the example ships every token form commented out
+    # (#670), so a rendered config MUST append a grant or the service
+    # refuses to start (AuthConfigError::NoTokens) — which is exactly what
+    # this script silently produced between 032 and 034 (its old sed
+    # pattern matched nothing in klams.example.toml). Emit a scoped,
+    # attributed operator grant; `manage` requires `agent_name` (#703).
+    cat >>"$TOKEN_FILE" <<TOML
+
+# Rendered by provision-storage-root.sh — the operator's starting
+# credential (read+write+manage, attributed to "operator"). Add more
+# grants per consumer as needed; the service reloads [[auth.tokens]]
+# on SIGHUP. For admin verbs (restore / hard-delete), add an explicit
+# admin grant — see docs/auth.md.
+[[auth.tokens]]
+token      = "$OPERATOR_TOKEN"
+scopes     = ["read", "write", "manage"]
+label      = "operator"
+agent_name = "operator"
+TOML
     chmod 600 "$TOKEN_FILE"
 
     echo "==> Rendering $ENV_FILE"
@@ -84,7 +102,19 @@ fi
 
 cat <<EOF
 
-Done. Next steps:
+Done.
+EOF
+if [[ -n "${OPERATOR_TOKEN:-}" ]]; then
+    cat <<EOF
+
+Operator bearer token (also in $TOKEN_FILE, mode 600):
+
+    $OPERATOR_TOKEN
+
+EOF
+fi
+cat <<EOF
+Next steps:
 
   1. Review and adjust:
        \$EDITOR $TOKEN_FILE
@@ -98,5 +128,8 @@ Done. Next steps:
        cd $REPO_ROOT
        cargo build --release -p klams-service
        KLAMS_CONFIG=$TOKEN_FILE ./target/release/klams-service
+
+  4. Verify the token round-trips:
+       curl -fsS -H "Authorization: Bearer <token>" http://127.0.0.1:7777/healthz
 
 EOF

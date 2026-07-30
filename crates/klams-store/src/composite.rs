@@ -73,10 +73,6 @@ impl CompositeStore {
 
 #[async_trait]
 impl Store for CompositeStore {
-    async fn upsert_fact(&self, req: UpsertFact) -> StoreResult<Fact> {
-        self.postgres.upsert_fact(req).await
-    }
-
     async fn upsert_fact_v2(&self, req: UpsertFact) -> StoreResult<FactWriteOutcome> {
         self.postgres.upsert_fact_v2(req).await
     }
@@ -179,13 +175,10 @@ impl Store for CompositeStore {
         let start = std::time::Instant::now();
         // Sprint 028 (#655): queries — and only queries — carry the
         // model's retrieval prefix. Documents embed verbatim.
-        let out = if self.query_prefix.is_empty() {
-            self.embedder.embed(query).await
-        } else {
-            self.embedder
-                .embed(&format!("{}{query}", self.query_prefix))
-                .await
-        };
+        let out = self
+            .embedder
+            .embed(&prefixed_query(&self.query_prefix, query))
+            .await;
         metrics::histogram!("klams_embedding_latency_seconds")
             .record(start.elapsed().as_secs_f64());
         out
@@ -552,6 +545,18 @@ impl Store for CompositeStore {
 
     async fn embed_document(&self, text: &str) -> StoreResult<Vec<f32>> {
         self.embedder.embed(text).await
+    }
+}
+
+/// What actually goes to the embedder for a *query* (sprint 028 #655):
+/// symmetric models (bge-small, bge-m3) configure an empty prefix and
+/// embed the query verbatim; asymmetric models (Qwen3-Embedding) get
+/// their instruct line prepended. Documents never pass through here.
+fn prefixed_query(prefix: &str, query: &str) -> String {
+    if prefix.is_empty() {
+        query.to_string()
+    } else {
+        format!("{prefix}{query}")
     }
 }
 
@@ -1285,5 +1290,35 @@ mod merge_tests {
         let (out, next) = take_merged_page(cands, 2, true);
         assert_eq!(out, vec!['A', 'B']);
         assert_eq!(next, Some((200, id(2))));
+    }
+}
+
+#[cfg(test)]
+mod query_prefix_tests {
+    use super::prefixed_query;
+
+    /// Sprint 034 (#732): the 028 embedder swap made retrieval
+    /// asymmetric and nothing hermetic pinned it. Symmetric models
+    /// (the CPU test stack's bge-small) configure an empty prefix and
+    /// must see the query verbatim.
+    #[test]
+    fn empty_prefix_embeds_query_verbatim() {
+        assert_eq!(
+            prefixed_query("", "where do backups land?"),
+            "where do backups land?"
+        );
+    }
+
+    /// The deployed Qwen3-Embedding prefix (the exact string from
+    /// `deploy/config/klams.example.toml`) is prepended to queries —
+    /// and only prepended, never substituted or repeated.
+    #[test]
+    fn instruct_prefix_is_prepended_to_queries() {
+        let prefix =
+            "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: ";
+        assert_eq!(
+            prefixed_query(prefix, "where do backups land?"),
+            format!("{prefix}where do backups land?"),
+        );
     }
 }

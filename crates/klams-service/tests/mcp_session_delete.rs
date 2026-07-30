@@ -12,9 +12,7 @@
 
 mod common;
 
-use common::TestServer;
-
-const INIT_BODY: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}"#;
+use common::{TestServer, INIT_BODY};
 
 #[ignore = "requires docker compose test stack"]
 #[tokio::test]

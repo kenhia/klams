@@ -43,10 +43,10 @@ fn binary_path() -> &'static str {
 }
 
 fn base_config(port: u16, extra_decay: &str) -> String {
-    let pg = std::env::var("TEST_DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://klams:klams_test@127.0.0.1:55432/klams".into());
-    let qd = std::env::var("TEST_QDRANT_URL").unwrap_or_else(|_| "http://127.0.0.1:56334".into());
-    let tei = std::env::var("TEST_TEI_URL").unwrap_or_else(|_| "http://127.0.0.1:57070".into());
+    let pg = common::test_pg_url();
+    let qd = common::test_qdrant_grpc_url();
+    let tei = common::test_tei_url();
+    let dim = common::TEST_EMBED_DIM;
     format!(
         r#"
 [server]
@@ -67,7 +67,7 @@ collection = "knowledge_items_test"
 [embeddings]
 url = "{tei}"
 model_id = "BAAI/bge-small-en-v1.5"
-vector_dim = 384
+vector_dim = {dim}
 
 [queue]
 capacity = 32

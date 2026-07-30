@@ -8,16 +8,14 @@
 
 mod common;
 
-use common::TestServer;
+use common::{make_author, mcp_state_from, TestServer};
 use klams_mcp::tools::{
     dissent_propose::{run as dissent_propose, DissentProposeArgs},
     memory_add::{run as memory_add, FactTypeArg, MemoryAddArgs},
     memory_delete::{run as memory_delete, DeleteCaller, MemoryDeleteArgs},
-    register_author::{run as register, RegisterAuthorInput},
     McpState,
 };
-use klams_types::{DissentStatus, MaintenanceState, Source};
-use std::sync::Arc;
+use klams_types::{DissentStatus, Source};
 use uuid::Uuid;
 
 /// Sprint 025 (#633): these tests delete memories they authored
@@ -28,32 +26,6 @@ fn owner_caller(author_id: Uuid) -> DeleteCaller {
         author_id,
         scopes: vec![klams_types::Scope::Read, klams_types::Scope::Write],
     }
-}
-
-fn mcp_state_from(server: &TestServer) -> McpState {
-    McpState::new(
-        Arc::clone(&server.store),
-        Arc::new(MaintenanceState::default()),
-        klams_types::ApiConfig::default(),
-    )
-}
-
-async fn make_author(state: &McpState, name: &str) -> Uuid {
-    register(
-        state,
-        RegisterAuthorInput {
-            agent_name: name.into(),
-            model: None,
-            session_title: None,
-            repo: None,
-            client_app: None,
-            client_version: None,
-            extra: serde_json::Value::Null,
-        },
-    )
-    .await
-    .expect("register_author")
-    .author_id
 }
 
 async fn seed_fact(state: &McpState, author: Uuid, key: &str, value: &str) -> Uuid {

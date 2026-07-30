@@ -55,9 +55,6 @@ struct MockStore(Mode);
 
 #[async_trait]
 impl Store for MockStore {
-    async fn upsert_fact(&self, _req: UpsertFact) -> StoreResult<Fact> {
-        unimplemented!()
-    }
     async fn upsert_fact_v2(&self, _req: UpsertFact) -> StoreResult<FactWriteOutcome> {
         Ok(FactWriteOutcome::Dissented {
             dissent_id: Uuid::now_v7(),

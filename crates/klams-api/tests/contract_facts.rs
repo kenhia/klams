@@ -10,7 +10,9 @@ use axum::http::{header, Method, Request, StatusCode};
 use klams_api::{build_router, ApiState};
 use klams_core::{spawn_workers, MemoryQueue};
 use klams_store::{EventQuery, FactQuery, Store, StoreResult, TextHit};
-use klams_types::{AppendEvent, Event, Fact, IndexKnowledge, KnowledgeItem, UpsertFact};
+use klams_types::{
+    AppendEvent, Event, Fact, FactWriteOutcome, IndexKnowledge, KnowledgeItem, UpsertFact,
+};
 use std::sync::Arc;
 use time::OffsetDateTime;
 use tower::ServiceExt;
@@ -21,21 +23,23 @@ struct MockStore;
 
 #[async_trait]
 impl Store for MockStore {
-    async fn upsert_fact(&self, req: UpsertFact) -> StoreResult<Fact> {
+    async fn upsert_fact_v2(&self, req: UpsertFact) -> StoreResult<FactWriteOutcome> {
         let now = OffsetDateTime::now_utc();
-        Ok(Fact {
-            id: req.explicit_id.unwrap_or_else(Uuid::now_v7),
-            fact_type: req.fact_type,
-            payload: req.payload,
-            version: 1,
-            source: req.source,
-            confidence: 1.0,
-            decay_weight: 1.0,
-            use_count: 0,
-            dissent_count: 0,
-            last_used_at: None,
-            created_at: now,
-            updated_at: now,
+        Ok(FactWriteOutcome::Persisted {
+            fact: Fact {
+                id: req.explicit_id.unwrap_or_else(Uuid::now_v7),
+                fact_type: req.fact_type,
+                payload: req.payload,
+                version: 1,
+                source: req.source,
+                confidence: 1.0,
+                decay_weight: 1.0,
+                use_count: 0,
+                dissent_count: 0,
+                last_used_at: None,
+                created_at: now,
+                updated_at: now,
+            },
         })
     }
     async fn append_event(&self, _req: AppendEvent) -> StoreResult<Event> {

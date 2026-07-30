@@ -58,39 +58,6 @@ impl PostgresStore {
             .map_err(|e| StoreError::from_sqlx("pg health", &e))
     }
 
-    pub async fn upsert_fact(&self, req: UpsertFact) -> StoreResult<Fact> {
-        let hash = canonical_json_hash(req.fact_type.as_str(), &req.payload);
-        let id = req.explicit_id.unwrap_or_else(Uuid::now_v7);
-
-        let row = sqlx::query(
-            r"
-            INSERT INTO facts (id, type, payload, payload_hash, source, version, author_id)
-            VALUES ($1, $2, $3, $4, $5, 1, $6)
-            ON CONFLICT (type, payload_hash) DO UPDATE
-                SET updated_at = now(),
-                    version = facts.version + CASE
-                        WHEN facts.payload <> EXCLUDED.payload THEN 1
-                        ELSE 0
-                    END,
-                    payload = EXCLUDED.payload
-            RETURNING
-                id, type, payload, version, source,
-                confidence, decay_weight, use_count,
-                last_used_at, created_at, updated_at
-            ",
-        )
-        .bind(id)
-        .bind(req.fact_type.as_str())
-        .bind(&req.payload)
-        .bind(&hash[..])
-        .bind(req.source.as_str())
-        .bind(req.author_id)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| StoreError::from_sqlx("upsert_fact", &e))?;
-        row_to_fact(&row)
-    }
-
     pub async fn append_event(&self, req: AppendEvent) -> StoreResult<Event> {
         let row = sqlx::query(
             r"

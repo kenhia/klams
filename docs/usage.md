@@ -13,12 +13,12 @@ there.
 
 ## Authentication
 
-All `/memory/*` routes require a bearer token. The token is loaded
-from configuration (`auth.bearer_token` in the service config or the
-`KLAMS_AUTH__BEARER_TOKEN` env var — **two** underscores between the
-section and the key; the loader is `Env::prefixed("KLAMS_").split("__")`,
-so the single-underscore form these docs used until sprint 032 never
-bound anything) and compared in constant time.
+All `/memory/*` routes require a bearer token. Tokens are loaded from
+the `[[auth.tokens]]` grants in the service config and compared in
+constant time. The legacy single `auth.bearer_token` field (and its
+`KLAMS_AUTH__BEARER_TOKEN` env form) is **retired** — sprint 034
+(#703): a config that still sets it refuses to start; see the
+migration note in [auth.md](auth.md).
 
 ```text
 Authorization: Bearer <token>
@@ -84,7 +84,7 @@ named klams metrics below.
 | Code | Cause |
 |------|-------|
 | `0`  | Clean shutdown (SIGTERM/SIGINT after `tokio::signal`). |
-| `1`  | Configuration error (missing/invalid `klams-service.toml` or env). |
+| `1`  | Configuration error (missing/invalid `klams.toml` or env — the config path resolution order is in [setup.md](setup.md#how-klams-service-finds-its-config-sprint-034-775)). |
 | `2`  | Dependency error at boot (Postgres unreachable, Qdrant connect failed, embedder schema mismatch). |
 | `64` | Invalid CLI arguments (per `sysexits.h` convention). |
 
@@ -97,10 +97,22 @@ invented "suggested unit" that stood here: it named the service
 `klams.service`, pointed `KLAMS_CONFIG` at a path that does not exist
 (`/etc/klams/service.toml`, real: `/etc/klams/klams.toml`), and omitted
 both `ExecReload` — so `systemctl reload` would not hot-reload
-`[[auth.tokens]]` — and the `ReadWritePaths=` line that
-`ProtectSystem=strict` requires for backups to write at all. Every
-`journalctl` example alongside it used the wrong unit name too, so they
-returned nothing.
+`[[auth.tokens]]` — and any way for backups to write at all under
+`ProtectSystem=strict`. Every `journalctl` example alongside it used
+the wrong unit name too, so they returned nothing.
+
+The shipped unit deliberately carries **no** `ReadWritePaths=` line
+since sprint 034 (#774). It used to hardcode `/gratch/klams-backup`,
+and systemd refuses to start a unit whose `ReadWritePaths` target is
+missing on the host — so the shipped unit only started on kubs0.
+Hosts that enable `[backup]` grant the backup dir back via a drop-in
+(kubs0 already carries this one):
+
+```ini
+# /etc/systemd/system/klams-service.service.d/backup.conf
+[Service]
+ReadWritePaths=/path/to/backup_dir
+```
 
 Operate with:
 
@@ -481,6 +493,10 @@ status_hook          = "/usr/local/bin/klams-backup-shim"   # optional
 status_hook_timeout  = "10s"                       # bounded; misbehaving hook can't stall a backup
 ```
 
+Under the shipped systemd unit, enabling `[backup]` also needs the
+`ReadWritePaths=` drop-in described in [systemd](#systemd) above — the
+unit no longer ships a backup-dir grant (sprint 034, #774).
+
 Validate the config without starting the service:
 
 ```bash
@@ -683,15 +699,18 @@ also answers 204 (not 202) so mcp python-sdk clients no longer log
 
 ### Scope configuration
 
-Sprint 007 keeps the legacy single `auth.bearer_token` field (which
-materializes into one grant with all three scopes) and adds an
-`[[auth.tokens]]` array for fine-grained tokens:
+All tokens are `[[auth.tokens]]` grants. Sprint 007 introduced the
+array alongside the legacy single `auth.bearer_token` field (which
+materialized into one all-scope grant bound to the seeded `system`
+author); sprint 034 (#703) **retired** the legacy field — an
+unattributable all-scope credential is exactly what the grant model
+exists to prevent. The key still parses so it can be refused loudly
+rather than silently ignored: a config with a non-empty
+`bearer_token` refuses to start, fails `--validate-config`, and fails
+a SIGHUP reload (the previous grant table stays active), with an
+error pointing at the migration note in [auth.md](auth.md).
 
 ```toml
-[auth]
-# Legacy single-token form — still supported, grants all scopes:
-# bearer_token = "..."
-
 [[auth.tokens]]
 token = "viewport-XXXXXXXXXXXXXXXXXXXX"
 scopes = ["read", "write", "manage"]   # it edits facts + resolves dissents
@@ -714,15 +733,18 @@ agent_name = "klams-scanner"
 token = "ken-admin-XXXXXXXXXXXXXXXXXX"
 scopes = ["read", "write", "manage", "admin"]
 label = "ken-admin"
+agent_name = "ken"                     # mandatory: the grant holds manage/admin
 ```
 
 Validation rules (enforced at load):
 
-- At least one of `bearer_token` (non-empty) or `tokens` (non-empty)
-  must be present.
+- At least one `[[auth.tokens]]` grant must be present ("auth: at
+  least one `[[auth.tokens]]` grant must be set" — sprint 034, #703).
 - Every token must be ≥ 16 characters (loose entropy floor — real
   entropy is the operator's responsibility).
 - Every grant's `scopes` array must be non-empty.
+- A grant holding `manage` or `admin` must declare `agent_name`, so
+  privileged actions are attributable (sprint 034, #703).
 - Scopes are **flat**: `write` does not imply `read`, `admin` does not
   imply `write`. List each one explicitly.
 
@@ -740,7 +762,8 @@ Recommended layout: `read`+`write`+`manage` for the viewport and for
 interactive agents that curate the corpus; `read`+`write` for daemons
 that only write their own records (scanner, kmon — they can still
 retract their *own* chunks); and a single all-scopes admin token used
-only from your own shell. Give every grant an `agent_name`, since
+only from your own shell. Give every grant an `agent_name` — it is
+mandatory for `manage`/`admin` grants (sprint 034, #703), and
 `memory_delete` decides ownership by the bound author. Full model:
 [auth.md](auth.md).
 
