@@ -204,3 +204,23 @@ Reality check against the live host made most of this WI moot:
 - Docs updated in-sprint: `auth.md` (migration note), `setup.md`
   (provision flow, config resolution, backup drop-in), `usage.md`,
   `architecture.md`, `klams.example.toml`.
+
+## Deployed 2026-07-29
+
+- Version `0.1.34` live on kubs0 (`/healthz` confirms; all three
+  backends Ok).
+- Rollback target: `0.1.33` via `just rollback` (`.prev` binaries in
+  place from the Jul 28 deploy).
+- Migrations applied: none (migrations/ unchanged since 0012).
+- Verified live, beyond `/healthz`: `just health` (2 passed / 0
+  failed); the *deployed* binary's `--validate-config` accepts the
+  live config under the new #703 rules (`scoped_grants=14`); the
+  installed unit carries **no** `ReadWritePaths` directive while
+  `systemctl show` reports the effective grant coming from the
+  `backup.conf` drop-in (#774, exactly the designed split); an MCP
+  `memory_search` round-trip against the restarted service returns
+  results.
+- Config changes required: none — kubs0's `/etc/klams/klams.toml`
+  already satisfied the new validation (bearer_token commented out
+  since 032; every privileged grant attributed). The `backup.conf`
+  drop-in was installed ahead of the deploy (k-homelab WI #784).
