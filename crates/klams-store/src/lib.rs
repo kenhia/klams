@@ -679,6 +679,20 @@ pub trait Store: Send + Sync + 'static {
         ))
     }
 
+    /// Lexical candidate list (sprint 037, #333): live knowledge whose
+    /// text contains every token of `query_text`, ordered by cosine
+    /// against `query_vector`.
+    async fn search_knowledge_lexical(
+        &self,
+        _query_text: &str,
+        _query_vector: Vec<f32>,
+        _top_k: u32,
+    ) -> StoreResult<Vec<(KnowledgeItem, f32)>> {
+        Err(StoreError::Other(
+            "search_knowledge_lexical not implemented".into(),
+        ))
+    }
+
     async fn restore_payload(&self, _id: Uuid) -> StoreResult<()> {
         Err(StoreError::Other("restore_payload not implemented".into()))
     }

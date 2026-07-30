@@ -20,8 +20,9 @@ klams stores three kinds of memory behind one HTTP + MCP surface:
   notes, plus prose findings agents write back.
 
 Retrieval is hybrid: dense vectors (Qdrant + a text-embeddings
-server), Postgres full-text, and a curated stratum, fused with
-reciprocal rank fusion and re-ranked by a cross-encoder. Agents talk
+server), Postgres full-text, a curated stratum, and a lexical list
+(exact-token matches over the knowledge text), fused with reciprocal
+rank fusion and re-ranked by a cross-encoder. Agents talk
 to it over MCP (Streamable HTTP) with scoped, attributed bearer
 tokens; writes carry their author.
 

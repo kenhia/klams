@@ -39,7 +39,7 @@
   </defs>
   <rect x="0" y="0" width="1240" height="1010" fill="var(--bg)"/>
   <text x="24" y="34" class="tt">klams — read path (MCP memory_search)</text>
-  <text x="24" y="52" class="s">as it actually is post-030 · stage order = memory_search.rs::run · constants re-verified in the 033 retrospective</text>
+  <text x="24" y="52" class="s">post-030 shape · 036 moved it to klams_core::retrieval · 037 added a lexical list beside the curated stratum (not drawn — architecture.md §2.5 stage 5)</text>
 
   <!-- query in -->
   <rect x="40" y="76" width="400" height="58" rx="8" class="stage"/>

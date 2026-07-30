@@ -6,7 +6,8 @@ use qdrant_client::qdrant::{
     point_id::PointIdOptions, points_selector::PointsSelectorOneOf, value::Kind as ValueKind,
     Condition, CountPointsBuilder, CreateCollectionBuilder, DeletePointsBuilder, Distance,
     FieldType, Filter, ListValue, PointId, PointStruct, PointsIdsList, QueryPointsBuilder,
-    ScrollPointsBuilder, SetPayloadPointsBuilder, UpsertPointsBuilder, Value, VectorParamsBuilder,
+    ScrollPointsBuilder, SetPayloadPointsBuilder, TextIndexParamsBuilder, TokenizerType,
+    UpsertPointsBuilder, Value, VectorParamsBuilder,
 };
 use qdrant_client::Qdrant;
 use std::collections::HashMap;
@@ -142,6 +143,28 @@ impl QdrantStore {
                     collection.to_string(),
                     "created_at".to_string(),
                     FieldType::Datetime,
+                ),
+            )
+            .await;
+
+        // Sprint 037 (#333): full-text index on the chunk text, backing
+        // the lexical candidate list (`search_knowledge_lexical`).
+        // Word tokenizer, lowercased — a memory opening "GOTCHA —" must
+        // match the query token "gotcha". Idempotent like the indexes
+        // above; Qdrant builds it over existing points in the
+        // background, and `matches_text` degrades to a payload scan
+        // until it lands.
+        let _ = client
+            .create_field_index(
+                qdrant_client::qdrant::CreateFieldIndexCollectionBuilder::new(
+                    collection.to_string(),
+                    "text".to_string(),
+                    FieldType::Text,
+                )
+                .field_index_params(
+                    TextIndexParamsBuilder::new(TokenizerType::Word)
+                        .lowercase(true)
+                        .on_disk(true),
                 ),
             )
             .await;
@@ -339,6 +362,49 @@ impl QdrantStore {
             )
             .await
             .map_err(|e| StoreError::Backend(format!("qdrant curated search: {e}")))?;
+        let mut out = Vec::with_capacity(resp.result.len());
+        for sp in resp.result {
+            if let Some(item) = payload_to_item(&sp.payload) {
+                out.push((item, sp.score));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Filtered kNN over the lexical stratum: live points whose text
+    /// contains **every** token of `query_text` (sprint 037, #333).
+    ///
+    /// `matches_text` is AND-over-tokens against the lowercased
+    /// full-text index built at connect, so long prose queries (whose
+    /// stopwords co-occur nowhere) match nothing and the list stays
+    /// empty — the source only speaks when the query's literal terms
+    /// actually appear somewhere. Cosine orders the subset; the token
+    /// match, not a score floor, is the relevance guard (the motivating
+    /// hit sits at raw 0.41 for the query it must answer).
+    pub async fn search_knowledge_lexical(
+        &self,
+        query_text: &str,
+        query_vector: Vec<f32>,
+        top_k: u32,
+    ) -> StoreResult<Vec<(KnowledgeItem, f32)>> {
+        let filter = Filter {
+            must: vec![
+                Condition::is_empty("deleted_at"),
+                Condition::matches_text("text", query_text),
+            ],
+            ..Default::default()
+        };
+        let resp = self
+            .client
+            .query(
+                QueryPointsBuilder::new(self.collection.clone())
+                    .query(query_vector)
+                    .limit(u64::from(top_k))
+                    .with_payload(true)
+                    .filter(filter),
+            )
+            .await
+            .map_err(|e| StoreError::Backend(format!("qdrant lexical search: {e}")))?;
         let mut out = Vec::with_capacity(resp.result.len());
         for sp in resp.result {
             if let Some(item) = payload_to_item(&sp.payload) {

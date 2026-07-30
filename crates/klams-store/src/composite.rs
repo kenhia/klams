@@ -493,6 +493,17 @@ impl Store for CompositeStore {
             .await
     }
 
+    async fn search_knowledge_lexical(
+        &self,
+        query_text: &str,
+        query_vector: Vec<f32>,
+        top_k: u32,
+    ) -> StoreResult<Vec<(KnowledgeItem, f32)>> {
+        self.qdrant
+            .search_knowledge_lexical(query_text, query_vector, top_k)
+            .await
+    }
+
     async fn restore_payload(&self, id: Uuid) -> StoreResult<()> {
         self.qdrant.restore_payload(id).await
     }

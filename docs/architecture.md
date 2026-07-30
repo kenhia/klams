@@ -405,6 +405,10 @@ kwi #55 self-dependency. The section is inert when omitted.
 
 ![klams read path — the post-030 retrieval pipeline](diagrams/klams-read-path.svg)
 
+*(Diagram shows the pre-037 shape; the 037 lexical list — stage 5
+below — sits beside the curated-stratum box and feeds fusion as a 5th
+rank list.)*
+
 The eval-measured retrieval pipeline, serving **both** surfaces since
 sprint 036 (#730):
 [`klams_core::retrieval::search`](../crates/klams-core/src/retrieval.rs).
@@ -421,7 +425,7 @@ Stages, in execution order:
    narrows which backends are queried. REST's `filters`
    (`RetrievalFilters`: host / type / tag / repo / file / source /
    since / until) apply at the candidate stages on typed fields — MCP
-   passes no filters (its `tags` argument is stage 9).
+   passes no filters (its `tags` argument is stage 10).
 2. **Embed the query** — `Store::embed_query` prepends
    `[embeddings] query_prefix` (the Qwen3 instruct prefix; asymmetric
    retrieval models prefix *queries*, never documents — sprint 028,
@@ -440,7 +444,24 @@ Stages, in execution order:
    `machine` gate matters: scanned agent-session transcripts are
    `AgentProposal` *with* a machine and would otherwise flood the
    stratum.
-5. **Query-relative boost gate** — stratum membership and the tier
+5. **Lexical list** (sprint 037, #333) — a third knowledge search,
+   `search_knowledge_lexical`: filtered kNN over live points whose text
+   contains **every** query token (`matches_text` against a lowercase
+   word-tokenized full-text payload index, built idempotently at
+   connect). Cosine orders the subset; the all-tokens match is the
+   relevance guard, so this list is deliberately **not** boost-gated —
+   its motivating hit ("klams gotcha" → the curated MCP gotcha, raw
+   0.41 vs a 0.49 bulk top, measured 2026-07-30) sits below any
+   competitive-score gate. Long prose queries whose stopwords co-occur
+   nowhere match nothing and leave the list empty, which keeps the
+   source silent except where literal terms actually appear. The list's
+   rank order enters fusion as a 5th source; the crossroads §2.1
+   "knowledge has zero lexical search" gap closes here, in-engine —
+   the cheapest adequate option (#333's trial order: Qdrant payload
+   index → Postgres FTS mirror → BM25/OpenSearch; the data never
+   justified the heavier two, and the idle OpenSearch instance was
+   decommissioned).
+6. **Query-relative boost gate** — stratum membership and the tier
    weight both require a raw cosine ≥
    `provenance::boost_threshold(top_raw)` =
    `max(0.45, 0.82 × top_raw)`
@@ -448,10 +469,12 @@ Stages, in execution order:
    0.45 is the measured Qwen3 junk line, 0.82 the competitive
    fraction). Without it, topically-adjacent agent memories (raw 0.60)
    displaced genuine bulk answers (raw 0.75) — eligibility, not fusion
-   arithmetic, is where relevance holds the line.
-6. **Author resolution** — one batched lookup maps knowledge points to
+   arithmetic, is where relevance holds the line. The gate governs the
+   curated stratum and tier-weight boosts only; the lexical list is
+   exempt (stage 5).
+7. **Author resolution** — one batched lookup maps knowledge points to
    author records for projection and tier classification.
-7. **Per-hit provenance weight** (sprint 029, #644) — each knowledge
+8. **Per-hit provenance weight** (sprint 029, #644) — each knowledge
    hit gets `ProvenanceTier::classify(source, agent_name, has_machine)`
    × `volatility_demotion(volatility, age_days)`. Three tiers:
    hand-authored (`memory_add` writes, w = 2.0) > machine-extracted
@@ -462,28 +485,28 @@ Stages, in execution order:
    `created_at` is scan time, and silently burying stable truths is the
    worst failure mode. Weights scale RRF contribution; they never
    reorder hits within a source list.
-8. **Facts + events FTS** — `search_text` (Postgres `ts_rank`), scored
+9. **Facts + events FTS** — `search_text` (Postgres `ts_rank`), scored
    and ranked per source.
-9. **Tag filter** — post-projection; a hit must carry *all* requested
+10. **Tag filter** — post-projection; a hit must carry *all* requested
    tags.
-10. **Duplicate collapse** (sprint 026, #641) —
+11. **Duplicate collapse** (sprint 026, #641) —
     `klams_core::dedupe::collapse_duplicates` groups knowledge hits by
     `content_hash` and keeps the best-ranked copy, **before** fusion so
     freed ranks compact. The survivor carries `copies` so nothing
     becomes unreachable. Facts/events carry no `content_hash` and are
     never collapsed. `source_rank`s are re-numbered contiguously over
     the list the caller receives.
-11. **Raw-score snapshot** — per-source scores are captured by id
+12. **Raw-score snapshot** — per-source scores are captured by id
     before fusion overwrites them: `raw_score` on the output, and the
     miss-log signal, are about the cosine, not the fused value.
-12. **Cross-encoder rerank** (sprint 030, #685) — if
+13. **Cross-encoder rerank** (sprint 030, #685) — if
     `[retrieval] reranker_url` is set, the knowledge candidates (global
     + curated, post collapse/tag-filter, up to
     `[retrieval] rerank_window` = 50) go to `POST /rerank`
     (bge-reranker-v2-m3, port 7071;
     [`crates/klams-store/src/rerank.rs`](../crates/klams-store/src/rerank.rs)).
     The stage reorders the knowledge within-source rank list plus the
-    curated order — the *inputs* to weighted RRF — so provenance
+    curated and lexical orders — the *inputs* to weighted RRF — so provenance
     weights apply to the reranked order: the cross-encoder fixes
     semantic order within a tier, the weights still arbitrate across
     tiers. Facts/events are not submitted (JSON payloads, not prose).
@@ -493,16 +516,17 @@ Stages, in execution order:
     rollback switch). Measured live: ~34 ms median, ~43 ms p99; it took
     the eval from 19/21 to 21/21 by fixing curated-vs-curated
     inversions that per-tier weights cannot see.
-13. **Weighted RRF fusion** — `klams_core::hybrid::fuse` (strategy from
-    `[retrieval] fusion`, default RRF `k=60`) over four rank lists:
-    knowledge, facts, events, curated stratum. Per-hit contribution is
+14. **Weighted RRF fusion** — `klams_core::hybrid::fuse` (strategy from
+    `[retrieval] fusion`, default RRF `k=60`) over five rank lists:
+    knowledge, facts, events, curated stratum, lexical list (when
+    non-empty). Per-hit contribution is
     `w/(k+rank+1)`. RRF is scale-free — it consumes ranks, not scores —
     which is why it replaced the raw-score sort (History: pre-024 the
     merged sort mixed Qdrant cosine with unbounded `ts_rank` and
     structurally favoured knowledge; sprint 024 #329/#330 fixed the
     class). Ties break deterministically by source discriminant then id
     (sprint 029). Truncate to `top_k`.
-14. **Instrumentation, fire-and-forget** — every search appends a
+15. **Instrumentation, fire-and-forget** — every search appends a
     `search_sample` row (query, caller, top **raw** score + its kind,
     hit count, kinds, duplicates collapsed — sprint 026, #643); a
     zero-hit or weak search (top raw < `LOW_SCORE_THRESHOLD` = 0.45,
