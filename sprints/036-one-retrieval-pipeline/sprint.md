@@ -172,3 +172,18 @@ The read-side completion of 031's write-path unification, straight from the
 - Docs: architecture.md §2.5 (one pipeline, per-surface contract table,
   pre-036 history) + §2.6 (context = last adapter consumer), usage.md
   (healthz reranker block), setup.md (test-stack reranker).
+
+### Test-run notes
+
+- First `just test-integration` run tripped ONE failure:
+  `us3_decay::tick_is_monotonically_non_increasing` — Postgres
+  `deadlock detected` in `apply_decay_batch`, i.e. two decay ticks from
+  parallel tests colliding. Nothing in this sprint touches decay or the
+  write path; the test passes in isolation. Pre-existing parallelism
+  flake, noted for a future breather (candidate: order fact ids in the
+  batch UPDATE, or advisory-lock the decay tick in tests).
+- The recipe's `*ARGS` land after `--` (libtest side), so
+  `just test-integration --no-fail-fast` cannot work — the cargo-side
+  rerun was done by hand. Not worth a recipe knob yet.
+- Eval before-baseline against live 0.1.35: green, 0 regressions
+  (the `known_open` "klams gotcha" query as expected).
