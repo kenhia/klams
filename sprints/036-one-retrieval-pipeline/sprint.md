@@ -187,3 +187,27 @@ The read-side completion of 031's write-path unification, straight from the
   rerun was done by hand. Not worth a recipe knob yet.
 - Eval before-baseline against live 0.1.35: green, 0 regressions
   (the `known_open` "klams gotcha" query as expected).
+
+## Deployed 2026-07-30
+
+- Version `0.1.36` live on kubs0 (`/healthz` confirms; squash commit
+  `8acd5a4`, PR #39).
+- Rollback target: `0.1.35` via `just rollback` (`.prev` binaries in
+  place).
+- Migrations applied: none.
+- Verified live, beyond `/healthz`:
+  - `/healthz` reports the new `reranker` subsystem: `{state: Ok}`,
+    excluded from the aggregate (#731's deliverable, observed on the
+    production endpoint).
+  - REST `POST /memory/search` returns unified-pipeline hits:
+    `score` = fused RRF (1/61 for a rank-0 single-source hit),
+    `raw_score` = 0.5626 cosine, `source_rank` 0, payload carries
+    `author` — fields the divergent adapter path never had.
+    `degraded: false`.
+  - `just health` light smoke green; units `active`, journal clean
+    since restart.
+  - Post-deploy `just eval`: green, 0 regressions, identical shape to
+    the 0.1.35 baseline (`known_open` "klams gotcha" only) — the
+    extraction moved code without moving MCP ranking, as intended.
+- Config changes required: none (`[retrieval] reranker_url` was already
+  set; the shared instance and healthz probe pick it up as-is).
