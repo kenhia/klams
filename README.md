@@ -53,6 +53,9 @@ Then, going deeper:
   blurb that makes agents actually use the store.
 - [docs/setup.md](docs/setup.md) — the reference deployment's
   operational record.
+- [docs/sharing/](docs/sharing/README.md) — **thought-stage** design
+  space for sharing memories between operators (community feeds, a
+  draft interchange format). Nothing in it is built or promised.
 - [AGENTS.md](AGENTS.md) — the working agreement for humans and
   agents changing this repo.
 
