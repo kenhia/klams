@@ -445,6 +445,11 @@ impl TestServer {
                 .with_summary_store(Arc::clone(&store) as Arc<dyn klams_store::SummaryStore>);
         }
 
+        // Sprint 036 (#730): both surfaces share one reranker instance,
+        // mirroring main.rs — REST search runs the same core pipeline.
+        let reranker = reranker_url
+            .as_deref()
+            .map(|url| Arc::new(klams_store::TeiReranker::new(url).expect("reranker client")));
         let state = ApiState {
             store: Arc::clone(&store),
             api: klams_types::ApiConfig::default(),
@@ -456,6 +461,9 @@ impl TestServer {
             context_builder: Arc::new(builder),
             maintenance: klams_types::MaintenanceState::default(),
             embed_limit: klams_types::EmbedLimit::default(),
+            fusion: klams_types::FusionStrategy::default_rrf(),
+            reranker: reranker.clone(),
+            rerank_window: 50,
         };
         let router = {
             // Mirror main.rs's wiring: single AuthState gates both REST
@@ -513,10 +521,8 @@ impl TestServer {
                 std::sync::Arc::new(klams_types::MaintenanceState::default()),
                 klams_types::ApiConfig::default(),
             );
-            if let Some(url) = reranker_url.as_deref() {
-                mcp_state.reranker = Some(Arc::new(
-                    klams_store::TeiReranker::new(url).expect("reranker client"),
-                ));
+            if reranker.is_some() {
+                mcp_state.reranker = reranker;
             }
             let mcp_router = klams_mcp::router(mcp_state, Vec::new()).layer(
                 axum::middleware::from_fn_with_state(auth_state.clone(), klams_api::require_bearer),

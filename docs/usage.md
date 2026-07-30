@@ -42,6 +42,17 @@ Subsystems probed: Postgres (`SELECT 1`), Qdrant (collection list),
 embedder (`GET {tei_url}/health`). Each probe result is cached for
 ~2s to absorb scrape storms (Kubernetes liveness/readiness, dashboards).
 
+When `[retrieval] reranker_url` is configured the snapshot also carries
+a `reranker` block (sprint 036, #731) — probed via
+`GET {reranker_url}/health`, same ~2s cache. It is **visible but never
+fatal**: the rerank stage is best-effort (a sick reranker serves the
+un-reranked order, it never fails a search), so `reranker.state` never
+contributes to the aggregate `status` or the HTTP code. A deployment
+without a reranker omits the field entirely. If `reranker.state` is
+`Down` while everything else is `Ok`, searches are being served
+un-reranked — check the `klams-reranker` container; the
+`klams_rerank_skipped_total` counter will be climbing in step.
+
 Sample (healthy) response:
 
 ```json
@@ -50,6 +61,7 @@ Sample (healthy) response:
   "postgres":   { "state": "Ok" },
   "qdrant":     { "state": "Ok" },
   "embeddings": { "state": "Ok" },
+  "reranker":   { "state": "Ok" },
   "queue":      { "depth": 0, "capacity": 256, "workers": 2 },
   "version":    "0.1.0",
   "uptime_seconds": 1234

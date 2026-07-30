@@ -51,6 +51,17 @@ pub struct ApiState<S: Store> {
     /// deployed model's 512 tokens; production sets it from
     /// `[embeddings] max_input_tokens`.
     pub embed_limit: klams_types::EmbedLimit,
+    /// Sprint 036 (#730): cross-source fusion strategy for
+    /// `/memory/search` (`[retrieval] fusion`). Before the pipeline
+    /// unification the handler hardcoded `default_rrf()` and silently
+    /// ignored the config.
+    pub fusion: klams_types::FusionStrategy,
+    /// Sprint 036 (#730): optional second-stage cross-encoder, the same
+    /// instance `McpState` holds. `None` = the stage is off. Also
+    /// probed by `/healthz` (#731) — visible but never fatal.
+    pub reranker: Option<Arc<klams_store::TeiReranker>>,
+    /// Max candidates per rerank call (`[retrieval] rerank_window`).
+    pub rerank_window: usize,
 }
 
 impl<S: Store> Clone for ApiState<S> {
@@ -66,6 +77,9 @@ impl<S: Store> Clone for ApiState<S> {
             context_builder: Arc::clone(&self.context_builder),
             maintenance: self.maintenance.clone(),
             embed_limit: self.embed_limit,
+            fusion: self.fusion,
+            reranker: self.reranker.clone(),
+            rerank_window: self.rerank_window,
         }
     }
 }

@@ -572,6 +572,7 @@ mod tests {
                 uptime_seconds: 0,
                 contract: None,
                 maintenance: None,
+                reranker: None,
             })
         }
         async fn list_dissents(&self, p: ListDissentsParams) -> Result<DissentPage, ViewportError> {

@@ -13,6 +13,7 @@ volumes:
   klams-test-pg: {}
   klams-test-qdrant: {}
   klams-test-tei: {}
+  klams-test-reranker: {}
 
 services:
   postgres:
@@ -69,6 +70,35 @@ services:
       - "127.0.0.1:57070:80"
     volumes:
       - klams-test-tei:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+
+  reranker:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.7
+    networks: [klams-test-net]
+    # Sprint 036 (#731): the live-rerank integration test
+    # (crates/klams-service/tests/mcp_rerank.rs) self-skipped forever
+    # because no documented path provided TEST_RERANKER_URL. Same
+    # smaller-than-production rule as the embedder above: production
+    # serves BAAI/bge-reranker-v2-m3 (deploy/compose.env.example); this
+    # stack scores a handful of pairs on CPU, so the base model is
+    # plenty and pulls far less. The flags mirror the deploy compose
+    # (deploy/docker-compose.yml `reranker`): --auto-truncate because
+    # this container only scores pairs, and --max-client-batch-size
+    # must stay >= [retrieval] rerank_window (default 50).
+    command:
+      [
+        "--model-id", "BAAI/bge-reranker-base",
+        "--auto-truncate",
+        "--max-client-batch-size", "64",
+      ]
+    ports:
+      - "127.0.0.1:57071:80"
+    volumes:
+      - klams-test-reranker:/data
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost/health"]
       interval: 5s

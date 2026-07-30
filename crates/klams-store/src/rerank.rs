@@ -124,6 +124,13 @@ impl TeiReranker {
         Ok(hits)
     }
 
+    /// The configured base URL (sprint 036, #731 — the health probe's
+    /// cache key).
+    #[must_use]
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
     /// Cheap liveness probe (mirrors [`crate::TeiEmbedder`]'s).
     ///
     /// # Errors

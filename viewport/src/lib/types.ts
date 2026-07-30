@@ -121,6 +121,9 @@ export interface HealthSnapshot {
   postgres: SubsystemStatus;
   qdrant: SubsystemStatus;
   embeddings: SubsystemStatus;
+  /** Sprint 036 (#731): second-stage reranker. Absent when the stage
+   *  is not configured; never contributes to the aggregate status. */
+  reranker?: SubsystemStatus;
   queue: { depth: number; capacity: number; workers: number };
   version: string;
   uptime_seconds: number;

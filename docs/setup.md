@@ -124,6 +124,16 @@ is NOT the Qwen3-Reranker the planning WI named: TEI cannot serve
 that architecture yet (upstream PRs open, 2026-07-26) — swap
 `RERANKER_MODEL_ID` when a TEI release merges support.
 
+Since sprint 036 the configured reranker serves **both** search
+surfaces (REST `/memory/search` runs the same core pipeline as MCP
+`memory_search`, #730) and is visible on `/healthz` as a non-fatal
+`reranker` subsystem (#731). The **test stack**
+(`tests/docker-compose.test.yml`) carries its own CPU reranker
+(`BAAI/bge-reranker-base`, port `127.0.0.1:57071`) so the live-rerank
+integration tests run under `just test-integration` — smaller than
+production for the same reason the test embedder is bge-small, and
+wired via `TEST_RERANKER_URL` by the recipe.
+
 ## Developer tooling
 
 Sprint 002 introduces a top-level `justfile` so every routine

@@ -137,6 +137,7 @@ test-integration *ARGS:
     TEST_TEI_URL=http://127.0.0.1:57070 \
     TEST_OPENAI_EMBED_URL=http://127.0.0.1:57070/v1 \
     TEST_OPENAI_EMBED_MODEL=BAAI/bge-small-en-v1.5 \
+    TEST_RERANKER_URL=http://127.0.0.1:57071 \
         cargo test --workspace -- --ignored {{ARGS}}
 
 # Quick liveness probe + light verification round-trip.

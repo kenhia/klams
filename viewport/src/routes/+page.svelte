@@ -26,6 +26,9 @@
         <tr><td>Postgres</td><td>{$health.postgres.state}</td><td>{$health.postgres.message ?? ''}</td></tr>
         <tr><td>Qdrant</td><td>{$health.qdrant.state}</td><td>{$health.qdrant.message ?? ''}</td></tr>
         <tr><td>Embeddings</td><td>{$health.embeddings.state}</td><td>{$health.embeddings.message ?? ''}</td></tr>
+        {#if $health.reranker}
+          <tr><td>Reranker</td><td>{$health.reranker.state}</td><td>{$health.reranker.message ?? '(best-effort: never fails a search)'}</td></tr>
+        {/if}
       </tbody>
     </table>
     <p>Queue: {$health.queue.depth}/{$health.queue.capacity} · workers {$health.queue.workers}</p>
