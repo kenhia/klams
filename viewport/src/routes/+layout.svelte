@@ -91,7 +91,7 @@
     <h2>Settings</h2>
     <label>
       klams URL
-      <input type="url" bind:value={urlField} placeholder="http://kubs0:7777" />
+      <input type="url" bind:value={urlField} placeholder="http://127.0.0.1:7777" />
     </label>
     <label>
       Bearer token

@@ -1,67 +1,62 @@
-# klams-scanner configuration (sprint 010).
+# klams-scanner configuration.
 #
-# Deploy as /etc/klams/scanner.toml and point the systemd unit's
-# Environment=KLAMS_CONFIG at it. See
-# sprints/010-operationalize-ingestion/contracts/scanner-config.md.
+# The provision script renders a working copy of this file (url + token
+# filled) into $KLAMS_ROOT/config/scanner.toml; for the systemd unit,
+# deploy it as /etc/klams/scanner.toml and point the unit's
+# Environment=KLAMS_CONFIG at it.
 #
-# IMPORTANT (research.md §R2): the scanner runs as User=klams with
-# ProtectHome=read-only. `~` would expand to the klams user's home,
-# NOT /home/ken — so roots MUST be ABSOLUTE paths, and the klams user
-# must be able to read them (ProtectHome=read-only permits reads, but
-# Unix permissions still apply; grant least-broad read access if the
-# home dir is 0700).
+# IMPORTANT: under systemd the scanner runs as User=klams with
+# ProtectHome=read-only. `~` would expand to the klams user's home, NOT
+# yours — so roots MUST be ABSOLUTE paths, and the klams user must be
+# able to read them (ProtectHome=read-only permits reads, but Unix
+# permissions still apply; grant least-broad read access if your home
+# dir is 0700).
 
-# klams service base URL. On the same host as the service, use loopback
-# (127.0.0.1:7777). On a REMOTE host scanning into the central service
-# (sprint 023 multi-host — e.g. kai), point at the service host:
-#   url = "http://kubs0:7777"
+# klams service base URL. On the same host as the service, use loopback.
+# On a remote host scanning into a central service (multi-host, sprint
+# 023), point at the service host instead:
+#   url = "http://your-klams-host:7777"
 url = "http://127.0.0.1:7777"
 
-# Scoped scanner bearer. MUST resolve to a registered author so the
-# scanner's knowledge writes are attributable on the per-author surface.
-# Treat as a secret — this example carries a placeholder only.
-token = "changeme-scanner-bearer"
+# Scoped scanner bearer ([[auth.tokens]] grant with scopes
+# ["read", "write"] and agent_name = "klams-scanner", so the scanner's
+# knowledge writes are attributable). Treat as a secret — this example
+# carries a placeholder only.
+token = "CHANGE-ME-scanner-bearer"
 
-# Absolute roots to walk. NOT "~/src".
-# The Obsidian vault is deliberately absent (sprint 028 #657): stale
-# notes recalled confidently cost more than a miss. Don't reinstate the
-# whole vault; if a subtree earns its way back, add it as a targeted
-# root behind a .klamsignore allowlist.
-roots = ["/home/ken/src"]
+# Absolute paths to walk — your code and notes, e.g. "/home/you/src".
+# NOT "~/src" (see the systemd note above). The placeholder below does
+# not exist on purpose: the scanner refuses to start until you set real
+# paths (sprint 035, #776) instead of silently scanning nothing.
+roots = ["/CHANGE-ME/paths-to-scan"]
 
-# Seconds between cycles when run as a long-lived loop. The deployed
-# unit runs `--once` under klams-scanner.timer, so the timer's cadence
-# governs in production; this value only applies to ad-hoc loop runs.
+# Seconds between cycles when run as a long-lived loop. The systemd
+# deployment runs `--once` under klams-scanner.timer, so the timer's
+# cadence governs there; this value only applies to ad-hoc loop runs.
 interval_secs = 3600
 
-# SQLite cursor home. MUST align with the unit's StateDirectory=klams so
-# the mtime cursor persists across runs and re-scans stay idempotent
-# (scanner-config.md C4). The binary reads this value directly (it does
-# not consume $STATE_DIRECTORY), so set it explicitly.
+# SQLite cursor home. MUST align with the systemd unit's
+# StateDirectory=klams so the mtime cursor persists across runs and
+# re-scans stay idempotent. The binary reads this value directly (it
+# does not consume $STATE_DIRECTORY), so set it explicitly.
 state_dir = "/var/lib/klams"
 
 # The embedding model's input ceiling in TOKENS (sprint 027, #420).
-# MUST match the service's `[embeddings] max_input_tokens`. The scanner
-# cannot reach TEI (it speaks only to the klams API), so it splits
-# against a conservative character *estimate* of this ceiling rather
-# than an exact token count. That estimate is imperfect by design: if a
-# chunk still turns out to be over budget, the service answers 413 and
-# the scanner skips that one chunk — counted as `chunk_too_large` and
-# logged — instead of stalling the file's cursor forever.
-#
-# Before 027 an over-budget chunk was published anyway, accepted with
-# 202 (advancing the cursor), then dropped at the worker when the embed
-# failed — kai lost ~30k chunks that way in a single 2h window, silently.
-# Sprint 028 swapped the model to Qwen3-Embedding-0.6B (32768 tokens);
-# sprint 032 (#647) updated this example, which had stayed at the
-# pre-028 512 — a scanner provisioned from it would have split against a
-# ceiling 64x too small, fragmenting every file it ingested.
+# MUST match the service's `[embeddings] max_input_tokens` (32768 for
+# Qwen3-Embedding-0.6B; 512 for bge-small-en-v1.5 on the CPU path —
+# see docs/install.md). The scanner cannot reach the embedder (it
+# speaks only to the klams API), so it splits against a conservative
+# character *estimate* of this ceiling rather than an exact token
+# count. That estimate is imperfect by design: if a chunk still turns
+# out to be over budget, the service answers 413 and the scanner skips
+# that one chunk — counted as `chunk_too_large` and logged — instead of
+# stalling the file's cursor forever.
 max_input_tokens = 32768
 
 # Host stamped on every chunk (sprint 023 #407), making retrieval a
 # fully-qualified (host, file). Defaults to the kernel hostname
 # (/proc/sys/kernel/hostname) — leave unset on a normal per-host
-# scanner. Set it explicitly only for the future central mount-scan mode
+# scanner. Set it explicitly only for the central mount-scan mode
 # (klams #406), where one process scans several hosts' mounts and the
 # host is derived per subtree.
-# host = "kai"
+# host = "some-host"

@@ -18,7 +18,7 @@ use tracing_subscriber::EnvFilter;
 #[derive(Debug, Parser)]
 #[command(
     version,
-    about = "Walks ~/src and ~/obsidian, indexes changed files, deletes vanished ones."
+    about = "Walks the configured roots, indexes changed files, deletes vanished ones."
 )]
 struct Args {
     #[arg(long, env = "KLAMS_CONFIG")]
@@ -47,7 +47,10 @@ struct Args {
 struct Config {
     url: String,
     token: String,
-    #[serde(default = "default_roots")]
+    /// Sprint 035 (#776): no default. A machine-specific default here
+    /// ("~/src") silently scanned nothing everywhere else; roots must be
+    /// configured explicitly and are validated at startup.
+    #[serde(default)]
     roots: Vec<String>,
     #[serde(default = "default_interval")]
     interval_secs: u64,
@@ -66,9 +69,6 @@ struct Config {
     max_input_tokens: usize,
 }
 
-fn default_roots() -> Vec<String> {
-    vec!["~/src".into(), "~/obsidian".into()]
-}
 fn default_interval() -> u64 {
     3600
 }
@@ -113,6 +113,9 @@ async fn main() -> Result<()> {
     } else {
         args.root.clone()
     };
+    // Fail loudly on a misconfigured root instead of warning once per
+    // cycle and scanning nothing (sprint 035, #776).
+    klams_scanner::validate_roots(&roots)?;
 
     // Sprint 027 (#420): split against the same ceiling the service
     // enforces, so no chunk is published that the embedder will refuse.
@@ -163,7 +166,7 @@ fn load_config(args: &Args) -> Result<Config> {
     Ok(Config {
         url,
         token,
-        roots: default_roots(),
+        roots: Vec::new(),
         interval_secs: default_interval(),
         state_dir: default_state_dir(),
         host: None,

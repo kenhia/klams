@@ -6,8 +6,20 @@ retired spec-kit constitution (`.specify/memory/constitution.md`,
 removed in sprint 013); the principles below are carried over from it.
 
 klams is purpose-built for Ken's homelab (`kubs0`, `kai`, specific
-Postgres/Qdrant layout). It is not a general-purpose system; do not
-generalize paths, hostnames, or assumptions "for portability."
+Postgres/Qdrant layout), but it is installable by strangers (sprint
+035, the Operator track). The portability line is drawn like this:
+
+- **Operator-facing surfaces** — defaults, example configs, the
+  provision script, the justfile, docs — must be **generic or fail
+  loudly**. No Ken-shaped hostname, path, or username may ship as a
+  default; Ken-specific values live in rendered config and env, never
+  in the repo's defaults. (Redrawn in sprint 035; the old blanket "do
+  not generalize" rule predated the generalize area and contradicted
+  it.)
+- **The architecture stays purpose-built.** Do not grow abstraction
+  for hypothetical deployments — no tenancy model, no pluggable
+  storage backends, no "for portability" refactors of code paths that
+  already carry no environment assumptions.
 
 ## Sprint workflow
 

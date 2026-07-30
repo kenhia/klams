@@ -6,6 +6,10 @@
 
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 set positional-arguments
+# Machine-local values (KLAMS_TOKEN, KLAMS_MIND_DIR, VIEWPORT_HOST, …)
+# can live in a gitignored `.env` at the repo root instead of the shell
+# environment (sprint 035, #776).
+set dotenv-load := true
 
 # Default recipe shows the menu so a bare `just` is friendly.
 default:
@@ -28,11 +32,16 @@ klams_config  := env_var_or_default('KLAMS_CONFIG', if path_exists('/ai/klams/co
 
 # klams-mind checkout — it owns the retrieval eval suite + runner (the
 # TOML and the Python harness live there; the gate lives here, because
-# klams is what regresses). Override if your checkout is elsewhere.
-klams_mind    := env_var_or_default('KLAMS_MIND_DIR', justfile_directory() / '../klams-mind')
+# klams is what regresses). No default (sprint 035, #776 — the #682
+# pattern): a sibling-directory guess that doesn't exist fails as a
+# confusing uv error instead of "you didn't set the variable". The
+# `eval` recipes check and say what to set.
+klams_mind    := env_var_or_default('KLAMS_MIND_DIR', '')
 
-# Windows viewport host (cleo) + deploy target used by `viewport-deploy`.
-viewport_host       := env_var_or_default('VIEWPORT_HOST',       'kenhi@cleo')
+# Windows host + deploy target used by `viewport-deploy`. VIEWPORT_HOST
+# has no default for the same reason (it used to be one specific
+# machine); the recipe fails loudly when unset.
+viewport_host       := env_var_or_default('VIEWPORT_HOST',       '')
 viewport_deploy_dir := env_var_or_default('VIEWPORT_DEPLOY_DIR', 'c:\tools\bin')
 
 # Bring the Postgres+Qdrant+TEI+reranker stack up in the background.
@@ -165,6 +174,7 @@ db-psql *ARGS:
 # it is a pre-deploy check rather than a per-commit one. Run it before
 # and after a deploy that touches retrieval.
 eval:
+    @if [ -z '{{klams_mind}}' ]; then echo 'eval: set KLAMS_MIND_DIR to your klams-mind checkout (owns the eval suite + runner)' >&2; exit 1; fi
     @KLAMS_TOKEN={{klams_token}} KLAMS_URL={{klams_url}} \
         uv run --project {{klams_mind}} klams-mind eval run \
         {{klams_mind}}/evals/suites/homelab-retrieval.toml
@@ -172,6 +182,7 @@ eval:
 # Same, writing the markdown report somewhere durable — use this to
 # capture a before/after around a retrieval change or the corpus reset.
 eval-report OUT:
+    @if [ -z '{{klams_mind}}' ]; then echo 'eval-report: set KLAMS_MIND_DIR to your klams-mind checkout (owns the eval suite + runner)' >&2; exit 1; fi
     @KLAMS_TOKEN={{klams_token}} KLAMS_URL={{klams_url}} \
         uv run --project {{klams_mind}} klams-mind eval run \
         {{klams_mind}}/evals/suites/homelab-retrieval.toml --out {{OUT}}
@@ -180,6 +191,15 @@ eval-report OUT:
 verify:
     @KLAMS_URL={{klams_url}} KLAMS_TOKEN={{klams_token}} \
         bash scripts/verify-mvp.sh
+
+# Sprint 035 (#779) — the first-run smoke docs/install.md ends with:
+# proves an empty install end-to-end (health → fact round-trip →
+# knowledge write/embed/search → error handling → metrics) and closes
+# with a plain-language verdict. Valid on a completely empty store.
+#   KLAMS_TOKEN=<operator token> just smoke
+smoke:
+    @KLAMS_URL={{klams_url}} KLAMS_TOKEN={{klams_token}} \
+        bash scripts/verify-mvp.sh --first-run
 
 # Cross-compile the viewport for Windows (requires cargo-xwin).
 # Builds the SvelteKit frontend first — tauri's `generate_context!`
@@ -208,6 +228,10 @@ viewport-deploy: viewport-build
     set -euo pipefail
     exe="viewport/target/x86_64-pc-windows-msvc/release/klams-viewport.exe"
     host="{{viewport_host}}"
+    if [[ -z "$host" ]]; then
+        echo "viewport-deploy: set VIEWPORT_HOST to the ssh target (user@host) of the Windows machine" >&2
+        exit 1
+    fi
     dest_dir="$(echo '{{viewport_deploy_dir}}' | tr '\\' '/' | sed 's:/*$::')"
     dest="$dest_dir/klams-viewport.exe"
     echo "→ shipping $exe to $host:$dest"

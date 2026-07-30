@@ -207,14 +207,16 @@ common task is a one-liner that matches what CI runs.
 | `test-integration`| The docker-gated suite `gate` excludes. Sweeps the test stack (`scripts/reset-test-stack.sh`), then runs `cargo test --workspace -- --ignored` at default parallelism. Needs `docker compose -f tests/docker-compose.test.yml up -d`; run `... down` when finished — a long-lived test stack shadows the production containers and accumulates seeds (#647). |
 | `health`          | `/healthz` curl + `scripts/verify-mvp.sh --light`. |
 | `verify`          | Full `scripts/verify-mvp.sh` (SC-001..SC-009). |
+| `smoke`           | The first-run smoke `docs/install.md` ends with (sprint 035, #779): full `verify-mvp.sh` with `--first-run` — failure hints on every check and a plain-language verdict. Valid on an empty store. |
 | `viewport-build`  | `cargo xwin` Windows cross-build of the viewport. |
-| `viewport-deploy` | `viewport-build`, then `scp` the exe to `VIEWPORT_HOST` (default `kenhi@cleo`) at `VIEWPORT_DEPLOY_DIR` (default `c:\tools\bin`) and verify the SHA-256 matches. Close a running viewport on the target first — Windows locks the `.exe` of a running process. |
+| `viewport-deploy` | `viewport-build`, then `scp` the exe to `VIEWPORT_HOST` (no default — set it to the Windows target, sprint 035 #776) at `VIEWPORT_DEPLOY_DIR` (default `c:\tools\bin`) and verify the SHA-256 matches. Close a running viewport on the target first — Windows locks the `.exe` of a running process. |
 | `viewport-build-linux` | Native Linux build of the viewport (also runs in WSL Ubuntu). |
 | `viewport-run-linux`   | Build + launch the Linux viewport with `--debug`. |
 
-`KLAMS_URL` and `KLAMS_TOKEN` are read from the environment, so the
-same `just health` and `just verify` work against a local stack or a
-remote `kubs0`.
+`KLAMS_URL` and `KLAMS_TOKEN` are read from the environment — or from
+a gitignored `.env` at the repo root (`set dotenv-load`, sprint 035) —
+so the same `just health` and `just verify` work against a local stack
+or a remote service.
 
 **`KLAMS_TOKEN` has no default** (sprint 031). It used to fall back to
 `dev-token`, so forgetting to export it produced a `401` that read like
