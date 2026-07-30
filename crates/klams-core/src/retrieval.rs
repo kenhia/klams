@@ -260,6 +260,7 @@ pub async fn search<S: Store>(
     // rank order, fed to `fuse_in_place` as a 4th RRF source.
     let mut weights: HashMap<uuid::Uuid, f32> = HashMap::new();
     let mut curated_order: Vec<uuid::Uuid> = Vec::new();
+    let mut lexical_order: Vec<uuid::Uuid> = Vec::new();
 
     let mut degraded = false;
 
@@ -269,6 +270,7 @@ pub async fn search<S: Store>(
             Ok(Some(k)) => {
                 weights = k.weights;
                 curated_order = k.curated_order;
+                lexical_order = k.lexical_order;
                 scored = k.scored;
             }
             Ok(None) => {}
@@ -324,11 +326,13 @@ pub async fn search<S: Store>(
     collapse_duplicates_in_place(&mut scored);
     let duplicates_collapsed = before_collapse - scored.len();
     // The tag filter and the collapse can both remove entries the
-    // curated stratum named; a fused rank for an id with no surviving
-    // projection would push real results down the page for a ghost.
+    // curated stratum or lexical list named; a fused rank for an id with
+    // no surviving projection would push real results down the page for
+    // a ghost.
     {
         let live: HashSet<uuid::Uuid> = scored.iter().map(|(_, _, m)| m.id).collect();
         curated_order.retain(|id| live.contains(id));
+        lexical_order.retain(|id| live.contains(id));
     }
     // Collapse removes entries, so the survivors' `source_rank`s are now
     // holed — a caller asking for 20 could see ranks 0 and 25, which
@@ -360,6 +364,7 @@ pub async fn search<S: Store>(
             &query,
             &mut scored,
             &mut curated_order,
+            &mut lexical_order,
             config.rerank_window,
             transport,
         )
@@ -374,7 +379,13 @@ pub async fn search<S: Store>(
     // which keys on id + within-source rank, so equal within-source
     // ranks land at comparable positions regardless of kind. Reorder
     // the projections and set `score` to the fused value.
-    fuse_in_place(&mut scored, config.fusion, &weights, &curated_order);
+    fuse_in_place(
+        &mut scored,
+        config.fusion,
+        &weights,
+        &curated_order,
+        &lexical_order,
+    );
     scored.truncate(top_k as usize);
 
     // Miss log (sprint 021, #317): a search that returned nothing, or
@@ -526,6 +537,7 @@ struct KnowledgeCandidates {
     scored: Vec<(f32, u32, PublicMemory)>,
     weights: HashMap<uuid::Uuid, f32>,
     curated_order: Vec<uuid::Uuid>,
+    lexical_order: Vec<uuid::Uuid>,
 }
 
 /// The ANN + curated-stratum candidate stage. `Ok(None)` = both lists
@@ -578,9 +590,24 @@ async fn knowledge_candidates<S: Store>(
     // eligibility, not fusion arithmetic, is where relevance has to
     // hold the line.
     let all_curated: Vec<(KnowledgeItem, f32)> = store
-        .search_knowledge_curated(embedding, top_k)
+        .search_knowledge_curated(embedding.clone(), top_k)
         .await
         .map_err(RetrievalError::backend("curated search"))?
+        .into_iter()
+        .filter(|(item, _)| knowledge_matches_filters(item, filters))
+        .collect();
+    // Sprint 037 (#333): the lexical candidate list — live points whose
+    // text contains every query token, cosine-ordered. This is the
+    // lexical source the crossroads §2.1 gap called for, in its
+    // cheapest adequate form (Qdrant full-text payload index; no BM25
+    // engine). Deliberately NOT gated by `boost_threshold`: the
+    // motivating hit ("klams gotcha" → the curated MCP gotcha, raw
+    // 0.41 vs a 0.49 bulk top) sits below any competitive-score gate —
+    // the all-tokens-present match is itself the relevance evidence.
+    let lexical_hits: Vec<(KnowledgeItem, f32)> = store
+        .search_knowledge_lexical(query, embedding, top_k)
+        .await
+        .map_err(RetrievalError::backend("lexical search"))?
         .into_iter()
         .filter(|(item, _)| knowledge_matches_filters(item, filters))
         .collect();
@@ -594,19 +621,19 @@ async fn knowledge_candidates<S: Store>(
         .into_iter()
         .filter(|(_, score)| *score >= threshold)
         .collect();
-    if hits.is_empty() && curated_hits.is_empty() {
+    if hits.is_empty() && curated_hits.is_empty() && lexical_hits.is_empty() {
         return Ok(None);
     }
 
     let ids: Vec<uuid::Uuid> = hits
         .iter()
         .chain(curated_hits.iter())
+        .chain(lexical_hits.iter())
         .map(|(it, _)| it.id)
         .collect();
     let authors = resolve_knowledge_authors(store, &ids).await;
 
     let mut weights: HashMap<uuid::Uuid, f32> = HashMap::new();
-    let mut curated_order: Vec<uuid::Uuid> = Vec::new();
     let mut scored: Vec<(f32, u32, PublicMemory)> = Vec::new();
 
     let in_global: HashSet<uuid::Uuid> = hits.iter().map(|(it, _)| it.id).collect();
@@ -629,30 +656,70 @@ async fn knowledge_candidates<S: Store>(
     // page keep their entry (the 4th fusion list is what boosts them);
     // stratum-only hits are appended after the global hits, so the
     // knowledge list stays contiguous and best-first per source.
-    let mut next_rank = global_count;
-    for (item, score) in curated_hits {
-        curated_order.push(item.id);
-        if in_global.contains(&item.id) {
-            continue;
-        }
-        let author_ref = authors.author_ref_for(item.id);
-        // Stratum membership already implies `score >= threshold`.
-        weights.insert(
-            item.id,
-            knowledge_weight(&item, &author_ref.agent_name, true),
-        );
-        scored.push((
-            score,
-            rank_u32(next_rank),
-            projection::project_knowledge(&item, author_ref),
-        ));
-        next_rank += 1;
-    }
+    // Stratum membership already implies `score >= threshold`.
+    let mut page = KnowledgePage {
+        present: in_global,
+        next_rank: global_count,
+        authors: &authors,
+        weights: &mut weights,
+        scored: &mut scored,
+    };
+    let curated_order = page.append_aux_list(curated_hits, |_| true);
+    // Lexical hits follow the same shape as the stratum: already-present
+    // ids keep their entry (the 5th fusion list is their lift); lexical-
+    // only hits are appended so they exist on the page at all. Their tier
+    // weight applies un-boosted unless they independently clear the
+    // competitive threshold — the lexical list's rank contribution, not
+    // a provenance boost, is what argues for them.
+    let lexical_order = page.append_aux_list(lexical_hits, |score| score >= threshold);
     Ok(Some(KnowledgeCandidates {
         scored,
         weights,
         curated_order,
+        lexical_order,
     }))
+}
+
+/// In-progress knowledge page state shared by the auxiliary rank lists
+/// (curated stratum, lexical list) while they join the candidate page.
+struct KnowledgePage<'a> {
+    present: HashSet<uuid::Uuid>,
+    next_rank: usize,
+    authors: &'a KnowledgeAuthors,
+    weights: &'a mut HashMap<uuid::Uuid, f32>,
+    scored: &'a mut Vec<(f32, u32, PublicMemory)>,
+}
+
+impl KnowledgePage<'_> {
+    /// Record an auxiliary list's rank order and append its hits the
+    /// page doesn't already hold. Returns the list's own order for
+    /// fusion; `boosted` decides per-hit whether the provenance tier
+    /// weight applies at full strength.
+    fn append_aux_list(
+        &mut self,
+        hits: Vec<(KnowledgeItem, f32)>,
+        boosted: impl Fn(f32) -> bool,
+    ) -> Vec<uuid::Uuid> {
+        let mut order = Vec::with_capacity(hits.len());
+        for (item, score) in hits {
+            order.push(item.id);
+            if !self.present.insert(item.id) {
+                continue;
+            }
+            let author_ref = self.authors.author_ref_for(item.id);
+            self.weights.insert(
+                item.id,
+                knowledge_weight(&item, &author_ref.agent_name, boosted(score)),
+            );
+            self.scored.push((
+                score,
+                rank_u32(self.next_rank),
+                projection::project_knowledge(&item, author_ref),
+            ));
+            self.next_rank += 1;
+        }
+        order
+    }
 }
 
 /// The facts + events FTS candidate stage. `fetch_k` is the per-source
@@ -1039,8 +1106,21 @@ fn fuse_in_place(
     strategy: FusionStrategy,
     weights: &HashMap<uuid::Uuid, f32>,
     curated_order: &[uuid::Uuid],
+    lexical_order: &[uuid::Uuid],
 ) {
     let weight_of = |id: uuid::Uuid| weights.get(&id).copied().unwrap_or(1.0);
+    let rank_list = |order: &[uuid::Uuid]| -> Vec<RankedRow> {
+        order
+            .iter()
+            .map(|id| RankedRow {
+                weight: weight_of(*id),
+                source: RetrievalSource::Vector,
+                id: *id,
+                score: 0.0,
+                payload: serde_json::Value::Null,
+            })
+            .collect()
+    };
     let mut by_kind: [Vec<RankedRow>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     for (_, _, mem) in scored.iter() {
         let (idx, source) = match mem.kind() {
@@ -1058,18 +1138,14 @@ fn fuse_in_place(
     }
     let mut sources: Vec<Vec<RankedRow>> = by_kind.into_iter().collect();
     if !curated_order.is_empty() {
-        sources.push(
-            curated_order
-                .iter()
-                .map(|id| RankedRow {
-                    weight: weight_of(*id),
-                    source: RetrievalSource::Vector,
-                    id: *id,
-                    score: 0.0,
-                    payload: serde_json::Value::Null,
-                })
-                .collect(),
-        );
+        sources.push(rank_list(curated_order));
+    }
+    // Sprint 037 (#333): the lexical list is a 5th rank source. A hit
+    // whose text carries every query token earns a contribution at its
+    // lexical rank; hits present in several lists sum contributions,
+    // which is RRF working as intended.
+    if !lexical_order.is_empty() {
+        sources.push(rank_list(lexical_order));
     }
     let fused = crate::hybrid::fuse(sources, strategy);
     let order: HashMap<uuid::Uuid, (usize, f32)> = fused
@@ -1111,6 +1187,7 @@ async fn rerank_stage(
     query: &str,
     scored: &mut Vec<(f32, u32, PublicMemory)>,
     curated_order: &mut [uuid::Uuid],
+    lexical_order: &mut [uuid::Uuid],
     window: usize,
     transport: &'static str,
 ) {
@@ -1134,7 +1211,7 @@ async fn rerank_stage(
     match reranker.rerank(query, &texts).await {
         Ok(hits) => {
             let window_ids: Vec<uuid::Uuid> = candidates.iter().map(|(id, _)| *id).collect();
-            apply_rerank_order(scored, curated_order, &window_ids, &hits);
+            apply_rerank_order(scored, curated_order, lexical_order, &window_ids, &hits);
         }
         Err(e) => {
             crate::metrics::incr_rerank_skipped();
@@ -1147,11 +1224,12 @@ async fn rerank_stage(
 /// permuted so the reranked window leads in cross-encoder order,
 /// followed by any beyond-window knowledge entries in their prior
 /// order; knowledge `source_rank`s are renumbered to the new order and
-/// `curated_order` is sorted by it. Facts and events keep both their
-/// entries and their ranks untouched.
+/// `curated_order` / `lexical_order` are sorted by it. Facts and events
+/// keep both their entries and their ranks untouched.
 fn apply_rerank_order(
     scored: &mut Vec<(f32, u32, PublicMemory)>,
     curated_order: &mut [uuid::Uuid],
+    lexical_order: &mut [uuid::Uuid],
     window_ids: &[uuid::Uuid],
     hits: &[klams_store::RerankHit],
 ) {
@@ -1188,6 +1266,7 @@ fn apply_rerank_order(
     scored.extend(knowledge);
     scored.extend(others);
     curated_order.sort_by_key(|id| new_rank.get(id).copied().unwrap_or(usize::MAX));
+    lexical_order.sort_by_key(|id| new_rank.get(id).copied().unwrap_or(usize::MAX));
 }
 
 /// Label for the calling agent (sprint 026, #643). One helper so the
@@ -1386,6 +1465,7 @@ mod tests {
             FusionStrategy::default_rrf(),
             &HashMap::new(),
             &[],
+            &[],
         );
         let pos = |id: uuid::Uuid| scored.iter().position(|(_, _, m)| m.id == id).unwrap();
         // The two within-source rank-0 hits (k0, f0) tie for the top and
@@ -1420,7 +1500,13 @@ mod tests {
         let mut weights = HashMap::new();
         weights.insert(gid, 2.0_f32);
         let mut scored = vec![(0.71_f32, 0, b0), (0.69_f32, 1, b1), (0.66_f32, 2, gotcha)];
-        fuse_in_place(&mut scored, FusionStrategy::default_rrf(), &weights, &[]);
+        fuse_in_place(
+            &mut scored,
+            FusionStrategy::default_rrf(),
+            &weights,
+            &[],
+            &[],
+        );
         assert_eq!(
             scored[0].2.id, gid,
             "hand-authored weight must lift the gotcha over bulk (2/63 > 1/61)"
@@ -1445,11 +1531,75 @@ mod tests {
             (0.67_f32, 2, b2),
             (0.60_f32, 3, cur),
         ];
-        fuse_in_place(&mut scored, FusionStrategy::default_rrf(), &weights, &[cid]);
+        fuse_in_place(
+            &mut scored,
+            FusionStrategy::default_rrf(),
+            &weights,
+            &[cid],
+            &[],
+        );
         assert_eq!(
             scored[0].2.id, cid,
             "stratum rank-0 + weight 1.5 must beat bulk rank-0 (1.5/64 + 1.5/61 > 1/61)"
         );
+    }
+
+    // ---- Sprint 037 (#333): the lexical list as a 5th fusion source.
+
+    #[test]
+    fn a_lexical_only_hit_lands_via_the_lexical_list() {
+        // The measured "klams gotcha" shape (2026-07-30): the curated
+        // gotcha's cosine (0.41) is uncompetitive with bulk (0.49), so
+        // it enters the knowledge list only by lexical appendage at the
+        // tail — but its lexical rank-0 contribution must carry it to
+        // the top of the page (1/65 + 1/61 > 1/61).
+        let b0 = mem(MemoryKind::Knowledge, "b0");
+        let b1 = mem(MemoryKind::Knowledge, "b1");
+        let b2 = mem(MemoryKind::Knowledge, "b2");
+        let b3 = mem(MemoryKind::Knowledge, "b3");
+        let lex = mem(MemoryKind::Knowledge, "lex");
+        let lid = lex.id;
+        let mut scored = vec![
+            (0.49_f32, 0, b0),
+            (0.47_f32, 1, b1),
+            (0.46_f32, 2, b2),
+            (0.45_f32, 3, b3),
+            (0.41_f32, 4, lex), // appended lexical-only tail entry
+        ];
+        fuse_in_place(
+            &mut scored,
+            FusionStrategy::default_rrf(),
+            &HashMap::new(),
+            &[],
+            &[lid],
+        );
+        assert_eq!(
+            scored[0].2.id, lid,
+            "lexical rank-0 + knowledge tail rank must beat bulk rank-0"
+        );
+    }
+
+    #[test]
+    fn a_hit_on_both_lists_sums_contributions_without_duplicating() {
+        // A hit present in the global page AND the lexical list keeps
+        // one entry whose fused score carries both contributions.
+        let a = mem(MemoryKind::Knowledge, "a");
+        let b = mem(MemoryKind::Knowledge, "b");
+        let (aid, bid) = (a.id, b.id);
+        let mut scored = vec![(0.60_f32, 0, a), (0.55_f32, 1, b)];
+        fuse_in_place(
+            &mut scored,
+            FusionStrategy::default_rrf(),
+            &HashMap::new(),
+            &[],
+            &[bid],
+        );
+        assert_eq!(scored.len(), 2, "no duplicate entry for the shared id");
+        assert_eq!(
+            scored[0].2.id, bid,
+            "knowledge rank-1 + lexical rank-0 (1/62 + 1/61) must beat bare rank-0 (1/61)"
+        );
+        assert_eq!(scored[1].2.id, aid);
     }
 
     #[test]
@@ -1464,6 +1614,7 @@ mod tests {
             &mut scored,
             FusionStrategy::default_rrf(),
             &HashMap::new(),
+            &[],
             &[],
         );
         assert_eq!(scored[0].2.id, i0);
@@ -1694,7 +1845,7 @@ mod tests {
             },
         ];
         let mut curated: Vec<uuid::Uuid> = Vec::new();
-        apply_rerank_order(&mut scored, &mut curated, &ids, &hits);
+        apply_rerank_order(&mut scored, &mut curated, &mut [], &ids, &hits);
         assert_eq!(
             scored.iter().map(|(_, _, m)| m.id).collect::<Vec<_>>(),
             vec![ids[2], ids[0], ids[1]]
@@ -1729,7 +1880,7 @@ mod tests {
                 score: 0.40,
             },
         ];
-        apply_rerank_order(&mut scored, &mut curated, &ids, &hits);
+        apply_rerank_order(&mut scored, &mut curated, &mut [], &ids, &hits);
         assert_eq!(curated, vec![ids[1], ids[0]]);
         assert_eq!(scored[0].2.id, ids[1]);
     }
@@ -1758,7 +1909,7 @@ mod tests {
                 score: 0.1,
             },
         ];
-        apply_rerank_order(&mut scored, &mut Vec::new(), &kids, &hits);
+        apply_rerank_order(&mut scored, &mut Vec::new(), &mut [], &kids, &hits);
         // Kind layout preserved (knowledge, then facts, then events),
         // and the non-knowledge entries keep their ranks.
         assert_eq!(
@@ -1789,7 +1940,7 @@ mod tests {
                 score: 0.1,
             },
         ];
-        apply_rerank_order(&mut scored, &mut Vec::new(), &window, &hits);
+        apply_rerank_order(&mut scored, &mut Vec::new(), &mut [], &window, &hits);
         assert_eq!(
             scored.iter().map(|(_, _, m)| m.id).collect::<Vec<_>>(),
             vec![ids[1], ids[0], ids[2]]
@@ -1808,6 +1959,7 @@ mod tests {
             &mut scored,
             FusionStrategy::default_rrf(),
             &HashMap::new(),
+            &[],
             &[],
         );
         assert!(
@@ -2062,6 +2214,147 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, RetrievalError::Embed(_)));
+    }
+
+    #[tokio::test]
+    async fn the_lexical_list_surfaces_a_token_match_the_global_page_missed() {
+        // End-to-end through `search`: the store's ANN page holds three
+        // bulk hits; the target exists only in the lexical list (its
+        // cosine is real but uncompetitive — the "klams gotcha" failure
+        // shape, measured live 2026-07-30). It must land on the page,
+        // and at the top, with its raw cosine preserved.
+        let store = std::sync::Arc::new(LexicalGapStore);
+        let cfg = RetrievalConfig::default();
+        let out = search(
+            &store,
+            SearchParams::query("klams gotcha"),
+            &cfg,
+            SourceTolerance::HardFail,
+            None,
+            "test",
+        )
+        .await
+        .expect("search must succeed");
+        assert_eq!(out.hits.len(), 4, "three bulk + one lexical-only hit");
+        let top = &out.hits[0];
+        assert_eq!(
+            top.memory.id,
+            lexical_target_id(),
+            "the lexical-only hit must fuse to the top of the page"
+        );
+        assert_eq!(
+            top.raw_score,
+            Some(0.41),
+            "raw_score stays the pre-fusion cosine"
+        );
+        let ids: Vec<uuid::Uuid> = out.hits.iter().map(|h| h.memory.id).collect();
+        let mut deduped = ids.clone();
+        deduped.dedup();
+        assert_eq!(ids, deduped, "no duplicate entries");
+    }
+
+    fn lexical_target_id() -> uuid::Uuid {
+        uuid::Uuid::from_u128(0x0197_0000_0000_0000_0000_0000_0000_0042)
+    }
+
+    fn lex_item(id_low: u128, text: &str) -> KnowledgeItem {
+        let mut item = kitem(None, None, &[]);
+        item.id = uuid::Uuid::from_u128(0x0197_0000_0000_0000_0000_0000_0000_0000 | id_low);
+        item.text = text.to_string();
+        item.content_hash = format!("hash-{id_low}");
+        item
+    }
+
+    /// Store modeling the lexical-gap corpus: a competitive bulk ANN
+    /// page that misses the target, an empty curated stratum (the
+    /// target's cosine is below the boost threshold, as measured), and
+    /// a lexical list that finds it by literal token match.
+    struct LexicalGapStore;
+
+    #[async_trait::async_trait]
+    impl Store for LexicalGapStore {
+        async fn upsert_fact_v2(
+            &self,
+            _req: klams_types::UpsertFact,
+        ) -> klams_store::StoreResult<klams_types::FactWriteOutcome> {
+            Err(StoreError::Other("not implemented".into()))
+        }
+        async fn append_event(
+            &self,
+            _req: klams_types::AppendEvent,
+        ) -> klams_store::StoreResult<Event> {
+            Err(StoreError::Other("not implemented".into()))
+        }
+        async fn index_knowledge(
+            &self,
+            _req: klams_types::IndexKnowledge,
+        ) -> klams_store::StoreResult<KnowledgeItem> {
+            Err(StoreError::Other("not implemented".into()))
+        }
+        async fn list_facts(
+            &self,
+            _q: klams_store::FactQuery,
+        ) -> klams_store::StoreResult<(Vec<Fact>, Option<String>)> {
+            Err(StoreError::Other("not implemented".into()))
+        }
+        async fn list_events(
+            &self,
+            _q: klams_store::EventQuery,
+        ) -> klams_store::StoreResult<(Vec<Event>, Option<String>)> {
+            Err(StoreError::Other("not implemented".into()))
+        }
+        async fn search_knowledge(
+            &self,
+            _v: Vec<f32>,
+            _k: u32,
+        ) -> klams_store::StoreResult<Vec<(KnowledgeItem, f32)>> {
+            Ok(vec![
+                (lex_item(1, "bulk chunk about klams generally"), 0.49),
+                (lex_item(2, "another bulk klams chunk"), 0.47),
+                (lex_item(3, "a third bulk klams chunk"), 0.46),
+            ])
+        }
+        async fn search_knowledge_curated(
+            &self,
+            _v: Vec<f32>,
+            _k: u32,
+        ) -> klams_store::StoreResult<Vec<(KnowledgeItem, f32)>> {
+            Ok(vec![])
+        }
+        async fn search_knowledge_lexical(
+            &self,
+            query_text: &str,
+            _v: Vec<f32>,
+            _k: u32,
+        ) -> klams_store::StoreResult<Vec<(KnowledgeItem, f32)>> {
+            assert_eq!(query_text, "klams gotcha", "pipeline passes the raw query");
+            let mut item = lex_item(0x42, "GOTCHA - the klams gotcha the page missed");
+            item.source = Source::AgentProposal;
+            Ok(vec![(item, 0.41)])
+        }
+        async fn search_text(
+            &self,
+            _q: &str,
+            _k: u32,
+        ) -> klams_store::StoreResult<(Vec<klams_store::TextHit>, Vec<klams_store::TextHit>)>
+        {
+            Ok((Vec::new(), Vec::new()))
+        }
+        async fn find_knowledge_by_content_hash(
+            &self,
+            _hash: &str,
+        ) -> klams_store::StoreResult<Option<uuid::Uuid>> {
+            Ok(None)
+        }
+        async fn get_knowledge(
+            &self,
+            _id: uuid::Uuid,
+        ) -> klams_store::StoreResult<Option<KnowledgeItem>> {
+            Ok(None)
+        }
+        async fn embed_query(&self, _query: &str) -> klams_store::StoreResult<Vec<f32>> {
+            Ok(vec![0.0; 4])
+        }
     }
 
     /// Store whose embedder is down and whose FTS is empty — the

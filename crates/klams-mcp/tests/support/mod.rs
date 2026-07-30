@@ -514,6 +514,18 @@ impl Store for MemStore {
         self.search_knowledge(v, top_k).await
     }
 
+    async fn search_knowledge_lexical(
+        &self,
+        _query_text: &str,
+        _v: Vec<f32>,
+        _top_k: u32,
+    ) -> StoreResult<Vec<(KnowledgeItem, f32)>> {
+        // No lexical matches — a legitimate store state; the lexical
+        // list's ranking semantics are pinned by klams-core unit tests
+        // and the Qdrant integration test.
+        Ok(vec![])
+    }
+
     async fn get_point_vector(&self, id: Uuid) -> StoreResult<Option<Vec<f32>>> {
         Ok(self
             .lock()

@@ -117,6 +117,14 @@ impl Store for MockStore {
     ) -> StoreResult<Vec<(KnowledgeItem, f32)>> {
         Ok(vec![])
     }
+    async fn search_knowledge_lexical(
+        &self,
+        _query_text: &str,
+        _v: Vec<f32>,
+        _k: u32,
+    ) -> StoreResult<Vec<(KnowledgeItem, f32)>> {
+        Ok(vec![])
+    }
     async fn knowledge_authors_by_ids(
         &self,
         _ids: &[Uuid],
