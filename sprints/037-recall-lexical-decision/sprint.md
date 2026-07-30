@@ -201,3 +201,27 @@ data, not vibes.
 - WIs #333 / #729 / #632 resolved with outcome comments; new #799
   filed (tags-filter pushdown, measured separately); k-homelab #798
   records the OpenSearch removal.
+
+## Deployed 2026-07-30
+
+- Version `0.1.37` live on kubs0 (`/healthz` confirms; squash commit
+  `8928c0c`, PR #40).
+- Rollback target: `0.1.36` via `just rollback` (`.prev` binaries in
+  place). Note: the full-text `text` index on `knowledge_items_v2` was
+  created at first 0.1.37 connect and is additive — a rollback leaves
+  it in place, harmlessly unused.
+- Migrations applied: none.
+- Verified live, beyond `/healthz`:
+  - The standing hygiene search (`memory_search "klams gotcha"` over
+    production MCP): rank 0 a curated gotcha, **rank 1 the flagship
+    `019f95dc-df08`** — the exact criterion the eval case gates,
+    observed on the deployed service. (Ranks 3/5 are this sprint's own
+    scanner-ingested sprint doc and test code — lexical matching being
+    thorough.)
+  - Post-deploy `just eval`: **27/27, 0 regressions, 0 known-open** —
+    the suite's first fully-green run, at the raised bar (the
+    "klams gotcha" case now `expect = "pass"`).
+  - `just health` light smoke green; units `active`, journal clean
+    since restart.
+- Config changes required: none (no new config surface; the index is
+  created by the service itself).
