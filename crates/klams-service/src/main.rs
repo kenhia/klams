@@ -262,6 +262,24 @@ async fn main() -> Result<()> {
         let _ = task.spawn();
     }
 
+    // Sprint 030 (#685) / 036 (#730): optional second-stage reranker,
+    // ONE instance shared by both surfaces — REST `/memory/search` and
+    // MCP `memory_search` run the same core pipeline since 036, and
+    // `/healthz` probes this same client (#731). A bad URL is a config
+    // error worth failing startup for — silently searching un-reranked
+    // while the config says otherwise would be worse.
+    let reranker = match cfg.retrieval.reranker_url.as_deref() {
+        Some(url) => {
+            info!(
+                reranker_url = url,
+                window = cfg.retrieval.rerank_window,
+                "second-stage reranker enabled"
+            );
+            Some(std::sync::Arc::new(klams_store::TeiReranker::new(url)?))
+        }
+        None => None,
+    };
+
     let state = ApiState {
         store: Arc::clone(&store),
         api: cfg.api.clone(),
@@ -273,6 +291,11 @@ async fn main() -> Result<()> {
         context_builder,
         maintenance: maintenance_state.clone(),
         embed_limit,
+        // Sprint 036 (#730): REST search fuses with the configured
+        // strategy and runs the reranker, same as MCP.
+        fusion: cfg.retrieval.fusion_strategy(),
+        reranker: reranker.clone(),
+        rerank_window: cfg.retrieval.rerank_window as usize,
     };
     // Sprint 007 — unify legacy `bearer_token` + scoped `[[auth.tokens]]`
     // into a single `AuthState` and apply the same `require_bearer`
@@ -299,17 +322,11 @@ async fn main() -> Result<()> {
     // Sprint 027 (#420): the same ceiling the REST path and the embedder
     // enforce, so `memory_add` refuses over-budget text up front.
     mcp_state.embed_limit = embed_limit;
-    // Sprint 030 (#685): optional second-stage reranker. A bad URL is a
-    // config error worth failing startup for — silently searching
-    // un-reranked while the config says otherwise would be worse.
-    if let Some(url) = cfg.retrieval.reranker_url.as_deref() {
-        mcp_state.reranker = Some(std::sync::Arc::new(klams_store::TeiReranker::new(url)?));
+    // Sprint 030 (#685) / 036 (#730): the shared reranker instance —
+    // built once above, held by both surfaces.
+    if reranker.is_some() {
+        mcp_state.reranker = reranker;
         mcp_state.rerank_window = cfg.retrieval.rerank_window as usize;
-        info!(
-            reranker_url = url,
-            window = cfg.retrieval.rerank_window,
-            "second-stage reranker enabled"
-        );
     }
     let mcp_router = klams_mcp::router(mcp_state, cfg.server.mcp_allowed_hosts.clone()).layer(
         axum::middleware::from_fn_with_state(auth_state, klams_api::require_bearer),

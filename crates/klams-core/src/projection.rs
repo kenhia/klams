@@ -1,12 +1,13 @@
-//! Public projection layer (sprint 007 T020).
+//! Public projection layer (sprint 007 T020; moved here from
+//! `klams-mcp` in sprint 036, #730, so the REST surface can share it).
 //!
 //! Pure functions that map internal `Fact`/`Event`/`KnowledgeItem`
 //! values to the public [`PublicMemory`] shape. Every public-facing
-//! response (MCP tool result or viewport author REST route) MUST go
-//! through this module — direct serialization of the internal types
-//! would leak `version`, `decay_weight`, `confidence`, `use_count`,
-//! `last_used_at`, the raw embedding vector, the internal `source`
-//! trust tier, and the soft-deletion bookkeeping columns.
+//! response (MCP tool result, REST search hit, or viewport author REST
+//! route) MUST go through this module — direct serialization of the
+//! internal types would leak `version`, `decay_weight`, `confidence`,
+//! `use_count`, `last_used_at`, the raw embedding vector, the internal
+//! `source` trust tier, and the soft-deletion bookkeeping columns.
 
 use chrono::{DateTime, Utc};
 use klams_types::{Event, Fact, KnowledgeItem, PublicAuthorRef, PublicMemory, PublicMemoryContent};

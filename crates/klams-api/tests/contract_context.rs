@@ -131,6 +131,9 @@ fn router_with(opts: MockOpts) -> axum::Router {
             )),
             maintenance: klams_types::MaintenanceState::default(),
             embed_limit: klams_types::EmbedLimit::default(),
+            fusion: klams_types::FusionStrategy::default_rrf(),
+            reranker: None,
+            rerank_window: 50,
         },
         "test-bearer",
     )

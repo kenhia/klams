@@ -20,9 +20,44 @@ use time::OffsetDateTime;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-#[derive(Debug, Default)]
+/// Mock store serving the shared retrieval pipeline (sprint 036, #730):
+/// since REST `/memory/search` runs `klams_core::retrieval::search`,
+/// the mock must answer the pipeline's full read surface — curated
+/// stratum, typed fact/event rows with authors, and the fire-and-forget
+/// miss/sample logs — not just the two raw search calls the old adapter
+/// path used. Ids are fixed so the row fetches can find their hits.
+#[derive(Debug)]
 struct MockStore {
     fail_knowledge: bool,
+    knowledge_id: Uuid,
+    fact_id: Uuid,
+    event_id: Uuid,
+}
+
+impl Default for MockStore {
+    fn default() -> Self {
+        Self {
+            fail_knowledge: false,
+            knowledge_id: Uuid::now_v7(),
+            fact_id: Uuid::now_v7(),
+            event_id: Uuid::now_v7(),
+        }
+    }
+}
+
+fn mock_author() -> klams_types::AuthorRecord {
+    klams_types::AuthorRecord {
+        id: Uuid::nil(),
+        agent_name: "mock-agent".into(),
+        model: None,
+        session_title: None,
+        repo: None,
+        client_app: None,
+        client_version: None,
+        extra: serde_json::Value::Null,
+        created_at: chrono::Utc::now(),
+        last_seen_at: chrono::Utc::now(),
+    }
 }
 
 #[async_trait]
@@ -50,7 +85,7 @@ impl Store for MockStore {
         let now = OffsetDateTime::now_utc();
         Ok(vec![(
             KnowledgeItem {
-                id: Uuid::now_v7(),
+                id: self.knowledge_id,
                 text: "knowledge body".into(),
                 content_hash: "h".into(),
                 source: Source::Controller,
@@ -75,18 +110,92 @@ impl Store for MockStore {
             0.85,
         )])
     }
+    async fn search_knowledge_curated(
+        &self,
+        _v: Vec<f32>,
+        _k: u32,
+    ) -> StoreResult<Vec<(KnowledgeItem, f32)>> {
+        Ok(vec![])
+    }
+    async fn knowledge_authors_by_ids(
+        &self,
+        _ids: &[Uuid],
+    ) -> StoreResult<std::collections::HashMap<Uuid, Uuid>> {
+        Ok(std::collections::HashMap::new())
+    }
+    async fn get_author_by_id(&self, _id: Uuid) -> StoreResult<Option<klams_types::AuthorRecord>> {
+        Ok(Some(mock_author()))
+    }
     async fn search_text(&self, _q: &str, _k: u32) -> StoreResult<(Vec<TextHit>, Vec<TextHit>)> {
         let f = TextHit {
-            id: Uuid::now_v7(),
+            id: self.fact_id,
             score: 0.6,
             payload: serde_json::json!({"summary": "fact-row"}),
         };
         let e = TextHit {
-            id: Uuid::now_v7(),
+            id: self.event_id,
             score: 0.4,
             payload: serde_json::json!({"summary": "event-row"}),
         };
         Ok((vec![f], vec![e]))
+    }
+    async fn fetch_facts_with_authors(
+        &self,
+        ids: &[Uuid],
+    ) -> StoreResult<Vec<(Fact, klams_types::AuthorRecord)>> {
+        let now = OffsetDateTime::now_utc();
+        Ok(ids
+            .iter()
+            .filter(|id| **id == self.fact_id)
+            .map(|id| {
+                (
+                    Fact {
+                        id: *id,
+                        fact_type: klams_types::FactType::EnvFact,
+                        payload: serde_json::json!({"summary": "fact-row"}),
+                        version: 1,
+                        source: Source::Task,
+                        confidence: 1.0,
+                        decay_weight: 1.0,
+                        use_count: 0,
+                        dissent_count: 0,
+                        last_used_at: None,
+                        created_at: now,
+                        updated_at: now,
+                    },
+                    mock_author(),
+                )
+            })
+            .collect())
+    }
+    async fn fetch_events_with_authors(
+        &self,
+        ids: &[Uuid],
+    ) -> StoreResult<Vec<(Event, klams_types::AuthorRecord)>> {
+        let now = OffsetDateTime::now_utc();
+        Ok(ids
+            .iter()
+            .filter(|id| **id == self.event_id)
+            .map(|id| {
+                (
+                    Event {
+                        id: *id,
+                        task_id: None,
+                        category: "Service".into(),
+                        payload: serde_json::json!({"summary": "event-row"}),
+                        source: Source::Task,
+                        created_at: now,
+                    },
+                    mock_author(),
+                )
+            })
+            .collect())
+    }
+    async fn insert_search_miss(&self, _miss: &klams_store::SearchMiss) -> StoreResult<()> {
+        Ok(())
+    }
+    async fn insert_search_sample(&self, _sample: &klams_store::SearchSample) -> StoreResult<()> {
+        Ok(())
     }
     async fn find_knowledge_by_content_hash(&self, _h: &str) -> StoreResult<Option<Uuid>> {
         Ok(None)
@@ -121,6 +230,9 @@ fn router_with(store: Arc<MockStore>) -> axum::Router {
             )),
             maintenance: klams_types::MaintenanceState::default(),
             embed_limit: klams_types::EmbedLimit::default(),
+            fusion: klams_types::FusionStrategy::default_rrf(),
+            reranker: None,
+            rerank_window: 50,
         },
         "test-bearer",
     )
@@ -178,7 +290,23 @@ async fn search_returns_envelope_with_all_three_types() {
         }
         let score = hit["score"].as_f64().unwrap();
         assert!((0.0..=1.0).contains(&score), "score out of range: {score}");
+        // Sprint 036 (#730): the unified pipeline's additive fields —
+        // the same match-quality surface MCP memory_search reports.
+        assert!(
+            hit.get("raw_score").is_some(),
+            "hit missing raw_score (pre-fusion per-source relevance)"
+        );
+        assert!(hit.get("source_rank").is_some(), "hit missing source_rank");
     }
+    // Fused scores are the ranking key: descending down the page.
+    let scores: Vec<f64> = results
+        .iter()
+        .map(|h| h["score"].as_f64().unwrap())
+        .collect();
+    assert!(
+        scores.windows(2).all(|w| w[0] >= w[1]),
+        "results must be ordered by fused score: {scores:?}"
+    );
 }
 
 #[tokio::test]
@@ -201,6 +329,7 @@ async fn search_types_filter_restricts_results() {
 async fn search_sets_degraded_when_knowledge_fails() {
     let app = router_with(Arc::new(MockStore {
         fail_knowledge: true,
+        ..Default::default()
     }));
     let (status, body) = search(&app, serde_json::json!({"query": "q"})).await;
     assert_eq!(status, StatusCode::OK);

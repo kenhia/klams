@@ -42,4 +42,12 @@ pub struct HealthSnapshot {
     /// from binaries that don't run the backup orchestrator.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub maintenance: Option<MaintenanceSnapshot>,
+    /// Sprint 036 (#731): the second-stage reranker. Omitted when the
+    /// stage is not configured. **Visible but never fatal**: the stage
+    /// is best-effort by contract (a sick reranker degrades ranking
+    /// quality, not availability), so this field never contributes to
+    /// the aggregate `status` — it exists precisely so "rerank silently
+    /// off for a week" can't happen again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reranker: Option<SubsystemStatus>,
 }

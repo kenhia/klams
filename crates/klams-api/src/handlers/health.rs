@@ -102,6 +102,41 @@ async fn probe_tei<S: Store>(store: &S) -> SubsystemStatus {
     v
 }
 
+/// Sprint 036 (#731): probe the second-stage reranker when configured.
+/// `TeiReranker::health()` had zero callers before this — the stage
+/// could sit dead for a week with only the `rerank_skipped` counter as
+/// a signal. Returns `None` when the stage is off (the field is then
+/// omitted from the snapshot entirely, so an unconfigured deployment
+/// doesn't dangle a permanently-"down" subsystem).
+///
+/// The cache is keyed by the reranker's URL: the other probes cache
+/// per-process because a process has exactly one store, but tests spin
+/// up several routers with different mock rerankers in one process, and
+/// a URL-blind cache would serve one server's verdict for another.
+static RERANKER_CACHE: Mutex<Option<(Instant, String, SubsystemStatus)>> = Mutex::new(None);
+
+async fn probe_reranker(
+    reranker: Option<&std::sync::Arc<klams_store::TeiReranker>>,
+) -> Option<SubsystemStatus> {
+    let reranker = reranker?;
+    let url = reranker.base_url().to_string();
+    if let Ok(guard) = RERANKER_CACHE.lock() {
+        if let Some((when, cached_url, v)) = guard.as_ref() {
+            if *cached_url == url && when.elapsed() < CACHE_TTL {
+                return Some(v.clone());
+            }
+        }
+    }
+    let v = match reranker.health().await {
+        Ok(()) => ok(),
+        Err(e) => down(e.to_string()),
+    };
+    if let Ok(mut guard) = RERANKER_CACHE.lock() {
+        *guard = Some((Instant::now(), url, v.clone()));
+    }
+    Some(v)
+}
+
 /// Sprint 032 (#335): the `Degraded` arm below is currently
 /// unreachable — `probe_pg`/`probe_qdrant`/`probe_tei` only ever build
 /// `ok()` or `down()`. It is kept deliberately rather than deleted: it
@@ -122,11 +157,16 @@ pub async fn healthz<S: Store>(
     State(state): State<ApiState<S>>,
     Query(params): Query<HealthzParams>,
 ) -> Response {
-    let (pg, qd, tei) = tokio::join!(
+    let (pg, qd, tei, reranker) = tokio::join!(
         probe_pg(state.store.as_ref()),
         probe_qdrant(state.store.as_ref()),
         probe_tei(state.store.as_ref()),
+        probe_reranker(state.reranker.as_ref()),
     );
+    // The reranker is deliberately absent from the aggregate: the stage
+    // is best-effort (searches serve the un-reranked order when it is
+    // sick), so it must be visible here without ever flipping overall
+    // status or the HTTP code (#731).
     let agg = aggregate(&[&pg, &qd, &tei]);
 
     let snapshot = HealthSnapshot {
@@ -134,6 +174,7 @@ pub async fn healthz<S: Store>(
         postgres: pg,
         qdrant: qd,
         embeddings: tei,
+        reranker,
         queue: QueueStatus {
             depth: state.queue.depth(),
             capacity: state.queue_capacity,

@@ -78,10 +78,10 @@ service) — see §2.4.
 | Crate | Role |
 |-------|------|
 | `klams-types` | Shared serde DTOs (`Fact`, `Event`, `KnowledgeItem`, `MemoryWrite`, `PublicMemory`, `ScoredMemory`, `HealthSnapshot`), plus shared policy types: `EmbedLimit` token estimation (`src/embed_limit.rs`), `DecayConfig` validation, auth config shapes. No I/O. |
-| `klams-core` | The async heart: bounded mpsc queue + worker pool, `MemoryWrite` dispatch, hybrid retrieval + RRF fusion (`src/hybrid.rs`), provenance weighting (`src/provenance.rs`), query-time duplicate collapse (`src/dedupe.rs`), context bundling, summarization, decay worker, metrics registry. |
+| `klams-core` | The async heart: bounded mpsc queue + worker pool, `MemoryWrite` dispatch, **the shared retrieval pipeline** (`src/retrieval.rs`, sprint 036 #730 — both surfaces' search + related), the `PublicMemory` projection (`src/projection.rs`, moved from klams-mcp in 036), hybrid retrieval + RRF fusion (`src/hybrid.rs`), provenance weighting (`src/provenance.rs`), query-time duplicate collapse (`src/dedupe.rs`), context bundling, summarization, decay worker, metrics registry. |
 | `klams-store` | Storage adapters: `PostgresStore` (sqlx, compile-time checked), `QdrantStore` (gRPC), `TeiEmbedder` behind the `Embedder` trait (`src/embeddings.rs`; an `OpenAiCompatEmbedder` alternative is selected via `[embeddings] api`, sprint 014), `TeiReranker` (`src/rerank.rs`, sprint 030 #685). `CompositeStore` implements the one `Store` trait everything upstream consumes. |
 | `klams-api` | `axum` router, bearer auth + per-route scope middleware, request validation, error → JSON mapping, REST handlers, `/healthz`, `/metrics`. |
-| `klams-mcp` | The MCP tool surface (rmcp `StreamableHttpService` mounted at `/mcp`), projection to `PublicMemory`, scope gating, tool metrics. Generic over `Store` (`McpState<S: Store>`) since sprint 031 (#645) so MCP and REST share one write layer — enforced by `crates/klams-mcp/tests/no_concrete_store_reachthrough.rs`. |
+| `klams-mcp` | The MCP tool surface (rmcp `StreamableHttpService` mounted at `/mcp`), scope gating, tool metrics; the `PublicMemory` projection is re-exported from `klams_core::projection` (moved in 036, #730). Generic over `Store` (`McpState<S: Store>`) since sprint 031 (#645) so MCP and REST share one write layer — enforced by `crates/klams-mcp/tests/no_concrete_store_reachthrough.rs`. Since 036 the read side is shared too: `memory_search`/`memory_related` are shells over `klams_core::retrieval`. |
 | `klams-service` | The binary. Loads `klams.toml`, wires queue + workers + HTTP server + background tasks, owns the tokio runtime. |
 | `klams-client` | Typed HTTP client. Used by the viewport's Tauri backend so the desktop app and any future Rust caller share one API contract. |
 | `klams-scanner` | Non-agentic filesystem writer: walks configured roots, chunks, publishes to `/memory/knowledge/index` (sprint 003; §2.4). |
@@ -401,16 +401,27 @@ and publishes a `kpidash:services:<name>:<host>` Redis card — an
 *external* observer on a separate Redis host, which side-steps the
 kwi #55 self-dependency. The section is inert when omitted.
 
-### 2.5 Read path — MCP `memory_search`
+### 2.5 Read path — the ONE retrieval pipeline
 
 ![klams read path — the post-030 retrieval pipeline](diagrams/klams-read-path.svg)
 
-The agent-facing, eval-measured retrieval pipeline
-([`crates/klams-mcp/src/tools/memory_search.rs`](../crates/klams-mcp/src/tools/memory_search.rs)).
+The eval-measured retrieval pipeline, serving **both** surfaces since
+sprint 036 (#730):
+[`klams_core::retrieval::search`](../crates/klams-core/src/retrieval.rs).
+MCP `memory_search`
+([`crates/klams-mcp/src/tools/memory_search.rs`](../crates/klams-mcp/src/tools/memory_search.rs))
+and REST `POST /memory/search`
+([`crates/klams-api/src/handlers/search.rs`](../crates/klams-api/src/handlers/search.rs))
+are validation + envelope shells over this one function; they differ
+only in wire shape and failure contract (below), never in ranking.
 Stages, in execution order:
 
-1. **Validate** — non-empty query; `top_k` 1..=50 (default 10);
-   optional `kinds` narrows which backends are queried.
+1. **Validate** — non-empty query ≤ 1024 chars; `top_k` 1..=50
+   (default 10; REST clamps instead of rejecting); optional `kinds`
+   narrows which backends are queried. REST's `filters`
+   (`RetrievalFilters`: host / type / tag / repo / file / source /
+   since / until) apply at the candidate stages on typed fields — MCP
+   passes no filters (its `tags` argument is stage 9).
 2. **Embed the query** — `Store::embed_query` prepends
    `[embeddings] query_prefix` (the Qwen3 instruct prefix; asymmetric
    retrieval models prefix *queries*, never documents — sprint 028,
@@ -500,45 +511,47 @@ Stages, in execution order:
     labelled with the calling agent.
 
 Output: `Vec<ScoredMemory>` — `{ score, raw_score, source_rank,
-memory }` envelopes over the `PublicMemory` projection (§3.1). Contract
-note: `score` is an **RRF value, not a similarity** — not comparable
-across queries, never threshold it; rank order is the meaningful
-output. `raw_score` is the per-source score (cosine for knowledge,
-`ts_rank` for facts/events).
+memory }` envelopes over the `PublicMemory` projection (§3.1, now in
+[`klams_core::projection`](../crates/klams-core/src/projection.rs)).
+Contract note: `score` is an **RRF value, not a similarity** — not
+comparable across queries, never threshold it; rank order is the
+meaningful output. `raw_score` is the per-source score (cosine for
+knowledge, `ts_rank` for facts/events).
 
-### 2.6 Read path — REST `/memory/search` and `/memory/context`
+**Per-surface contracts** (the only differences, sprint 036 #730):
 
-The REST read paths are **not** the §2.5 pipeline. Both go through
+| | MCP `memory_search` | REST `POST /memory/search` |
+|-|--------------------|---------------------------|
+| Source failure | hard-fail: typed error envelope with the 027 transient/permanent taxonomy (`SourceTolerance::HardFail`) | degrade: sick source omitted, `degraded: true`, still 200 (`SourceTolerance::Degrade`) |
+| `top_k` outside 1..=50 | `INVALID_TOP_K` error | clamped |
+| Wire shape | `ScoredMemory` envelopes | flattened `SearchHit`s (`preview` + adapter-era `payload` keys, plus additive `raw_score` / `source_rank` / payload `author` / `created_at`) |
+| Filters | none (tags argument only) | full `RetrievalFilters` |
+| Caller attribution | tool argument | bearer token's bound `agent_name` |
+
+The pre-036 history: REST search ran a divergent `StoreHybridAdapter`
+path — no curated stratum, no rerank, author-blind two-tier weights
+(klams-mind extracts mis-weighted 2.0 instead of 1.5), hardcoded
+`default_rrf()`, and one shared facts/events budget truncated before
+the split (an event-heavy query could return zero facts). All gone;
+the 033 retrospective (#692) mapped the divergence and 036 deleted it.
+
+### 2.6 Read path — REST `/memory/context`
+
+`/memory/context` is the one remaining consumer of
 `StoreHybridAdapter`
 ([`crates/klams-core/src/hybrid.rs`](../crates/klams-core/src/hybrid.rs)),
-which shares some stages and lacks others. Unification is an open work
-item; until then the divergence is:
-
-| Stage | MCP `memory_search` | REST adapter paths |
-|-------|--------------------|--------------------|
-| Over-fetch | ×2 | ×3 |
-| Query-relative boost gate | yes | yes (same `boost_threshold`) |
-| Provenance weight | three tiers via author resolution | author-blind two-tier approximation (`adapter_knowledge_weight`: klams-mind extracts get the hand-authored weight) |
-| Duplicate collapse | yes | yes (`collapse_knowledge_rows`, same key) |
-| Curated stratum (4th source) | yes | **no** |
-| Cross-encoder rerank | yes (config-gated) | **no** |
-| Fusion strategy | `[retrieval] fusion` config | `/memory/search` **hardcodes** `FusionStrategy::default_rrf()` ([`crates/klams-api/src/handlers/search.rs`](../crates/klams-api/src/handlers/search.rs)); `/memory/context` honours the config via `ContextBuilder::with_fusion` |
-| Filters | tag filter only (tool argument) | full `RetrievalFilters` (host / type / tag / repo / file / source / since / until) |
-
-`POST /memory/search` fans out vector + FTS retrieves through the
-adapter, fuses, and returns flattened `SearchHit`s (preview + payload —
-a different shape from MCP's `ScoredMemory`). Degraded mode: if one
-source fails the response still returns 200 with `degraded: true` and
-the surviving hits. As of sprint 033 (#692) the request's `filters`
-field is parsed into the same `RetrievalFilters` the context handler
-uses and actually applied — it had been accepted and silently discarded
-since sprint 005 (contract-tested now).
+whose `RankedRow` payload keys are effectively the ContextBuilder's
+input schema — bundling is a different shape from search, so it stayed
+on the adapter in 036 (a deliberate scope line, revisit only if context
+ever needs the curated stratum or rerank). The adapter's Vector arm
+keeps its own boost gate, author-blind weight, and duplicate collapse
+for that path.
 
 `POST /memory/context`
 ([`crates/klams-api/src/handlers/context.rs`](../crates/klams-api/src/handlers/context.rs))
 is the token-budgeted bundler (sprint 005): `ContextBuilder`
 ([`crates/klams-core/src/context.rs`](../crates/klams-core/src/context.rs))
-retrieves per section (facts / knowledge / events) through the same
+retrieves per section (facts / knowledge / events) through the
 adapter, fuses per-section with the configured strategy, token-counts
 items (`cl100k_base` via `tiktoken-rs`, `chars_div4` fallback), and
 greedy-fills each section under the caller's `token_budget`, marking
@@ -553,7 +566,12 @@ does the endpoint return `503 + Retry-After`.
   sprint 033 it attributes the caller in the search counter and log,
   like `memory_search`.
 * **`memory_related` (MCP)** — nearest-neighbour walk from a given
-  memory.
+  memory, through `klams_core::retrieval::related` since sprint 036
+  (#730): duplicate collapse with `copies` annotation, exclusion of
+  copies of the seed's own content, live-only neighbours (the ANN
+  filter excludes soft-deleted and superseded points). A superseded
+  seed still resolves — its vector exists; only its *listing* is
+  hidden.
 * **`GET /v1/memories` (REST) + viewport `/activity`** — a uniform,
   globally newest-first `PublicMemory` stream over all three kinds via
   the single `Store::list_memories` method (sprint 008: "two surfaces,

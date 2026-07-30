@@ -10,7 +10,8 @@
 //! - [`errors`] — canonical MCP error codes & envelope helpers.
 //! - [`maintenance`] — `MAINTENANCE_WINDOW_ACTIVE` short-circuit.
 //! - [`metrics`] — Prometheus counters (cardinality-disciplined).
-//! - [`projection`] — internal entities → `PublicMemory`.
+//! - [`projection`] — internal entities → `PublicMemory` (re-export;
+//!   lives in `klams_core::projection` since sprint 036, #730).
 //! - [`tools`] — `ServerHandler` + tool registry.
 //! - [`transport`] — Streamable HTTP service construction.
 
@@ -18,9 +19,14 @@ pub mod auth_bridge;
 pub mod errors;
 pub mod maintenance;
 pub mod metrics;
-pub mod projection;
 pub mod tools;
 pub mod transport;
+
+// Sprint 036 (#730): the projection layer moved to `klams-core` so the
+// REST surface can project the same `PublicMemory` shapes without
+// depending on this crate. Re-exported here so `crate::projection::`
+// call sites (and any external users of the old path) keep working.
+pub use klams_core::projection;
 
 use axum::{
     body::Body,

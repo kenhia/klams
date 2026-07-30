@@ -60,6 +60,10 @@ impl Store for HealthyStore {
 }
 
 fn router() -> axum::Router {
+    router_with_reranker(None)
+}
+
+fn router_with_reranker(reranker: Option<Arc<klams_store::TeiReranker>>) -> axum::Router {
     let (queue, _rx) = MemoryQueue::new(8);
     build_router(
         ApiState {
@@ -76,9 +80,24 @@ fn router() -> axum::Router {
             )),
             maintenance: klams_types::MaintenanceState::default(),
             embed_limit: klams_types::EmbedLimit::default(),
+            fusion: klams_types::FusionStrategy::default_rrf(),
+            reranker,
+            rerank_window: 50,
         },
         "test-token",
     )
+}
+
+async fn healthz_json(app: axum::Router) -> (StatusCode, serde_json::Value) {
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/healthz")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+    (status, serde_json::from_slice(&body).unwrap())
 }
 
 #[tokio::test]
@@ -104,6 +123,58 @@ async fn healthz_returns_200_with_full_snapshot() {
     assert!(v["queue"]["depth"].is_number());
     assert!(v["version"].is_string());
     assert!(v["uptime_seconds"].is_number());
+    // Sprint 036 (#731): no reranker configured → the field is omitted
+    // entirely, not present as a permanently-down subsystem.
+    assert!(
+        v.get("reranker").is_none(),
+        "unconfigured reranker must not appear in the snapshot"
+    );
+}
+
+// ---- Sprint 036 (#731): reranker visibility. The stage is best-effort
+// (searches serve the un-reranked order when it is sick), so /healthz
+// must SHOW its state without ever letting it flip overall status or
+// the HTTP code — "rerank silently off for a week" was the failure this
+// exists to prevent.
+
+#[tokio::test]
+async fn healthz_reports_a_healthy_reranker_without_affecting_status() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/health"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    let reranker = Arc::new(klams_store::TeiReranker::new(server.uri()).unwrap());
+    let (status, v) = healthz_json(router_with_reranker(Some(reranker))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(v["status"], "Ok");
+    assert_eq!(v["reranker"]["state"], "Ok");
+}
+
+#[tokio::test]
+async fn a_sick_reranker_is_visible_but_never_fatal() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/health"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    let reranker = Arc::new(klams_store::TeiReranker::new(server.uri()).unwrap());
+    let (status, v) = healthz_json(router_with_reranker(Some(reranker))).await;
+    // Visible: the subsystem reports Down with a message.
+    assert_eq!(v["reranker"]["state"], "Down");
+    assert!(v["reranker"]["message"].is_string());
+    // Never fatal: overall status and HTTP code are untouched.
+    assert_eq!(
+        v["status"], "Ok",
+        "a sick reranker must not flip overall status"
+    );
+    assert_eq!(status, StatusCode::OK, "and must not 503 the endpoint");
 }
 
 #[tokio::test]
@@ -193,6 +264,9 @@ async fn healthz_includes_active_maintenance_block_with_run_id() {
         )),
         maintenance,
         embed_limit: klams_types::EmbedLimit::default(),
+        fusion: klams_types::FusionStrategy::default_rrf(),
+        reranker: None,
+        rerank_window: 50,
     };
     let app = build_router(state, "test-token");
 
