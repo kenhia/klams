@@ -18,6 +18,7 @@ your files.
 | Linux, x86_64 | the monitor shells out to `systemctl`; the systemd deploy path and container images assume it | the *service* has no Linux-only code, but this is the supported ground |
 | Docker + Compose v2 | Postgres, Qdrant, and the embedder run as containers | no |
 | Rust (via [rustup](https://rustup.rs)) | klams builds where it runs; the exact toolchain (currently 1.96.0) is pinned in `rust-toolchain.toml` and rustup picks it up automatically | no |
+| A C toolchain (`build-essential` on Debian/Ubuntu) | several dependencies compile C (found missing on a minimal Ubuntu Server during the sprint-035 first-install) | no |
 | [`just`](https://github.com/casey/just) (`cargo install just`) | every routine task is a recipe | you could type the commands by hand, but don't |
 | ~20 GB disk | Postgres + Qdrant + model cache + a Rust target dir | more later, as corpus grows |
 | 16 GB RAM | four containers plus a Rust build | 8 GB works, slowly |
@@ -38,11 +39,13 @@ VRAM (measured). Any card with 4 GB works; 6 GB is roomy. You'll set
 capability (e.g. Ada/8.9 → `89-1.9`; see the comments in
 `deploy/compose.env.example`) and include the GPU compose override.
 
-**CPU** — no GPU required. `TEI_IMAGE_TAG=cpu-1.7` is exactly what
-this repo's CI runs, with the smaller `BAAI/bge-small-en-v1.5` model.
-Embedding throughput drops hard — that matters for a bulk re-scan,
-not for interactive search. The §4 checklist below has the exact
-config edits.
+**CPU** — no GPU required. `TEI_IMAGE_TAG=cpu-1.9` with the smaller
+`BAAI/bge-small-en-v1.5` model — the same model this repo's CI proves
+the whole integration suite against on CPU. Embedding throughput
+drops hard — that matters for a bulk re-scan, not for interactive
+search. Use a `cpu-1.8`-or-newer tag: the compose command passes
+`--auto-truncate false`, which older TEI images reject at startup.
+The §4 checklist below has the exact config edits.
 
 **Any OpenAI-compatible embeddings endpoint** — the AMD / Apple
 Silicon / no-GPU-at-all answer. vLLM, Ollama (`/v1`), LM Studio, or a
@@ -55,7 +58,10 @@ ceiling gets fuzzier. Handled gracefully, worth knowing.
 **The reranker is optional on every path.** It's a second-stage
 reorder, best-effort at runtime — a dead reranker costs the reorder,
 never the search. To skip it (e.g. on CPU), delete the
-`reranker_url` line from your `klams.toml`.
+`reranker_url` line from your `klams.toml`. If you do run it on CPU,
+expect the container to show *unhealthy* for a few minutes while the
+model loads, and expect it to be slow (the CPU backend caps batches
+at 4).
 
 ## 3. Provision
 
@@ -99,7 +105,7 @@ on a vector-width mismatch, which beats silently querying garbage):
 In `compose.env`:
 
 ```sh
-TEI_IMAGE_TAG=cpu-1.7
+TEI_IMAGE_TAG=cpu-1.9
 TEI_MODEL_ID=BAAI/bge-small-en-v1.5
 ```
 

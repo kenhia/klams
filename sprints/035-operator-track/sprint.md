@@ -64,3 +64,54 @@ no hostname or Ken-shaped concept in any code path — so this sprint is
 - **No `--cpu` provision flag:** the CPU branch is documented edits in
   install.md, not tooling. #780 (compose-mode + CPU override) stays
   gated on the first real operator's friction list.
+- **CPU tag is `cpu-1.9`, not `cpu-1.7` (#779 finding):** the live
+  ksandbox first-install crashlooped TEI on `cpu-1.7` — the deploy
+  compose command passes `--auto-truncate false`, and pre-1.8 clap
+  treats `--auto-truncate` as a value-less switch (`unexpected
+  argument 'false'`). "cpu-1.7 is CI-proven" was true only of CI's
+  *minimal* TEI command (`tests/docker-compose.test.yml` passes no
+  truncation flags at all), never of the deploy command. Fixed:
+  install.md and compose.env.example now say `cpu-1.9` (same TEI
+  release as the CUDA `89-1.9` tag) and warn about pre-1.8 tags.
+
+## The ksandbox first-install (#779)
+
+Run 2026-07-29/30 from kubs0 via the kai ssh hop (ksandbox authorizes
+only kai/cleo keys), following docs/install.md §1–§5 + §9 as a
+stranger would: rustup + `cargo install just` + clone → provision →
+CPU checklist → compose up → release build → `just smoke`. Log of
+findings, each folded back into the docs in this sprint:
+
+1. **Provision on a truly clean host works** — four files rendered,
+   tokens matched to grants, operator token printed once. The #773
+   fix holds where it had never been exercised before.
+2. **`build-essential` missing** from install.md's prereq table —
+   ksandbox (deliberately minimal Ubuntu server) has no C compiler,
+   and several crates need `cc`. Added to the table.
+3. **The `cpu-1.7` crashloop** (decision entry above) — the sprint's
+   headline finding.
+4. **Reranker on CPU**: reaches Ready but loads slowly (healthcheck
+   shows *unhealthy* for minutes) and the CPU backend forces
+   `max_batch_requests=4`. Noted in install.md; skipping it stays the
+   CPU default.
+
+Result: `just smoke` → **7 passed, 0 failed** on the empty ksandbox
+store (fact round-trip 20 ms; knowledge write→embed→search 1 s), on
+klams 0.1.35 built on the box. #779's acceptance — provision → boot →
+printed token completes a memory_add round-trip — met on the CPU
+branch kubs0 can never exercise.
+
+The install was left quiesced and cleanly removable: service process
+stopped, all four klams containers stopped (survives reboots), the
+box's harness-eval tenants untouched. Footprint + exact resume/removal
+commands: **k-homelab #787** (the record-machine-change note the WI
+comment required).
+
+## Outcome
+
+- `just gate` ✓, `just gate-viewport` ✓, `just test-integration` ✓
+  (test stack swept + torn down after).
+- `just smoke` green against the live kubs0 service (0.1.34) and the
+  fresh ksandbox install (0.1.35).
+- korg: #779 carries the run record; the proposal (korg:781) closes
+  via sprint-ship.
