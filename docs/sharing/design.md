@@ -1,8 +1,8 @@
 # Sharing design — knowledge leaving the homelab
 
-**Status:** THOUGHT STAGE — design record, no build commitment.
-See [README.md](README.md) for what that means.
-**Date:** 2026-07-30 (sprint 038, korg:772, covering WIs #760 + #768)
+**Status:** THOUGHT STAGE — design record, no build commitment.  
+See [README.md](README.md) for what that means.  
+**Date:** 2026-07-30 (sprint 038, korg:772, covering WIs #760 + #768)  
 **Companion docs:** [prior-art.md](prior-art.md) (research, sources) ·
 [memory-feed-draft.md](memory-feed-draft.md) (draft interchange
 standard) · [pitch.html](pitch.html) (the infographic)
