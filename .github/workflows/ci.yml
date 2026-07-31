@@ -7,7 +7,15 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Sprint 040 (#792): PRs keep fast-cancel; `main` does not. Two pushes
+  # land on main per sprint ship (the merge commit, then the deploy
+  # record), and blanket cancellation meant the second killed the first —
+  # so the commit actually carrying the sprint's code never completed a
+  # run, on every sprint since at least 033. `perf` is main-only and
+  # ~7 min against a ~2 min cancel, so it only ever measured the docs
+  # commit. The deploy-record commit now also carries `[skip ci]`, so in
+  # practice main gets one run per ship, not two.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   service:
@@ -15,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -44,64 +52,27 @@ jobs:
           echo "=== Disk space after cleanup ==="
           df -h /
 
-      - name: Report disk space before test stack
-        run: |
-          echo "=== Disk usage before test stack ==="
-          df -h /
-          echo "=== Docker disk usage ==="
-          docker system df || true
-
-      - name: Bring up test stack
-        run: docker compose -f tests/docker-compose.test.yml up -d
-
-      - name: Wait for test stack
-        # Probe published ports from the host rather than reading
-        # `docker compose ps`'s health column. Sprint 031 (#672) fixed
-        # the qdrant healthcheck (it shelled out to a curl the image
-        # does not ship, so it was permanently "unhealthy"), but the
-        # host probe stays: it also covers TEI's multi-minute model
-        # load, which no container healthcheck timeout wants to span.
-        # pg_isready and curl are preinstalled on ubuntu-latest.
-        run: |
-          set -e
-          echo -n "postgres: "
-          for i in $(seq 1 60); do
-            if pg_isready -h 127.0.0.1 -p 55432 -U klams >/dev/null 2>&1; then
-              echo "ok"; break
-            fi
-            sleep 1
-          done
-          echo -n "qdrant:   "
-          for i in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:56333/readyz >/dev/null 2>&1; then
-              echo "ok"; break
-            fi
-            sleep 1
-          done
-          echo -n "tei:      "
-          for i in $(seq 1 120); do
-            if curl -fsS http://127.0.0.1:57070/health >/dev/null 2>&1; then
-              echo "ok"; break
-            fi
-            sleep 1
-          done
-          # Final verification — fail loudly if any service is still unresponsive
-          pg_isready -h 127.0.0.1 -p 55432 -U klams >/dev/null \
-            || { echo "postgres unreachable"; docker compose -f tests/docker-compose.test.yml ps; exit 1; }
-          curl -fsS http://127.0.0.1:56333/readyz >/dev/null \
-            || { echo "qdrant unreachable"; docker compose -f tests/docker-compose.test.yml ps; exit 1; }
-          curl -fsS http://127.0.0.1:57070/health >/dev/null \
-            || { echo "tei unreachable"; docker compose -f tests/docker-compose.test.yml ps; exit 1; }
-          echo "stack ready"
-
       - name: Install just
-        run: cargo install just --locked
+        # Sprint 040 (#788): was `cargo install just --locked`, which
+        # built from source for 91 s on every run — in a job that then
+        # never invoked `just`. This is a composite action (no Node
+        # runtime) wrapping a SHA-pinned download of a `casey/just`
+        # release, so it costs ~1 s and adds no annotation.
+        uses: extractions/setup-just@v4
 
-      - name: cargo fmt + clippy + tests (just gate, without --all-features to save disk)
-        run: |
-          cargo fmt --all -- --check
-          cargo clippy --workspace --all-targets -- -D warnings
-          cargo test --workspace
+      - name: just gate (fmt + clippy + tests)
+        # Sprint 040 (#788): CI now runs the recipe rather than its own
+        # copy of the three commands, so the justfile is the single
+        # definition of the gate. The two were byte-identical when this
+        # landed — running the recipe is what keeps them that way.
+        run: just gate
+
+      # Sprint 040 (#789): the stack comes up HERE, not at the top of the
+      # job. It used to start before the compile gate, so Postgres,
+      # Qdrant and TEI idled ~8 minutes under exactly the disk pressure
+      # the rest of this workflow works around.
+      - name: Bring up test stack
+        uses: ./.github/actions/test-stack
 
       - name: cargo test --ignored (integration)
         env:
@@ -160,7 +131,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -177,22 +148,7 @@ jobs:
           df -h /
 
       - name: Bring up test stack
-        run: docker compose -f tests/docker-compose.test.yml up -d
-
-      - name: Wait for test stack
-        run: |
-          set -e
-          for _ in $(seq 1 60); do
-            pg_isready -h 127.0.0.1 -p 55432 -U klams >/dev/null 2>&1 && break
-            sleep 1
-          done
-          for _ in $(seq 1 120); do
-            curl -fsS http://127.0.0.1:57070/health >/dev/null 2>&1 && break
-            sleep 1
-          done
-          pg_isready -h 127.0.0.1 -p 55432 -U klams >/dev/null || { echo "postgres unreachable"; exit 1; }
-          curl -fsS http://127.0.0.1:56333/readyz >/dev/null || { echo "qdrant unreachable"; exit 1; }
-          curl -fsS http://127.0.0.1:57070/health >/dev/null || { echo "tei unreachable"; exit 1; }
+        uses: ./.github/actions/test-stack
 
       - name: search_p95_under_500ms_at_mvp_corpus
         env:

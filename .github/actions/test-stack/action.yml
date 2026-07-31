@@ -1,0 +1,74 @@
+name: Test stack
+description: >
+  Bring up the docker-compose integration stack (Postgres, Qdrant, TEI)
+  and block until every service answers on its published port.
+
+# Sprint 040 (#789). The `service` and `perf` jobs each carried their own
+# copy of this, and the copies had drifted: `perf`'s wait loop polled only
+# Postgres and TEI, then final-checked Qdrant it had never waited for — so
+# a slow Qdrant failed the job instead of being waited on. One definition
+# fixes that by construction.
+#
+# Composite, not a Node action: nothing here needs a runtime, and a
+# composite cannot contribute a Node deprecation annotation (#790).
+
+runs:
+  using: composite
+  steps:
+    - name: Report disk before test stack
+      shell: bash
+      # Disk pressure is the recurring failure mode for this stack, and
+      # this is the moment it bites — after the compile gate has filled
+      # the cargo target dir, before three containers land on top of it.
+      run: |
+        echo "=== Disk usage before test stack ==="
+        df -h /
+        echo "=== Docker disk usage ==="
+        docker system df || true
+
+    - name: Bring up test stack
+      shell: bash
+      run: docker compose -f tests/docker-compose.test.yml up -d
+
+    - name: Wait for test stack
+      shell: bash
+      # Probe published ports from the host rather than reading
+      # `docker compose ps`'s health column. Sprint 031 (#672) fixed the
+      # qdrant healthcheck (it shelled out to a curl the image does not
+      # ship, so it was permanently "unhealthy"), but the host probe
+      # stays: it also covers TEI's multi-minute model load, which no
+      # container healthcheck timeout wants to span. pg_isready and curl
+      # are preinstalled on ubuntu-latest.
+      run: |
+        set -e
+        echo -n "postgres: "
+        for _ in $(seq 1 60); do
+          if pg_isready -h 127.0.0.1 -p 55432 -U klams >/dev/null 2>&1; then
+            echo "ok"; break
+          fi
+          sleep 1
+        done
+        echo -n "qdrant:   "
+        for _ in $(seq 1 60); do
+          if curl -fsS http://127.0.0.1:56333/readyz >/dev/null 2>&1; then
+            echo "ok"; break
+          fi
+          sleep 1
+        done
+        echo -n "tei:      "
+        for _ in $(seq 1 120); do
+          if curl -fsS http://127.0.0.1:57070/health >/dev/null 2>&1; then
+            echo "ok"; break
+          fi
+          sleep 1
+        done
+        # Verify rather than trust the loops: a loop that exhausts its
+        # attempts falls through silently, so assert each one and dump
+        # container state on failure.
+        pg_isready -h 127.0.0.1 -p 55432 -U klams >/dev/null \
+          || { echo "postgres unreachable"; docker compose -f tests/docker-compose.test.yml ps; exit 1; }
+        curl -fsS http://127.0.0.1:56333/readyz >/dev/null \
+          || { echo "qdrant unreachable"; docker compose -f tests/docker-compose.test.yml ps; exit 1; }
+        curl -fsS http://127.0.0.1:57070/health >/dev/null \
+          || { echo "tei unreachable"; docker compose -f tests/docker-compose.test.yml ps; exit 1; }
+        echo "stack ready"

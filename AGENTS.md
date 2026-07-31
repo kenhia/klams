@@ -65,10 +65,17 @@ at cross-component boundaries.
 Every commit must pass the gate — `just gate`:
 
 ```bash
-cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 ```
+
+Note the deliberate absence of `--all-features`: it would enable
+`scale-fixture`, an intentionally heavy fixture for multi-minute loads.
+That feature is exercised by targeted tests, not by the gate. Since
+sprint 040 (#788) CI invokes `just gate` itself rather than keeping its
+own copy of these three commands, so the recipe is the single
+definition — if you change it, you have changed CI.
 
 This applies to existing code touched in passing, not just new code —
 no broken windows.
