@@ -188,3 +188,39 @@ behind (`target/` 21 G, `node_modules/` 66 M, plus `build/`,
 `.svelte-kit/`, `src-tauri/gen/`). Verified to contain zero
 non-artifact files, then removed on Ken's go-ahead. The source remains
 recoverable from git history.
+
+## Deployed 2026-07-30
+
+- Version `0.1.39` live on kubs0 (`/healthz` and MCP `server_info` both
+  confirm; was `0.1.37` — 038 was a docs-only sprint and never deployed).
+- Rollback target: `0.1.37` via `just rollback` (`.prev` binaries in
+  place for all three).
+- Migrations applied: **none** — this sprint touched no `migrations/`,
+  so the rollback is a clean binary swap with no restore needed.
+- Verified live, beyond `/healthz`: `just verify` (7 passed, 0 failed —
+  including the two SC checks this sprint rewrote: SC-006 now reports
+  `n/a: UI retired`, SC-007 checks `docs/install.md`); MCP `initialize`
+  returns `0.1.39` and `tools/list` advertises 16 tools; and the one
+  string this sprint actually changed in the running service —
+  `dissent_propose`'s description — now reads "…a human promotes or
+  discards over the dissents endpoints" instead of naming the viewport.
+  Units settled with `NRestarts=0` and no ERROR/WARN in the log.
+
+### Config follow-up for the operator (not done by this sprint)
+
+`/etc/klams/klams.toml` is outside this repo and was deliberately not
+touched. It still carries the now-dead grant:
+
+```toml
+label = "viewport"
+agent_name = "viewport"
+scopes = ["read", "write", "manage"]
+```
+
+Nothing uses it — the app it belonged to no longer exists, and
+klams-view has its own read-scoped `klams-view` grant (klams-view #793,
+already present in the deployed config). It is a live `manage`-scoped
+credential with no owner, which is the kind of thing worth removing on
+principle rather than leaving to rot. Deleting the block and
+`sudo systemctl reload klams-service` (hot-reloads `[[auth.tokens]]`,
+no restart) is all it takes.
