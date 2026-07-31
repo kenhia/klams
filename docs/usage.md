@@ -177,29 +177,15 @@ or detail view.
 The Phase 2 quickstart walks the full flow:
 [sprints/002-safety-and-write-ops/quickstart.md §5](../sprints/002-safety-and-write-ops/quickstart.md#5-story-2--dissent-on-lower-trust-contradiction-promote-later).
 
-## Viewport: provenance panel + Dissents page
-
-The Phase 2 viewport surfaces two new affordances on top of the
-existing read-only inspectors:
-
-- **Provenance panel** — on every fact / event / knowledge detail
-  view. Renders the eight provenance fields (`source`, `version`,
-  `created_at`, `updated_at`, `last_used_at`, `decay_weight`,
-  `confidence`, `dissent_count`) as a definition list. When
-  `dissent_count > 0` it links to `/dissents?fact_id=…` so the
-  operator can review the pending proposals.
-- **Dissents page** (`/dissents`, in the top nav) — paginated review
-  queue with filters (status, source, fact_id, created_after,
-  caller_source) and per-row diff between the canonical fact and the
-  proposed payload. Each row exposes **Promote** and **Discard**
-  buttons that call the endpoints above with optimistic UI rollback
-  on backend error.
-
-The Facts inspector also gains **Edit** and **Delete** actions
-(User-sourced) with optimistic application and rollback when the
-backend reports `409 version_conflict` or any error envelope. A
-mutation counter in the layout drives a pending-dissent badge in the
-nav bar so newly diverted writes show up without a manual refresh.
+> **Historical note (sprint 039).** The review queue described above
+> used to have a UI: the `viewport` desktop app had a `/dissents` page
+> with per-row diffs and Promote/Discard buttons, plus a provenance
+> panel and Edit/Delete actions on the fact inspector. The viewport was
+> retired in favour of [klams-view](https://github.com/kenhia/klams-view),
+> which is read-only, so **dissent resolution is a REST operation with
+> no UI today** — the recipe is in
+> [auth.md](auth.md#resolving-dissents-without-a-ui), and the screens
+> are on klams-view's roadmap.
 
 ## `just` recipe reference
 
@@ -220,10 +206,6 @@ common task is a one-liner that matches what CI runs.
 | `health`          | `/healthz` curl + `scripts/verify-mvp.sh --light`. |
 | `verify`          | Full `scripts/verify-mvp.sh` (SC-001..SC-009). |
 | `smoke`           | The first-run smoke `docs/install.md` ends with (sprint 035, #779): full `verify-mvp.sh` with `--first-run` — failure hints on every check and a plain-language verdict. Valid on an empty store. |
-| `viewport-build`  | `cargo xwin` Windows cross-build of the viewport. |
-| `viewport-deploy` | `viewport-build`, then `scp` the exe to `VIEWPORT_HOST` (no default — set it to the Windows target, sprint 035 #776) at `VIEWPORT_DEPLOY_DIR` (default `c:\tools\bin`) and verify the SHA-256 matches. Close a running viewport on the target first — Windows locks the `.exe` of a running process. |
-| `viewport-build-linux` | Native Linux build of the viewport (also runs in WSL Ubuntu). |
-| `viewport-run-linux`   | Build + launch the Linux viewport with `--debug`. |
 
 `KLAMS_URL` and `KLAMS_TOKEN` are read from the environment — or from
 a gitignored `.env` at the repo root (`set dotenv-load`, sprint 035) —
@@ -250,11 +232,6 @@ Two things CI runs that `gate` does not:
   non-blocking** job. It seeds the 10k/50k/10k corpus and takes ~5
   minutes, and a p95 measured on shared CI hardware is noisy enough to
   need a human reading it rather than a red X.
-
-> **WSL note**: The Linux viewport runs unchanged under WSL Ubuntu via
-> WSLg. Install the webkit2gtk runtime first:
-> `sudo apt install libwebkit2gtk-4.1-0 libjavascriptcoregtk-4.1-0 libsoup-3.0-0`.
-> Quick-tested launching both `./klams-viewport` and `./klams-viewport --debug`.
 
 ## Reference
 
@@ -468,16 +445,16 @@ section in `/memory/context` ships headlines ("3x compile, 2x test").
 Watch `klams_summarization_lag_seconds` for the wall-clock duration of
 the most recent cycle.
 
-### Viewport: Context Preview pane
+### Context preview
 
-The viewport gains a `/preview` route backed by
-`viewport/src/lib/components/ContextPreview.svelte`. The pane has a
-query box, a 250 ms-debounced token-budget slider, a
-raw-vs-summarized toggle, and per-section token-count readouts.
-Each interaction calls `POST /memory/context` via the typed client
-in `viewport/src/lib/api/context.ts` and renders the returned bundle
-section-by-section, surfacing `sections[*].status` (`degraded`,
-etc.) and any `Retry-After` hint on 503.
+`POST /memory/context` is the endpoint behind this: give it a query
+and a token budget and it returns the bundle section-by-section, with
+`sections[*].status` (`degraded`, etc.) and a `Retry-After` hint on
+503. The retired viewport had a `/preview` pane over it (query box,
+debounced budget slider, raw-vs-summarized toggle); a replacement
+"context workbench" is on
+[klams-view](https://github.com/kenhia/klams-view)'s roadmap. Until
+then, call the endpoint directly.
 
 ## Sprint 006 — Maintenance window + backups
 
@@ -653,9 +630,8 @@ against a throwaway compose stack and compare row counts.
 Sprint 007 mounts a Model Context Protocol (MCP) surface on
 `klams-service` so editors and shell agents can read and write
 klams memories through a uniform tool interface. The MCP server is
-**additive**: every existing REST endpoint, the viewport, and the
-non-agentic writers (`klams-scanner`, `klams-monitor`) keep working
-unchanged. Detailed contracts live under
+**additive**: every existing REST endpoint and the non-agentic writers
+(`klams-scanner`, `klams-monitor`) keep working unchanged. Detailed contracts live under
 [sprints/007-mcp-server/contracts/](../sprints/007-mcp-server/contracts/).
 
 ### Tool surface
@@ -666,7 +642,7 @@ unchanged. Detailed contracts live under
 | `memory_search` | `read` | Hybrid retrieval over facts + knowledge + events. |
 | `event_search` | `read` | Filter `events` by category / task / time window / payload substring. Pure SQL — never hits the embedder (FR-004). |
 | `memory_related` | `read` | Neighborhood expansion around a known memory id. |
-| `dissent_propose` | `write` | File a dissent against a live canonical fact (sprint 015); lands as a pending `AgentProposal` for human review in the viewport. |
+| `dissent_propose` | `write` | File a dissent against a live canonical fact (sprint 015); lands as a pending `AgentProposal` a human resolves over the dissents endpoints ([auth.md](auth.md#resolving-dissents-without-a-ui)). |
 | `memory_add` | `write` | Add a fact or knowledge item. Same dedupe + dissent rules as REST. Flat input schema since sprint 018: `kind` (`"fact"` \| `"knowledge"`) discriminates, with `fact_type`+`payload` required for facts and `text` (+ optional `tags`/`source_path`/`repo`) for knowledge — no top-level `oneOf`, so Anthropic-bound agents can carry the tool. |
 | `memory_append_event` | `write` | Append an event. Always canonical, never soft-deleted. |
 | `memory_delete` | `write` | Soft-delete the caller's own fact / knowledge item by id. |
@@ -726,10 +702,10 @@ error pointing at the migration note in [auth.md](auth.md).
 
 ```toml
 [[auth.tokens]]
-token = "viewport-XXXXXXXXXXXXXXXXXXXX"
-scopes = ["read", "write", "manage"]   # it edits facts + resolves dissents
-label = "viewport"
-agent_name = "viewport"
+token = "klams-view-XXXXXXXXXXXXXXXXXXXX"
+scopes = ["read"]                      # the dashboard only reads
+label = "klams-view"
+agent_name = "klams-view"
 
 [[auth.tokens]]
 token = "ghcp-write-XXXXXXXXXXXXXXXX"
@@ -772,8 +748,10 @@ direct consequence. The authoritative series list is
 so a noisy or rogue client is easy to identify without leaking the
 raw token.
 
-Recommended layout: `read`+`write`+`manage` for the viewport and for
-interactive agents that curate the corpus; `read`+`write` for daemons
+Recommended layout: `read` alone for a dashboard (klams-view);
+`read`+`write`+`manage` for interactive agents that curate the corpus
+and for the operator credential that resolves dissents;
+`read`+`write` for daemons
 that only write their own records (scanner, kmon — they can still
 retract their *own* chunks); and a single all-scopes admin token used
 only from your own shell. Give every grant an `agent_name` — it is
@@ -803,78 +781,68 @@ destroy them. The DR drill at
 [sprints/007-mcp-server/quickstart.md §12](../sprints/007-mcp-server/quickstart.md#12-restore-from-rogue-agent-drill)
 walks through detecting and reversing a mass-delete.
 
-### Viewport `/authors` review workflow
+### Author review workflow
 
-The viewport gains an `Authors` nav entry that drills into per-agent
-state:
+Sprint 007 added the endpoints this runs on, and they are unchanged:
 
-1. **`/authors`** — table of every registered author with rolling
-   counts (writes, knowledge, events, soft-deletes, restores
-   received). Filter by `agent_name` substring or `since` timestamp.
-2. **`/authors/{id}`** — author header (model, repo, client app,
-   first/last seen, counts) plus a memories table. Each row carries
-   a state badge (`live` | `soft-deleted` | `hard-deleted`),
-   a kind column, a summary, the updated-at timestamp, and a link
-   that lands on `/facts/{id}`, `/knowledge/{id}`, or
-   `/events/{id}` so you can pivot into the existing per-kind
-   inspectors (FR-025).
+1. **`GET /v1/authors`** — every registered author with rolling counts
+   (writes, knowledge, events, soft-deletes, restores received).
+   Filter by `agent_name` substring or `since` timestamp.
+2. **`GET /v1/authors/{id}`** and **`GET /v1/authors/{id}/memories`** —
+   author header (model, repo, client app, first/last seen, counts)
+   plus that author's memories, each carrying a state
+   (`live` | `soft-deleted` | `hard-deleted`), kind, summary and
+   updated-at (FR-025). Filter by kinds and state; cursor-paginated.
 
-> **Sprint 010 (US4):** both surfaces now render `counts.knowledge`
-> as a distinct **Knowledge** measure alongside **Writes** (facts).
-> They are shown separately, never summed — so an author that has only
-> indexed knowledge (e.g. `klams-scanner`, `writes=0`) shows its real
-> knowledge count instead of `0`. The two pages share one render helper
-> (`viewport/src/routes/authors/counts.ts`).
+> **Sprint 010 (US4):** `counts.knowledge` is a distinct measure from
+> `counts.writes` (facts) and the two are never summed — an author that
+> has only indexed knowledge (e.g. `klams-scanner`, `writes=0`) has a
+> real knowledge count, not `0`. Any UI over these counts must keep
+> them separate.
 
-Filter controls on the detail page: kinds checkboxes
-(`fact` / `knowledge` / `event`) and a state selector
-(`live` / `deleted` / `all`). Pagination uses the same cursor
-contract as the REST endpoint.
+Use this for incident review (who wrote this?), routine hygiene (this
+scanner has been hammering the dissent queue), and the post-restore
+audit (every restore drill should end by checking the rogue author's
+counts returned to baseline).
 
-Use it for incident review (who wrote this?), routine hygiene
-(this scanner has been hammering the dissent queue), and the
-post-restore audit (every restore drill should end with a glance
-at the rogue author's `/authors/{id}` page to confirm counts
-returned to baseline).
+[klams-view](https://github.com/kenhia/klams-view) renders all of it —
+author list with corpus share, per-author detail with kind filters —
+and is the comfortable way to do this. The retired viewport had the
+same workflow under an `Authors` nav entry.
 
 ## Sprint 008 — Activity tab and `event_search`
 
 Sprint 008 (`sprints/008-activity-observability/`) adds a single
-cross-author **Activity tab** to the viewport and a matching MCP
-tool (`event_search`) for cheap event lookup, both backed by the
-same shared store query (R-001 — "two surfaces, one query").
+cross-author **activity listing** (`GET /v1/memories`, plus a tab in
+the then-current UI) and a matching MCP tool (`event_search`) for cheap
+event lookup, both backed by the same shared store query (R-001 —
+"two surfaces, one query").
 
-### Viewport Activity tab (`/activity`)
+### The activity listing
 
-Open the viewport and pick **Activity** from the nav. The tab
-defaults to the last 24 hours across all kinds and all authors.
+The cross-author stream — "what happened in the last hour, across
+every agent and every kind?" — as opposed to the per-author view
+added in sprint 007. It is `GET /v1/memories` (detailed below), and
+[klams-view](https://github.com/kenhia/klams-view)'s Activity page
+renders it. The retired viewport had the same tab.
 
-Filters:
+Filters, whichever surface you use:
 
-- **From / To** — local-time pickers; sent to the service as ISO
-  8601. The service rejects windows wider than 30 days with HTTP
-  400 `WINDOW_TOO_LARGE`.
+- **From / To** — ISO 8601. Windows wider than 30 days are rejected
+  with HTTP 400 `WINDOW_TOO_LARGE`. Defaults to the last 24 hours.
 - **Kinds** — independent toggles for `fact`, `knowledge`, `event`.
-- **State** — `live` (default), `soft-deleted`, or `all`. Soft-
-  deleted rows render with an amber badge and keep their original
-  `deleted_at` / `deleted_by` metadata (FR-015a); the row link
-  still routes to the per-kind detail page.
-- **Authors** — multi-select sourced from
-  `GET /v1/authors`. Empty selection means "all authors".
-- **Limit** — page size, 1–200.
-
-The grid uses cursor pagination — when the service returns a
-`next_cursor`, a **Load more** button appears beneath the table.
-
-Unlike the per-author `/authors/{id}` view added in sprint 007,
-the Activity tab is cross-author: the natural starting point for
-"what happened in the last hour, across every agent and every
-kind?"
+- **State** — `live` (default), `soft-deleted`, or `all`. Soft-deleted
+  rows keep their original `deleted_at` / `deleted_by` metadata
+  (FR-015a).
+- **Authors** — filter by author id; empty means "all authors".
+  Sourced from `GET /v1/authors`.
+- **Limit** — page size, 1–200, with cursor pagination via
+  `next_cursor`.
 
 ### `event_search` MCP tool
 
-`event_search` is the agent-facing counterpart to the Activity
-tab. Read scope. Pure SQL — it never invokes the embedder, so
+`event_search` is the agent-facing counterpart to the activity
+listing. Read scope. Pure SQL — it never invokes the embedder, so
 counters like `klams_tei_requests_total` (which does not exist — see
 [SERIES.md](../deploy/grafana/SERIES.md); #648) must not increment for
 a search-only workload (FR-004).
@@ -898,10 +866,9 @@ The window cap is the same 30-day limit as the HTTP surface.
 
 ### Operator surface — `GET /v1/memories`
 
-The HTTP route behind the Activity tab; read scope. Identical
-filters and response shape to the Tauri wrapper, with the same
-30-day window cap and the same cursor contract. Useful when you
-want to script the same listing from the shell:
+The HTTP route behind the activity listing; read scope. The filters
+above, a 30-day window cap, and cursor pagination. Useful when you
+want to script the listing from the shell:
 
 ```bash
 curl -sS -H "Authorization: Bearer $KLAMS_READ_TOKEN" \

@@ -428,7 +428,7 @@ pub trait Store: Send + Sync + 'static {
         Ok(())
     }
 
-    // Sprint 007 — viewport `/v1/authors` routes. Default impls
+    // Sprint 007 — the `/v1/authors` routes. Default impls
     // return empty data so test mocks need not connect to Postgres
     // or Qdrant.
 

@@ -16,14 +16,6 @@ Cargo.lock.bak
 .DS_Store
 Thumbs.db
 
-# Viewport (Tauri + SvelteKit + cargo-xwin)
-viewport/xwin/
-viewport/build/
-viewport/node_modules/
-viewport/.svelte-kit/
-viewport/src-tauri/target/
-viewport/src-tauri/gen/
-
 # Deploy / runtime config (rendered, never committed)
 deploy/compose.env
 

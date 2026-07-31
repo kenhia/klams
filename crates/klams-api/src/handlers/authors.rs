@@ -1,4 +1,4 @@
-//! Sprint 007 (US5) — `/v1/authors` viewport drilldown routes.
+//! Sprint 007 (US5) — `/v1/authors` drilldown routes.
 
 use crate::error::ApiError;
 use crate::router::ApiState;

@@ -24,8 +24,10 @@ your files.
 | 16 GB RAM | four containers plus a Rust build | 8 GB works, slowly |
 | systemd | the long-running deploy mode | `just run` in a terminal is fine to start |
 
-The desktop viewport is optional and has its own toolchain (pnpm +
-Node 20 + Tauri); skip it on day one.
+A UI is optional and lives outside this repo — see
+[klams-view](https://github.com/kenhia/klams-view), which has its own
+prerequisites (Rust + pnpm) and its own install guide. Skip it on day
+one; klams is fully usable by agents without it.
 
 ## 2. Pick your embedding backend (the one real decision)
 

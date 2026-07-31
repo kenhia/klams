@@ -107,22 +107,63 @@ curation is granted deliberately, per token.
 `manage` is **not** implied by `admin`, and does not imply `admin` —
 hard-delete and restore stay separate from everyday curation.
 
+### Resolving dissents without a UI
+
+A `manage` token's other job is settling dissents — the corrections
+agents file with `dissent_propose`, and the trust-tier collisions the
+write path diverts rather than overwrites. **There is no UI for this
+as of sprint 039**: the viewport was the curation surface and it was
+retired, and [klams-view](https://github.com/kenhia/klams-view) is
+read-only by design (dissent actions sit in its roadmap). Until that
+lands, resolution is three REST calls:
+
+```bash
+# List what is pending (read scope).
+curl -s -H "Authorization: Bearer $TOKEN" \
+  http://127.0.0.1:7777/memory/dissents | jq
+
+# Inspect one (read scope).
+curl -s -H "Authorization: Bearer $TOKEN" \
+  http://127.0.0.1:7777/memory/dissents/$ID | jq
+
+# Settle it — manage scope. Promote makes the proposed correction
+# canonical; discard drops it and leaves the incumbent standing.
+curl -s -X POST -H "Authorization: Bearer $MANAGE_TOKEN" \
+  http://127.0.0.1:7777/memory/dissents/$ID/promote
+curl -s -X POST -H "Authorization: Bearer $MANAGE_TOKEN" \
+  http://127.0.0.1:7777/memory/dissents/$ID/discard
+```
+
+Nothing expires a pending dissent, so an unattended store simply
+accumulates them; the list endpoint is the queue.
+
 ## Recommended token split
 
 | Token | Scopes | Why |
 |---|---|---|
-| `viewport` | `["read", "write", "manage"]` | It edits and deletes facts, and it is where a human resolves dissents. |
+| `klams-view` | `["read"]` | The dashboard only reads. Give it nothing else. |
 | `scanner`, `kmon`, `klams-mind` | `["read", "write"]` | Write their own records; can retract them; cannot touch anyone else's. |
 | `claude`, `ghcp` | `["read", "write", "manage"]` | Interactive agents that curate the corpus. |
 | operator | all four | Used from your own shell, not wired into a service. |
 
-> **The viewport is not read-only.** Docs before sprint 025 recommended
-> a `["read"]` viewport token "so a UI compromise cannot mutate state."
-> That was only nominally true — nothing enforced scopes on the fact and
-> dissent routes, so the read-only token could mutate everything. Now
-> enforcement is real, and a `["read"]` viewport gets 403 on its own
-> curation features. What bounds the viewport is withholding `admin`:
-> it cannot hard-delete, restore, or touch the author registry.
+> **A note on UI tokens, because this advice reversed twice.** Before
+> sprint 025 the docs said "give the UI a `["read"]` token so a UI
+> compromise cannot mutate state" — which was only nominally true, since
+> nothing enforced scopes on the fact and dissent routes and that
+> read-only token could mutate everything anyway. Sprint 025 made
+> enforcement real, and the advice flipped: the `viewport` desktop app
+> needed `["read", "write", "manage"]`, because it *was* the curation
+> surface — a `["read"]` viewport got 403 on its own features.
+>
+> Sprint 039 retired the viewport in favour of
+> [klams-view](https://github.com/kenhia/klams-view), which is
+> deliberately read-only, so `["read"]` is right again. The rule
+> underneath all three positions is the same: **scope the token to what
+> the client actually does.** The client changed; the posture followed.
+>
+> Curation itself did not disappear — it just has no UI right now.
+> Dissents are resolved over REST with a `manage`-scoped credential
+> (see [Resolving dissents without a UI](#resolving-dissents-without-a-ui)).
 
 A grant with no `agent_name` cannot delete anything, since ownership is
 decided by the bound author. Give every token one.
@@ -217,7 +258,8 @@ Lifecycle verbs are `admin`-scoped:
 ## Checking a deployment
 
 Use a token you expect to be read-only — a dashboard or scrape
-credential, **not** the viewport (which carries `write` and `manage`).
+credential such as `klams-view`'s, **not** an interactive agent's
+(which carries `write` and `manage`).
 
 ```bash
 # Should be 403 scope_insufficient — a read-only token must not write.

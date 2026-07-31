@@ -212,7 +212,7 @@ impl Client {
         self.get_json_query("/memory/dissents", params).await
     }
 
-    /// `GET /v1/authors` — sprint 007 viewport drilldown.
+    /// `GET /v1/authors` — sprint 007 author drilldown.
     pub async fn list_authors(&self, params: &ListAuthorsParams) -> ClientResult<AuthorPage> {
         self.get_json_query("/v1/authors", params).await
     }

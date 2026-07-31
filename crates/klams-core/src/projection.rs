@@ -3,8 +3,8 @@
 //!
 //! Pure functions that map internal `Fact`/`Event`/`KnowledgeItem`
 //! values to the public [`PublicMemory`] shape. Every public-facing
-//! response (MCP tool result, REST search hit, or viewport author REST
-//! route) MUST go through this module — direct serialization of the
+//! response (MCP tool result, REST search hit, or author REST route)
+//! MUST go through this module — direct serialization of the
 //! internal types would leak `version`, `decay_weight`, `confidence`,
 //! `use_count`, `last_used_at`, the raw embedding vector, the internal
 //! `source` trust tier, and the soft-deletion bookkeeping columns.

@@ -258,18 +258,20 @@ else
 fi
 
 # ---------------------------------------------------------------------- SC-006
-# Viewport cold launch < 3s — manual / GUI check.
-record SC-006 skip "manual: launch klams-viewport.exe on Windows"
+# Was "viewport cold launch < 3s". The viewport was retired in sprint
+# 039; the human surface is klams-view (kenhia/klams-view), which has
+# its own repo and its own checks. Nothing for this smoke to assert.
+record SC-006 skip "n/a: UI retired (see kenhia/klams-view)"
 
 # ---------------------------------------------------------------------- SC-007
-# Cold-checkout build — verify build commands documented in setup.md /
-# viewport/README.md exist; full rebuild is too slow for smoke.
+# Cold-checkout build — verify the build/install docs exist; a full
+# rebuild is too slow for smoke.
 docs_ok=1
-for f in docs/setup.md viewport/README.md; do
+for f in docs/setup.md docs/install.md; do
   [[ -f "$f" ]] || docs_ok=0
 done
 if (( docs_ok )); then
-  record SC-007 pass "build docs present (docs/setup.md, viewport/README.md)"
+  record SC-007 pass "build docs present (docs/setup.md, docs/install.md)"
 else
   record SC-007 fail "missing build documentation"
 fi

@@ -43,7 +43,8 @@ impl Default for PolicyTable {
             user: PolicyEntry {
                 rank: Source::User.trust_rank(),
                 description:
-                    "Direct user input via viewport or CLI; wins all contradictions.".into(),
+                    "Direct user input via an operator tool or CLI; wins all contradictions."
+                        .into(),
             },
             controller: PolicyEntry {
                 rank: Source::Controller.trust_rank(),

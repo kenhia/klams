@@ -18,13 +18,12 @@ what exists; navigate the codebase by the names in the boxes.)*
 
 ```text
                        ┌─────────────────────────────┐
-                       │  klams-viewport             │
-                       │  (Windows / Linux / WSL)    │
-                       │  Tauri 2 + SvelteKit        │
-                       │  desktop UI                 │
+                       │  klams-view (separate repo) │
+                       │  axum binary + SvelteKit    │
+                       │  SPA; holds a read-scoped   │
+                       │  bearer server-side         │
                        └──────────────┬──────────────┘
-                                      │ bearer over the tailnet;
-                                      │ klams-client crate
+                                      │ REST over the tailnet
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │ kubs0 (Linux x86_64)                                                │
@@ -83,41 +82,33 @@ service) — see §2.4.
 | `klams-api` | `axum` router, bearer auth + per-route scope middleware, request validation, error → JSON mapping, REST handlers, `/healthz`, `/metrics`. |
 | `klams-mcp` | The MCP tool surface (rmcp `StreamableHttpService` mounted at `/mcp`), scope gating, tool metrics; the `PublicMemory` projection is re-exported from `klams_core::projection` (moved in 036, #730). Generic over `Store` (`McpState<S: Store>`) since sprint 031 (#645) so MCP and REST share one write layer — enforced by `crates/klams-mcp/tests/no_concrete_store_reachthrough.rs`. Since 036 the read side is shared too: `memory_search`/`memory_related` are shells over `klams_core::retrieval`. |
 | `klams-service` | The binary. Loads `klams.toml`, wires queue + workers + HTTP server + background tasks, owns the tokio runtime. |
-| `klams-client` | Typed HTTP client. Used by the viewport's Tauri backend so the desktop app and any future Rust caller share one API contract. |
+| `klams-client` | Typed HTTP client. Used by `klams-scanner`, `klams-monitor` and `tools/bench`, and by `klams-service`'s integration tests, so every Rust caller shares one API contract. |
 | `klams-scanner` | Non-agentic filesystem writer: walks configured roots, chunks, publishes to `/memory/knowledge/index` (sprint 003; §2.4). |
 | `klams-monitor` | Non-agentic systemd-state writer: posts `Service` events on unit-state edges; optional kpidash `/healthz` reporter (sprint 003/010; §2.4). |
 
-### 1.2 Viewport (`viewport/`)
+### 1.2 The human surface (`klams-view`, out of tree)
 
-Independent Cargo workspace + SvelteKit project. Tauri 2 native shell
-hosts a static SvelteKit bundle; the Rust side exposes a small
-`#[tauri::command]` surface that delegates to `klams-client`. Built on
-Linux via `cargo-xwin` targeting `x86_64-pc-windows-msvc` (`just
-viewport-build`); ships as a single `klams-viewport.exe` with no
-installer. A native Linux build is also supported (`just
-viewport-build-linux`) and runs unchanged under WSL Ubuntu via WSLg
-— useful for headless verification before cutting a Windows release.
+klams ships no UI. The human-facing view is
+[**klams-view**](https://github.com/kenhia/klams-view), a separate
+project: one axum binary that serves a SvelteKit SPA and an `/api/*`
+aggregation layer, calling klams' REST API server-side with a
+**read**-scoped bearer the browser never sees. It computes what the
+klams API doesn't expose directly — activity and metrics history,
+per-author corpus share — and it is reachable from any browser that
+can reach its port, which is also the whole of its security model
+(it has no auth of its own).
 
-Runtime config (`bearer`, `service_url`) lives in
-`%APPDATA%\klams\config\viewport.toml` on Windows and
-`$XDG_CONFIG_HOME/klams/viewport.toml` on Linux; the bearer is
-stored in the platform-native credential store via the `keyring`
-crate (`windows-native` on Windows, `linux-native` / Secret Service
-on Linux). The `--debug` CLI flag opens WebView devtools and enables
-per-poll diagnostic logging to `%TEMP%\klams-viewport.log` (or
-`/tmp/klams-viewport.log` on Linux); otherwise the app runs quietly.
+This replaced the in-repo `viewport` in **sprint 039**. The viewport
+was a Tauri 2 + SvelteKit desktop app in its own Cargo workspace,
+cross-compiled to a Windows `.exe` and hand-shipped to one machine,
+with its bearer in the client's OS keyring. It is recoverable from git
+history if ever needed; nothing in this repo depends on it.
 
-The `custom-protocol` Tauri feature is enabled by default in
-`viewport/src-tauri/Cargo.toml` so that bypass-CLI builds
-(`cargo xwin build --release` via `just viewport-build`) still embed
-the asset-protocol handler; without it the webview can't reach the
-bundled SvelteKit assets and stays at `about:blank`.
-
-Key routes: `/` dashboard (polls `/healthz`), `/activity` (sprint 008),
-`/authors/{id}` drilldown, per-kind detail pages `/facts/{id}`,
-`/events/{id}`, `/knowledge/{id}` (sprint 015), `/dissents` with diff +
-promote/discard (sprint 002), `/preview` context-bundle preview
-(sprint 005).
+One capability did **not** carry over: the viewport was also the
+*curation* surface (`/dissents`, with diff + promote/discard), which is
+why it held `write` + `manage`. klams-view is read-only, so dissent
+resolution is currently a REST operation with no UI — see §2.3 and
+[auth.md](auth.md).
 
 ### 1.3 Stateful dependencies (Docker Compose)
 
@@ -195,9 +186,12 @@ agent  ──MCP memory_add──────▶ klams-mcp ─┤        same va
   Agents can also file *semantic* contradictions directly via the
   `dissent_propose` MCP tool (proposed correction + required `reason`,
   optional `contradicting_memory_id`; lands as `Source::AgentProposal`
-  — sprint 015). Resolution is operator-only: viewport `/dissents` →
+  — sprint 015). Resolution is operator-only:
   `POST /memory/dissents/{id}/{promote|discard}`, gated at `Manage`
-  scope (§3.2).
+  scope (§3.2), listed via `GET /memory/dissents`. Since sprint 039
+  there is no UI for this — the viewport was the curation surface, and
+  its replacement (klams-view) is read-only, so resolution is a REST
+  call until klams-view grows the screen.
 * **Durability** — facts and events are persisted to Postgres on the
   worker before the success counter increments.
 * **Events are append-only** — no update, no soft delete (§2.3 applies
@@ -596,7 +590,7 @@ does the endpoint return `503 + Retry-After`.
   filter excludes soft-deleted and superseded points). A superseded
   seed still resolves — its vector exists; only its *listing* is
   hidden.
-* **`GET /v1/memories` (REST) + viewport `/activity`** — a uniform,
+* **`GET /v1/memories` (REST)** — a uniform,
   globally newest-first `PublicMemory` stream over all three kinds via
   the single `Store::list_memories` method (sprint 008: "two surfaces,
   one query" — `event_search` paging and this route share the store
@@ -605,7 +599,8 @@ does the endpoint return `503 + Retry-After`.
   Soft-deleted rows surface with `state=deleted` and their tombstone
   metadata.
 * **`GET /v1/authors*`** — author list/detail plus
-  `GET /v1/authors/{id}/memories` for the viewport drilldown.
+  `GET /v1/authors/{id}/memories` for per-author drilldown (added in
+  sprint 007 for the viewport; klams-view is the consumer today).
 * **Admin tools (MCP)** — `memory_admin_list_deleted`,
   `memory_admin_restore`, `memory_admin_hard_delete`, and the author
   registry verbs (§3.2), all `Admin` scope.
@@ -699,8 +694,7 @@ All in-process in `klams-service`; no external scheduler.
   maintenance, summarization, per-author MCP activity, search misses,
   oversize/failed writes). Production install lives in ansible-k.
 * **Logs** — structured `tracing`, JSON when `KLAMS_LOG_FORMAT=json`
-  (the systemd unit sets this). The viewport polls `/healthz` on an
-  exponential backoff capped at 60 s.
+  (the systemd unit sets this).
 
 ### 2.10 Document history
 
@@ -713,8 +707,8 @@ The delta-section trail lives in git history and in `sprints/NNN-*/`.
 
 ### 3.1 Public projection
 
-The only shape returned by MCP tools and the viewport author/activity
-REST endpoints is `klams_types::PublicMemory` (sprint 007). The
+The only shape returned by MCP tools and the author/activity REST
+endpoints is `klams_types::PublicMemory` (sprint 007). The
 internal `Fact`, `Event`, and `KnowledgeItem` types are **never**
 serialized across the public boundary; the projection deliberately
 omits `version`, `decay_weight`, `confidence`, `use_count`,
@@ -887,7 +881,7 @@ Rationale in
 
 * End-to-end provisioning steps: [setup.md](setup.md).
 * Day-to-day operator recipes (start/stop, log inspection, backups,
-  restore, viewport install): [usage.md](usage.md).
+  restore): [usage.md](usage.md).
 * Auth model in full: [auth.md](auth.md).
 * Metrics series contract: [deploy/grafana/SERIES.md](../deploy/grafana/SERIES.md).
 * Per-sprint rationale and contracts: `sprints/NNN-*/` (sprints 001–012

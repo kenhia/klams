@@ -176,9 +176,6 @@ commit — it executes the constitution's pre-commit gate
 | `gate`            | Constitution pre-commit gate; what CI runs. |
 | `health`          | `/healthz` curl + `scripts/verify-mvp.sh --light`. |
 | `verify`          | Full `scripts/verify-mvp.sh` (SC-001..SC-009 smoke). |
-| `viewport-build`  | `cargo xwin` Windows cross-build of the viewport. |
-| `viewport-build-linux` | Native Linux build of the viewport (also works in WSL Ubuntu — see [usage.md](usage.md) for the runtime libs). |
-| `viewport-run-linux`   | Build + launch the Linux viewport with `--debug`. |
 
 ## Decay tuning (sprint 002)
 
@@ -530,16 +527,15 @@ Scopes are **flat** — `write` does not imply `read`, `admin` does not
 imply `write`. List every scope a token needs. Full model:
 [auth.md](auth.md).
 
-- **The viewport needs `["read", "write", "manage"]`.** It is a curation
-  surface, not a display: it edits and deletes facts and it is where a
-  human resolves dissents. Earlier revisions of this page recommended a
-  read-only viewport token "so a UI compromise cannot mutate state" —
-  that was only nominally true, because until sprint 025 nothing
-  enforced scopes on those routes, so the read-only token could mutate
-  everything anyway. Now the enforcement is real, and a `["read"]`
-  viewport token gets 403 on its own curation features. Withholding
-  `admin` is what limits the blast radius: no hard deletes, no restores,
-  no author lifecycle.
+- **A UI token needs only `["read"]`.**
+  [klams-view](https://github.com/kenhia/klams-view), the dashboard,
+  reads and nothing else. (This page has said the opposite before: the
+  retired `viewport` app was a *curation* surface and genuinely needed
+  `manage`. Scope the token to what the client does — see the note in
+  [auth.md](auth.md#recommended-token-split) for the full history.)
+- **Curation has no UI right now.** Resolving dissents is a `manage`
+  scoped REST call; keep an operator token for it. See
+  [auth.md](auth.md#resolving-dissents-without-a-ui).
 - One read+write token per agent that produces memories (typically
   one per editor). Add `manage` only for agents you want curating other
   authors' records.
@@ -707,9 +703,9 @@ scopes = ["read", "write"]
 agent_name = "ghcp"            # ← NEW; lowercase, digits, '-' or '_'
 
 [[auth.tokens]]
-token = "viewport-XXXXXXXXXXXXXXXX"
-scopes = ["read", "write", "manage"]   # curation UI; see scope tips above
-agent_name = "viewport"
+token = "klams-view-XXXXXXXXXXXXXXXX"
+scopes = ["read"]                      # the dashboard only reads
+agent_name = "klams-view"
 
 [[auth.tokens]]
 token = "bench-XXXXXXXXXXXXXXXX"

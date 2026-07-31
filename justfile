@@ -6,9 +6,9 @@
 
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 set positional-arguments
-# Machine-local values (KLAMS_TOKEN, KLAMS_MIND_DIR, VIEWPORT_HOST, …)
-# can live in a gitignored `.env` at the repo root instead of the shell
-# environment (sprint 035, #776).
+# Machine-local values (KLAMS_TOKEN, KLAMS_MIND_DIR, …) can live in a
+# gitignored `.env` at the repo root instead of the shell environment
+# (sprint 035, #776).
 set dotenv-load := true
 
 # Default recipe shows the menu so a bare `just` is friendly.
@@ -37,12 +37,6 @@ klams_config  := env_var_or_default('KLAMS_CONFIG', if path_exists('/ai/klams/co
 # confusing uv error instead of "you didn't set the variable". The
 # `eval` recipes check and say what to set.
 klams_mind    := env_var_or_default('KLAMS_MIND_DIR', '')
-
-# Windows host + deploy target used by `viewport-deploy`. VIEWPORT_HOST
-# has no default for the same reason (it used to be one specific
-# machine); the recipe fails loudly when unset.
-viewport_host       := env_var_or_default('VIEWPORT_HOST',       '')
-viewport_deploy_dir := env_var_or_default('VIEWPORT_DEPLOY_DIR', 'c:\tools\bin')
 
 # Bring the Postgres+Qdrant+TEI+reranker stack up in the background.
 compose-up:
@@ -92,31 +86,15 @@ soak *ARGS:
     cargo run --release -p klams-soak -- {{ARGS}}
 
 # Constitution pre-commit gate — fail-fast on fmt, clippy, or tests.
-# Mirrors CI's `service` job exactly. NOTE: the root workspace does NOT
-# include the viewport (viewport/src-tauri is its own Cargo workspace),
-# so this recipe does not gate viewport code — use `gate-viewport` for
-# that, or `gate-all` for both. A change to a `klams_types` shape the
-# viewport consumes can pass `gate` and still break CI's viewport job.
+# Mirrors CI's `service` job exactly. Since sprint 039 the workspace is
+# the whole repo (the viewport, a second Cargo workspace, was retired in
+# favour of kenhia/klams-view), so this is the gate — no `gate-all`.
 # Note: excludes `--all-features` which gates off `scale-fixture` (an intentionally
 # heavy fixture for multi-minute loads); that feature is checked only in targeted tests.
 gate:
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets -- -D warnings
     cargo test --workspace
-
-# Mirrors CI's `viewport` job exactly (svelte + tauri). Needs pnpm and
-# the Tauri Linux deps (libwebkit2gtk-4.1-dev etc.); slower than `gate`,
-# so it's separate rather than folded in. Run it whenever a change
-# touches the viewport or a shared type the viewport serializes.
-gate-viewport:
-    cd viewport && pnpm install --frozen-lockfile && pnpm check && pnpm build
-    cd viewport/src-tauri && cargo fmt --all -- --check
-    cd viewport/src-tauri && cargo clippy --all-targets --features custom-protocol -- -D warnings
-    cd viewport/src-tauri && cargo test --features custom-protocol
-
-# The complete gate — both CI jobs. Use before shipping anything that
-# spans the service and the viewport.
-gate-all: gate gate-viewport
 
 # Sprint 031 (#679/#687/#646) — the docker-gated integration suite,
 # which `gate` deliberately excludes. Until 031 there was no recipe for
@@ -201,64 +179,6 @@ verify:
 smoke:
     @KLAMS_URL={{klams_url}} KLAMS_TOKEN={{klams_token}} \
         bash scripts/verify-mvp.sh --first-run
-
-# Cross-compile the viewport for Windows (requires cargo-xwin).
-# Builds the SvelteKit frontend first — tauri's `generate_context!`
-# panics at compile time if `viewport/build/` doesn't exist.
-viewport-build:
-    cd viewport && pnpm install --frozen-lockfile && pnpm build
-    cd viewport/src-tauri && cargo xwin build --release --target x86_64-pc-windows-msvc
-
-# Cross-compile the viewport and ship klams-viewport.exe to the
-# Windows host (cleo) at VIEWPORT_DEPLOY_DIR. Override VIEWPORT_HOST /
-# VIEWPORT_DEPLOY_DIR to target a different machine/path.
-#
-# History worth keeping: this shipped as a *pull*
-# (`ssh cleo "scp kubs0:... dest"`) because cleo's Win32-OpenSSH 9.5p2
-# had a broken sftp subsystem — `sftp-server.exe` exited immediately on
-# invocation, which killed any `scp`/`sftp` INTO cleo. That is fixed as
-# of 2026-07-27: a plain push now works, 5/5 hash-verified runs at ~2s
-# each, on the same 9.5p2 build. So this is a straight `scp` again, and
-# cleo no longer needs SSH access back to the build host. If pushes
-# ever start failing that way again, the pull is the workaround — see
-# PR #17 for the full diagnostic trail.
-#
-# Close a running viewport on the target first: Windows locks the .exe of a running process.
-viewport-deploy: viewport-build
-    #!/usr/bin/env bash
-    set -euo pipefail
-    exe="viewport/target/x86_64-pc-windows-msvc/release/klams-viewport.exe"
-    host="{{viewport_host}}"
-    if [[ -z "$host" ]]; then
-        echo "viewport-deploy: set VIEWPORT_HOST to the ssh target (user@host) of the Windows machine" >&2
-        exit 1
-    fi
-    dest_dir="$(echo '{{viewport_deploy_dir}}' | tr '\\' '/' | sed 's:/*$::')"
-    dest="$dest_dir/klams-viewport.exe"
-    echo "→ shipping $exe to $host:$dest"
-
-    scp -q "$exe" "$host:$dest"
-
-    # Verify rather than trust the exit code: a partial write that still
-    # exits 0 would otherwise ship a corrupt binary to a machine with no
-    # other check on it.
-    local_hash=$(sha256sum "$exe" | awk '{print $1}')
-    remote_hash=$(ssh "$host" "Get-FileHash '$dest' -Algorithm SHA256 | Select-Object -ExpandProperty Hash" | tr 'A-F' 'a-f' | tr -d '\r')
-    if [ "$local_hash" != "$remote_hash" ]; then
-        echo "✗ hash mismatch (local $local_hash, remote $remote_hash)" >&2
-        exit 1
-    fi
-    echo "→ deployed and hash-verified. Relaunch klams-viewport.exe on the target to pick up the build."
-
-# Native Linux build of the viewport (webkit2gtk).
-# Requires: libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev.
-viewport-build-linux:
-    cd viewport && pnpm install --frozen-lockfile && pnpm build
-    cd viewport/src-tauri && cargo build --release
-
-# Run the natively-built Linux viewport with devtools enabled.
-viewport-run-linux: viewport-build-linux
-    ./viewport/target/release/klams-viewport --debug
 
 # sprint-003 T046 — systemd lifecycle helpers.
 install-systemd:

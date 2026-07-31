@@ -1,6 +1,5 @@
 # Build and dependency artifacts
 node_modules/
-viewport/node_modules/
 target/
 **/target/
 

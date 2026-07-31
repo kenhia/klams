@@ -88,9 +88,9 @@ impl Store for PanicStore {
 fn app() -> axum::Router {
     let (queue, _rx) = MemoryQueue::new(32);
     let auth = AuthState::with_grants(vec![
-        // A genuinely read-only consumer — a dashboard or scrape job.
-        // Note the *viewport* is not one: it edits facts and resolves
-        // dissents, so it carries `manage` (see docs/auth.md).
+        // A genuinely read-only consumer — a dashboard (klams-view) or
+        // a scrape job. Curation tokens are the contrast: resolving a
+        // dissent needs `manage` (see docs/auth.md).
         TokenGrant::new(READ_TOKEN, vec![Scope::Read], Some("dashboard".into())),
         TokenGrant::new(
             WRITE_TOKEN,

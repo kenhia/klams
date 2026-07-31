@@ -210,8 +210,9 @@ instructions alongside the routing blurb:
 After setup, have the agent run `memory_search` with query
 `"klams"` — non-empty scored results confirm the pipe end-to-end.
 A `memory_add` (kind `knowledge`) followed by a `memory_search` for
-its text confirms writes, and the new memory should appear in the
-viewport attributed to the token's `agent_name`.
+its text confirms writes, attributed to the token's `agent_name`
+(visible in `GET /v1/memories`, or in the klams-view dashboard if one
+is installed).
 
 ## Error codes — which ones are worth retrying
 

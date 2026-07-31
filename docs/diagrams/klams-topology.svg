@@ -41,7 +41,7 @@
   </defs>
   <rect x="0" y="0" width="1240" height="940" fill="var(--bg)"/>
   <text x="24" y="34" class="tt">klams — system topology</text>
-  <text x="24" y="52" class="s">as of 0.1.33 (sprint 033) · one box = one real unit/container/crate · see docs/architecture.md</text>
+  <text x="24" y="52" class="s">as of 0.1.39 (sprint 039) · one box = one real unit/container/crate · see docs/architecture.md</text>
 
   <!-- ===================== agents band ===================== -->
   <rect x="24" y="72" width="620" height="96" rx="8" class="agent"/>
@@ -51,10 +51,10 @@
   <text x="40" y="150" class="s">https://kubs0.encke-wahoo.ts.net:7777/mcp (tailscale serve; loopback on kubs0 itself)</text>
 
   <rect x="668" y="72" width="270" height="96" rx="8" class="agent"/>
-  <text x="684" y="96" class="t">klams-viewport</text>
-  <text x="684" y="114" class="s">Tauri 2 + SvelteKit desktop UI</text>
-  <text x="684" y="132" class="s">runs on cleo (Windows)</text>
-  <text x="684" y="150" class="s">REST /memory/context, /v1/* (read scope)</text>
+  <text x="684" y="96" class="t">klams-view · :7778</text>
+  <text x="684" y="114" class="s">axum + SvelteKit SPA (separate repo)</text>
+  <text x="684" y="132" class="s">systemd on kubs0 · browsers connect here</text>
+  <text x="684" y="150" class="s">holds a read-scoped bearer server-side</text>
 
   <rect x="962" y="72" width="254" height="96" rx="8" class="nas"/>
   <text x="978" y="96" class="t">gratch (Unraid NAS)</text>
@@ -155,9 +155,9 @@
   <!-- agents -> service MCP -->
   <path class="fl" d="M334 168 L334 248"/>
   <text x="342" y="192" class="lbl">MCP /mcp (bearer)</text>
-  <!-- viewport -> service REST -->
+  <!-- klams-view -> service REST -->
   <path class="fl" d="M760 168 C700 210 560 200 470 246"/>
-  <text x="600" y="205" class="lbl">REST over tailnet</text>
+  <text x="600" y="205" class="lbl">REST /v1/* (read scope)</text>
   <!-- service -> postgres/qdrant -->
   <path class="fl" d="M300 488 L380 544"/>
   <path class="fl" d="M440 488 L620 544"/>
