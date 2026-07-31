@@ -236,3 +236,48 @@ rest of the docker-gated suite).
 - `just gate` — green.
 - `just test-integration` — **126 passed, 0 failed**, twice.
 - Targeted before/after for both flakes, as above.
+
+## Deployed 2026-07-30
+
+- Version `0.1.40` live on kubs0 (`/healthz` and MCP `server_info`
+  confirm; was `0.1.39`).
+- Rollback target: `0.1.39` via `just rollback` (`.prev` binaries in
+  place for all three).
+- Migrations applied: **none** — this sprint touched no `migrations/`,
+  so rollback is a clean binary swap with no restore needed.
+- Config changes required: **none**.
+- Units settled: `NRestarts=0`, no ERROR/WARN in the log,
+  `klams-service` and `klams-monitor` both active.
+
+### Verified live, beyond `/healthz`
+
+`just verify` — 7 passed, 0 failed.
+
+**#791** — `/healthz` reports `reranker: Ok` alongside all three
+backends, i.e. the instance-id-keyed probe cache works against the real
+reranker and not just against mocks.
+
+**#811** — neither new statement runs until the first decay tick, an
+hour after restart, so waiting for one was not an option. Instead both
+were planned against the **production** schema inside a rolled-back
+transaction (`EXPLAIN` on a uuid matching nothing — no data touched).
+The plans confirm the fix at the planner level rather than by reading
+the SQL:
+
+```
+apply_decay_batch:       LockRows → Sort (Sort Key: f_1.id)
+apply_last_used_bumps:   LockRows → Index Scan using facts_pkey
+```
+
+Both acquire their row locks in `id` ascending order — the sort is
+explicit in one, the primary-key index scan supplies it in the other.
+Same order in both statements, so the cycle that produced `40P01`
+cannot form. This is stronger evidence than the test-stack runs: it is
+the real schema, the real statistics, and the real planner.
+
+**#792** — verified by this very deploy. The merge commit's run on
+`main` was still in flight when this record was pushed; under the old
+configuration that push would have cancelled it, as it did on every ship
+from 033 through 039. The record commit carries the CI-skip marker so it
+starts no competing run, and `cancel-in-progress` is now scoped off
+`main` as a backstop.
