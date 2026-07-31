@@ -679,6 +679,27 @@ pub trait Store: Send + Sync + 'static {
         ))
     }
 
+    /// ANN search over live knowledge carrying **every** tag in `tags`
+    /// (sprint 041, #799).
+    ///
+    /// A default impl rather than a parameter on
+    /// [`Self::search_knowledge`] on purpose: that method has 17
+    /// implementations across the crates and their mocks, and widening
+    /// all of them to carry an argument nearly all would ignore is
+    /// churn without value. Stores that cannot filter server-side
+    /// simply do not implement this, and the caller falls back to
+    /// fetch-then-retain — the same answer, just starved.
+    async fn search_knowledge_tagged(
+        &self,
+        _query_vector: Vec<f32>,
+        _tags: &[String],
+        _top_k: u32,
+    ) -> StoreResult<Vec<(KnowledgeItem, f32)>> {
+        Err(StoreError::Other(
+            "search_knowledge_tagged not implemented".into(),
+        ))
+    }
+
     /// Lexical candidate list (sprint 037, #333): live knowledge whose
     /// text contains every token of `query_text`, ordered by cosine
     /// against `query_vector`.

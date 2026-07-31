@@ -323,6 +323,58 @@ impl QdrantStore {
         Ok(out)
     }
 
+    /// ANN search restricted to points carrying **every** tag in
+    /// `tags` (sprint 041, #799).
+    ///
+    /// The plain [`Self::search_knowledge`] above cannot serve a
+    /// tag-filtered query: it ranks over the whole corpus and the
+    /// caller then discards whatever is untagged, so a tagged memory
+    /// that missed the global page can never be recovered. Measured on
+    /// the live corpus, a `gotcha`-tagged search returned 4, 1 and 0
+    /// hits for three reasonable queries against a 36-point stratum.
+    /// Filtering server-side makes the search run *over* that stratum,
+    /// so the page fills from it.
+    ///
+    /// `tags` is a keyword payload index on the collection, so this is
+    /// an indexed filter rather than a scan — 133 of ~180k points carry
+    /// any tag at all, which is exactly the shape Qdrant's filtered
+    /// search is built for.
+    ///
+    /// Semantics are AND across tags (`must` over one `matches` per
+    /// tag), matching the caller's post-projection `retain`, which
+    /// stays in place as the authority on what the filter means.
+    pub async fn search_knowledge_tagged(
+        &self,
+        query_vector: Vec<f32>,
+        tags: &[String],
+        top_k: u32,
+    ) -> StoreResult<Vec<(KnowledgeItem, f32)>> {
+        let mut must = vec![Condition::is_empty("deleted_at")];
+        must.extend(tags.iter().map(|t| Condition::matches("tags", t.clone())));
+        let filter = Filter {
+            must,
+            ..Default::default()
+        };
+        let resp = self
+            .client
+            .query(
+                QueryPointsBuilder::new(self.collection.clone())
+                    .query(query_vector)
+                    .limit(u64::from(top_k))
+                    .with_payload(true)
+                    .filter(filter),
+            )
+            .await
+            .map_err(|e| StoreError::Backend(format!("qdrant tagged search: {e}")))?;
+        let mut out = Vec::with_capacity(resp.result.len());
+        for sp in resp.result {
+            if let Some(item) = payload_to_item(&sp.payload) {
+                out.push((item, sp.score));
+            }
+        }
+        Ok(out)
+    }
+
     /// ANN search restricted to the curated stratum: agent-authored
     /// knowledge (`source = "AgentProposal"`), live points only
     /// (sprint 029, #644).

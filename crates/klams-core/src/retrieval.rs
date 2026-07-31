@@ -264,9 +264,18 @@ pub async fn search<S: Store>(
 
     let mut degraded = false;
 
+    // Sprint 041 (#799): every arm needs to know about the tag filter —
+    // knowledge pushes it down to Qdrant, facts/events widen their fetch
+    // for it, and the post-projection retain below enforces it.
+    let want_tags: &[String] = params
+        .tags
+        .as_deref()
+        .filter(|v| !v.is_empty())
+        .unwrap_or(&[]);
+
     // ---------- knowledge via Qdrant ANN ----------
     if want_knowledge {
-        match knowledge_candidates(store, &query, top_k, filters).await {
+        match knowledge_candidates(store, &query, top_k, filters, want_tags).await {
             Ok(Some(k)) => {
                 weights = k.weights;
                 curated_order = k.curated_order;
@@ -291,7 +300,13 @@ pub async fn search<S: Store>(
         // budget BEFORE the fact/event split, so an event-heavy query
         // could return zero facts; MCP always capped them separately,
         // and that is the behavior the unified pipeline keeps.
-        let fetch_k = if filters_active(filters) {
+        // Sprint 041 (#799): a tag filter widens this fetch too. Facts
+        // and events keep their tags in Postgres, so they are still
+        // filtered after the fetch and discard exactly the way an
+        // equivalent `filters.tag` does — which already counted here.
+        // The two spellings of "filter by tag" disagreeing about
+        // over-fetch was an accident, not a decision.
+        let fetch_k = if filters_active(filters) || !want_tags.is_empty() {
             top_k.saturating_mul(FILTER_OVERFETCH)
         } else {
             top_k
@@ -314,7 +329,16 @@ pub async fn search<S: Store>(
 
     // Tag filter (post-projection): keep memories whose tag set
     // contains all requested tags.
-    if let Some(want_tags) = params.tags.as_ref().filter(|v| !v.is_empty()) {
+    //
+    // This stays after the sprint-041 pushdown and is deliberately not
+    // conditional on it. It is the single definition of what the filter
+    // MEANS — AND across tags — and it is the only enforcement for
+    // facts and events, whose tags live in Postgres rather than in the
+    // Qdrant payload. For knowledge under pushdown it is a no-op, which
+    // is the correct relationship between a semantic rule and an
+    // optimisation of it: if the two ever disagree, this one wins and
+    // the result is a short page, not a wrong one.
+    if !want_tags.is_empty() {
         scored.retain(|(_, _, mem)| want_tags.iter().all(|t| mem.tags.iter().any(|m| m == t)));
     }
 
@@ -540,6 +564,51 @@ struct KnowledgeCandidates {
     lexical_order: Vec<uuid::Uuid>,
 }
 
+/// The global ANN arm: rank over the tagged subset when a tag filter is
+/// active, otherwise over the whole corpus (sprint 041, #799).
+///
+/// The unfiltered ANN cannot serve a tag-filtered query. Every result it
+/// returns has to carry the tags anyway, so a tagged memory outside its
+/// page is simply lost — and no over-fetch factor recovers it, because
+/// the page is chosen by cosine over 180k points of which ~133 carry any
+/// tag. The measured failure was 0 hits for an ordinary prose query
+/// against a 36-point stratum. Filtering server-side is also strictly
+/// less work than ranking everything to discard nearly all of it.
+///
+/// A store with no server-side tag search falls back to the unfiltered
+/// fetch rather than erroring: the caller's post-projection retain still
+/// enforces what the filter means, so the answer degrades to the old,
+/// starved one instead of failing.
+async fn global_arm<S: Store>(
+    store: &Arc<S>,
+    embedding: &[f32],
+    want_tags: &[String],
+    fetch_k: u32,
+) -> Result<Vec<(KnowledgeItem, f32)>, RetrievalError> {
+    if want_tags.is_empty() {
+        return store
+            .search_knowledge(embedding.to_vec(), fetch_k)
+            .await
+            .map_err(RetrievalError::backend("search_knowledge"));
+    }
+    match store
+        .search_knowledge_tagged(embedding.to_vec(), want_tags, fetch_k)
+        .await
+    {
+        Ok(hits) => Ok(hits),
+        Err(e) => {
+            tracing::debug!(
+                error = %e,
+                "no server-side tag search; falling back to unfiltered ANN + retain"
+            );
+            store
+                .search_knowledge(embedding.to_vec(), fetch_k)
+                .await
+                .map_err(RetrievalError::backend("search_knowledge"))
+        }
+    }
+}
+
 /// The ANN + curated-stratum candidate stage. `Ok(None)` = both lists
 /// empty.
 async fn knowledge_candidates<S: Store>(
@@ -547,6 +616,7 @@ async fn knowledge_candidates<S: Store>(
     query: &str,
     top_k: u32,
     filters: &RetrievalFilters,
+    want_tags: &[String],
 ) -> Result<Option<KnowledgeCandidates>, RetrievalError> {
     // Sprint 024 (#329): route the retrieval sources through the
     // `Store` trait rather than reaching into `.embedder` / `.qdrant`
@@ -566,10 +636,8 @@ async fn knowledge_candidates<S: Store>(
         KNOWLEDGE_OVERFETCH
     };
     let fetch_k = top_k.saturating_mul(overfetch);
-    let hits: Vec<(KnowledgeItem, f32)> = store
-        .search_knowledge(embedding.clone(), fetch_k)
-        .await
-        .map_err(RetrievalError::backend("search_knowledge"))?
+    let raw_hits = global_arm(store, &embedding, want_tags, fetch_k).await?;
+    let hits: Vec<(KnowledgeItem, f32)> = raw_hits
         .into_iter()
         .filter(|(item, _)| knowledge_matches_filters(item, filters))
         .take(top_k.saturating_mul(KNOWLEDGE_OVERFETCH) as usize)
@@ -2355,6 +2423,182 @@ mod tests {
         async fn embed_query(&self, _query: &str) -> klams_store::StoreResult<Vec<f32>> {
             Ok(vec![0.0; 4])
         }
+    }
+
+    /// Store modeling the #799 corpus shape: a global ANN page made
+    /// entirely of untagged bulk, and a tagged subset reachable only by
+    /// filtering server-side. This is the live failure in miniature —
+    /// 133 tagged points in ~180k, so the tagged ones never make the
+    /// global page and the post-projection retain has nothing to keep.
+    ///
+    /// `lie: true` makes the tagged search answer with an *untagged*
+    /// point, so the retain's authority can be tested independently.
+    struct TagStarvedStore {
+        lie: bool,
+    }
+
+    fn tagged_target_id() -> uuid::Uuid {
+        uuid::Uuid::from_u128(0x0197_0000_0000_0000_0000_0000_0000_0799)
+    }
+
+    #[async_trait::async_trait]
+    impl Store for TagStarvedStore {
+        async fn upsert_fact_v2(
+            &self,
+            _req: klams_types::UpsertFact,
+        ) -> klams_store::StoreResult<klams_types::FactWriteOutcome> {
+            Err(StoreError::Other("not implemented".into()))
+        }
+        async fn append_event(
+            &self,
+            _req: klams_types::AppendEvent,
+        ) -> klams_store::StoreResult<Event> {
+            Err(StoreError::Other("not implemented".into()))
+        }
+        async fn index_knowledge(
+            &self,
+            _req: klams_types::IndexKnowledge,
+        ) -> klams_store::StoreResult<KnowledgeItem> {
+            Err(StoreError::Other("not implemented".into()))
+        }
+        async fn list_facts(
+            &self,
+            _q: klams_store::FactQuery,
+        ) -> klams_store::StoreResult<(Vec<Fact>, Option<String>)> {
+            Err(StoreError::Other("not implemented".into()))
+        }
+        async fn list_events(
+            &self,
+            _q: klams_store::EventQuery,
+        ) -> klams_store::StoreResult<(Vec<Event>, Option<String>)> {
+            Err(StoreError::Other("not implemented".into()))
+        }
+        /// The whole global page is untagged — exactly what the old
+        /// fetch-then-retain path had to work with.
+        async fn search_knowledge(
+            &self,
+            _v: Vec<f32>,
+            _k: u32,
+        ) -> klams_store::StoreResult<Vec<(KnowledgeItem, f32)>> {
+            Ok(vec![
+                (lex_item(1, "untagged bulk chunk"), 0.61),
+                (lex_item(2, "another untagged bulk chunk"), 0.58),
+            ])
+        }
+        async fn search_knowledge_tagged(
+            &self,
+            _v: Vec<f32>,
+            tags: &[String],
+            _k: u32,
+        ) -> klams_store::StoreResult<Vec<(KnowledgeItem, f32)>> {
+            assert_eq!(
+                tags,
+                ["gotcha"],
+                "the pipeline must pass the requested tags through"
+            );
+            if self.lie {
+                return Ok(vec![(lex_item(7, "not actually tagged"), 0.9)]);
+            }
+            let mut item = lex_item(0x799, "the tagged memory the global page never held");
+            item.id = tagged_target_id();
+            item.tags = vec!["gotcha".into()];
+            Ok(vec![(item, 0.33)])
+        }
+        async fn search_knowledge_curated(
+            &self,
+            _v: Vec<f32>,
+            _k: u32,
+        ) -> klams_store::StoreResult<Vec<(KnowledgeItem, f32)>> {
+            Ok(vec![])
+        }
+        async fn search_knowledge_lexical(
+            &self,
+            _q: &str,
+            _v: Vec<f32>,
+            _k: u32,
+        ) -> klams_store::StoreResult<Vec<(KnowledgeItem, f32)>> {
+            Ok(vec![])
+        }
+        async fn search_text(
+            &self,
+            _q: &str,
+            _k: u32,
+        ) -> klams_store::StoreResult<(Vec<klams_store::TextHit>, Vec<klams_store::TextHit>)>
+        {
+            Ok((Vec::new(), Vec::new()))
+        }
+        async fn find_knowledge_by_content_hash(
+            &self,
+            _hash: &str,
+        ) -> klams_store::StoreResult<Option<uuid::Uuid>> {
+            Ok(None)
+        }
+        async fn get_knowledge(
+            &self,
+            _id: uuid::Uuid,
+        ) -> klams_store::StoreResult<Option<KnowledgeItem>> {
+            Ok(None)
+        }
+        async fn embed_query(&self, _query: &str) -> klams_store::StoreResult<Vec<f32>> {
+            Ok(vec![0.0; 4])
+        }
+    }
+
+    /// Sprint 041 (#799). Before the pushdown this returned an empty
+    /// page: the global ANN arm produced only untagged bulk and the
+    /// post-projection retain then dropped all of it. The measured live
+    /// equivalent was "deployment surprises to watch out for" +
+    /// `tags: ["gotcha"]` → 0 hits from a 36-point stratum.
+    #[tokio::test]
+    async fn tag_filter_is_pushed_down_so_the_page_is_not_starved() {
+        let store = std::sync::Arc::new(TagStarvedStore { lie: false });
+        let cfg = RetrievalConfig::default();
+        let mut params = SearchParams::query("deployment surprises to watch out for");
+        params.tags = Some(vec!["gotcha".into()]);
+        let out = search(
+            &store,
+            params,
+            &cfg,
+            SourceTolerance::HardFail,
+            None,
+            "test",
+        )
+        .await
+        .expect("search must succeed");
+        assert_eq!(
+            out.hits.len(),
+            1,
+            "the tagged memory must survive; the untagged bulk must not"
+        );
+        assert_eq!(out.hits[0].memory.id, tagged_target_id());
+    }
+
+    /// The retain stays authoritative: a store that answers the tagged
+    /// search with something untagged must not have that leak into the
+    /// page. The pushdown is an optimisation of the filter, never a
+    /// replacement for its meaning — if the two disagree, the result is
+    /// a short page, not a wrong one.
+    #[tokio::test]
+    async fn retain_still_enforces_tags_if_the_pushdown_answers_wrongly() {
+        let store = std::sync::Arc::new(TagStarvedStore { lie: true });
+        let cfg = RetrievalConfig::default();
+        let mut params = SearchParams::query("deployment surprises to watch out for");
+        params.tags = Some(vec!["gotcha".into()]);
+        let out = search(
+            &store,
+            params,
+            &cfg,
+            SourceTolerance::HardFail,
+            None,
+            "test",
+        )
+        .await
+        .expect("search must succeed");
+        assert!(
+            out.hits.is_empty(),
+            "an untagged result must be dropped by the retain even when the \
+             pushdown returned it"
+        );
     }
 
     /// Store whose embedder is down and whose FTS is empty — the

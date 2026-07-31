@@ -569,7 +569,7 @@ pub fn all_tool_descriptors() -> Vec<Tool> {
         ),
         tool_descriptor::<memory_search::MemorySearchArgs>(
             "memory_search",
-            "Search memory across facts, knowledge, and events; returns merged results ranked by relevance.",
+            "Search memory across facts, knowledge, and events; returns merged results ranked by relevance. Pass `tags` to search *within* a tagged subset rather than the whole corpus — e.g. tags:[\"gotcha\"] for the curated gotchas. Multiple tags are AND.",
         ),
         tool_descriptor::<memory_related::MemoryRelatedArgs>(
             "memory_related",

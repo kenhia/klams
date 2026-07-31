@@ -419,14 +419,25 @@ Stages, in execution order:
    narrows which backends are queried. REST's `filters`
    (`RetrievalFilters`: host / type / tag / repo / file / source /
    since / until) apply at the candidate stages on typed fields — MCP
-   passes no filters (its `tags` argument is stage 10).
+   passes no filters (its `tags` argument drives stages 3 and 10).
 2. **Embed the query** — `Store::embed_query` prepends
    `[embeddings] query_prefix` (the Qwen3 instruct prefix; asymmetric
    retrieval models prefix *queries*, never documents — sprint 028,
    #655) and calls TEI. An over-long query classifies as permanent
    `PAYLOAD_TOO_LARGE`, not an outage.
 3. **Global ANN** — `search_knowledge` over-fetched ×2
-   (`KNOWLEDGE_OVERFETCH`): ~44% of the corpus is duplicate cross-host
+   (`KNOWLEDGE_OVERFETCH`). **Under a `tags` filter this becomes
+   `search_knowledge_tagged`** (sprint 041, #799): a Qdrant-side
+   `must` over one keyword `match` per tag, so the ANN ranks *within*
+   the tagged subset. The unfiltered search cannot serve that query —
+   everything it returns has to carry the tags anyway, so a tagged
+   memory outside its page was unreachable at any over-fetch factor.
+   Measured before the fix, `tags: ["gotcha"]` returned 4, 1 and 0 hits
+   for three ordinary queries against a 36-point stratum; the 0 was a
+   prose query, where sprint 037's lexical list cannot mask the gap.
+   A store without server-side tag search falls back to the unfiltered
+   fetch, which degrades to the old starved answer rather than failing.
+   ~44% of the corpus is duplicate cross-host
    content, so a plain top-k fetch routinely collapsed to half a page
    (sprint 026, #641).
 4. **Curated-stratum ANN** (sprint 029, #644/#628) — a second, filtered
@@ -482,7 +493,12 @@ Stages, in execution order:
 9. **Facts + events FTS** — `search_text` (Postgres `ts_rank`), scored
    and ranked per source.
 10. **Tag filter** — post-projection; a hit must carry *all* requested
-   tags.
+   tags. Kept after the stage-3 pushdown, deliberately: it is the one
+   definition of what the filter means, and the only enforcement for
+   facts and events, whose tags live in Postgres rather than the Qdrant
+   payload. For knowledge under pushdown it is a no-op — and if the two
+   ever disagree, this wins, so the result is a short page rather than a
+   wrong one.
 11. **Duplicate collapse** (sprint 026, #641) —
     `klams_core::dedupe::collapse_duplicates` groups knowledge hits by
     `content_hash` and keeps the best-ranked copy, **before** fusion so
