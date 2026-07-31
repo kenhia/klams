@@ -639,7 +639,7 @@ klams memories through a uniform tool interface. The MCP server is
 | Tool | Scope | Purpose |
 |------|-------|---------|
 | `register_author` | `read` | Issue / refresh the caller's author id. Optional since sprint 018: write tools default to the bearer token's bound author; call this only to write as a separate per-session identity. `repo` accepts an absolute path or a bare repo name. |
-| `memory_search` | `read` | Hybrid retrieval over facts + knowledge + events. |
+| `memory_search` | `read` | Hybrid retrieval over facts + knowledge + events. `tags` narrows the search to a tagged subset (AND across tags) — since sprint 041 (#799) that is a Qdrant-side filter, so the ANN ranks within the subset instead of pruning a page chosen from the whole corpus. |
 | `event_search` | `read` | Filter `events` by category / task / time window / payload substring. Pure SQL — never hits the embedder (FR-004). |
 | `memory_related` | `read` | Neighborhood expansion around a known memory id. |
 | `dissent_propose` | `write` | File a dissent against a live canonical fact (sprint 015); lands as a pending `AgentProposal` a human resolves over the dissents endpoints ([auth.md](auth.md#resolving-dissents-without-a-ui)). |

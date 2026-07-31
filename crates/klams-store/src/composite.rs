@@ -493,6 +493,17 @@ impl Store for CompositeStore {
             .await
     }
 
+    async fn search_knowledge_tagged(
+        &self,
+        query_vector: Vec<f32>,
+        tags: &[String],
+        top_k: u32,
+    ) -> StoreResult<Vec<(KnowledgeItem, f32)>> {
+        self.qdrant
+            .search_knowledge_tagged(query_vector, tags, top_k)
+            .await
+    }
+
     async fn search_knowledge_lexical(
         &self,
         query_text: &str,
