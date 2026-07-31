@@ -128,7 +128,6 @@ external APIs, file I/O) — trust internal code.
 |-----------|---------|---------|
 | `sprints/` | Sprint records (`###-<stub>/`) + `planning/` | Yes |
 | `crates/` | Rust workspace crates | Yes |
-| `viewport/` | Tauri + SvelteKit desktop UI (own workspace) | Yes |
 | `tools/` | Non-shipping ops tooling (bench, soak, repair) | Yes |
 | `docs/` | Architecture, setup, usage | Yes |
 | `deploy/` | Compose, systemd units, Grafana/Prometheus | Yes |

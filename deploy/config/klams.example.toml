@@ -44,15 +44,13 @@ port = 7777
 #
 # Full model: docs/auth.md.
 #
-# The viewport is a CURATION surface, not a display: it edits and
-# deletes facts and it is where a human resolves dissents. It needs
-# `manage`. Withholding `admin` is what bounds it — no hard deletes,
-# no restores, no author lifecycle.
+# A dashboard only reads. klams-view (github.com/kenhia/klams-view)
+# holds this token server-side and never exposes it to the browser.
 # [[auth.tokens]]
-# token      = "viewport-XXXXXXXXXXXXXXXXXXXX"
-# scopes     = ["read", "write", "manage"]
-# label      = "viewport"
-# agent_name = "viewport"
+# token      = "klams-view-XXXXXXXXXXXXXXXXXXXX"
+# scopes     = ["read"]
+# label      = "klams-view"
+# agent_name = "klams-view"
 #
 # Agents that curate the corpus get `manage`; daemons that only write
 # their own records (scanner, kmon) deliberately do not — they can

@@ -26,13 +26,18 @@ rank fusion and re-ranked by a cross-encoder. Agents talk
 to it over MCP (Streamable HTTP) with scoped, attributed bearer
 tokens; writes carry their author.
 
-Alongside the service run three companions:
+Alongside the service run two companions:
 
 - **klams-scanner** — walks your configured roots and keeps the
   knowledge corpus in sync with your files.
 - **klams-monitor** — turns systemd unit state edges into events.
-- **viewport** — a Tauri + Svelte desktop app; the human-facing
-  window into (and curation surface for) klams state.
+
+For the human-facing window into klams state, install
+**[klams-view](https://github.com/kenhia/klams-view)** — a separate
+project: one binary serving a web dashboard (activity, per-author
+profiles, a search workbench) that talks to klams with a read-scoped
+token held server-side. It replaced the in-repo `viewport` desktop app
+in sprint 039.
 
 ## Getting started
 

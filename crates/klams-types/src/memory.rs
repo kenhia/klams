@@ -1,7 +1,7 @@
 //! Public memory projection (sprint 007).
 //!
 //! [`PublicMemory`] is the only shape returned by MCP tools and the
-//! viewport REST author endpoints. The internal `Fact` / `Event` /
+//! REST author endpoints. The internal `Fact` / `Event` /
 //! `KnowledgeItem` types carry decay state, trust tiers, and embedding
 //! vectors that are deliberately stripped before crossing the public
 //! boundary — see `data-model.md` §6.

@@ -597,7 +597,7 @@ pub fn all_tool_descriptors() -> Vec<Tool> {
         ),
         tool_descriptor::<dissent_propose::DissentProposeArgs>(
             "dissent_propose",
-            "File a dissent against a live canonical fact (proposed correction + reason). Lands as a pending AgentProposal; a human resolves it in the viewport.",
+            "File a dissent against a live canonical fact (proposed correction + reason). Lands as a pending AgentProposal a human promotes or discards over the dissents endpoints.",
         ),
         tool_descriptor::<memory_admin_restore::MemoryAdminRestoreArgs>(
             "memory_admin_restore",

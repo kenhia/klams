@@ -6,7 +6,8 @@
 //! same-fact trust conflicts, so contradictions found *after* the
 //! fact need this tool. Proposals land as `Source::AgentProposal`
 //! (lowest trust) and resolve only through the human promote/discard
-//! flow in the viewport.
+//! endpoints (`POST /memory/dissents/{id}/{promote,discard}`, `manage`
+//! scope). There is no UI for that as of sprint 039 — see docs/auth.md.
 
 use crate::{
     errors::{self, envelope, ErrorEnvelope},
