@@ -108,6 +108,32 @@ Bumped checkout to `@v7` (`node24`). v5 was the node24 switch; v6 and v7
 are dependency bumps plus a fork-PR tightening for `pull_request_target`
 / `workflow_run`, neither of which this workflow uses.
 
+### D-4 — the CI-skip marker is a live wire in commit messages
+
+Discovered by stepping on it: this sprint's own first commit **got no CI
+run at all** — zero workflow runs, zero check suites, not even a failed
+one. The cause was the commit body, which described the D-1 change and
+therefore contained the marker literally. GitHub does not care that the
+mention was prose; it scans the head commit's message, finds the token,
+and skips the workflow.
+
+So the marker chosen in D-1 has a trap attached, and it is exactly the
+kind that bites the person documenting the feature rather than the
+person using it:
+
+- **Never write the marker literally in a commit message unless you
+  mean it.** Refer to it as "the CI-skip marker" in prose. The same
+  applies to a squash-merge subject/body — `gh pr merge --squash --body`
+  puts that text into a commit on `main`, so a PR body that discusses
+  the marker would skip `main`'s run and defeat the whole point of
+  #792.
+- File contents are safe. Only commit messages are scanned, which is why
+  `deploy-kubs0/SKILL.md` and this document can spell it out.
+
+This is recorded rather than quietly worked around because the failure
+mode is silent: no error, no annotation, no red X — just an absence, on
+a PR whose *entire purpose* was making CI's verdict trustworthy.
+
 ## Outcome
 
 All six done. **Both flakes were root-caused with a deterministic
