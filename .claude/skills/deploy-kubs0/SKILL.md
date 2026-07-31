@@ -207,5 +207,23 @@ file (this overrides `/sprint-ship` Phase 7.3's default filename):
 - Config changes required: <none | what Ken changed in /etc/klams/klams.toml>.
 ```
 
-The feature branch is gone by Phase 7, so commit this to `main` directly:
-`docs(NNN): record the deploy`.
+The feature branch is gone by Phase 7, so commit this to `main` directly.
+**Put `[skip ci]` in the subject** — this is load-bearing, not cosmetic:
+
+```
+docs(NNN): record the deploy [skip ci]
+```
+
+Sprint 040 (#792): without it, this second push to `main` starts a run
+that cancels the merge commit's still-in-flight one, so the commit
+actually carrying the sprint's code never completes a verdict. That
+happened on every ship from at least 033 through 039. It also meant the
+main-only `perf` job (~7 min, cancelled at ~2) only ever measured the
+docs commit, never the code.
+
+GitHub honours `[skip ci]` / `[ci skip]` / `[no ci]` natively on push —
+the workflow is skipped before any job is evaluated, so nothing in
+`ci.yml` needs to know about it. `ci.yml` also scopes
+`cancel-in-progress` to non-`main` refs as a backstop, but that only
+limits the damage; this is what prevents it. A deploy record changes no
+code, so skipping CI for it costs no coverage.

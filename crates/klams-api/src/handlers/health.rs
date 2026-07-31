@@ -109,20 +109,30 @@ async fn probe_tei<S: Store>(store: &S) -> SubsystemStatus {
 /// omitted from the snapshot entirely, so an unconfigured deployment
 /// doesn't dangle a permanently-"down" subsystem).
 ///
-/// The cache is keyed by the reranker's URL: the other probes cache
-/// per-process because a process has exactly one store, but tests spin
-/// up several routers with different mock rerankers in one process, and
-/// a URL-blind cache would serve one server's verdict for another.
-static RERANKER_CACHE: Mutex<Option<(Instant, String, SubsystemStatus)>> = Mutex::new(None);
+/// The cache is keyed by the reranker's *instance id*: the other probes
+/// cache per-process because a process has exactly one store, but tests
+/// spin up several routers with different mock rerankers in one
+/// process, and an identity-blind cache would serve one server's
+/// verdict for another.
+///
+/// Sprint 040 (#791): this used to key on `base_url`, which looks like
+/// an identity and is not. An ephemeral port is recycled as soon as its
+/// listener drops, so a fresh mock server routinely lands on the URL a
+/// just-dropped one had, matches the key, and inherits a verdict about
+/// a server that no longer exists. `TeiReranker::instance_id` is unique
+/// per construction, so a collision is impossible by design rather than
+/// by luck. Production is unaffected either way — one reranker, one id,
+/// one URL — which is exactly why the bug only ever showed up in CI.
+static RERANKER_CACHE: Mutex<Option<(Instant, u64, SubsystemStatus)>> = Mutex::new(None);
 
 async fn probe_reranker(
     reranker: Option<&std::sync::Arc<klams_store::TeiReranker>>,
 ) -> Option<SubsystemStatus> {
     let reranker = reranker?;
-    let url = reranker.base_url().to_string();
+    let id = reranker.instance_id();
     if let Ok(guard) = RERANKER_CACHE.lock() {
-        if let Some((when, cached_url, v)) = guard.as_ref() {
-            if *cached_url == url && when.elapsed() < CACHE_TTL {
+        if let Some((when, cached_id, v)) = guard.as_ref() {
+            if *cached_id == id && when.elapsed() < CACHE_TTL {
                 return Some(v.clone());
             }
         }
@@ -132,7 +142,7 @@ async fn probe_reranker(
         Err(e) => down(e.to_string()),
     };
     if let Ok(mut guard) = RERANKER_CACHE.lock() {
-        *guard = Some((Instant::now(), url, v.clone()));
+        *guard = Some((Instant::now(), id, v.clone()));
     }
     Some(v)
 }

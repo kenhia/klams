@@ -764,6 +764,24 @@ impl PostgresStore {
 
     /// Apply a batch of `(id, decay_weight)` updates in one round
     /// trip via `UPDATE … FROM UNNEST(...)`.
+    ///
+    /// Sprint 040 (#811): the `locked` CTE is load-bearing, not
+    /// decoration. This and [`Self::apply_last_used_bumps`] are the two
+    /// statements that lock many `facts` rows at once, and they run
+    /// concurrently by design — the decay task fires hourly while the
+    /// read path flushes `last_used_at` bumps for whatever searches
+    /// returned. Neither statement pinned its lock order (that was the
+    /// planner's choice, and a `FROM UNNEST` join and an
+    /// `id = ANY(...)` scan do not share a plan shape), so an
+    /// overlapping row set could be locked in opposite orders and
+    /// deadlock — `40P01`, surfacing as a failed decay tick in
+    /// production and as a flaky integration test in CI.
+    ///
+    /// `ORDER BY f.id … FOR UPDATE` takes every row lock up front in one
+    /// agreed order. Both batch writers use the same discipline, so the
+    /// cycle cannot form. Single-row writers are not part of this: one
+    /// statement taking one lock can never be the party that holds A and
+    /// waits for B.
     pub async fn apply_decay_batch(&self, updates: &[(Uuid, f32)]) -> StoreResult<u64> {
         if updates.is_empty() {
             return Ok(0);
@@ -771,10 +789,22 @@ impl PostgresStore {
         let ids: Vec<Uuid> = updates.iter().map(|(i, _)| *i).collect();
         let weights: Vec<f32> = updates.iter().map(|(_, w)| *w).collect();
         let res = sqlx::query(
-            r"UPDATE facts AS f
-              SET decay_weight = u.w
-              FROM UNNEST($1::uuid[], $2::real[]) AS u(id, w)
-              WHERE f.id = u.id",
+            r"WITH target AS (
+                  SELECT u.id, u.w
+                  FROM UNNEST($1::uuid[], $2::real[]) AS u(id, w)
+              ),
+              locked AS (
+                  SELECT f.id
+                  FROM facts f
+                  JOIN target t ON t.id = f.id
+                  ORDER BY f.id
+                  FOR UPDATE
+              )
+              UPDATE facts AS f
+              SET decay_weight = t.w
+              FROM target t
+              WHERE f.id = t.id
+                AND f.id IN (SELECT id FROM locked)",
         )
         .bind(&ids[..])
         .bind(&weights[..])
@@ -786,15 +816,25 @@ impl PostgresStore {
 
     /// Coalesced `last_used_at` bumps. Increments `use_count` per
     /// flushed id (one increment per unique id per flush).
+    ///
+    /// Locks in `id` order — see [`Self::apply_decay_batch`] for why
+    /// both batch writers must agree on one order (sprint 040, #811).
     pub async fn apply_last_used_bumps(&self, ids: &[Uuid]) -> StoreResult<u64> {
         if ids.is_empty() {
             return Ok(0);
         }
         let res = sqlx::query(
-            r"UPDATE facts
+            r"WITH locked AS (
+                  SELECT f.id
+                  FROM facts f
+                  WHERE f.id = ANY($1::uuid[])
+                  ORDER BY f.id
+                  FOR UPDATE
+              )
+              UPDATE facts
               SET last_used_at = now(),
                   use_count = use_count + 1
-              WHERE id = ANY($1::uuid[])",
+              WHERE id IN (SELECT id FROM locked)",
         )
         .bind(ids)
         .execute(&self.pool)

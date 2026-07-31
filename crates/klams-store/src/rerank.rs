@@ -30,12 +30,16 @@ struct RerankResponseItem {
     score: f32,
 }
 
+/// Process-unique instance counter — see [`TeiReranker::instance_id`].
+static NEXT_INSTANCE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// TEI `/rerank` client. Deliberately not part of the [`crate::Store`]
 /// trait: the reranker is an optional retrieval stage, not a storage
 /// backend, and absent config means the stage simply doesn't exist.
 #[derive(Debug, Clone)]
 pub struct TeiReranker {
     base_url: String,
+    instance_id: u64,
     client: reqwest::Client,
 }
 
@@ -43,11 +47,32 @@ impl TeiReranker {
     pub fn new(base_url: impl Into<String>) -> StoreResult<Self> {
         Ok(Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
+            instance_id: NEXT_INSTANCE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             client: reqwest::Client::builder()
                 .timeout(REQUEST_TIMEOUT)
                 .build()
                 .map_err(|e| StoreError::Backend(format!("reranker client build: {e}")))?,
         })
+    }
+
+    /// Identity for health-probe caching, unique per constructed
+    /// instance for the life of the process.
+    ///
+    /// Sprint 040 (#791): the `/healthz` probe cache used to key on
+    /// `base_url`, which is **not** an identity — an ephemeral port is
+    /// recycled the moment its listener drops, so a second reranker can
+    /// hold the same URL as a dead first one and inherit its verdict.
+    /// That made `healthz_reports_a_healthy_reranker_without_affecting_status`
+    /// fail 60/60 under `--test-threads=1` (and intermittently on CI,
+    /// where core count decides whether the two mock-backed tests
+    /// overlap): a server answering 200 was reported `Down` from the
+    /// previous test's cached entry.
+    ///
+    /// Cloning preserves the id on purpose — a clone is the same
+    /// reranker, and `Arc<TeiReranker>` is how it is actually shared.
+    #[must_use]
+    pub fn instance_id(&self) -> u64 {
+        self.instance_id
     }
 
     /// Score `texts` against `query`; returns hits sorted best-first,
@@ -124,8 +149,10 @@ impl TeiReranker {
         Ok(hits)
     }
 
-    /// The configured base URL (sprint 036, #731 — the health probe's
-    /// cache key).
+    /// The configured base URL.
+    ///
+    /// Not an identity — see [`Self::instance_id`], which is what the
+    /// `/healthz` probe cache keys on since sprint 040 (#791).
     #[must_use]
     pub fn base_url(&self) -> &str {
         &self.base_url

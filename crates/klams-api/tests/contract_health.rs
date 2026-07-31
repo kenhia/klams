@@ -177,6 +177,53 @@ async fn a_sick_reranker_is_visible_but_never_fatal() {
     assert_eq!(status, StatusCode::OK, "and must not 503 the endpoint");
 }
 
+// Sprint 040 (#791) regression. The `/healthz` reranker probe caches its
+// verdict for 2 s, and that cache used to be keyed on the reranker's
+// base URL. A URL is not an identity: an ephemeral port is recycled the
+// instant its listener drops, so a fresh mock server routinely binds the
+// URL a just-dropped one had and inherits a verdict about a server that
+// no longer exists.
+//
+// That is what made the two tests above flaky — sequentially (which is
+// what CI's core count sometimes forces) the sick server's port was
+// handed straight to the healthy one, and a server answering 200 was
+// reported `Down`. It reproduced 60/60 under `--test-threads=1`.
+//
+// This test pins the bug without depending on port luck: one server, one
+// URL, two reranker instances, behaviour changed in between. Under the
+// old URL-keyed cache the second probe returns the first's stale `Ok`.
+#[tokio::test]
+async fn reranker_probe_cache_does_not_leak_between_instances_sharing_a_url() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/health"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    let healthy = Arc::new(klams_store::TeiReranker::new(server.uri()).unwrap());
+    let (_, v) = healthz_json(router_with_reranker(Some(healthy))).await;
+    assert_eq!(v["reranker"]["state"], "Ok", "sanity: the 200 server is Ok");
+
+    // Same URL, a different instance, now sick — and well inside the 2 s
+    // cache TTL, which is the whole point.
+    server.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/health"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    let sick = Arc::new(klams_store::TeiReranker::new(server.uri()).unwrap());
+    let (_, v) = healthz_json(router_with_reranker(Some(sick))).await;
+    assert_eq!(
+        v["reranker"]["state"], "Down",
+        "a second instance must be probed on its own merits, not served \
+         the previous instance's cached verdict for the same URL"
+    );
+}
+
 #[tokio::test]
 async fn healthz_is_unauthenticated() {
     let app = router();
