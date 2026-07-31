@@ -100,6 +100,14 @@ build.
    just install-systemd
    ```
 
+   **This step restarts the scanner timer, whether or not you wanted
+   it.** The script ends with `systemctl enable --now
+   klams-scanner.timer`, and `--now` starts a timer that was merely
+   `stop`ped. So a scanner deliberately paused — e.g. to hold the corpus
+   still for a before/after retrieval measurement (sprint 041) — comes
+   back mid-deploy and scans. If a measurement depends on a frozen
+   corpus, re-stop it *after* this step, or do not deploy mid-measure.
+
 2. **Restart — this step is not optional.**
    ```bash
    just restart

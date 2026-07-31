@@ -103,7 +103,7 @@ tag), matching the retain's `all()`.
 
 ## Ship checklist
 
-- [ ] **Restart `klams-scanner.timer`** — stopped at sprint start for
+- [x] **Restart `klams-scanner.timer`** — stopped at sprint start for
       measurement hygiene (the scanner re-indexes this very sprint doc,
       and a doc about tags and gotchas would feed its own query terms
       back into the corpus being measured as *untagged* knowledge). A
@@ -114,3 +114,59 @@ tag), matching the retain's `all()`.
 ## Outcome
 
 _(filled in at ship time)_
+
+## Outcome
+
+Done. The acceptance measurement, same three queries, same corpus,
+before and after — verified byte-identical at both ends (180,889 points,
+133 tagged), so the comparison is against a corpus that did not move:
+
+| Query (`tags: ["gotcha"]`) | Before | After |
+|---|---|---|
+| `"deployment surprises to watch out for"` | **0** | **10** |
+| `"port binding"` | **1** | **10** |
+| `"klams gotcha"` | **4** | **5 of 5** (`top_k: 5`) |
+
+Every returned memory carries the tag. The prose query — the one the
+lexical list could not mask, and the case that made this worth a sprint
+— went from nothing to a full page.
+
+Also shipped: the two tag paths now agree on fetch widening
+(`filters.tag` and `params.tags` both count toward `FILTER_OVERFETCH`);
+the `memory_search` MCP tool description mentions `tags` for the first
+time; `architecture.md` documents stage 3's pushdown and why stage 10's
+retain deliberately stays.
+
+Tests: 128 integration passed / 0 failed (126 before), gate green, CI
+green in 10m35s with zero annotations.
+
+## Deployed 2026-07-30
+
+- Version `0.1.41` live on kubs0 (`/healthz` confirms; was `0.1.40`).
+- Rollback target: `0.1.40` via `just rollback` (`.prev` in place).
+- Migrations applied: **none** — clean binary rollback, no restore.
+- Config changes required: **none**.
+- Verified live: the three-query re-measure above, against the deployed
+  instance over MCP — the same path an agent uses.
+
+### The deploy restarted the scanner by itself
+
+`just install-systemd` ends with `systemctl enable --now
+klams-scanner.timer`, and `--now` **starts a timer that was merely
+stopped**. So the scanner came back mid-deploy and fired a scan between
+the baseline and the re-measure, without being asked.
+
+It did no harm here, and the reason is worth stating rather than
+assuming: the scan writes **untagged** knowledge, and the re-measure is
+a tag-filtered search, so the new points could not enter the result set.
+Confirmed rather than argued — the tagged stratum was 133 points before
+and 133 after, and the collection total was unchanged at 180,889.
+
+The general lesson stands even though this instance was benign:
+**"stop the scanner for the duration of a sprint" does not survive a
+deploy.** Any measurement that needs a frozen corpus has to re-stop it
+after `install-systemd`, or not deploy mid-measurement. Recorded in the
+deploy skill so the next person does not have to rediscover it.
+
+The ship checklist item is therefore satisfied — the timer is `active`
+with its next run scheduled — just not by the route intended.
