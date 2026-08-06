@@ -163,3 +163,61 @@ stub binaries into a fake store and asserts:
 ## Outcome
 
 See [outcome.md](outcome.md).
+
+## Deployed 2026-08-06
+
+- Version `0.1.42` live on kubs0 (`/healthz` confirms; was `0.1.41`,
+  uptime 515177s). All four subsystems `Ok` — postgres, qdrant,
+  embeddings, reranker.
+- **Deployed via `just deploy-from-store`, not `just install-systemd`** —
+  this sprint's own path, dogfooded on its own ship. All three binaries
+  fetched from `artifacts/klams-*/0.1.42/`, checksum-verified, and
+  version-asserted before any was swapped in.
+  - The published 0.1.42 was built from `209ec98` (the branch tip before
+    two docs commits), not from merged `main`. Checked rather than
+    assumed: the only delta is `docs/architecture.md` and
+    `sprints/042-scanner-from-store/outcome.md`, and no crate uses
+    `include_str!`/`include_bytes!`, so nothing markdown reaches a
+    binary. No unit files changed either, which is why skipping
+    `install-systemd` was safe this time.
+  - From sprint 043 the ordering should be the plain one: merge, then
+    `just publish` from `main`, then `just deploy-from-store`.
+- Rollback target: `0.1.41` via `just rollback` (`.prev` in place for all
+  three). Deeper: `just deploy-from-store --version <older>`.
+- Migrations applied: **none** — `migrations/` unchanged this sprint.
+- Config changes required: **none**. `/etc/klams/klams.toml` untouched.
+- The scanner timer was **not** disturbed: `install-systemd`'s
+  `enable --now` (which restarts a paused timer whether you wanted it or
+  not) never ran. Timer was `enabled` + `active` before and after.
+
+### Verified live, beyond `/healthz`
+
+- `just health` — 2 passed, 0 failed.
+- `just verify` — SC-001..SC-009, 7 passed, 0 failed, 3 skipped
+  (perf/restart/retired-UI, as designed).
+- **The defect this sprint fixed, proved on the deployed binaries:**
+  ```
+  $ env -u KLAMS_CONFIG /usr/local/bin/klams-service --version
+  klams-service 0.1.42                                    # exit 0
+  $ env -u KLAMS_CONFIG /usr/local/bin/klams-service.prev --version
+  Error: no config found: tried /ai/klams/config/klams.toml and …  # exit 1
+  ```
+  `-V` matches. The 0.1.41 binary now sitting in `.prev` is the contrast.
+- The deploy log caught the same defect one last time on its way out:
+  `rotating /usr/local/bin/klams-service (unknown) -> ….prev` — the
+  installer could not read the outgoing binary's version, because that
+  binary was the broken one. Every future rotation names both versions.
+- All three deployed binaries report `0.1.42`; all three `.prev` report
+  `0.1.41` (scanner and monitor — service's `.prev` cannot report at all,
+  see above).
+- Forced `systemctl start klams-scanner.service` on the new binary:
+  started, scanned, `Deactivated successfully`, `is-failed` → `inactive`.
+
+### One WARN, pre-existing and not a regression
+
+`klams-monitor` logged one `publish failed … POST /memory/events` at
+`04:46:18.670`. The service did not bind `127.0.0.1:7777` until
+`04:46:18.866` — the monitor saw the *unit* go active ~200ms before the
+listener existed and published into a closed port. Not introduced here:
+the previous restart (0.1.41, 2026-07-30) logged **4** of them; this one
+logged 1. Worth its own WI, not a rollback trigger.
