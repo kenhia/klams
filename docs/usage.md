@@ -206,6 +206,16 @@ common task is a one-liner that matches what CI runs.
 | `health`          | `/healthz` curl + `scripts/verify-mvp.sh --light`. |
 | `verify`          | Full `scripts/verify-mvp.sh` (SC-001..SC-009). |
 | `smoke`           | The first-run smoke `docs/install.md` ends with (sprint 035, #779): full `verify-mvp.sh` with `--first-run` — failure hints on every check and a plain-language verdict. Valid on an empty store. |
+| `publish`         | Sprint 042 (#1012): build all three binaries and publish them to the homelab package store under `artifacts/klams-{service,scanner,monitor}/<version>/`. Refuses a dirty tree, and refuses binaries that disagree about their version. Needs `KLAMS_STORE_HOST`. |
+| `deploy-from-store *ARGS` | Install binaries on **this** host from the store, SHA256-verified. Defaults to all three at `latest`; name specific binaries, or `--version <v>` to roll back. Restarts nothing. Needs `KLAMS_STORE_URL`. |
+| `deploy-remote HOST *BINS` | Same, over ssh, on a host with **no klams checkout and no Rust toolchain** — it fetches the verified installer out of the store. Needs `KLAMS_STORE_URL`. |
+
+The three store recipes are documented in full in
+[setup.md](setup.md#sprint-042--deploying-from-the-package-store),
+including the copy-paste bootstrap for a host you cannot ssh to from
+here. `KLAMS_STORE_URL` and `KLAMS_STORE_HOST` have **no defaults**, for
+the same reason `KLAMS_TOKEN` does not — and because AGENTS.md forbids
+shipping one homelab's hostname as another's default.
 
 `KLAMS_URL` and `KLAMS_TOKEN` are read from the environment — or from
 a gitignored `.env` at the repo root (`set dotenv-load`, sprint 035) —

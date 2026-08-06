@@ -58,12 +58,30 @@ fn resolve_config_path() -> Result<String> {
 #[allow(clippy::too_many_lines)]
 #[tokio::main]
 async fn main() -> Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+
+    // Sprint 042 (#1012) — `--version` answers before anything else can
+    // fail, and specifically before config resolution. It is the fleet's
+    // freshness signal: k-homelab's klams-scanner recipe reads it to
+    // enforce a version floor, and `deploy/install-from-store.sh` reads
+    // it to prove a fetched binary carries the label it was published
+    // under. On a host mid-provision there is no config yet, and a
+    // binary that will not say what it is until one exists cannot
+    // participate in either check.
+    //
+    // Hand-rolled to match clap's `<name> <version>` output (and its
+    // `-V` short form), because klams-scanner and klams-monitor get this
+    // from clap and every reader `awk`s the last field.
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     let config_path = resolve_config_path()?;
 
     // Sprint 006 (T013) — `--validate-backup-config` early-out.
     // Loads the config, prints a single line, exits 0/2 without
     // starting the service or contacting any backend.
-    let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--validate-backup-config") {
         validate_backup_config_cli(&config_path);
     }

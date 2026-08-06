@@ -849,9 +849,9 @@ The split between **systemd-managed klams binaries** and
 
 * The service is a single Rust binary with no native deps beyond libssl
   — built on the host it runs on (`cargo build --release` +
-  `install-systemd.sh`), easy to restart. It connects to its
-  dependencies over the published loopback ports, so it needs no place
-  on `klams-net`.
+  `install-systemd.sh`) or fetched from the package store (§4.3), and
+  easy to restart either way. It connects to its dependencies over the
+  published loopback ports, so it needs no place on `klams-net`.
 * Postgres, Qdrant and the two TEI containers have non-trivial
   image/version management that Compose handles via `compose.env` pins.
 * All three units share a hardening profile (`NoNewPrivileges`,
@@ -892,6 +892,39 @@ Rationale in
   the service's `postgres.url`.
 * TLS is terminated by `tailscale serve`; the service itself speaks
   plain HTTP on loopback.
+
+### 4.3 Binary distribution (sprint 042)
+
+The deploy asset is the **binary**, not the source. `just publish`
+builds all three and publishes each under its own name in the homelab
+package store (`artifacts/klams-{service,scanner,monitor}/<version>/`,
+with `SHA256SUMS` and a `latest` pointer); hosts install with
+`just deploy-from-store`, which fetches, verifies the checksum, and
+asserts the fetched binary reports the version it was published under.
+
+This exists because the scanner is a **multi-host** component (§2.4)
+while the repo lives on one host. Requiring a checkout and a Rust
+toolchain wherever a scanner runs is how one host sat 13 releases
+behind for months — visible only because k-homelab asserts a version
+floor against `klams-scanner --version`. A store fetch needs neither.
+
+Two boundaries hold the design together:
+
+* **`deploy/install-from-store.sh` installs binaries only** — never
+  unit files, never config, never a restart. Remote scanner hosts
+  legitimately diverge in their unit files (a different `User=`, and no
+  `After=klams-service.service` where there is no local service), so an
+  installer that shipped units would overwrite that on every deploy.
+  Units remain `install-systemd.sh`'s job, on hosts that have a
+  checkout.
+* **Verification is two-layer.** The checksum proves the transfer; the
+  `--version` assertion proves the *label*. A mislabelled publish is
+  invisible to SHA256 and would silently defeat the only drift alarm
+  the fleet has.
+
+`<bin>.prev` still backs `just rollback` as the fast, one-slot path.
+The store is the deep one: any published version is retrievable by
+number.
 
 ## 5. Where to look next
 
