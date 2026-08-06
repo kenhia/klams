@@ -25,6 +25,21 @@ klams_url     := env_var_or_default('KLAMS_URL',   'http://127.0.0.1:7777')
 klams_token   := env_var_or_default('KLAMS_TOKEN', '')
 compose_file  := 'deploy/docker-compose.yml'
 
+# Sprint 042 (#1012) — the homelab package store klams releases go to
+# and come from (k-homelab docs/deploying.md).
+#
+#   KLAMS_STORE_URL   base URL the store is *read* from, e.g.
+#                     https://<host>:4880 — used by deploys, on every host.
+#   KLAMS_STORE_HOST  ssh host that *runs* `kpkg` — used by `publish` only.
+#
+# Neither has a default, deliberately (the #682 / #776 pattern, and
+# AGENTS.md's portability line: no Ken-shaped hostname ships as a repo
+# default). A guessed hostname fails as a confusing curl or ssh error
+# instead of "you didn't set the variable". Put yours in the gitignored
+# `.env`; the recipes below check and say what to set.
+klams_store      := env_var_or_default('KLAMS_STORE_URL',  '')
+klams_store_host := env_var_or_default('KLAMS_STORE_HOST', '')
+
 # Config path, resolved the same way klams-service does (sprint 034,
 # #775): $KLAMS_CONFIG wins; else the storage-root default if present;
 # else $XDG_CONFIG_HOME/klams/klams.toml (~/.config fallback).
@@ -188,6 +203,126 @@ install-systemd:
 # Restart the long-running systemd services (service + monitor).
 restart:
     sudo systemctl restart klams-service klams-monitor
+
+# Reload klams-service (get latest auth)
+reload:
+    sudo systemctl reload klams-service
+
+# Sprint 042 (#1012) — publish this version's release binaries to the
+# homelab package store. See k-homelab docs/deploying.md for the
+# doctrine; the sprint record for why the asset is the binary.
+#
+# Publishes one artifact name per binary, so a host fetches exactly what
+# it runs and kai's klams-scanner `latest` does not move because the
+# service was re-released. install-from-store.sh rides along inside each
+# artifact directory — that is what lets a host with no checkout
+# bootstrap from a verified fetch instead of `curl | bash`.
+#
+# The store refuses to overwrite a published version: bump the workspace
+# version (the sprint number, per AGENTS.md) before republishing.
+publish:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ -z '{{klams_store_host}}' ]]; then
+        echo 'publish: set KLAMS_STORE_HOST to the ssh host running kpkg (see k-homelab docs/deploying.md)' >&2
+        exit 1
+    fi
+    # Clean-tree only, same rule as the deploy: a published version must
+    # correspond to a commit, or /healthz reports a version that names
+    # no source. Untracked files count — the build may pick them up.
+    if [[ -n "$(git status --porcelain)" ]]; then
+        echo 'publish: working tree is dirty — commit first (a published version must name a commit)' >&2
+        git status --short >&2
+        exit 1
+    fi
+    cargo build --release --bin klams-service --bin klams-scanner --bin klams-monitor
+    suffix="$(uname -m)-$(uname -s | tr '[:upper:]' '[:lower:]')"
+    # Take the version from the binaries rather than Cargo.toml, and
+    # require all three to agree. install-from-store.sh asserts the
+    # label on the way in; this is the same assertion on the way out.
+    version=""
+    for bin in klams-service klams-scanner klams-monitor; do
+        v=$(./target/release/"$bin" --version | awk '{print $NF}')
+        if [[ -z "$version" ]]; then version="$v"
+        elif [[ "$v" != "$version" ]]; then
+            echo "publish: $bin reports $v but the others report $version" >&2
+            exit 1
+        fi
+    done
+    echo "==> publishing klams $version ($suffix) to {{klams_store_host}}"
+    stage=$(ssh -n '{{klams_store_host}}' mktemp -d)
+    trap 'ssh -n "{{klams_store_host}}" rm -rf "$stage"' EXIT
+    scp -q deploy/install-from-store.sh "{{klams_store_host}}:$stage/"
+    for bin in klams-service klams-scanner klams-monitor; do
+        scp -q "./target/release/$bin" "{{klams_store_host}}:$stage/$bin-$suffix"
+        ssh -n '{{klams_store_host}}' \
+            "kpkg artifact $bin $version $stage/$bin-$suffix $stage/install-from-store.sh"
+    done
+    echo "==> published klams $version"
+
+# Sprint 042 (#1012) — install klams binaries on THIS host from the
+# package store, checksum-verified. Names default to all three; pass
+# specific ones (e.g. `just deploy-from-store klams-scanner`) on a host
+# that only runs some. Add `--version <v>` to roll back to a published
+# release. Restarts nothing — the script prints what to activate.
+deploy-from-store *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ -z '{{klams_store}}' ]]; then
+        echo 'deploy-from-store: set KLAMS_STORE_URL to the package store base URL (e.g. https://<host>:4880)' >&2
+        exit 1
+    fi
+    args=({{ARGS}})
+    # Default to all three, but only when the caller named none: bare
+    # flags must not suppress the default, and a flag's *value*
+    # (`--version 0.1.42`) is not a binary name.
+    has_bin=0; skip=0
+    for a in ${args[@]+"${args[@]}"}; do
+        if [[ $skip -eq 1 ]]; then skip=0; continue; fi
+        case "$a" in
+            --store|--version) skip=1 ;;
+            -*)                ;;
+            *)                 has_bin=1 ;;
+        esac
+    done
+    if [[ $has_bin -eq 0 ]]; then
+        args+=(klams-service klams-scanner klams-monitor)
+    fi
+    # A dry run writes nothing, so it should not cost a sudo prompt.
+    sudo=(sudo)
+    for a in "${args[@]}"; do [[ "$a" == --dry-run ]] && sudo=(); done
+    "${sudo[@]}" env KLAMS_STORE_URL='{{klams_store}}' \
+        bash deploy/install-from-store.sh "${args[@]}"
+
+# Sprint 042 (#1012) — install klams binaries on ANOTHER host from the
+# package store. The host needs no klams checkout and no Rust toolchain:
+# it fetches the installer out of the store, verifies it against the
+# same SHA256SUMS as the binary, and runs it.
+#
+#   just deploy-remote kai klams-scanner
+#
+# This is the documented bootstrap in docs/setup.md, run over ssh — the
+# copy-paste form works identically from a shell on the target host.
+deploy-remote host *BINS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ -z '{{klams_store}}' ]]; then
+        echo 'deploy-remote: set KLAMS_STORE_URL to the package store base URL (e.g. https://<host>:4880)' >&2
+        exit 1
+    fi
+    bins='{{BINS}}'
+    if [[ -z "$bins" ]]; then
+        echo 'deploy-remote: name at least one binary, e.g. `just deploy-remote kai klams-scanner`' >&2
+        exit 1
+    fi
+    first=${bins%% *}
+    ssh -n '{{host}}' "set -euo pipefail
+        base='{{klams_store}}/artifacts/$first'
+        v=\$(curl -fsS \"\$base/latest\")
+        d=\$(mktemp -d); trap 'rm -rf \"\$d\"' EXIT; cd \"\$d\"
+        curl -fsSO \"\$base/\$v/install-from-store.sh\"
+        curl -fsS \"\$base/\$v/SHA256SUMS\" | grep install-from-store.sh | sha256sum -c --status -
+        sudo KLAMS_STORE_URL='{{klams_store}}' bash install-from-store.sh --version \"\$v\" $bins"
 
 scanner-once:
     @KLAMS_URL={{klams_url}} KLAMS_TOKEN={{klams_token}} \

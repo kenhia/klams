@@ -254,6 +254,12 @@ a few days. Recall value shows up with corpus, not with installation.
 
 Run `main`. The version's PATCH segment is a sprint number, not a
 compatibility promise; migrations are forward-only and run at start.
+
+If you run scanners on more than one machine, publishing releases to a
+package store and installing from it beats keeping a checkout on each —
+see [setup.md](setup.md#sprint-042--deploying-from-the-package-store).
+It is optional: nothing in klams requires a store, and a single-host
+install can keep using `just install-systemd`.
 Occasionally a sprint changes the corpus shape (a new embedding model
 or collection) — the upgrade path for those is re-running the scanner,
 which is cheap. See "Support & posture" in the [README](../README.md).

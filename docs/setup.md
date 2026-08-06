@@ -176,6 +176,9 @@ commit — it executes the constitution's pre-commit gate
 | `gate`            | Constitution pre-commit gate; what CI runs. |
 | `health`          | `/healthz` curl + `scripts/verify-mvp.sh --light`. |
 | `verify`          | Full `scripts/verify-mvp.sh` (SC-001..SC-009 smoke). |
+| `publish`         | Build + publish this version's binaries to the package store (sprint 042). |
+| `deploy-from-store` | Install binaries on **this** host from the store, checksum-verified. |
+| `deploy-remote HOST BINS…` | Same, on another host — no checkout needed there. |
 
 ## Decay tuning (sprint 002)
 
@@ -392,8 +395,14 @@ journalctl -u klams-monitor -f
 ### Rollback
 
 `just rollback` swaps every `/usr/local/bin/<bin>` with its `.prev`
-copy (created by `install-systemd.sh` on the previous upgrade) and
-restarts the long-running units. No-op when no `.prev` exists.
+copy (created by `install-systemd.sh` — or, since sprint 042, by
+`install-from-store.sh` — on the previous upgrade) and restarts the
+long-running units. No-op when no `.prev` exists.
+
+`.prev` is one slot deep and only holds the build this host last
+replaced. To go back further, or to reach a build this host never ran,
+fetch it from the package store by version:
+`just deploy-from-store --version 0.1.41`.
 
 ## Sprint 006 — Restore from snapshot
 
@@ -817,9 +826,11 @@ the host for a fully-qualified `(host, source_path)`.
    `sudo systemctl reload klams-service` (hot-reload, no restart — sprint
    018). Keep it distinct from kubs0's own scanner token so writes stay
    attributable per host.
-2. **Binary:** install the same-version `klams-scanner` on kai (it's the
-   same Linux release binary; version must match the service it writes
-   to).
+2. **Binary:** install the same-version `klams-scanner` on the second
+   host (it's the same Linux release binary; version must match the
+   service it writes to). Since sprint 042 this is a store fetch and
+   needs no checkout there — see [deploying from the package
+   store](#sprint-042--deploying-from-the-package-store) below.
 3. **Config:** `/etc/klams/scanner.toml` with `url = "http://kubs0:7777"`,
    the `kai-scanner` token, and kai's absolute roots (at least
    `/home/ken/src`). Leave `host` unset — the scanner reports kai's
@@ -838,3 +849,129 @@ central mount-and-scan topology (for hosts that can't run the scanner,
 e.g. Windows/cleo) is a separate future option (klams #406) with a
 `NOT_MOUNTED` sentinel guard against a mount outage triggering a mass
 prune.
+
+## Sprint 042 — deploying from the package store
+
+Until sprint 042 the only way to update a klams binary was to build it
+from a checkout on the host that runs it. That works on the klams host
+and nowhere else: a second scanner host needs the repo, a Rust
+toolchain, and someone to remember it exists. In practice nobody did —
+one such host sat 13 releases behind for months, and the drift was only
+visible because k-homelab's `recipes/klams-scanner` asserts a version
+floor.
+
+The fix is the homelab package store (k-homelab `docs/deploying.md`):
+releases are published as versioned binaries, and hosts install by
+fetching and verifying them.
+
+### Configuration
+
+Two variables, **neither with a default** — a repo default would bake
+one homelab's hostname into everyone else's install:
+
+| Variable | Who needs it | What it is |
+|---|---|---|
+| `KLAMS_STORE_URL` | every host that deploys | store base URL, e.g. `https://<host>:4880` |
+| `KLAMS_STORE_HOST` | the publishing host only | ssh host that runs `kpkg` |
+
+Put them in the gitignored `.env` at the repo root (`set dotenv-load`),
+or export them. Unset, the recipes stop and name the variable.
+
+### Publishing a release
+
+```sh
+just publish
+```
+
+Builds `klams-service`, `klams-scanner` and `klams-monitor` in release
+mode and publishes each under its own artifact name:
+
+```
+artifacts/klams-scanner/0.1.42/klams-scanner-x86_64-linux
+artifacts/klams-scanner/0.1.42/install-from-store.sh
+artifacts/klams-scanner/0.1.42/SHA256SUMS
+artifacts/klams-scanner/latest                    → "0.1.42"
+```
+
+One artifact name per binary, so a host that only runs the scanner
+fetches only the scanner — and its `latest` pointer doesn't move
+because the service was re-released.
+
+Two things `publish` refuses to do:
+
+- **Publish from a dirty tree.** A published version must correspond to
+  a commit, or `/healthz` reports a version that names no source.
+- **Publish binaries that disagree.** All three must report the same
+  `--version`, which is the invariant `install-from-store.sh` checks
+  again on the way in.
+
+Published versions are **immutable** — `kpkg` refuses to overwrite one.
+Bump `[workspace.package] version` (the sprint number, per AGENTS.md)
+before republishing.
+
+### Installing on the klams host
+
+```sh
+just deploy-from-store                    # all three, at `latest`
+just deploy-from-store klams-scanner      # just one
+just deploy-from-store --version 0.1.41   # roll back to a published release
+```
+
+This replaces the build half of `just install-systemd`, not the whole
+thing: unit files still come from the repo. Run `install-systemd` when
+a unit file changes, `deploy-from-store` when only the code has.
+
+### Installing on a host with no checkout
+
+This is the case that had no answer before. The host needs `curl`,
+`sha256sum` and tailnet reach to the store — no repo, no cargo:
+
+```sh
+base="$KLAMS_STORE_URL/artifacts/klams-scanner"
+v=$(curl -fsS "$base/latest")
+cd "$(mktemp -d)"
+curl -fsSO "$base/$v/install-from-store.sh"
+curl -fsS "$base/$v/SHA256SUMS" | grep install-from-store.sh | sha256sum -c -
+sudo env KLAMS_STORE_URL="$KLAMS_STORE_URL" \
+    bash install-from-store.sh --version "$v" klams-scanner
+```
+
+The installer is published *inside* each artifact directory and covered
+by the same `SHA256SUMS` as the binary, which is what makes that a
+verified fetch rather than a `curl | bash`.
+
+From the klams host, the same thing over ssh:
+
+```sh
+just deploy-remote <host> klams-scanner
+```
+
+### What the installer will not touch
+
+`install-from-store.sh` installs **binaries only**. It does not write
+unit files, does not read or write config, and does not restart
+anything — it prints what to activate and stops.
+
+The unit-file exclusion is load-bearing, not fastidiousness. A remote
+scanner host's `klams-scanner.service` legitimately diverges from the
+repo's copy (a different `User=`, and no `After=klams-service.service`
+when there is no local service). An installer that shipped units would
+silently overwrite that on every deploy.
+
+Not restarting is the same idea: installing and activating are separate
+decisions. A timer-driven scanner picks the new binary up on its next
+tick with no restart at all.
+
+### What it verifies
+
+1. **SHA256** against the published `SHA256SUMS` — proves the transfer.
+2. **`--version` of the fetched binary equals the version it was
+   published under** — proves the *label*. A checksum cannot catch a
+   mislabelled publish, and the label is exactly what k-homelab's
+   version floor reads.
+3. **Every binary passes before any is installed.** A failure on the
+   third one must not leave the first two already swapped in.
+
+Each install still rotates the outgoing binary to `<bin>.prev`, so
+`just rollback` remains the fast path. The store is the deep one:
+`--version <older>` fetches any release still published.
