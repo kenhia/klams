@@ -239,17 +239,149 @@ deployed process:
   `memory_search` through this session's own MCP client succeeded against
   the restarted server.
 
-### Still outstanding: the live gate
+### Live gate — from cleo, 2026-08-13: PASS
 
-**The one thing that cannot be self-certified.** Everything above was
-driven by raw HTTP or by an MCP session that negotiated before the
-restart. The gate this sprint exists to pass is a **fresh Claude Code
-≥2.1.227 session** enumerating all klams tools *and* completing a real
-`memory_search` — because the failure mode is a client-side validation
-drop, invisible from the server. Ken runs that by starting a new session.
+**Passed over two passes, and for the first time in this program the
+negotiated revision was confirmed from the server side rather than
+inferred.** Pass 1 ran on a session that predated the restart and proved
+the *call* path at `2026-07-28`; pass 2, on a genuinely fresh session,
+covered the `tools/list` validation that pass 1 could not. Slice 3 closes.
 
-If it fails, the symptom is klams connected with **zero tools**, and the
-rollback is `just rollback` (no migration to undo).
+**Enumeration — 10 tools.** The full scope-filtered catalog for this
+bearer token (`dissent_propose`, `event_search`, `memory_add`,
+`memory_append_event`, `memory_delete`, `memory_related`, `memory_search`,
+`memory_supersede`, `memory_update`, `register_author`) — no
+`memory_admin_*`, correctly, since this is not an Admin token. Identical to
+the pre-deploy catalog for the same token, which is the comparison that
+means anything for a per-caller `tools/list`. Enumerated with a cap of 20,
+so 10 is the count and not a truncation. No zero-tools signature.
+
+**Calls.**
+
+| Class | Call | Result |
+|---|---|---|
+| search | `memory_search` (both slice notes) | ok, 3 hits, full payloads |
+| tag-filtered search | `memory_search tags:["gotcha"]` | ok, 2 hits |
+| **error envelope** | `memory_update` on a nonexistent id | `NOT_FOUND`, `isError: true`, message intact |
+
+No durable write was made. The read and error paths exercise the same
+dispatch and framing, and klams writes are not cheaply reversible — events
+are append-only and a knowledge write is a real corpus row. Slice 2 already
+proved the write path under the identical rmcp 3.1.2 pattern.
+
+#### The part worth keeping: the gate verified its own premise
+
+This session connected **hours before** the 10:00 restart, so a green
+result was ambiguous on its face — a client that re-initialises after a
+restart can carry its old negotiated version forward, and this program has
+twice been burned by a check that answered a neighbouring question. The
+client cannot introspect its own negotiated revision, so the ambiguity was
+resolved from the server: one correlation probe, then the journal.
+
+```
+17:34:54.366054Z  Service initialized as server
+                  protocol_version: ProtocolVersion("2026-07-28")
+17:34:54.366213Z  mcp.tool dispatch  tool: memory_search
+```
+
+No `create new session`, no `InitializedNotification` — the inline
+lifecycle, one service instance per request, which is exactly what
+SEP-2567 prescribes and what the sprint verified live for `initialize`.
+The `client_info` on those spans reads `rmcp/3.1.2` rather than
+`claude-code`: under the inline lifecycle there is no real `initialize`
+carrying client identity, so rmcp fills its own — the client-driven field
+is the `_meta` protocol version, and it reads `2026-07-28`.
+
+For contrast the same journal shows genuine legacy sessions from a
+`claude-code/2.1.229` client at `2025-11-25`, with session ids and
+initialized-notifications. **Both lifecycles are serving traffic on this
+binary right now**, which is the clean-downgrade requirement demonstrated
+by live traffic rather than by a probe.
+
+**Method worth reusing:** when a live gate's validity depends on when the
+client connected, the client cannot answer it — issue one distinctively
+timed call and read the negotiated version off the server's own log. It is
+two commands and it converts "probably fresh" into a fact.
+
+#### Pass 2 — the retest on a genuinely fresh session
+
+Pass 1 left one gap, narrow but exactly on target. It proved the *calls*
+ran at `2026-07-28`; it could not show that this client had ever validated
+a **`2026-07-28` `tools/list`** — and that catalog fetch, not the calls, is
+the operation #1212 breaks. The pass-1 catalog was most likely fetched from
+the pre-deploy binary, and `ttlMs: 3600000` explicitly invites a client to
+keep it for an hour. The journal could not settle it either: klams logs
+`mcp.tool dispatch` but never `tools/list`, so a zero count there is a
+logging gap, not evidence.
+
+Ken restarted the client. The entire klams traffic from app start:
+
+```
+17:58:25.981  Service initialized as server   2026-07-28
+17:58:25.999  Service initialized as server   2026-07-28
+17:59:17.342  mcp.tool dispatch  memory_search  2026-07-28
+```
+
+Two spans 18 ms apart at startup — `initialize` then the catalog fetch —
+then the probe call. No `create new session`, no `client initialized`, no
+`2025-11-25` anywhere: the inline lifecycle throughout. All 10 tools
+registered.
+
+**The conclusion does not depend on identifying which span is which**,
+which matters because klams does not log the method. The fresh client
+demonstrably holds the full 10-tool catalog; the only klams traffic since
+app start is those spans; therefore whichever request delivered the catalog
+ran at `2026-07-28`, and the client validated it and registered every tool.
+That is the #1212 operation, directly covered.
+
+Also worth noting for the downgrade requirement: pass 1's journal showed a
+real `claude-code/2.1.229` legacy session at `2025-11-25`, with a session
+id and an initialized-notification, served by this same binary. Pass 2
+shows the same client on the inline `2026-07-28` path once reconnected.
+Both revisions demonstrated by live traffic, on one build.
+
+#### What this does not settle
+
+It does not read `ttlMs`/`cacheScope` off the wire — the raw suite owns
+that, and the `private` scoping decision in particular is invisible from a
+client, which is the one part of this sprint no live gate can ever check.
+Raw tests prove the bytes; the live gate proves acceptance.
+
+Nor does it prove the catalog is *correct* for other token scopes: this
+gate exercised one bearer token's 10-tool view. An Admin token's
+`memory_admin_*` surface is covered by the wire suite, not by this.
+
+### The qdrant snapshot shrink: resolved — compaction, not loss
+
+Looked into, since the preflight note below asked for it. **No data loss;
+no action needed.**
+
+| Evidence | Reading |
+|---|---|
+| `points_count` **186,399**, status `green` | Live corpus intact — and *up* 2 from the 186,397 recorded below, so it is growing |
+| `num_vectors` **197,535** vs points 186,399 | **11,136 dead vectors** still present, awaiting vacuum |
+| vectors are **1024-dim**, `on_disk: true` | 11,136 × 1024 × 4 B = **45.6 MB** |
+| observed shrink | **46.7 MB** (1,286,256,128 → 1,239,520,768) |
+| `deleted_threshold: 0.2`, `vacuum_min_vector_number: 1000` | A segment is vacuumed once >20% of its vectors are deleted — the 8→7 merge |
+
+The arithmetic lands within **2.4%** of the observed drop, with HNSW link
+overhead and payload comfortably covering the remainder. A purge of this
+many dead vectors is precisely the size of the shrink that was seen, and
+11k more are queued behind it — so this is steady-state churn from
+re-scans and supersedes, not a one-off.
+
+Postgres genuinely cannot corroborate, and now for a sharper reason than
+"it only holds facts": **there is no knowledge table at all.** Its tables
+are `search_sample`, `search_miss`, `facts`, `authors`, `events`,
+`dissents`, `summaries`. The knowledge corpus lives **only** in qdrant, so
+the nightly qdrant snapshot is its sole backup — worth knowing
+independently of this sprint.
+
+**Recommendation for the deploy skill:** its snapshot-size check will keep
+firing on qdrant, because vacuum churn makes a shrinking snapshot the
+normal case rather than the alarming one. Gate it on `points_count`
+(monotonic except for real deletes) instead of snapshot bytes; the byte
+check cries wolf on exactly the healthy behaviour.
 
 ### Preflight deviations, recorded
 
@@ -266,4 +398,5 @@ rollback is `just rollback` (no migration to undo).
   segments where the previous snapshot spanned 8, and the scanner logs
   routine clear-and-reindex churn; compaction genuinely shrinks snapshots.
   Postgres cannot corroborate — it holds only 55 facts / 29 events, while
-  the 186,397-point corpus lives in qdrant. **Worth a separate look.**
+  the 186,397-point corpus lives in qdrant. **Looked at during the live-gate
+  pass — resolved above as vacuum/compaction, quantitatively. Not loss.**
