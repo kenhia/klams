@@ -56,11 +56,17 @@ pub fn router(state: McpState, allowed_hosts: Vec<String>) -> Router {
 /// Rewrite session-termination DELETE responses from 202 Accepted to
 /// 204 No Content (sprint 018, WI #305).
 ///
-/// rmcp 1.7's `StreamableHttpService::handle_delete` hardcodes 202,
-/// but the mcp python-sdk treats only 200/204 as successful
-/// termination and logs `Session termination failed: 202` on every
-/// session close. Only a DELETE that rmcp accepted (202) is rewritten;
-/// error statuses (400 missing-session-id, 5xx) pass through.
+/// rmcp's `StreamableHttpService::handle_delete` hardcodes 202, but the
+/// mcp python-sdk treats only 200/204 as successful termination and logs
+/// `Session termination failed: 202` on every session close. Only a
+/// DELETE that rmcp accepted (202) is rewritten; error statuses (400
+/// missing-session-id, 5xx) pass through.
+///
+/// Re-checked against rmcp 3.1.2 in sprint 043 and still required. It is
+/// now reached only by legacy (≤2025-11-25) peers — `handle_delete`
+/// answers 405 to anything else — because SEP-2567 removes sessions from
+/// 2026-07-28, which has nothing to terminate. Retire this middleware
+/// when the last legacy client is gone, not when the revision lands.
 pub async fn delete_status_compat(req: Request, next: Next) -> Response {
     let is_delete = req.method() == Method::DELETE;
     let resp = next.run(req).await;

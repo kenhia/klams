@@ -2,7 +2,7 @@
 //!
 //! Returns a [`StreamableHttpService`] configured for in-process use
 //! by `klams-service`. The HTTP+SSE fallback contemplated in R-001 is
-//! served by the same Streamable HTTP mount point — rmcp 1.7's
+//! served by the same Streamable HTTP mount point — rmcp's
 //! `StreamableHttpService` handles both transport modes natively, so
 //! no second mount or feature flag is required.
 
@@ -27,7 +27,10 @@ pub fn streamable_http_service(
     allowed_hosts: Vec<String>,
 ) -> StreamableHttpService<ToolRegistry, LocalSessionManager> {
     let mut config = StreamableHttpServerConfig::default();
-    config.stateful_mode = true;
+    // Sprint 043: renamed from `stateful_mode` in rmcp 3.x, not
+    // re-specified — SEP-2567 removes sessions from 2026-07-28 outright,
+    // so this flag only ever governed the legacy (≤2025-11-25) lifecycle.
+    config.legacy_session_mode = true;
     config.json_response = false;
     config.allowed_hosts = allowed_hosts;
     let factory_state = state;

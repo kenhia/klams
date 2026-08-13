@@ -17,8 +17,13 @@ operator provides across machines (see
 |---|---|
 | Endpoint | `<klams-url>/mcp` |
 | Transport | MCP Streamable HTTP (rmcp; HTTP+SSE fallback on the same mount) |
+| Protocol | MCP `2024-11-05` … `2026-07-28`; older clients negotiate down cleanly |
 | Auth | `Authorization: Bearer <token>` — required on every request |
 | Server name | `klams-mcp` |
+
+The tool catalog you see is filtered by your token's scopes, so it is
+advertised as privately cacheable — two agents with different scopes get
+different catalogs from the same endpoint.
 
 Tokens are `[[auth.tokens]]` entries in the service's `klams.toml`,
 each with a `scopes` list and an `agent_name` that writes are
