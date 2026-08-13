@@ -191,5 +191,79 @@ _(decisions, surprises and outcomes recorded as the sprint proceeds)_
   `klams-mcp-for-agents.md` gains the revision range and a note that the
   catalog is scope-filtered. Test stack torn down.
 
-  **Remaining: deploy to kubs0 + the live gate.** Not yet done — the gate
-  requires a fresh Claude Code ≥2.1.227 session, which is Ken's to run.
+## Deployed 2026-08-13
+
+- Version `0.1.43` live on kubs0 (`/healthz` confirms; was `0.1.42`).
+- Published to the store as `artifacts/klams-{service,scanner,monitor}/0.1.43/`,
+  `latest` → `0.1.43`. Built from branch commit `52ed27d`, not from `main` —
+  this sprint deployed *before* shipping the PR, so the eventual squash
+  commit on `main` will carry the same code under a different SHA.
+- Unit files: unchanged (`git diff 7ed0dcb..HEAD -- deploy/` is empty), so
+  `install-systemd` was **not** run — `deploy-from-store` touched no units.
+- Migrations applied: **none**. `migrations/` is untouched by this sprint,
+  so the restart migrated nothing and rollback is a pure binary swap.
+- kai's `klams-scanner`: **left at 0.1.42, deliberately.** This sprint
+  changes only the MCP server surface (`klams-mcp`), which kai does not
+  run — kai runs the scanner alone. Catch it up with
+  `just deploy-remote kai klams-scanner` whenever convenient; 0.1.43 is
+  already in the store waiting.
+- Rollback target: `0.1.42` via `just rollback` (`.prev` binaries in place
+  for all three); any published version via `just deploy-from-store --version`.
+- Config changes required: **none**. `/etc/klams/klams.toml` untouched; no
+  new scopes or sections.
+
+### Verified live, beyond `/healthz`
+
+The wire suite proves shape against a test server; these ran against the
+deployed process:
+
+- **Raw probe** — `initialize` asking for `9999-12-31` returns
+  `2026-07-28`. The server's real ceiling, read from outside, not from its
+  docs. The service log shows rmcp's matching fallback WARN.
+- **2026-07-28 peer** — `tools/list` returns `ttlMs: 3600000` (JSON
+  *number*, type-checked) and `cacheScope: "private"`, 10 tools.
+- **2025-11-25 peer** — `tools/list` returns **neither** field, same 10
+  tools. Clean downgrade, no shape leakage.
+- **Real `tools/call`** — `memory_search` over the conformant 2026-07-28
+  request shape returned 2 hits with `isError: false`.
+- **Session DELETE still 204** — the sprint-018 python-sdk workaround
+  survived the rmcp 3.1.2 migration, as the code re-check predicted.
+- `just verify` — 7 passed, 0 failed (SC-001, 002, 005, 007, 008, 009).
+- Units settled: `klams-service` and `klams-monitor` both active; service
+  log clean apart from the two expected protocol-fallback WARNs from the
+  probes above. `klams-monitor` logged 4 publish failures in the startup
+  window — the documented shape (monitor goes active before the service
+  binds `:7777`), and they stopped.
+- Consumers: `klams-view` active, zero errors since restart. `klams-mind`
+  is not running as a unit on kubs0, so nothing to check there. A real
+  `memory_search` through this session's own MCP client succeeded against
+  the restarted server.
+
+### Still outstanding: the live gate
+
+**The one thing that cannot be self-certified.** Everything above was
+driven by raw HTTP or by an MCP session that negotiated before the
+restart. The gate this sprint exists to pass is a **fresh Claude Code
+≥2.1.227 session** enumerating all klams tools *and* completing a real
+`memory_search` — because the failure mode is a client-side validation
+drop, invisible from the server. Ken runs that by starting a new session.
+
+If it fails, the symptom is klams connected with **zero tools**, and the
+rollback is `just rollback` (no migration to undo).
+
+### Preflight deviations, recorded
+
+- `.env` was missing `KLAMS_STORE_HOST`/`KLAMS_STORE_URL` — it predates
+  sprint 042, which introduced them. Values recovered from klams memory
+  (`kubsdb`, `https://kubsdb.encke-wahoo.ts.net:4880`), cross-checked
+  against k-homelab `docs/deploying.md`, and appended to the gitignored
+  `.env`.
+- **The nightly qdrant snapshot shrank** 3.6% (2026-08-12:
+  1,286,256,128 → 2026-08-13: 1,239,520,768), which the deploy skill says
+  to stop and ask about. Proceeded, because the check exists to make a bad
+  *migration* survivable and this sprint has none — rollback is binary-only
+  either way. Benign explanation available but not proven: qdrant is at 7
+  segments where the previous snapshot spanned 8, and the scanner logs
+  routine clear-and-reindex churn; compaction genuinely shrinks snapshots.
+  Postgres cannot corroborate — it holds only 55 facts / 29 events, while
+  the 186,397-point corpus lives in qdrant. **Worth a separate look.**
