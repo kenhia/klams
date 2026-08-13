@@ -96,8 +96,31 @@ build.
    sudo ls -la /gratch/klams-backup/ | tail -4
    ```
    Expect a `postgres-<UTC-date>.dump` and `qdrant-<UTC-date>.snapshot` from
-   last night, with the qdrant snapshot no smaller than the previous one. If
-   stale or shrinking, say so and ask before continuing.
+   last night. **Check the dates, not the sizes.** If either is stale, say so
+   and ask before continuing.
+
+   **Do not gate on the qdrant snapshot's byte size** — that check cried wolf
+   for the whole of its life and was retired in sprint 043. Qdrant vacuums a
+   segment once >20% of its vectors are deleted (`deleted_threshold: 0.2`),
+   and re-scans plus supersedes make that routine, so a *shrinking* snapshot
+   is the healthy steady state. Sprint 043 saw a 46.7 MB drop that turned out
+   to be 11,136 dead 1024-dim vectors being reclaimed — 45.6 MB of arithmetic,
+   within 2.4% — while `points_count` went *up*.
+
+   If you want the real signal, ask qdrant what it holds:
+   ```bash
+   curl -s http://127.0.0.1:6333/collections/knowledge_items_v2 \
+     | jq '{points: .result.points_count, vectors: .result.vectors_count, status: .result.status}'
+   ```
+   `points_count` is monotonic except for genuine deletes; a drop there is
+   worth stopping for, and a `points_count` far below `vectors_count` just
+   means a vacuum is pending.
+
+   **Why this backup matters more than it looks:** there is no knowledge table
+   in Postgres — its tables are `facts`, `events`, `authors`, `dissents`,
+   `summaries`, `search_*`, `oversize_write`. The knowledge corpus lives
+   **only** in qdrant, so that nightly snapshot is its sole backup. The
+   Postgres dump being healthy tells you nothing about it.
 
 5. **Record the rollback target** — the version now live and the binary
    timestamps:

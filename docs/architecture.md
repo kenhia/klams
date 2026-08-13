@@ -816,6 +816,45 @@ get `401` before any tool sees them. No OAuth metadata is served; VS
 Code-style `"type": "http"` clients pass a static
 `headers.Authorization`.
 
+### Protocol revisions (sprint 043, WI #1216)
+
+klams serves every MCP revision from `2024-11-05` through **`2026-07-28`**,
+listed explicitly in `SUPPORTED_PROTOCOL_VERSIONS` (`klams-mcp/src/tools/mod.rs`)
+with the ceiling pinned in `PROTOCOL_VERSION_CEILING`.
+
+Both the list and `get_info`'s fallback are **hand-maintained, never an
+rmcp constant**. rmcp's default `supported_protocol_versions()` returns
+`ProtocolVersion::KNOWN_VERSIONS` — every revision the *SDK* knows, which
+is a claim about rmcp, not about klams. Serving that default is how
+korg:1212 happened on a sibling server: the client asks for a revision,
+gets it echoed, validates the response against that revision's schema,
+fails, and registers **zero tools** while still appearing connected with
+its instructions delivered. Nothing logs it. Adding a revision to that
+list is therefore a promise to emit its shape, and the two must land in
+one commit — a bare dependency bump arms and springs the trap between
+commits.
+
+Under `2026-07-28`, `tools/list` carries SEP-2549 cache metadata: `ttlMs`
+(a JSON *number* — a string fails client validation just as an absent
+field does) and `cacheScope`. Both are emitted only to peers that
+negotiated `2026-07-28` or later, since a `2025-11-25` peer is entitled to
+`2025-11-25`'s shape.
+
+klams sets **`cacheScope: "private"`**, diverging from the sibling servers
+kaed and korg-mcp, which both emit `public`. Their catalogs are static per
+build; klams's is not — `list_tools` filters it by the scopes on the
+caller's bearer token (FR-020), so a read-only token and an admin token
+receive different catalogs from the same endpoint. `public` would invite a
+shared cache to serve one principal's catalog to another. Note rmcp's
+`CacheScope::default()` is `Public`, so this stays explicit.
+
+The wire shape is locked by
+`crates/klams-service/tests/mcp_protocol_2026_07_28.rs`, which uses raw
+JSON-RPC because rmcp's own client cannot drive a conformant `2026-07-28`
+session. Those tests prove the shape, not client acceptance — the real
+gate is a live Claude Code session enumerating the tools and completing a
+real call.
+
 ## 4. Deployment topology on `kubs0`
 
 ```text

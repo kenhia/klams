@@ -25,8 +25,9 @@ use klams_types::{AuthenticatedAuthor, AuthenticatedScopes};
 use klams_types::{MaintenanceState, Scope};
 use rmcp::{
     model::{
-        CallToolRequestParams, CallToolResult, Content, ListToolsResult, PaginatedRequestParams,
-        ProtocolVersion, ServerCapabilities, ServerInfo, Tool,
+        CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
+        ListToolsResult, PaginatedRequestParams, ProtocolVersion, ServerCapabilities, ServerInfo,
+        Tool,
     },
     service::RequestContext,
     ErrorData as McpError, RoleServer, ServerHandler,
@@ -182,6 +183,28 @@ impl<S: Store> McpState<S> {
     }
 }
 
+/// The MCP revisions klams serves, oldest first (sprint 043, WI #1216).
+///
+/// Adding a revision here is a promise to emit its required shape, so the
+/// list is hand-maintained rather than borrowed from rmcp.
+const SUPPORTED_PROTOCOL_VERSIONS: &[ProtocolVersion] = &[
+    ProtocolVersion::V_2024_11_05,
+    ProtocolVersion::V_2025_03_26,
+    ProtocolVersion::V_2025_06_18,
+    ProtocolVersion::V_2025_11_25,
+    ProtocolVersion::V_2026_07_28,
+];
+
+/// The newest revision klams serves: what an unknown/newer request falls
+/// back to, and what `get_info` advertises.
+const PROTOCOL_VERSION_CEILING: ProtocolVersion = ProtocolVersion::V_2026_07_28;
+
+/// How long a client may cache the tool catalog (SEP-2549 `ttlMs`).
+///
+/// Within one scope set the catalog is static per build, so an hour is
+/// honest — a klams deploy restarts the server and the session with it.
+const TOOL_CATALOG_TTL_MS: u64 = 3_600_000;
+
 /// `ServerHandler` implementation that exposes the klams MCP tools.
 #[derive(Clone, Debug)]
 pub struct ToolRegistry<S: Store = CompositeStore> {
@@ -197,9 +220,27 @@ impl<S: Store> ToolRegistry<S> {
 
 #[allow(clippy::needless_pass_by_value)]
 impl<S: Store> ServerHandler for ToolRegistry<S> {
+    /// The MCP revisions klams actually implements, newest last.
+    ///
+    /// Sprint 043: this override is load-bearing. rmcp's default returns
+    /// `ProtocolVersion::KNOWN_VERSIONS` — every revision *the SDK* knows,
+    /// which is a claim about rmcp, not about klams. Serving that default
+    /// is how korg:1212 happened: a client asks for a revision, gets it
+    /// echoed, validates the response against that revision's schema,
+    /// fails, and registers ZERO TOOLS while still looking connected.
+    /// This list may only grow when the corresponding shape is emitted
+    /// below.
+    fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [ProtocolVersion]> {
+        std::borrow::Cow::Borrowed(SUPPORTED_PROTOCOL_VERSIONS)
+    }
+
     fn get_info(&self) -> ServerInfo {
         let mut info = ServerInfo::default();
-        info.protocol_version = ProtocolVersion::default();
+        // Sprint 043: pinned, never `ProtocolVersion::default()`/`LATEST`.
+        // An SDK constant moving underneath a release is precisely how this
+        // bug class arrives (kaed 015 D-3) — in rmcp 3.1.2 `LATEST` is still
+        // 2025-11-25 even though `KNOWN_VERSIONS` tops out at 2026-07-28.
+        info.protocol_version = PROTOCOL_VERSION_CEILING;
         info.capabilities = ServerCapabilities::builder().enable_tools().build();
         info.server_info.name = "klams-mcp".into();
         info.server_info.version = env!("CARGO_PKG_VERSION").into();
@@ -239,11 +280,50 @@ impl<S: Store> ServerHandler for ToolRegistry<S> {
             tools,
             ..ListToolsResult::default()
         };
+        // Sprint 043 (WI #1216): SEP-2549 cache metadata, required by
+        // 2026-07-28 on paginated results. tools/list is the only one
+        // klams serves — `CallToolResult` carries no cache metadata in
+        // any revision, so this is catalog caching, not result caching.
+        //
+        // Emitted ONLY for peers that negotiated 2026-07-28+. A 2025-11-25
+        // peer is entitled to 2025-11-25's shape, and strict clients may
+        // reject unknown fields — rmcp makes the same call for the
+        // neighbouring `resultType`.
+        //
+        // `cacheScope` is PRIVATE, diverging from kaed and korg-mcp, which
+        // both emit `public`. Their catalogs are static per build; klams's
+        // is not — the filter above narrows it to what the caller's bearer
+        // token scopes satisfy, so a Read token and an Admin token get
+        // different catalogs from the same server. `public` would invite a
+        // shared cache to serve one principal's catalog to another. Note
+        // rmcp's `CacheScope::default()` is `Public`, so this must stay
+        // explicit.
+        let negotiated = context.protocol_version();
+        if negotiated.is_some_and(|v| v >= PROTOCOL_VERSION_CEILING) {
+            return Ok(result
+                .with_ttl_ms(TOOL_CATALOG_TTL_MS)
+                .with_cache_scope(CacheScope::Private));
+        }
         Ok(result)
     }
 
-    #[allow(clippy::too_many_lines)]
     async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, McpError> {
+        // Sprint 043: rmcp 3.x returns the MRTR envelope (`CallToolResponse`)
+        // rather than a bare `CallToolResult`. Every klams tool completes
+        // in-request — no elicitation, no SEP-2663 tasks — so the conversion
+        // is total, and stripping `resultType` for legacy peers stays rmcp's
+        // job. The dispatch body below is unchanged by the 3.x migration.
+        self.dispatch_tool(request, context).await.map(Into::into)
+    }
+}
+
+impl<S: Store> ToolRegistry<S> {
+    #[allow(clippy::too_many_lines, clippy::needless_pass_by_value)]
+    async fn dispatch_tool(
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
@@ -637,13 +717,13 @@ where
 
 fn json_result<T: serde::Serialize>(value: &T) -> CallToolResult {
     let text = serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string());
-    CallToolResult::success(vec![Content::text(text)])
+    CallToolResult::success(vec![ContentBlock::text(text)])
 }
 
 fn envelope_result(env: &crate::errors::ErrorEnvelope) -> CallToolResult {
     let json = serde_json::to_string(env).unwrap_or_else(|_| "{}".to_string());
     let structured = serde_json::to_value(env).unwrap_or_default();
-    let mut out = CallToolResult::success(vec![Content::text(json)]);
+    let mut out = CallToolResult::success(vec![ContentBlock::text(json)]);
     out.is_error = Some(true);
     out.structured_content = Some(structured);
     out
