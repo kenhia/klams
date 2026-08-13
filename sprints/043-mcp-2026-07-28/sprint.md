@@ -195,9 +195,39 @@ _(decisions, surprises and outcomes recorded as the sprint proceeds)_
 
 - Version `0.1.43` live on kubs0 (`/healthz` confirms; was `0.1.42`).
 - Published to the store as `artifacts/klams-{service,scanner,monitor}/0.1.43/`,
-  `latest` → `0.1.43`. Built from branch commit `52ed27d`, not from `main` —
-  this sprint deployed *before* shipping the PR, so the eventual squash
-  commit on `main` will carry the same code under a different SHA.
+  `latest` → `0.1.43`. Built from branch commit `52ed27d`; this sprint
+  deployed *before* shipping the PR.
+
+### Provenance after the merge (PR #47, squash `f35c172`)
+
+The sprint shipped after it deployed, so the published artifact was built
+from a commit that no longer exists on `main`. That gap was checked rather
+than waved away, and it closes:
+
+- **The binary records no commit.** There is no `build.rs` and no `vergen`
+  anywhere in the workspace; `--version` reports `CARGO_PKG_VERSION` alone
+  (`klams-service 0.1.43`). There is no field that could be "the wrong
+  commit".
+- **The merge changed no compiled source.** The two commits added after the
+  build were `.claude/skills/deploy-kubs0/SKILL.md` and this file — neither
+  compiles, so `main` builds byte-identical binaries to the ones published.
+- **The running binaries are the published artifacts, verified**, not
+  assumed. All three `sha256sum`s match the store's `SHA256SUMS` for
+  `0.1.43` exactly (service `d5cdc583…`, scanner `a9203c15…`, monitor
+  `3278d493…`).
+
+**`deploy-from-store` was deliberately NOT re-run after the merge.** It
+would have installed identical bytes while rotating `0.1.43` into `.prev`,
+destroying `0.1.42` as the one-step rollback target — pure cost, no
+benefit. `.prev` still holds `0.1.42` for all three binaries. This is also
+what the deploy skill's preflight step 8 prescribes for an already-published
+version: do not reach for `--force`; the published build *is* the code you
+intend to deploy.
+
+Re-verified live on `main` after the merge: `/healthz` `0.1.43` / `Ok`,
+raw probe reports the `2026-07-28` ceiling, `tools/list` at 2026-07-28
+returns `ttlMs: 3600000` (number) + `cacheScope: "private"` over 10 tools,
+both units active.
 - Unit files: unchanged (`git diff 7ed0dcb..HEAD -- deploy/` is empty), so
   `install-systemd` was **not** run — `deploy-from-store` touched no units.
 - Migrations applied: **none**. `migrations/` is untouched by this sprint,
