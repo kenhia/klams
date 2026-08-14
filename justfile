@@ -111,6 +111,12 @@ gate:
     cargo clippy --workspace --all-targets -- -D warnings
     cargo test --workspace
 
+# Sprint 044 — the kprojects harness calls this gate `check`, and its
+# managed block tells every agent so. klams called it `gate` first and
+# CI invokes `just gate` by name, so `check` is an alias rather than a
+# second definition: two names, one gate, nothing to drift.
+check: gate
+
 # Sprint 031 (#679/#687/#646) — the docker-gated integration suite,
 # which `gate` deliberately excludes. Until 031 there was no recipe for
 # this at all: the only place it ran was a main-branch-only CI step, so
