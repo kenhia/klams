@@ -160,7 +160,9 @@ After installing, `just --list` from the repo root prints every
 recipe defined for this sprint. Run `just gate` before every
 commit — it executes the constitution's pre-commit gate
 (`cargo fmt --check`, `cargo clippy --workspace -- -D warnings`,
-`cargo test --workspace`).
+`cargo test --workspace`). `just check` is an alias for the same
+recipe (sprint 044), so the name the kprojects harness uses across
+Ken's repos lands here on the gate CI actually runs.
 
 ### `just --list` quick reference
 
@@ -174,6 +176,7 @@ commit — it executes the constitution's pre-commit gate
 | `run`             | `cargo run -p klams-service`, logs to stderr. |
 | `test`            | `cargo test --workspace` (skips `#[ignore]`'d cases). |
 | `gate`            | Constitution pre-commit gate; what CI runs. |
+| `check`           | Alias for `gate` — the kprojects harness's name for it. |
 | `health`          | `/healthz` curl + `scripts/verify-mvp.sh --light`. |
 | `verify`          | Full `scripts/verify-mvp.sh` (SC-001..SC-009 smoke). |
 | `publish`         | Build + publish this version's binaries to the package store (sprint 042). |

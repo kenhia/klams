@@ -77,6 +77,11 @@ sprint 040 (#788) CI invokes `just gate` itself rather than keeping its
 own copy of these three commands, so the recipe is the single
 definition — if you change it, you have changed CI.
 
+`just check` is an alias for it (sprint 044). The kprojects managed
+block in `CLAUDE.md` calls the gate `check`; klams called it `gate`
+first and CI invokes that name, so the alias exists to make both names
+land on the same recipe rather than on two that can drift.
+
 This applies to existing code touched in passing, not just new code —
 no broken windows.
 
