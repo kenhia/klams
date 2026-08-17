@@ -33,6 +33,18 @@ port = 7777
 # ≥ 16 characters; `scopes` MUST be non-empty; grants holding `manage`
 # or `admin` MUST declare `agent_name` (sprint 034, #703).
 #
+# EDIT THESE WITH `klams-token`, NOT AN EDITOR (sprint 045, #265). It
+# edits the blocks structurally, so a write cannot clobber a sibling
+# grant, and it validates the result before anything reaches disk:
+#
+#   sudo klams-token list [--verify]
+#   sudo klams-token add <name> --scopes read,write --reveal
+#   sudo klams-token rotate <name> --reveal
+#   sudo klams-token scopes <name> --add manage
+#   sudo klams-token remove <name>
+#
+# Then `sudo systemctl reload klams-service`. See docs/usage.md.
+#
 # SCOPES ARE FLAT, NOT HIERARCHICAL: "write" does not imply "read",
 # and "admin" does not imply "write". List every scope a token needs.
 #

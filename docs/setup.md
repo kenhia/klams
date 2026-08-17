@@ -385,6 +385,28 @@ read them while keeping the secrets off world-read. A wrong owner/mode
 (e.g. `root:root 0600`) makes a daemon crash-loop with
 `read config …: Permission denied (os error 13)`.
 
+This is also why `klams-token` (sprint 045) writes `klams.toml`
+**through the existing inode** rather than the usual
+write-temp-and-rename: a rename would replace the file with a fresh one
+owned by whoever ran `sudo`, producing exactly the crash-loop above at
+the next restart. If you edit these files any other way, preserve the
+owner and mode yourself.
+
+### Managing grants after provisioning
+
+Adding, rotating, rescoping or retiring an `[[auth.tokens]]` grant is
+`klams-token`'s job, not an editor's — see
+[usage.md](usage.md#sprint-045--klams-token-auth-grant-cli).
+
+```sh
+just install-klams-token      # once, onto this host's PATH
+sudo klams-token list --verify
+```
+
+`--verify` is worth running after any provisioning round: it asks the
+service which grants it actually still accepts, which is the only way
+to notice a token that a consumer holds a stale copy of.
+
 ### Logs
 
 All three units log to the journal. Tail with:

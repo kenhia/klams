@@ -28,6 +28,21 @@ silently confer a capability you didn't intend.
 Tokens live in the `[auth]` block of `klams.toml` (see
 [`deploy/config/klams.example.toml`](../deploy/config/klams.example.toml)).
 
+**Use `klams-token` rather than an editor** (sprint 045, #265). It
+edits these blocks structurally, so a write cannot clobber a sibling
+grant — which is exactly how korg #264 happened — and it validates the
+result against the types below before anything reaches disk:
+
+```bash
+sudo klams-token list                    # never prints token values
+sudo klams-token list --verify           # which grants does the service still accept?
+sudo klams-token add krot --scopes read,write --reveal
+sudo klams-token rotate klams-scanner    # keeps agent_name, so nothing is orphaned
+```
+
+Recipes and the full write pipeline: [usage.md](usage.md#sprint-045--klams-token-auth-grant-cli).
+The hand-edited shape it produces:
+
 ```toml
 [[auth.tokens]]
 token      = "claude-XXXXXXXXXXXXXXXXXXXX"   # ≥16 chars, treat as a secret
@@ -53,6 +68,14 @@ through that bearer is attributed to it, and — since sprint 025 —
 Edit `[[auth.tokens]]` and send `SIGHUP`; the grant table swaps
 atomically with no restart and no dropped in-flight requests. Rotating
 or revoking a token takes effect on the next request.
+
+```bash
+sudo systemctl reload klams-service
+```
+
+`klams-token` prints this reminder after every write, and deliberately
+does not run it: a config edit and a service action bundled together is
+a bigger blast radius than that tool should take on.
 
 ### The legacy `auth.bearer_token` — RETIRED (sprint 034)
 

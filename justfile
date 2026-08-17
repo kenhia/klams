@@ -89,6 +89,24 @@ service-validate-config:
     KLAMS_CONFIG={{klams_config}} \
         cargo run --quiet -p klams-service -- --validate-config
 
+# Sprint 045 (#265) — install the auth-grant CLI onto this host.
+#
+# It edits the live klams.toml, so it belongs on the PATH of whoever
+# runs `sudo`, not in `target/`. No default install prefix beyond the
+# conventional /usr/local/bin; override with KLAMS_BIN_DIR.
+klams_bin_dir := env_var_or_default('KLAMS_BIN_DIR', '/usr/local/bin')
+
+install-klams-token:
+    cargo build --release -p klams-token
+    sudo install -m 0755 target/release/klams-token {{klams_bin_dir}}/klams-token
+    @echo "installed {{klams_bin_dir}}/klams-token — try: sudo klams-token list --verify"
+
+# Sprint 045 — which grants does the running service still accept?
+# Exits 2 if any returns 401 (see docs/usage.md, sprint 045).
+tokens-verify:
+    KLAMS_CONFIG={{klams_config}} \
+        cargo run --quiet -p klams-token -- list --verify
+
 # Workspace-wide tests (excludes #[ignore]'d cases).
 test:
     cargo test --workspace

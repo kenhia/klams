@@ -85,6 +85,7 @@ service) — see §2.4.
 | `klams-client` | Typed HTTP client. Used by `klams-scanner`, `klams-monitor` and `tools/bench`, and by `klams-service`'s integration tests, so every Rust caller shares one API contract. |
 | `klams-scanner` | Non-agentic filesystem writer: walks configured roots, chunks, publishes to `/memory/knowledge/index` (sprint 003; §2.4). |
 | `klams-monitor` | Non-agentic systemd-state writer: posts `Service` events on unit-state edges; optional kpidash `/healthz` reporter (sprint 003/010; §2.4). |
+| `tools/klams-token` | Operator CLI over the `[[auth.tokens]]` grants in `klams.toml` (sprint 045, #265). Not part of the service: it never runs in-process, and it edits config the service only reads. It shares the schema, though — grants are read and validated through `klams_types::AuthConfig`, the same type the service boots from, which is why it lives here rather than in k-homelab. Writes are structural (`toml_edit`), guarded by a before/after fingerprint of the grant set, and rolled back from a timestamped backup if the result would not start the service. `--verify` probes each grant against the running service, since a dead credential is invisible in the file. |
 
 ### 1.2 The human surface (`klams-view`, out of tree)
 
