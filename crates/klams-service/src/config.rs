@@ -160,23 +160,11 @@ pub struct ServerConfig {
     pub mcp_allowed_hosts: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AuthConfig {
-    /// RETIRED legacy single-token form (sprint 034, #703). It
-    /// materialized a full-scope grant that could not declare an
-    /// `agent_name`, which privileged grants now require. The field
-    /// still parses — deliberately: a config that carries one refuses
-    /// to start with the migration note instead of silently ignoring a
-    /// credential the operator believes is live.
-    #[serde(default)]
-    pub bearer_token: String,
-
-    /// Token grants (`[[auth.tokens]]`). Each entry carries its own
-    /// scope set; grants holding `manage`/`admin` must declare an
-    /// `agent_name` (#703).
-    #[serde(default)]
-    pub tokens: Vec<klams_types::TokenGrantConfig>,
-}
+// Sprint 045 (#265): `AuthConfig` moved down to `klams-types` so
+// `klams-token` — which edits these very grants — validates against the
+// same definition the service boots from, rather than a copy that can
+// drift. Re-exported here so `config::AuthConfig` keeps resolving.
+pub use klams_types::AuthConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PostgresConfig {

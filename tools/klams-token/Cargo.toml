@@ -1,0 +1,37 @@
+[package]
+name = "klams-token"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "klams-token"
+path = "src/main.rs"
+
+[dependencies]
+# The schema this tool edits is klams-types' own `AuthConfig` /
+# `TokenGrantConfig` — deliberately the service's definition, not a
+# copy (sprint 045, #265).
+klams-types = { workspace = true }
+toml_edit = { workspace = true }
+toml = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { version = "4.5", features = ["derive"] }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }
+time = { workspace = true }
+reqwest = { workspace = true }
+tokio = { version = "1.41", features = ["macros", "rt-multi-thread"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+wiremock = { workspace = true }

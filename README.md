@@ -52,7 +52,9 @@ Then, going deeper:
   map (diagrams under [docs/diagrams/](docs/diagrams/)).
 - [docs/usage.md](docs/usage.md) — day-to-day operator recipes.
 - [docs/auth.md](docs/auth.md) — who can do what; how tokens are
-  granted.
+  granted. Grants are managed with `klams-token`, which edits them
+  structurally and can tell you which ones the service still accepts
+  (`klams-token list --verify`).
 - [docs/klams-mcp-for-agents.md](docs/klams-mcp-for-agents.md) — hand
   this to an AI agent to wire it up, including the routing-policy
   blurb that makes agents actually use the store.

@@ -50,7 +50,7 @@ pub fn system_author_id() -> uuid::Uuid {
 }
 
 pub use auth::{
-    validate_agent_name, AgentNameInvalidReason, AuthConfigError, AuthenticatedAuthor,
+    validate_agent_name, AgentNameInvalidReason, AuthConfig, AuthConfigError, AuthenticatedAuthor,
     AuthenticatedScopes, Scope, TokenGrantConfig,
 };
 pub use author::{AuthorRecord, PublicAuthorRef, RegisterAuthorArgs, RegisterAuthorError};

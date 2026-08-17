@@ -637,31 +637,12 @@ fn validate_config_cli(config_path: &str) -> ! {
     // [auth] — no retired `bearer_token` (sprint 034 #703), at least
     // one scoped grant, and each grant individually valid. Mirrors
     // `build_auth_grants` so a config this accepts also boots.
-    if !cfg.auth.bearer_token.is_empty() {
-        errors.push(format!(
-            "[auth]: {}",
-            klams_types::AuthConfigError::LegacyBearerTokenRetired
-        ));
-    }
-    if cfg.auth.tokens.is_empty() {
-        errors.push(format!(
-            "[auth]: {}",
-            klams_types::AuthConfigError::NoTokens
-        ));
-    }
-    for (i, g) in cfg.auth.tokens.iter().enumerate() {
-        if let Err(e) = g.validate() {
-            errors.push(format!(
-                "[auth.tokens[{i}]] ({label}): {e}",
-                label = g.label.as_deref().unwrap_or("<no label>")
-            ));
-        }
-        if g.label.is_none() {
-            warnings.push(format!(
-                "[auth.tokens[{i}]]: no `label` set; log/metric attribution will be empty"
-            ));
-        }
-    }
+    //
+    // Sprint 045 (#265): the rules themselves live on `AuthConfig` in
+    // klams-types, so `klams-token` gates its writes on exactly what
+    // this reports rather than a second copy of the same list.
+    errors.extend(cfg.auth.errors());
+    warnings.extend(cfg.auth.warnings());
     if errors.is_empty() {
         println!("OK: [auth] scoped_grants={}", cfg.auth.tokens.len());
     }

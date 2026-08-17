@@ -13,6 +13,7 @@ members = [
     "tools/bench",
     "tools/soak",
     "tools/reattribute-system",
+    "tools/klams-token",
 ]
 
 [workspace.package]
@@ -20,7 +21,7 @@ members = [
 # bumped at the start of every sprint so the version surfaced on
 # /healthz and MCP server_info identifies the deployed sprint at a
 # glance.
-version = "0.1.44"
+version = "0.1.45"
 edition = "2021"
 rust-version = "1.83"
 license = "MIT"
@@ -73,6 +74,7 @@ metrics = "0.24"
 # crypto / dedupe
 sha2 = "0.10"
 subtle = "2.6"
+rand = "0.8"
 
 # types
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
@@ -84,6 +86,10 @@ anyhow = "1"
 
 # config
 figment = { version = "0.10", features = ["toml", "env"] }
+# Format-preserving TOML editing (sprint 045, #265). `toml` alone can
+# only round-trip through serde, which flattens the heavily-commented
+# live klams.toml and materializes every `#[serde(default)]`.
+toml_edit = "0.22"
 
 # misc
 async-trait = "0.1"

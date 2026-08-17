@@ -1281,3 +1281,138 @@ been touched outside HTTP handlers, so when kai dropped ~30k chunks in a
 two-hour window, no counter moved and `/healthz` stayed green throughout
 (TEI's `/health` answers 200 whenever the model is loaded; input
 rejections never reach it).
+
+## Sprint 045 — `klams-token` (auth-grant CLI)
+
+`klams.toml`'s `[[auth.tokens]]` blocks used to be edited by hand, with
+`sudo` and a text editor, on a file that lives outside any repo. korg
+#264 is what that costs: an edit clobbered an existing grant, because
+nothing in the loop understood the file's structure and there was no
+diff or review step. `klams-token` is the tool that closes it.
+
+```bash
+cargo build --release -p klams-token          # or: just install-klams-token
+sudo klams-token list
+```
+
+### What it guarantees
+
+Every mutation runs one pipeline, and each step is a refusal point:
+
+1. **Structural edit** — grants are addressed as TOML tables via
+   `toml_edit`, so a write cannot overwrite a sibling, and the file's
+   comments, ordering and `=` alignment survive untouched.
+2. **Fingerprint-and-refuse** — the grant set is reduced to
+   `{identity → sha256(token)[:12]}` before and after. The command
+   declares the one change it intends; anything else in the delta
+   aborts the write before it happens.
+3. **Schema validation** — the result is checked against
+   `klams_types::AuthConfig`, *the same type `klams-service` boots
+   from*, using the same rule list `--validate-config` reports. A
+   config the service would refuse to start on never reaches disk.
+4. **Timestamped backup**, then the new content is written **through
+   the existing inode** — `/etc/klams/klams.toml` is `root:klams 0640`
+   and a write-temp-and-rename would hand it to whoever ran `sudo`,
+   locking the service out of its own config.
+5. **Re-read and re-validate**; on failure the backup is restored and
+   the command reports what happened.
+
+`--dry-run` runs steps 1–3 and stops. It reports in the conditional
+("would remove grant `x`"), and `add`/`rotate` under `--dry-run` print
+**no token value even with `--reveal`** — the value was generated and
+discarded, so printing it would hand you a credential that exists
+nowhere.
+
+### Recipes
+
+```bash
+# What grants exist? Token values are NEVER printed without --reveal;
+# the FINGERPRINT column is sha256(token)[:12].
+sudo klams-token list
+
+# Which of them does the service actually still accept? One
+# authenticated request per grant. 401 = dead, 403 = live but
+# scope-limited (a write-only grant is healthy), 2xx = live.
+sudo klams-token list --verify
+
+# Issue a grant. The token is <name>-<openssl rand -hex 32>; you get
+# one chance to read it.
+sudo klams-token add krot --scopes read,write --reveal
+
+# Widen or narrow one grant's permissions, touching nothing else.
+sudo klams-token scopes klams-view --add manage
+sudo klams-token scopes klams-view --set read
+
+# Replace a token, keeping the identity. klams attributes memories by
+# agent_name, not by token value, so nothing that agent wrote is
+# orphaned by this.
+sudo klams-token rotate klams-scanner --reveal
+
+# Retire a grant.
+sudo klams-token remove ansible-k --yes
+```
+
+A grant is addressed by its `agent_name` or its `label`. If a selector
+matches two grants the command refuses rather than picking one.
+
+### `--verify`, and why it exists
+
+k-homelab sprint 016 found the `ansible_k` grant returning **401**
+while `/etc/ansible/klams.token` and the ansible vault both held a
+different, also-dead value. Something had rotated the grant and neither
+deployed copy was updated — and nothing could notice, because a listing
+of label / agent_name / scopes shows a dead grant looking perfectly
+healthy. `--verify` asks the service instead of the file.
+
+It exits **2** when any grant returns 401 — distinct from 1 ("the
+command failed"), so a monitor can tell a broken credential from a
+broken config. An unreachable service is reported as `unreachable` and
+exits 0: that is an operator problem, not a grant problem.
+
+### Backups
+
+One convention, settled here: `klams.toml.bak-YYYYMMDDTHHMMSSZ`. UTC,
+second resolution, sorts chronologically. The tool keeps its ten most
+recent and **never touches a backup it did not write** — the live file
+already carries several under older ad-hoc names, and those are not
+this tool's to prune.
+
+A second edit inside the same second takes `…Z-1`, `…Z-2` and so on
+rather than overwriting the first or failing: back-to-back edits are
+the normal case, and the earlier snapshot is the one you would want if
+the pair went wrong. The suffix sorts after the bare name, so the
+directory still lists chronologically.
+
+Backups inherit the original's ownership and mode: they are verbatim
+copies of a file full of live bearer tokens.
+
+### After a write
+
+The command prints the reminder itself:
+
+```
+sudo systemctl reload klams-service
+```
+
+`reload`, not `restart` — SIGHUP hot-reloads `[[auth.tokens]]` with no
+dropped requests (sprint 018). The tool never reloads for you; a config
+edit and a service action bundled together is a bigger blast radius
+than this tool should take on.
+
+### Config resolution
+
+`--config`, then `$KLAMS_CONFIG`, then `/ai/klams/config/klams.toml`,
+then `/etc/klams/klams.toml`, then
+`$XDG_CONFIG_HOME/klams/klams.toml`. The systemd path is in the chain
+because `deploy/klams-service.service` sets `KLAMS_CONFIG` in the
+*unit* — not in your shell — so without it a bare `sudo klams-token
+list` would claim there is no config while the service was running
+against one. If nothing is found the error names every path it tried.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | Success (including `--dry-run` and an aborted confirmation). |
+| 1 | The command failed or was refused; nothing was written. |
+| 2 | `--verify` found at least one grant returning 401. |

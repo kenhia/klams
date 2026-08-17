@@ -189,6 +189,80 @@ impl TokenGrantConfig {
     }
 }
 
+/// The `[auth]` block of `klams.toml`.
+///
+/// Sprint 045 (#265): this lived in `klams-service::config` until
+/// `klams-token` needed it. That CLI edits the very grants this struct
+/// describes, and a config editor whose idea of the schema can drift
+/// from the service's is the class of bug it exists to prevent — so the
+/// shape moved down here, where both can share exactly one definition.
+/// `klams_service::config::AuthConfig` is now a re-export of this type.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AuthConfig {
+    /// RETIRED legacy single-token form (sprint 034, #703). It
+    /// materialized a full-scope grant that could not declare an
+    /// `agent_name`, which privileged grants now require. The field
+    /// still parses — deliberately: a config that carries one refuses
+    /// to start with the migration note instead of silently ignoring a
+    /// credential the operator believes is live.
+    #[serde(default)]
+    pub bearer_token: String,
+
+    /// Token grants (`[[auth.tokens]]`). Each entry carries its own
+    /// scope set; grants holding `manage`/`admin` must declare an
+    /// `agent_name` (#703).
+    #[serde(default)]
+    pub tokens: Vec<TokenGrantConfig>,
+}
+
+impl AuthConfig {
+    /// Every reason this `[auth]` block would be refused, as operator-
+    /// facing strings — *all* of them, not just the first, because an
+    /// operator fixing a config wants the whole list in one pass.
+    ///
+    /// This is the single definition of "is this `[auth]` block
+    /// startable": `klams-service --validate-config` reports it, and
+    /// `klams-token` gates every write on it (sprint 045, #265). An
+    /// empty vec means the block would boot.
+    #[must_use]
+    pub fn errors(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+        if !self.bearer_token.is_empty() {
+            errors.push(format!(
+                "[auth]: {}",
+                AuthConfigError::LegacyBearerTokenRetired
+            ));
+        }
+        if self.tokens.is_empty() {
+            errors.push(format!("[auth]: {}", AuthConfigError::NoTokens));
+        }
+        for (i, g) in self.tokens.iter().enumerate() {
+            if let Err(e) = g.validate() {
+                errors.push(format!(
+                    "[auth.tokens[{i}]] ({label}): {e}",
+                    label = g.label.as_deref().unwrap_or("<no label>")
+                ));
+            }
+        }
+        errors
+    }
+
+    /// Non-fatal observations about this `[auth]` block. A grant with
+    /// no `label` still boots, but its log and metric attribution is
+    /// empty, which is worth saying out loud.
+    #[must_use]
+    pub fn warnings(&self) -> Vec<String> {
+        self.tokens
+            .iter()
+            .enumerate()
+            .filter(|(_, g)| g.label.is_none())
+            .map(|(i, _)| {
+                format!("[auth.tokens[{i}]]: no `label` set; log/metric attribution will be empty")
+            })
+            .collect()
+    }
+}
+
 /// Scope set of the caller, resolved from the presented bearer token.
 ///
 /// Stamped onto request extensions by the REST auth middleware and read
