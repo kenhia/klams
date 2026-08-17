@@ -210,3 +210,57 @@ Gate green; the docker integration suite green and torn down.
   ever be distinguished as "authenticated" (403). That is the correct
   answer, but a dedicated unauthenticated-identity echo route would let
   it report scopes as the service sees them. Not worth a route today.
+
+## Deployed 2026-08-17
+
+- Version `0.1.45` live on kubs0 (`/healthz` confirms `version: 0.1.45`,
+  `status: Ok`, all four backends `Ok`; was `0.1.44`).
+- Published to the store as `artifacts/klams-{service,scanner,monitor}/0.1.45/`.
+- Unit files: **unchanged**, so `install-systemd` was not run. The only
+  file under `deploy/` this sprint touched is
+  `deploy/config/klams.example.toml`, which is an example, not a unit.
+- kai's `klams-scanner`: **deployed to `0.1.45`** — it was at `0.1.42`,
+  three releases behind. Nothing in this sprint affects the scanner, but
+  leaving it behind is exactly how the #836 drift accumulated, and the
+  release was already published and reachable. `~/k-homelab/bin/audit kai`
+  now reports `klams-scanner: ok`.
+- **`klams-token` is not part of the store publish** — `tools/` is
+  documented as non-shipping, so it was installed from the checkout with
+  `just install-klams-token` (`/usr/local/bin/klams-token`, reports
+  `0.1.45`). It is on kubs0 only; no other host has the config it edits.
+  If krot #943 needs it on a host without a checkout, that is the
+  follow-up above.
+- Rollback target: `0.1.44` via `just rollback` (`.prev` binaries in place
+  on both kubs0 and kai); any published version via
+  `just deploy-from-store --version`.
+- Migrations applied: **none** — this sprint added no migrations, so the
+  binary rollback is complete on its own.
+- Config changes required: **none**. `/etc/klams/klams.toml` was not
+  touched by this deploy. The tool is now the supported way to edit it,
+  but the file as it stands needs no change to work with 0.1.45.
+
+### Verified live, beyond `/healthz`
+
+| Check | Result |
+|---|---|
+| `sudo klams-token list --verify` against `/etc/klams/klams.toml` | **14 grants, all `live`, exit 0.** No token values printed. |
+| `klams-service --validate-config` on the deployed binary | `OK: [auth] scoped_grants=14` — the refactored `AuthConfig::errors()`/`warnings()` path, running against the real 14-grant config. |
+| `just health` | 2 passed, 0 failed |
+| `just verify` | SC-001/002/005/007/008/009 pass, 0 failed, 3 skipped (perf, restart-survival, retired UI) |
+| `klams-token --version` | `0.1.45` |
+| Units | `klams-service` + `klams-monitor` both `active`; zero errors/panics/warnings in the service journal since restart; exactly **1** `klams-monitor` publish failure at restart, the documented expected shape |
+
+The first two rows are the ones that matter: the tool was exercised
+against the **live** config it was built for, not a fixture — and the
+`--verify` probe answering `live` for all 14 grants is the check that
+would have caught the dead `ansible_k` grant that motivated it.
+
+One incidental proof: `just health`/`just verify` need a `KLAMS_TOKEN`
+that is not in `.env`, and it was supplied by piping
+`klams-token list --reveal --json | jq` into the environment without the
+value ever reaching the terminal. That is the `--json` contract krot
+slice 6 will use, exercised end-to-end on the first day.
+
+The live file has **14** grants, not the 13 the proposal's notes carried
+— the count moved again between planning and shipping, which is itself
+the argument for `list` over counting by hand.
