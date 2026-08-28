@@ -239,6 +239,32 @@ has since grown a hazard note (the marker is contagious through a quoted
 PR body) that the local copy never had, so the local copy was already
 the worse of two identical rules.
 
+### #1384 landed; #1377's prune is Ken's
+
+#1384 is built and documented: durable backups age-encrypt to a
+configured recipient, with a plaintext fingerprint manifest beside each
+one, and `klams-token restore` reads them back. The design constraint
+that shaped it is that **auto-restore must keep working without Ken** —
+so the same-run rollback moved to the in-memory copy the writer already
+held, and a test proves it by deleting the durable backup mid-flight.
+
+It is inert until Ken generates the keypair off-homelab and drops the
+public half in `/etc/klams/backup.age-recipient`. Until then backups
+stay plaintext and every write says so loudly, because refusing to edit
+the config when encryption is not configured would turn a hardening
+feature into an outage.
+
+**#1377's remaining ask — the one-time prune — is not done**, and it is
+Ken's call twice over: it is an irreversible deletion of files holding
+live credentials, and the survivor cannot be encrypted until the
+recipient exists. What is done is the reconciliation the WI comment
+asked for first: `backup-inventory.md`. The count is **seven**, not
+five, and six of them hold tokens the running service still accepts —
+the newest holds 13 of 14. The outlier `bak-1783644937` enumerates zero
+grants because it predates the multi-token schema; it carries the
+retired `bearer_token` instead, which makes it the one a fingerprint
+sweep would most easily miss.
+
 ### Remaining
 
 Decisions and surprises get appended as the work happens.
