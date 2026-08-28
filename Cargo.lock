@@ -1999,6 +1999,7 @@ dependencies = [
  "chrono",
  "figment",
  "filetime",
+ "futures",
  "hyper",
  "hyper-util",
  "jsonschema",

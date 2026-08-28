@@ -142,3 +142,89 @@ async fn t3_per_peer_cap_rejects_excess_connections() {
          (os_refused={rejected}, server_closed={closed})",
     );
 }
+
+/// Sprint 046 (WI #869) — T4: a connection actively STREAMING to the
+/// client is not idle, and the keep-alive watchdog must not evict it.
+///
+/// This is the klams MCP SSE drop reported in #869: a Claude Code
+/// client holding the stream open saw it die every ~80s, three times,
+/// then the transport close and lazily reconnect. The reported uptimes
+/// (77s, 79s x2, 81s, 83s) sit exactly in the window this watchdog
+/// produces at its default `keep_alive_timeout_secs = 75` — the tick is
+/// `keep_alive / 8`, so eviction lands between 75s and 84.4s.
+///
+/// The cause is that `IdleTrackedIo` advanced its clock only in
+/// `poll_read`. An SSE stream is server -> client only, so no matter how
+/// much data the server sends — including rmcp's own 15s SSE keepalive
+/// pings, which exist precisely to hold the stream open — the idle
+/// clock never moved and the watchdog killed a connection that was
+/// busy the whole time.
+///
+/// The WI proposed testing the loopback origin against ts.net to
+/// separate server from proxy. That test was run and pointed here:
+/// an idle keep-alive connection to loopback dies at the 30s
+/// header-read timeout, not at 80s, so neither observed timer was the
+/// tailscale proxy's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn t4_streaming_response_is_not_idle() {
+    use axum::response::sse::{Event, Sse};
+    use futures::stream;
+
+    let cfg = LimitsConfig {
+        header_read_timeout_secs: 30,
+        keep_alive_timeout_secs: 2,
+        per_peer_max_concurrent: 64,
+    };
+
+    // An SSE endpoint that emits a comment every 200ms forever — the
+    // shape of rmcp's keepalive-bearing stream, compressed in time.
+    let router = Router::new().route(
+        "/sse",
+        get(|| async {
+            Sse::new(stream::unfold((), |()| async {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                Some((
+                    Ok::<_, std::convert::Infallible>(Event::default().comment("ka")),
+                    (),
+                ))
+            }))
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("local_addr");
+    tokio::spawn(async move {
+        let _ = serve_with_limits(listener, router, cfg, std::future::pending::<()>()).await;
+    });
+
+    let mut sock = TcpStream::connect(addr).await.expect("connect");
+    sock.write_all(b"GET /sse HTTP/1.1\r\nHost: x\r\n\r\n")
+        .await
+        .expect("write");
+
+    // Read the stream for 5s — well past the 2s keep-alive window —
+    // sending NOTHING back, exactly as an SSE client does.
+    let start = Instant::now();
+    let mut buf = vec![0u8; 4096];
+    let mut total = 0usize;
+    loop {
+        if start.elapsed() >= Duration::from_secs(5) {
+            break;
+        }
+        match tokio::time::timeout(Duration::from_secs(1), sock.read(&mut buf)).await {
+            Ok(Ok(0)) => panic!(
+                "server closed a STREAMING connection after {:?} — the keep-alive \
+                 watchdog counted it idle because the traffic was all server -> client. \
+                 This is #869: every held-open MCP SSE stream dies at \
+                 keep_alive_timeout_secs (+ up to 1/8 of it in tick slop).",
+                start.elapsed()
+            ),
+            Ok(Ok(n)) => total += n,
+            Ok(Err(e)) => panic!("read error after {:?}: {e}", start.elapsed()),
+            Err(_) => {} // no data this second; keep waiting
+        }
+    }
+    assert!(
+        total > 0,
+        "expected streamed bytes from the SSE endpoint, got none"
+    );
+}

@@ -93,20 +93,29 @@ impl Drop for PerPeerPermit {
 }
 
 /// IO wrapper that records the wall-clock millisecond timestamp of
-/// each successful `poll_read`. The accept loop's keep-alive
-/// watchdog reads this counter to decide whether to abort an idle
-/// connection.
+/// traffic in EITHER direction. The accept loop's keep-alive watchdog
+/// reads this counter to decide whether to abort an idle connection.
+///
+/// Sprint 046 (WI #869): this used to record reads only, which made
+/// "idle" mean "the client has not spoken" rather than "nothing is
+/// happening". A server-sent-events stream is server -> client only, so
+/// an MCP client holding one open looked idle no matter how much the
+/// server was sending it — including rmcp's own 15s SSE keepalive
+/// pings, whose entire purpose is to hold the stream open. The watchdog
+/// killed every such stream at `keep_alive_timeout_secs` plus up to an
+/// eighth of it in tick slop: 75s..=84.4s at the default, matching the
+/// 77/79/79/81/83s drops reported in #869 to the second.
 struct IdleTrackedIo<T> {
     inner: T,
-    last_read_ms: Arc<AtomicU64>,
+    last_activity_ms: Arc<AtomicU64>,
 }
 
 impl<T> IdleTrackedIo<T> {
-    fn new(inner: T, last_read_ms: Arc<AtomicU64>) -> Self {
-        last_read_ms.store(now_ms(), Ordering::Relaxed);
+    fn new(inner: T, last_activity_ms: Arc<AtomicU64>) -> Self {
+        last_activity_ms.store(now_ms(), Ordering::Relaxed);
         Self {
             inner,
-            last_read_ms,
+            last_activity_ms,
         }
     }
 }
@@ -121,7 +130,7 @@ impl<T: AsyncRead + Unpin> AsyncRead for IdleTrackedIo<T> {
         let poll = Pin::new(&mut self.inner).poll_read(cx, buf);
         if let Poll::Ready(Ok(())) = &poll {
             if buf.filled().len() > pre {
-                self.last_read_ms.store(now_ms(), Ordering::Relaxed);
+                self.last_activity_ms.store(now_ms(), Ordering::Relaxed);
             }
         }
         poll
@@ -134,7 +143,14 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for IdleTrackedIo<T> {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
-        Pin::new(&mut self.inner).poll_write(cx, buf)
+        let poll = Pin::new(&mut self.inner).poll_write(cx, buf);
+        // A connection we are actively writing to is not idle (#869).
+        if let Poll::Ready(Ok(n)) = &poll {
+            if *n > 0 {
+                self.last_activity_ms.store(now_ms(), Ordering::Relaxed);
+            }
+        }
+        poll
     }
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         Pin::new(&mut self.inner).poll_flush(cx)
@@ -218,8 +234,8 @@ async fn serve_one_connection(
     keep_alive: Duration,
     _permit: PerPeerPermit,
 ) {
-    let last_read = Arc::new(AtomicU64::new(now_ms()));
-    let io = TokioIo::new(IdleTrackedIo::new(tcp, Arc::clone(&last_read)));
+    let last_activity = Arc::new(AtomicU64::new(now_ms()));
+    let io = TokioIo::new(IdleTrackedIo::new(tcp, Arc::clone(&last_activity)));
     let svc = TowerToHyperService::new(router);
 
     let mut builder = http1::Builder::new();
@@ -231,9 +247,10 @@ async fn serve_one_connection(
     let conn = builder.serve_connection(io, svc).with_upgrades();
     tokio::pin!(conn);
 
-    // Idle watchdog: every `tick` check whether `last_read` has been
-    // quiet longer than `keep_alive`. Use a fraction of the window
-    // so the eviction lands within the documented `+5s` slop.
+    // Idle watchdog: every `tick` check whether the connection has been
+    // quiet — in BOTH directions (#869) — longer than `keep_alive`. Use
+    // a fraction of the window so the eviction lands within the
+    // documented `+5s` slop.
     let tick = std::cmp::max(Duration::from_millis(250), keep_alive / 8);
 
     loop {
@@ -252,7 +269,7 @@ async fn serve_one_connection(
                 return;
             }
             () = tokio::time::sleep(tick) => {
-                let elapsed = now_ms().saturating_sub(last_read.load(Ordering::Relaxed));
+                let elapsed = now_ms().saturating_sub(last_activity.load(Ordering::Relaxed));
                 if u128::from(elapsed) >= keep_alive.as_millis() {
                     info!(
                         target: "klams_service::limits",

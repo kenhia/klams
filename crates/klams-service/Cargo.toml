@@ -54,6 +54,8 @@ nix = { version = "0.29", features = ["signal"] }
 
 [dev-dependencies]
 klams-client = { workspace = true }
+# Sprint 046 (#869): SSE stream fixture for the keep-alive watchdog test.
+futures = { workspace = true }
 klams-scanner = { path = "../klams-scanner" }
 tempfile = "3"
 filetime = "0.2"

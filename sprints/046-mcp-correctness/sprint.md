@@ -144,5 +144,49 @@ anywhere. #869 time-boxed.
 
 ## Log
 
-Written at sprint start; decisions and surprises get appended as the
-work happens.
+### #850 was three fields, not two
+
+The class test found `register_author.extra` — a third instance the WI
+had not spotted, sitting in the same shape (`serde_json::Value` with
+`#[serde(default)]`, rendered as `{"default": null}`: no `type`, so
+unsendable as an object). That is the argument for the class rule
+making its own case on the first run. It also had to be given a `{}`
+default so the advertised default stopped contradicting the advertised
+type; behaviour is unchanged, since the store already normalized a null
+`extra` to `{}` before insert.
+
+### #869 is a klams bug, and it is not SSE-specific
+
+Diagnosed in full and fixed; it did not need the time-box.
+
+The WI's proposed first test — loopback vs ts.net — was run and was
+useful mostly by elimination: an idle keep-alive connection to the
+loopback origin is closed at **30s**, the `header_read_timeout`, not at
+80s. Neither observed timer was the tailscale proxy's, which pointed
+back into this repo.
+
+The cause is `IdleTrackedIo` in `crates/klams-service/src/limits.rs`.
+It advanced its idle clock only in `poll_read`, so "idle" meant *the
+client has not spoken*, not *nothing is happening*. An SSE stream is
+server → client only. No amount of server traffic moved the clock —
+**including rmcp's own 15s SSE keepalive pings, whose entire purpose is
+to hold the stream open** — so the watchdog evicted a connection that
+had been busy the whole time.
+
+The arithmetic settles it. `keep_alive_timeout_secs` defaults to 75 and
+the watchdog ticks at `keep_alive / 8`, so eviction lands in
+75s..=84.4s. The uptimes reported in the WI were 77, 79, 79, 81 and 83.
+
+Fix: count traffic in both directions. Genuinely idle connections are
+still evicted on the same schedule — T1 and T2 pass unchanged; the only
+difference for them is that the clock now starts at the response write
+rather than the request read, microseconds apart.
+
+Worth noting what this was *not*: not a missing keepalive (rmcp sends
+them), and not the proxy. The server was sending exactly the frames
+that should have kept the connection alive, and was killing the
+connection for not hearing them come back.
+
+### Remaining
+
+Decisions and surprises get appended as the work happens.
