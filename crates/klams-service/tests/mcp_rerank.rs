@@ -38,10 +38,13 @@ async fn search_ids(session: &McpSession, query: &str) -> Vec<String> {
         None,
         "memory_search must not fail: {hits}"
     );
-    hits.as_array()
+    // Sprint 046 (#1178): compact hits — the locator is `id` on the hit.
+    // Rank order is what this suite asserts, and it survives compaction.
+    hits["hits"]
+        .as_array()
         .into_iter()
         .flatten()
-        .filter_map(|h| h["memory"]["id"].as_str().map(str::to_string))
+        .filter_map(|h| h["id"].as_str().map(str::to_string))
         .collect()
 }
 

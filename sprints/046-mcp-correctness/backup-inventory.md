@@ -38,6 +38,24 @@ are named for the sprint that made them (`bak-016-pre704`,
 tool that guesses which are disposable is a tool that deletes the one
 that mattered. So this pass stays manual.
 
+## Outcome (2026-08-27)
+
+Ken created `/etc/klams/backup.age-recipient` (identity generated
+off-fleet, passphrase-protected). The newest backup was encrypted to it
+as `klams.toml.bak-20260817T021051Z.age` with its manifest beside it,
+and **all seven plaintext files were `shred -u`ed** — not `rm`ed, since
+they held live credentials and unlinking leaves the blocks.
+
+`/etc/klams` now holds no plaintext token backup.
+
+**Unverified, by design:** nothing on kubs0 can decrypt that file, so
+no one here has confirmed it is readable with the real identity. One
+round trip settles it:
+
+```sh
+sudo klams-token restore /etc/klams/klams.toml.bak-20260817T021051Z.age --identity -
+```
+
 ## Also noticed, out of #1377's scope
 
 `monitor.env.bak-20260813-202310` is a backup of `monitor.env` in a

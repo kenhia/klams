@@ -254,17 +254,75 @@ stay plaintext and every write says so loudly, because refusing to edit
 the config when encryption is not configured would turn a hardening
 feature into an outage.
 
-**#1377's remaining ask — the one-time prune — is not done**, and it is
-Ken's call twice over: it is an irreversible deletion of files holding
-live credentials, and the survivor cannot be encrypted until the
-recipient exists. What is done is the reconciliation the WI comment
-asked for first: `backup-inventory.md`. The count is **seven**, not
-five, and six of them hold tokens the running service still accepts —
-the newest holds 13 of 14. The outlier `bak-1783644937` enumerates zero
-grants because it predates the multi-token schema; it carries the
-retired `bearer_token` instead, which makes it the one a fingerprint
-sweep would most easily miss.
+#### The prune, done
 
-### Remaining
+The reconciliation the WI comment asked for first is in
+`backup-inventory.md`. The count is **seven**, not five, and six held
+tokens the running service still accepts — the newest held 13 of 14.
+The outlier `bak-1783644937` enumerated zero grants because it predates
+the multi-token schema; it carried the retired `bearer_token` instead,
+which made it the one a fingerprint sweep would most easily have missed.
 
-Decisions and surprises get appended as the work happens.
+Ken created `/etc/klams/backup.age-recipient` mid-sprint (identity
+generated off-fleet, passphrase-protected, password manager + USB), so
+the prune could finish properly rather than leaving one plaintext file:
+
+- the newest backup was encrypted to that recipient as
+  `klams.toml.bak-20260817T021051Z.age`, with its plaintext fingerprint
+  manifest beside it;
+- all seven plaintext files were **`shred -u`**ed, not `rm`ed — these
+  held live credentials, and unlinking leaves the blocks.
+
+`/etc/klams` now holds **no plaintext token backup**. #1377's premise is
+gone.
+
+**One verification is Ken's and cannot be done here** — by design.
+Nothing on kubs0 can decrypt that backup, so nobody here has confirmed
+the ciphertext is readable with the real identity. If the recipient were
+a valid-but-wrong key, the failure would be silent and would only
+surface when it mattered. Worth one round trip:
+
+```sh
+sudo klams-token restore /etc/klams/klams.toml.bak-20260817T021051Z.age --identity -
+```
+
+What is lost if that fails is undo history only — the live config and
+the k-homelab store are the primaries, which is exactly why the trade
+was worth making.
+
+#### Also noticed
+
+`monitor.env.bak-20260813-202310` is a backup of `monitor.env` in a
+sixth ad-hoc convention, left in place as outside #1377's scope. The
+generalizing principle now in `docs/auth.md` applies to it too.
+
+### The integration stack earned its place again
+
+`just gate` passed clean through all of this and missed three real
+breakages, all of them found only by the docker-compose suite:
+
+- `mcp_auth`'s three scope-surface pins, which enumerate the exact tool
+  list each scope sees. Adding `memory_get` at Read scope is precisely
+  the change they exist to make someone look at.
+- two `mcp_lifecycle_verbs` assertions and one in `mcp_rerank` that
+  reach into `hit["memory"]["id"]` over the wire — the full shape the
+  compact contract replaced.
+
+That is AGENTS.md's "before pushing anything that touches the store, the
+MCP tools, or the write paths" clause doing exactly its job. This sprint
+touched all three.
+
+The lifecycle test was rewritten to assert on the compact snippet **and
+then call `memory_get`** for the full record, so the fetch op is now
+exercised end-to-end over the wire rather than only in unit tests.
+
+### Follow-ups
+
+- **Ken: verify the encrypted backup decrypts.** Nothing on kubs0 can,
+  by design. One `klams-token restore … --identity -` settles it.
+- `monitor.env.bak-20260813-202310` is a plaintext backup of
+  `monitor.env` in a sixth ad-hoc convention — outside #1377's scope,
+  but the same principle applies.
+- REST `/memory/search` still returns full records. That was the right
+  call for this sprint; whether the compact contract should reach it is
+  a separate decision with non-agent consumers to consider.

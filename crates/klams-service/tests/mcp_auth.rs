@@ -129,6 +129,10 @@ async fn tools_list_admin_sees_everything() {
         "memory_related",
         "memory_append_event",
         "event_search",
+        // Sprint 046 (#1178) — the fetch op the compact `memory_search`
+        // contract depends on. Read scope: it returns one record the
+        // caller could already have seen ranked.
+        "memory_get",
         "memory_delete",
         // Sprint 029 (#638) — knowledge lifecycle verbs.
         "memory_supersede",
@@ -167,6 +171,7 @@ async fn tools_list_read_only_sees_only_read_tools() {
         sorted,
         vec![
             "event_search".to_string(),
+            "memory_get".to_string(),
             "memory_related".to_string(),
             "memory_search".to_string(),
         ],
@@ -189,6 +194,8 @@ async fn tools_list_write_sees_read_and_write_no_admin() {
             "memory_add".to_string(),
             "memory_append_event".to_string(),
             "memory_delete".to_string(),
+            // Sprint 046 (#1178) — read scope, so a write token sees it too.
+            "memory_get".to_string(),
             "memory_related".to_string(),
             "memory_search".to_string(),
             // Sprint 029 (#638) — lifecycle verbs sit at Write.
