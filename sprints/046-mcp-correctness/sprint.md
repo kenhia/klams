@@ -326,3 +326,85 @@ exercised end-to-end over the wire rather than only in unit tests.
 - REST `/memory/search` still returns full records. That was the right
   call for this sprint; whether the compact contract should reach it is
   a separate decision with non-agent consumers to consider.
+
+## Deployed 2026-08-28
+
+- Version `0.1.46` live on kubs0 (`/healthz` confirms `status: Ok`, all four
+  backends `Ok`; was `0.1.45`).
+- Published to the store as `artifacts/klams-{service,scanner,monitor}/0.1.46/`.
+- Unit files: unchanged (`git diff 366f4c1..HEAD -- deploy/` is empty), so
+  `install-systemd` was not run and the scanner timer was not disturbed.
+- kai's `klams-scanner`: **left at its current version.** Nothing this sprint
+  touches the scanner — the changes are the MCP tool surface, the service's
+  connection watchdog, and `klams-token`. Deliberate, per the skill's "decide
+  explicitly" rule.
+- **`klams-token` needed a separate install and nearly got missed.**
+  `just deploy-from-store` ships three binaries; `klams-token` is not one of
+  them, so `/usr/local/bin/klams-token` was still `0.1.45` after the deploy —
+  *without* backup encryption. The next grant edit would have minted a
+  plaintext backup and quietly undone #1377's prune. Fixed with
+  `just install-klams-token`; now reports `0.1.46` and carries `restore` and
+  `--age-recipient`. **Worth folding into the deploy skill.**
+- Rollback target: `0.1.45` via `just rollback` (`.prev` binaries in place);
+  any published version via `just deploy-from-store --version`.
+- Migrations applied: **none** (`git diff 366f4c1..HEAD -- migrations/` empty),
+  so `just rollback` is a complete undo here.
+- Config changes required: none to `klams.toml`. Ken added
+  `/etc/klams/backup.age-recipient` during the sprint, which is new but not a
+  `klams-service` config change — the service never reads it.
+
+### Verified live, beyond `/healthz`
+
+Each of the four MCP-surface items was exercised against the deployed
+instance, three of them through a real Claude Code MCP client rather than a
+synthetic one:
+
+- **#850** — `memory_add(kind: "fact")` **succeeded from a Claude Code
+  session**, writing `01a046e7-…` (deleted again after). This is the WI's
+  acceptance criterion verbatim, and the store shows no agent had written a
+  fact since 2026-05-28.
+
+  The *first* attempt is the better evidence: it failed with
+  `payload.key (shape): key must match ^[A-Z][A-Z0-9_]*$` — a **store
+  validator** complaint about the key's casing. Before this sprint the same
+  call died at `payload must be a JSON object`, before reaching any store
+  logic at all. The payload now arrives as an object; the only thing left to
+  argue about is its contents.
+
+- **#1178** — `memory_search` returned compact hits over MCP: `snippet` (match-
+  windowed, elided with `…`), `id`, `score`/`raw_score`/`source_rank`,
+  `age_seconds`, `tags`, `author`, and `more: {"fetch": "memory_get",
+  "truncated": true}`. Typed metadata is omitted where it does not apply —
+  `repo` appeared on exactly the one hit that has one.
+
+- **#1230** — the log line is live:
+  `mcp.tools/list tools=11 protocol=2026-07-28 cache_metadata=true`.
+  Eleven tools is the write-scope surface, which now includes `memory_get`.
+
+- **#869** — an authenticated SSE stream against the deployed service held
+  **135 seconds** with 51 keepalive bytes flowing, clean through the
+  75..=84.4s window that used to evict it. Before this sprint the same stream
+  died three times inside that span and the client gave up on the transport.
+
+- **#1384** — the deployed `klams-token 0.1.46` advertises `restore` and
+  `--age-recipient`, and `/etc/klams` holds one age-encrypted backup plus its
+  plaintext manifest and no plaintext config backup at all.
+
+Units settled: `klams-service` and `klams-monitor` both `active`, **zero**
+ERROR/WARN lines in the service log since restart, and exactly one
+`klams-monitor` publish failure at startup — the known race, not a regression.
+
+### Note for the next agent: the tools/list cache delays this fix
+
+This session's MCP client was still serving the **0.1.45 tool catalog** after
+the restart — its cached `memory_add.payload` schema carried no `type`, and
+`memory_get` was absent from the catalog entirely. The write above worked
+anyway, because the payload shape is decided by what the client *sends* and
+this client sent an object regardless.
+
+But it means the #850 fix reaches an agent only when its cached catalog
+expires or it reconnects. Sprint 043 set `ttlMs` with `cacheScope: private`
+precisely so clients would cache this. **An agent still seeing
+`SCHEMA_VALIDATION_FAILED` after 0.1.46 should restart its MCP client before
+filing anything** — and Ken'''s global `CLAUDE.md`, which documents the bug as
+a standing workaround, is now stale and worth correcting.
