@@ -41,6 +41,63 @@ sudo klams-token rotate klams-scanner    # keeps agent_name, so nothing is orpha
 ```
 
 Recipes and the full write pipeline: [usage.md](usage.md#sprint-045--klams-token-auth-grant-cli).
+
+### Backups of this file are secret-bearing too
+
+**A backup of a secret-bearing file is itself a secret-bearing surface:
+encrypted at rest, or registered and retained deliberately.** krot's
+grant inventory (klams #1377) found seven `klams.toml.bak-*` files in
+`/etc/klams` in three ad-hoc naming conventions, several still holding
+the **current** live token for most of the 14 grants — the same
+`0640 root:klams` exposure as the config itself, with none of the
+attention. Every rotation minted another one.
+
+Since sprint 046 (#1384) `klams-token` encrypts its durable backups with
+`age`, to a recipient whose private half is passphrase-protected and
+kept **off the homelab filesystem**:
+
+```bash
+# Ken, off-homelab, once:
+age-keygen | age -p > ken-klams-backup.age   # keep this OFF kubs0
+# the PUBLIC half goes on the host:
+sudo tee /etc/klams/backup.age-recipient <<<'age1…'
+```
+
+`klams-token` finds that file beside the config on its own. (A
+`--age-recipient` flag and `$KLAMS_TOKEN_AGE_RECIPIENT` override it; the
+file is the primary route because these commands run under `sudo`, which
+drops the environment.) **With no recipient configured, backups stay
+plaintext and every write says so loudly** — refusing to edit the config
+because backups cannot be encrypted would turn a hardening feature into
+an outage.
+
+Two things make this affordable:
+
+- **Auto-restore still works without Ken.** The same-run rollback — the
+  restore-on-failed-validate the write pipeline has always done — uses
+  the in-memory copy the tool already holds. No plaintext outlives the
+  operation, and a failed validate at 2am self-heals with nobody awake.
+  Only the durable `.bak` on disk is encrypted.
+- **A plaintext manifest sits beside each backup**, carrying
+  `{agent_name: sha256(token)[:12]}` and nothing else, so krot and any
+  audit can still answer "does this backup hold a live token?" without
+  decrypting anything or learning a value.
+
+Reading one back:
+
+```bash
+sudo klams-token restore /etc/klams/klams.toml.bak-20260827T120000Z.age --identity -   # prints it
+sudo klams-token restore <backup> --identity - --apply                                  # makes it live
+```
+
+`--identity -` reads the age identity from stdin, so it never lands on
+this filesystem. `--apply` goes through the same validated write pipeline
+as any other mutation, so putting an old config back cannot itself break
+the service.
+
+**Losing the passphrase loses only undo history.** The live config and
+the k-homelab secret store are the primaries.
+
 The hand-edited shape it produces:
 
 ```toml
