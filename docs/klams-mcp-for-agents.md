@@ -103,7 +103,7 @@ header is all there is; no OAuth, no session pre-registration.
 ## Using it (the part that matters)
 
 The advertised tools are scope-filtered per token; a read+write token
-sees `memory_search`, `memory_related`, `event_search`, `memory_add`,
+sees `memory_search`, `memory_get`, `memory_related`, `event_search`, `memory_add`,
 `memory_append_event`, `memory_delete`, `dissent_propose`,
 `register_author`. Full surface reference:
 [usage.md § MCP server](usage.md#sprint-007--mcp-server).
@@ -257,11 +257,71 @@ Exceeding one of these is a permanent error, not an outage.
 |---|---|
 | `memory_search.query` | ≤ 1024 characters (`EMPTY_QUERY` if blank) |
 | `memory_search.top_k` | 1..=50, default 10 |
+| `memory_search` snippet | 320 characters per hit (compact mode) |
 | `memory_related.top_k` | 1..=50, default 5 |
 | `event_search` window | ≤ `[api] memories_max_window_days` (default **30** days) |
 | `memory_add` content | the embedding model's token ceiling — currently `max_input_tokens = 32768` (Qwen3-Embedding-0.6B). The service asks TEI's `/tokenize` for an exact count, so there is no character rule of thumb: 512 tokens is ~525 characters of prose but >20,000 of base64. |
 
 ## What a search result actually is
+
+### Compact by default (sprint 046)
+
+`memory_search` returns **snippets, not whole memories**. Each hit
+carries a match-window excerpt of at most 320 characters, the ranking
+fields, typed metadata for its kind, and an `id`. The response also
+carries an unconditional `more` block naming the follow-up call:
+
+```json
+{
+  "hits": [
+    {
+      "id": "019f4986-0ee3-7ae3-8de5-f697e2692dc6",
+      "kind": "knowledge",
+      "snippet": "…the TEI embedding endpoint is configured in…",
+      "score": 0.0164,
+      "raw_score": 0.87,
+      "source_rank": 0,
+      "age_seconds": 259200,
+      "tags": ["gotcha"],
+      "author": "claude-kubs0",
+      "source_path": "docs/setup.md",
+      "repo": "klams",
+      "host": "kubs0",
+      "heading_path": "Setup > TEI"
+    }
+  ],
+  "more": { "fetch": "memory_get", "truncated": true }
+}
+```
+
+**If a snippet did not carry what you needed, call `memory_get` with
+that hit's `id`.** That is one call and it returns the whole record —
+for facts, knowledge and events alike.
+
+Two rules govern the shape, both inherited from khound's response
+contract:
+
+1. **Compact by default.** You ask for more; it is not pushed at you.
+2. **Typed metadata, omitted rather than faked.** A fact has no
+   `source_path`, so the field is absent — not empty.
+
+Why: on khound's fair eval suite, full-text `memory_search` cost
+**4,491 tokens per answered query**. The compact contract cost
+**1,024–1,476** on the same suite with answers preserved — and that
+metric charges a follow-up read whenever the snippet fell short, so
+the saving is not taken out of recall.
+
+Pass `full: true` if you genuinely want bodies in bulk (eval harnesses,
+exports). Ordinary recall should not.
+
+The window is placed over the part of the memory that **matched your
+query**, not over its beginning. Head-of-text snippets were khound's
+own measured mistake: a document that was right still forced a
+follow-up read.
+
+REST `POST /memory/search` is unchanged and still returns full records.
+
+### Scores
 
 `memory_search` returns hits carrying a `score` that is a **Reciprocal
 Rank Fusion score, not a cosine similarity**. Do not threshold it as if

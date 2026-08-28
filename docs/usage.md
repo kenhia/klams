@@ -1310,12 +1310,20 @@ Every mutation runs one pipeline, and each step is a refusal point:
    `klams_types::AuthConfig`, *the same type `klams-service` boots
    from*, using the same rule list `--validate-config` reports. A
    config the service would refuse to start on never reaches disk.
-4. **Timestamped backup**, then the new content is written **through
-   the existing inode** — `/etc/klams/klams.toml` is `root:klams 0640`
-   and a write-temp-and-rename would hand it to whoever ran `sudo`,
-   locking the service out of its own config.
-5. **Re-read and re-validate**; on failure the backup is restored and
-   the command reports what happened.
+4. **Timestamped durable backup** — age-encrypted since sprint 046
+   (#1384) when a recipient is configured, with a plaintext fingerprint
+   manifest beside it; plaintext with a loud warning when one is not.
+   Then the new content is written **through the existing inode** —
+   `/etc/klams/klams.toml` is `root:klams 0640` and a
+   write-temp-and-rename would hand it to whoever ran `sudo`, locking
+   the service out of its own config.
+5. **Re-read and re-validate**; on failure the config is rolled back
+   **from the in-memory copy** — not from the durable backup, which by
+   then may be encrypted to a key that is not on this machine. That
+   split is what lets a failed validate at 2am self-heal without Ken.
+
+Set-up, the restore path, and why backups are encrypted at all:
+[auth.md](auth.md#backups-of-this-file-are-secret-bearing-too).
 
 `--dry-run` runs steps 1–3 and stops. It reports in the conditional
 ("would remove grant `x`"), and `add`/`rotate` under `--dry-run` print
@@ -1350,6 +1358,11 @@ sudo klams-token rotate klams-scanner --reveal
 
 # Retire a grant.
 sudo klams-token remove ansible-k --yes
+
+# Read an encrypted backup (sprint 046). --identity - takes the age
+# identity on stdin, so it never lands on this filesystem.
+sudo klams-token restore /etc/klams/klams.toml.bak-20260827T120000Z.age --identity -
+sudo klams-token restore <backup> --identity - --apply     # make it live again
 ```
 
 A grant is addressed by its `agent_name` or its `label`. If a selector

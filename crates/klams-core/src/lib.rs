@@ -3,6 +3,7 @@
 pub mod context;
 pub mod decay;
 pub mod dedupe;
+pub mod fetch;
 pub mod hybrid;
 pub mod knowledge_write;
 pub mod metrics;
@@ -11,6 +12,7 @@ pub mod projection;
 pub mod provenance;
 pub mod queue;
 pub mod retrieval;
+pub mod snippet;
 pub mod summarize;
 pub mod tokens;
 pub mod validate;

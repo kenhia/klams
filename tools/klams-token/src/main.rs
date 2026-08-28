@@ -47,12 +47,44 @@ struct Cli {
     #[arg(long, global = true)]
     dry_run: bool,
 
+    /// age recipient the durable backup is encrypted to (sprint 046,
+    /// #1384). Defaults to `$KLAMS_TOKEN_AGE_RECIPIENT`, then
+    /// `backup.age-recipient` beside the config — the file is the
+    /// primary route, because these commands run under `sudo` and sudo
+    /// drops the environment.
+    ///
+    /// The recipient is a PUBLIC key. Its private half is
+    /// passphrase-protected and lives off this machine; that is the
+    /// point, and it is why `restore` needs Ken.
+    #[arg(long, global = true, value_name = "age1…")]
+    age_recipient: Option<String>,
+
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Decrypt an encrypted durable backup and print it, or put it
+    /// back over the live config.
+    ///
+    /// Needs the age identity whose public half backups were encrypted
+    /// to — deliberately Ken's, deliberately not on this machine.
+    /// Losing the passphrase loses only undo history: the live config
+    /// and the k-homelab store are the primaries.
+    Restore {
+        /// The `.bak-…Z.age` file to read.
+        backup: PathBuf,
+        /// age identity file. Use `-` to read it from stdin so it never
+        /// touches this filesystem.
+        #[arg(long, value_name = "PATH|-")]
+        identity: String,
+        /// Write it over the live config instead of printing it. Takes
+        /// its own durable backup first, like any other write.
+        #[arg(long)]
+        apply: bool,
+    },
+
     /// List the grants.
     List {
         /// Print token values. Off by default: these are live secrets
@@ -150,6 +182,10 @@ struct Session {
     doc: GrantsDoc,
     json: bool,
     dry_run: bool,
+    /// Resolved age recipient for durable backups (#1384). `None` means
+    /// encryption is not configured, and the write path says so out
+    /// loud rather than letting a plaintext copy land quietly.
+    recipient: Option<klams_token::backup::Recipient>,
     /// Operator notes a completed write leaves behind (where the
     /// backup went, what to reload). Flushed to stderr *after* the
     /// command reports its own result, so the terminal reads in the
@@ -168,6 +204,7 @@ async fn main() {
 async fn run() -> Result<()> {
     let cli = Cli::parse();
     let path = paths::resolve(cli.config.clone())?;
+    let path2 = path.clone();
     let before_text = std::fs::read_to_string(&path).with_context(|| {
         format!(
             "reading {} — it is root:klams 0640 on a deployed host, so this usually means sudo",
@@ -182,6 +219,7 @@ async fn run() -> Result<()> {
         doc,
         json: cli.json,
         dry_run: cli.dry_run,
+        recipient: klams_token::backup::Recipient::resolve(cli.age_recipient.as_deref(), &path2)?,
         notes: Vec::new(),
     };
 
@@ -212,6 +250,11 @@ async fn run() -> Result<()> {
             remove: to_remove,
         } => s.scopes(selector, set, to_add, to_remove),
         Command::Rotate { selector, reveal } => s.rotate(selector, *reveal),
+        Command::Restore {
+            backup,
+            identity,
+            apply,
+        } => s.restore(backup, identity, *apply),
     };
     for note in &s.notes {
         eprintln!("{note}");
@@ -583,6 +626,110 @@ impl Session {
         Ok(())
     }
 
+    // --------------------------------------------------------- restore
+
+    /// Decrypt an encrypted durable backup (sprint 046, #1384).
+    ///
+    /// Restore is a command rather than an improvisation because the
+    /// alternative — an operator reaching for `age -d` under pressure
+    /// with a broken config live — is where the mistakes are. `--apply`
+    /// goes through the same validated write pipeline as every other
+    /// mutation, so putting an old config back cannot itself break the
+    /// service.
+    fn restore(&mut self, backup: &std::path::Path, identity: &str, apply: bool) -> Result<()> {
+        // `-` reads the identity from stdin so it never touches this
+        // filesystem, which is the whole premise of keeping it off the
+        // homelab.
+        let tmp;
+        let identity_path = if identity == "-" {
+            use std::io::Read as _;
+            let mut buf = String::new();
+            std::io::stdin()
+                .read_to_string(&mut buf)
+                .context("reading the age identity from stdin")?;
+            tmp = tempfile::NamedTempFile::new().context("staging the identity")?;
+            std::fs::write(tmp.path(), buf.as_bytes()).context("staging the identity")?;
+            tmp.path().to_path_buf()
+        } else {
+            std::path::PathBuf::from(identity)
+        };
+
+        let text = klams_token::backup::decrypt(&identity_path, backup)?;
+        // Prove it is a config before offering to make it the live one.
+        let doc = GrantsDoc::parse(&text).with_context(|| {
+            format!("{} decrypted, but does not parse as TOML", backup.display())
+        })?;
+        let grants = doc.fingerprints()?;
+
+        if !apply {
+            if self.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "backup": backup.display().to_string(),
+                        "grants": grants.len(),
+                        "fingerprints": grants
+                            .iter()
+                            .map(|f| (f.key.clone(), serde_json::Value::String(f.token.clone())))
+                            .collect::<serde_json::Map<_, _>>(),
+                    }))?
+                );
+            } else {
+                print!("{text}");
+                eprintln!(
+                    "\n({} grants; re-run with --apply to make this the live config)",
+                    grants.len()
+                );
+            }
+            return Ok(());
+        }
+
+        if self.dry_run {
+            eprintln!(
+                "dry run: {} would be restored over {} ({} grants)",
+                backup.display(),
+                self.path.display(),
+                grants.len()
+            );
+            return Ok(());
+        }
+
+        let before = self.doc.fingerprints()?;
+        let durable = writer::DurableBackup {
+            recipient: self.recipient.as_ref().map(|r| r.value.as_str()),
+            fingerprints: before
+                .iter()
+                .map(|f| (f.key.clone(), f.token.clone()))
+                .collect(),
+        };
+        let written = writer::write_validated(
+            &self.path,
+            &text,
+            time::OffsetDateTime::now_utc(),
+            writer::DEFAULT_RETAIN,
+            &durable,
+            |landed| {
+                let errors = GrantsDoc::parse(landed)?.auth()?.errors();
+                if errors.is_empty() {
+                    Ok(())
+                } else {
+                    bail!("{}", errors.join("; "))
+                }
+            },
+        )?;
+        self.notes.push(format!(
+            "restored {} over {} ({} grants); the config it replaced is backed up at {}",
+            backup.display(),
+            self.path.display(),
+            grants.len(),
+            written.backup.display()
+        ));
+        self.notes.push(
+            "reload the service to pick this up: sudo systemctl reload klams-service".to_string(),
+        );
+        Ok(())
+    }
+
     // ---------------------------------------------------------- commit
 
     /// The write pipeline every mutation goes through.
@@ -623,11 +770,22 @@ impl Session {
 
         // 3. Backup, write through the existing inode, re-read what
         //    actually landed, and roll back if it does not validate.
+        // The manifest describes the config being REPLACED — `before` is
+        // its grant set — so an encrypted backup stays legible to krot
+        // and to an audit without anyone decrypting it (#1384).
+        let durable = writer::DurableBackup {
+            recipient: self.recipient.as_ref().map(|r| r.value.as_str()),
+            fingerprints: before
+                .iter()
+                .map(|f| (f.key.clone(), f.token.clone()))
+                .collect(),
+        };
         let written = writer::write_validated(
             &self.path,
             &new_text,
             time::OffsetDateTime::now_utc(),
             writer::DEFAULT_RETAIN,
+            &durable,
             |landed| {
                 let errors = GrantsDoc::parse(landed)?.auth()?.errors();
                 if errors.is_empty() {
@@ -638,8 +796,32 @@ impl Session {
             },
         )?;
 
-        self.notes
-            .push(format!("backup: {}", written.backup.display()));
+        self.notes.push(format!(
+            "backup: {}{}",
+            written.backup.display(),
+            if written.encrypted {
+                " (age-encrypted)"
+            } else {
+                ""
+            }
+        ));
+        if let Some(m) = &written.manifest {
+            self.notes.push(format!("manifest: {}", m.display()));
+        }
+        if !written.encrypted {
+            // Never silent: a plaintext copy of every live token just
+            // landed on disk, which is the exact hazard #1377 found
+            // seven instances of.
+            self.notes.push(format!(
+                "WARNING: this backup is PLAINTEXT and holds every live token. Configure an age \
+                 recipient to encrypt it — put a public `age1…` key in {}",
+                self.path
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."))
+                    .join(klams_token::backup::RECIPIENT_FILE)
+                    .display()
+            ));
+        }
         if !written.pruned.is_empty() {
             self.notes
                 .push(format!("pruned {} old backup(s)", written.pruned.len()));

@@ -101,3 +101,106 @@ fn write_tool_author_id_is_optional_in_schema() {
         );
     }
 }
+
+/// Sprint 046 (WI #850) — every advertised property must constrain its
+/// shape. No `type`, no `enum`, no combinator = an untyped property.
+///
+/// This is #309's rule widened to the class it should have covered.
+/// #309 fixed `memory_append_event.payload` (a bare
+/// `serde_json::Value`, which schemars renders as the boolean schema
+/// `true`) and guarded it with
+/// `no_boolean_property_subschemas_anywhere`. But
+/// `Option<serde_json::Value>` renders as `{"description": …}` — an
+/// object schema with no `type`, not a boolean — so `memory_add.payload`
+/// and `dissent_propose.proposed_payload` walked under that guard and
+/// stayed uncallable from every MCP client for months (#850). Clients
+/// do not send structured data for a field whose schema never says it
+/// takes any, so the `is_object()` guard inside the tool refuses the
+/// call before it reaches the store.
+///
+/// The narrow test stays — a boolean subschema is a distinct client
+/// failure (Claude Code drops the whole tool list on one). This is the
+/// general rule beneath it.
+#[test]
+fn no_unconstrained_property_subschemas_anywhere() {
+    const CONSTRAINTS: [&str; 7] = ["type", "enum", "const", "oneOf", "anyOf", "allOf", "$ref"];
+
+    fn walk(tool: &str, path: &str, schema: &serde_json::Value) {
+        let Some(obj) = schema.as_object() else {
+            return;
+        };
+        for (key, value) in obj {
+            let child_path = format!("{path}/{key}");
+            if key == "properties" {
+                let props = value
+                    .as_object()
+                    .unwrap_or_else(|| panic!("{tool}: {child_path} is not an object"));
+                for (prop, prop_schema) in props {
+                    let prop_path = format!("{child_path}/{prop}");
+                    let constrained = prop_schema
+                        .as_object()
+                        .is_some_and(|s| CONSTRAINTS.iter().any(|c| s.contains_key(*c)));
+                    assert!(
+                        constrained,
+                        "{tool}: property {prop_path} declares no shape ({prop_schema}) — \
+                         a client will not send structured data for an untyped field, so a \
+                         tool guarding on it (e.g. `payload.is_object()`) refuses every call. \
+                         Give it a real schema \
+                         (e.g. #[schemars(with = \"serde_json::Map<String, serde_json::Value>\")])",
+                    );
+                    walk(tool, &prop_path, prop_schema);
+                }
+            } else {
+                walk(tool, &child_path, value);
+            }
+        }
+    }
+    for tool in all_tool_descriptors() {
+        walk(&tool.name, "", &tool.schema_as_json_value());
+    }
+}
+
+/// Sprint 046 (WI #850) — the three free-form payload fields, named.
+///
+/// The general rule above is the guard; this is the regression pin for
+/// the specific fields the bug was reported against, so a failure names
+/// the tool an agent could not call rather than a JSON pointer.
+#[test]
+fn free_form_payload_fields_advertise_object_type() {
+    const FIELDS: [(&str, &str); 4] = [
+        ("memory_add", "payload"),
+        ("dissent_propose", "proposed_payload"),
+        ("register_author", "extra"),
+        ("memory_append_event", "payload"),
+    ];
+    for (tool_name, field) in FIELDS {
+        let tool = all_tool_descriptors()
+            .into_iter()
+            .find(|t| t.name.as_ref() == tool_name)
+            .unwrap_or_else(|| panic!("{tool_name}: not advertised"));
+        let schema = tool.schema_as_json_value();
+        let prop = schema["properties"]
+            .get(field)
+            .unwrap_or_else(|| panic!("{tool_name}.{field}: property missing"));
+        // `object`, or `["object", "null"]` for an optional field.
+        let admits_object = match &prop["type"] {
+            serde_json::Value::String(s) => s == "object",
+            serde_json::Value::Array(v) => v.iter().any(|t| t == "object"),
+            _ => false,
+        };
+        assert!(
+            admits_object,
+            "{tool_name}.{field}: schema does not admit an object ({prop}) — \
+             clients will not send one, and the tool's `is_object()` guard \
+             then refuses every call (#850)",
+        );
+        // A default must not contradict the type it defaults for.
+        if let Some(default) = prop.get("default") {
+            assert!(
+                default.is_object() || default.is_null() && prop["type"].is_array(),
+                "{tool_name}.{field}: default {default} contradicts type {}",
+                prop["type"],
+            );
+        }
+    }
+}

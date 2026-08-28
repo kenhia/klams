@@ -1,0 +1,53 @@
+suite: /home/ken/khound-eval/suite-002.toml
+queries: 41 · errors: 0
+answered: 19 · follow-up reads charged: 1
+
+query                              full    compact  answered  snippet
+id2-836                            4347       1927         -        -
+id2-window-too-large               3655       1951         -        -
+id2-queue-full                     3716       1792       yes  carried
+id2-per-peer-max                   3726       1974       yes  carried
+id2-oversize-retention             4114       1886       yes  carried
+id2-rerank-window                  4318       1961       yes  carried
+id2-search-miss                    3859       1842       yes  carried
+id2-provision-storage              4191       1981       yes  carried
+id2-kprojects-dir                  4284       1887         -        -
+id2-okf-version                    3823       1910       yes  carried
+id2-klams-view-static              4480       1855       yes  carried
+id2-scanner-timer                  4203       2048         -        -
+con2-ports                         4289       2519       yes    fetch
+con2-eaddrinuse                    5235       1766       yes  carried
+con2-installer-units               4520       1975       yes  carried
+con2-publish-refuse                4575       1993         -        -
+con2-store-env                     4873       1972       yes  carried
+con2-scanner-roots                 4519       1877       yes  carried
+con2-tei-tag                       4078       1993         -        -
+con2-scopes-flat                   4225       2011       yes  carried
+con2-routing-first                 5022       1919       yes  carried
+con2-scanner-chart                 4477       1864       yes  carried
+con2-swap                          3831       1952       yes  carried
+flt2-view-unit                     7860       1877         -        -
+flt2-grafana-json                  4229       2011         -        -
+flt2-compose-qdrant                4822       2088         -        -
+flt2-kproject-instructions         4157       1881         -        -
+flt2-serve-recipe                  5292       1812         -        -
+flt2-wiki-scope                    3624       1900       yes  carried
+korg2-lexical-decision             4423       1847       yes  carried
+korg2-writes-failed                4071       1931         -        -
+korg2-unseed                       5751       1761         -        -
+korg2-schema-reject                4073       1791         -        -
+korg2-kagent-fate                  4317       2131         -        -
+korg2-kyac-audit                   4175       2065         -        -
+korg2-reset-blast                  3947       1919         -        -
+korg2-dirty-deploy                 3884       1900         -        -
+korg2-pi4-touch                    4896       2011         -        -
+korg2-zone-keys                    6381       1811         -        -
+korg2-grafana-owner                4373       2089         -        -
+korg2-union-intersection           3758       1992         -        -
+
+tokens per answered query
+  full text : 9599
+  compact   : 4193
+  reduction : 2.29x
+
+(suite carries 11 conceptual queries)

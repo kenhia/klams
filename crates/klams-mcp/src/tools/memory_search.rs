@@ -51,13 +51,72 @@ pub struct MemorySearchArgs {
     pub tags: Option<Vec<String>>,
     #[serde(default)]
     pub top_k: Option<u32>,
+    /// Return whole memory texts inline instead of compact snippets.
+    ///
+    /// Sprint 046 (WI #1178): compact is the default. Full text cost
+    /// 4,491 tokens per answered query on khound's fair suite; the
+    /// compact contract cost 1,024-1,476 on the same suite with answers
+    /// preserved, and that metric already charges the follow-up read
+    /// when a snippet fell short. Default-on is the deliberate call —
+    /// a flag nobody passes is a default that never changes anything —
+    /// so this exists for the callers that genuinely want bodies in
+    /// bulk (eval harnesses, exports), not as the ordinary path.
+    #[serde(default)]
+    pub full: Option<bool>,
+}
+
+/// What `memory_search` returns: compact hits by default, the full
+/// ranked list when the caller asked for it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub enum MemorySearchOutput {
+    Compact(crate::contract::CompactSearchResponse),
+    Full(Vec<ScoredMemory>),
+}
+
+impl MemorySearchOutput {
+    /// The full ranked list, when the caller asked for `full: true`.
+    ///
+    /// `None` for a compact response — deliberately not a silent
+    /// projection back to full records, because there are none to
+    /// project: the bodies were never fetched into this shape.
+    #[must_use]
+    pub fn into_full(self) -> Option<Vec<ScoredMemory>> {
+        match self {
+            Self::Full(hits) => Some(hits),
+            Self::Compact(_) => None,
+        }
+    }
+
+    /// The compact response, when the caller took the default.
+    #[must_use]
+    pub fn into_compact(self) -> Option<crate::contract::CompactSearchResponse> {
+        match self {
+            Self::Compact(resp) => Some(resp),
+            Self::Full(_) => None,
+        }
+    }
 }
 
 /// Execute `memory_search`. Returns the merged ranked hits on success
-/// or an MCP error envelope otherwise. Each result is a [`ScoredMemory`]
-/// with the fused `score` (RRF, #328), the per-source `source_rank`, and
-/// the pre-fusion `raw_score` (#332), so retrieval evals can see both
-/// how a hit ranked and how well it matched.
+/// or an MCP error envelope otherwise.
+///
+/// Sprint 046 (WI #1178): the default shape is now COMPACT — a
+/// match-window snippet plus a locator per hit, and a `more.fetch`
+/// pointer at `memory_get`. Pass `full: true` for the previous shape:
+/// [`ScoredMemory`] values carrying the whole text, the fused `score`
+/// (RRF, #328), the per-source `source_rank` and the pre-fusion
+/// `raw_score` (#332).
+///
+/// The compact hits carry `score`, `raw_score` and `source_rank` too,
+/// so a retrieval eval can still see how a hit ranked and how well it
+/// matched without asking for bodies.
+///
+/// **Scope of the change:** this is the MCP tool only. REST
+/// `/v1/search` is untouched and still returns full records — it has
+/// non-agent consumers whose contract nothing here justifies breaking,
+/// and the token argument that motivates compactness is an agent-context
+/// argument.
 ///
 /// # Errors
 /// Returns an [`ErrorEnvelope`] for `EMPTY_QUERY`, `INVALID_TOP_K`,
@@ -66,7 +125,11 @@ pub async fn run<S: Store>(
     state: &McpState<S>,
     args: MemorySearchArgs,
     caller: Option<&str>,
-) -> Result<Vec<ScoredMemory>, ErrorEnvelope> {
+) -> Result<MemorySearchOutput, ErrorEnvelope> {
+    let full = args.full.unwrap_or(false);
+    // Kept for the snippet window: the compact projection needs the
+    // query to know which part of a long memory to cut.
+    let query_for_snippets = args.query.clone();
     let params = retrieval::SearchParams {
         query: args.query,
         kinds: args
@@ -98,7 +161,12 @@ pub async fn run<S: Store>(
     // answer — while the caller's agent name was sitting right there in
     // the argument list.
     mcp_metrics::record_search(caller_label(caller), None);
-    Ok(outcome.hits)
+    if full {
+        return Ok(MemorySearchOutput::Full(outcome.hits));
+    }
+    Ok(MemorySearchOutput::Compact(
+        crate::contract::CompactSearchResponse::build(&outcome.hits, &query_for_snippets),
+    ))
 }
 
 /// Map a neutral [`RetrievalError`] onto the MCP error envelope,

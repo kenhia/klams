@@ -74,11 +74,14 @@ async fn supersede_replaces_hides_and_links() {
             }),
         )
         .await;
-    let ids: Vec<String> = hits
+    // Sprint 046 (#1178): `memory_search` answers with compact hits —
+    // `{hits: [...], more: {...}}` — so the locator is `id` on the hit
+    // itself rather than a nested full record.
+    let ids: Vec<String> = hits["hits"]
         .as_array()
         .into_iter()
         .flatten()
-        .filter_map(|h| h["memory"]["id"].as_str().map(str::to_string))
+        .filter_map(|h| h["id"].as_str().map(str::to_string))
         .collect();
     assert!(
         !ids.iter().any(|i| same_uuid(i, &old_id)),
@@ -245,16 +248,28 @@ async fn update_edits_in_place_with_a_stable_id() {
             serde_json::json!({ "query": "s029 update target kubs0", "kinds": ["knowledge"] }),
         )
         .await;
-    let found = hits.as_array().into_iter().flatten().find(|h| {
-        h["memory"]["id"]
-            .as_str()
-            .is_some_and(|i| same_uuid(i, &id))
-    });
+    let found = hits["hits"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|h| h["id"].as_str().is_some_and(|i| same_uuid(i, &id)));
+    let found = found.unwrap_or_else(|| panic!("updated memory must be findable: {hits}"));
     assert!(
-        found.is_some_and(|h| h["memory"]["text"]
+        found["snippet"]
             .as_str()
-            .is_some_and(|t| t.contains("fixed"))),
-        "search must serve the updated text: {hits}"
+            .is_some_and(|t| t.contains("fixed")),
+        "the compact snippet must carry the updated text: {hits}"
+    );
+
+    // Sprint 046 (#1178): and the fetch op the compact contract points
+    // at must return the whole updated record — end to end over the
+    // wire, which is the half a unit test cannot reach.
+    let full = owner
+        .call_tool("memory_get", serde_json::json!({ "id": id }))
+        .await;
+    assert!(
+        full["text"].as_str().is_some_and(|t| t.contains("fixed")),
+        "memory_get must serve the updated text: {full}"
     );
 
     server.cleanup().await;

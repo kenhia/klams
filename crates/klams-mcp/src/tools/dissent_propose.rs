@@ -34,6 +34,10 @@ pub struct DissentProposeArgs {
     pub fact_id: Uuid,
     /// The corrected payload — same shape as the fact type's payload.
     /// Promoting the dissent overwrites the fact with this verbatim.
+    ///
+    /// Object schema, not a bare `serde_json::Value` (sprint 046, WI
+    /// #850) — see the note on `memory_add.payload`.
+    #[schemars(with = "serde_json::Map<String, serde_json::Value>")]
     pub proposed_payload: serde_json::Value,
     /// Why the proposer believes the fact is wrong (1..=2000 chars).
     pub reason: String,

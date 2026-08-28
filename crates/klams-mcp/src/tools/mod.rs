@@ -13,6 +13,7 @@ pub mod memory_admin_list_deleted;
 pub mod memory_admin_restore;
 pub mod memory_append_event;
 pub mod memory_delete;
+pub mod memory_get;
 pub mod memory_related;
 pub mod memory_search;
 pub mod memory_supersede;
@@ -34,11 +35,49 @@ use rmcp::{
 };
 use std::sync::Arc;
 
+/// The MCP `instructions` block, delivered on every connection.
+///
+/// Sprint 046 (WI #853): this block is delivered on every
+/// connection to every agent and cannot be checked by its reader,
+/// so a wrong sentence here is paid for constantly. Two were:
+///
+///  * the old text said to call `register_author` "only to write
+///    as a separate per-session identity". Sprint 025 made it
+///    idempotent on `agent_name` — it dedupes and returns the
+///    token-bound author, so the consequence it warned about can
+///    no longer occur. One session read it as "not for this",
+///    concluded its author id was undiscoverable, and filed a WI
+///    saying so (the 2026-07-25 rpidash3 misdiagnosis, handoff
+///    korg:635). Dropped rather than reworded: nothing in the
+///    ordinary agent path needs an `author_id` any more, and
+///    `memory_delete`'s own description already carries the note.
+///
+///  * `similar_existing` was described as something to act on
+///    "instead of" writing a duplicate. It arrives on the
+///    response to a write that has already happened, so that is
+///    not an action the caller still has.
+///
+/// The rule this leaves behind: when a sprint changes a tool's
+/// contract, the instructions block is a call site.
+pub const SERVER_INSTRUCTIONS: &str = "klams memory server. Writes are attributed to the author \
+    bound to your bearer token — call the `memory_*` tools \
+    directly; you do not need to supply an `author_id`, and \
+    `register_author` is idempotent on `agent_name` (it returns \
+    your bound author rather than minting a second identity). \
+    When a memory you can see is stale or wrong, prefer \
+    `memory_supersede` (one call: replacement + hidden original \
+    + trail) over delete-then-add; use `memory_update` for \
+    typo-level fixes to your own records. A `similar_existing` \
+    block on a `memory_add` response is after the fact — the \
+    near-duplicate is already written. The remedy is \
+    `memory_delete` on the record you just created, then \
+    `memory_supersede` on the original.";
+
 /// Minimum scope required to see/invoke each tool (FR-020). Sprint 007 T065.
 #[must_use]
 pub fn required_scope(tool: &str) -> Option<Scope> {
     Some(match tool {
-        "memory_search" | "memory_related" | "event_search" => Scope::Read,
+        "memory_search" | "memory_get" | "memory_related" | "event_search" => Scope::Read,
         // Sprint 025 (#633): `register_author` moved Read -> Write. It
         // mints identities, which was a read-scope operation until now —
         // a read-only token could manufacture authors at will.
@@ -244,18 +283,7 @@ impl<S: Store> ServerHandler for ToolRegistry<S> {
         info.capabilities = ServerCapabilities::builder().enable_tools().build();
         info.server_info.name = "klams-mcp".into();
         info.server_info.version = env!("CARGO_PKG_VERSION").into();
-        info.instructions = Some(
-            "klams memory server. Writes are attributed to the author bound \
-             to your bearer token, so you can call `memory_*` tools \
-             directly; call `register_author` only to write as a separate \
-             per-session identity. When a memory you can see is stale or \
-             wrong, prefer `memory_supersede` (one call: replacement + \
-             hidden original + trail) over delete-then-add; use \
-             `memory_update` for typo-level fixes to your own records. If \
-             `memory_add` returns `similar_existing`, consider superseding \
-             that memory instead of writing a near-duplicate."
-                .into(),
-        );
+        info.instructions = Some(SERVER_INSTRUCTIONS.into());
         info
     }
 
@@ -299,7 +327,27 @@ impl<S: Store> ServerHandler for ToolRegistry<S> {
         // rmcp's `CacheScope::default()` is `Public`, so this must stay
         // explicit.
         let negotiated = context.protocol_version();
-        if negotiated.is_some_and(|v| v >= PROTOCOL_VERSION_CEILING) {
+        let cache_metadata = negotiated
+            .as_ref()
+            .is_some_and(|v| *v >= PROTOCOL_VERSION_CEILING);
+        // Sprint 046 (WI #1230): `call_tool` logs its dispatch, `list_tools`
+        // logged nothing — so the one operation the korg:1212 failure class
+        // actually breaks was the one klams could not observe. That class is
+        // a CLIENT-side validation drop: the server sees a successful
+        // request and has nothing unusual to report, so a zero-tools bug
+        // reads as silence. Recording what shape we served to which revision
+        // is the difference between diagnosing it from the server in one
+        // command and inferring it from span timing, which is what sprint
+        // 043's live gate had to do.
+        tracing::info!(
+            tools = result.tools.len(),
+            protocol = negotiated
+                .as_ref()
+                .map_or("<none>", ProtocolVersion::as_str),
+            cache_metadata,
+            "mcp.tools/list"
+        );
+        if cache_metadata {
             return Ok(result
                 .with_ttl_ms(TOOL_CATALOG_TTL_MS)
                 .with_cache_scope(CacheScope::Private));
@@ -442,6 +490,21 @@ impl<S: Store> ToolRegistry<S> {
                 };
                 let caller_agent = caller.as_ref().map(|a| a.agent_name.as_str());
                 match memory_search::run(&self.state, args, caller_agent).await {
+                    Ok(out) => Ok(json_result(&out)),
+                    Err(env) => Ok(envelope_result(&env)),
+                }
+            }
+            "memory_get" => {
+                let args = match serde_json::from_value(args_value) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        return Ok(envelope_result(&crate::errors::envelope(
+                            crate::errors::SCHEMA_VALIDATION_FAILED,
+                            format!("invalid memory_get arguments: {e}"),
+                        )))
+                    }
+                };
+                match memory_get::run(&self.state, args).await {
                     Ok(out) => Ok(json_result(&out)),
                     Err(env) => Ok(envelope_result(&env)),
                 }
@@ -649,7 +712,11 @@ pub fn all_tool_descriptors() -> Vec<Tool> {
         ),
         tool_descriptor::<memory_search::MemorySearchArgs>(
             "memory_search",
-            "Search memory across facts, knowledge, and events; returns merged results ranked by relevance. Pass `tags` to search *within* a tagged subset rather than the whole corpus — e.g. tags:[\"gotcha\"] for the curated gotchas. Multiple tags are AND.",
+            "Search memory across facts, knowledge, and events; returns merged results ranked by relevance. Hits are COMPACT: a match-window snippet (<=320 chars) plus an `id` — call `memory_get` with that id for the full record. Pass `full: true` to get whole texts inline instead. Pass `tags` to search *within* a tagged subset rather than the whole corpus — e.g. tags:[\"gotcha\"] for the curated gotchas. Multiple tags are AND.",
+        ),
+        tool_descriptor::<memory_get::MemoryGetArgs>(
+            "memory_get",
+            "Fetch one memory in full by id — the follow-up read for a `memory_search` hit whose snippet did not carry what you needed. Pass the hit's `id`. Works for facts, knowledge and events alike.",
         ),
         tool_descriptor::<memory_related::MemoryRelatedArgs>(
             "memory_related",

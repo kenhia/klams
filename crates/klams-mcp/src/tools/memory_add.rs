@@ -113,7 +113,15 @@ pub struct MemoryAddArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fact_type: Option<FactTypeArg>,
     /// Required when `kind` is `fact`: arbitrary JSON payload.
+    ///
+    /// Rendered as an object schema, NOT a bare `Option<serde_json::Value>`
+    /// (sprint 046, WI #850). schemars renders the latter with no `type`
+    /// at all, so no client ever sends an object and the `is_object()`
+    /// guard below refuses every `kind: "fact"` call — the same defect
+    /// #309 fixed for `memory_append_event.payload`, applied then to the
+    /// one call site instead of to the class.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<serde_json::Map<String, serde_json::Value>>")]
     pub payload: Option<serde_json::Value>,
     /// Optional, `fact` only: the id of an existing fact this write
     /// **amends**. Supply it when you believe a stored fact is now
