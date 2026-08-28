@@ -87,11 +87,15 @@ async fn memory_search_smoke() {
             kinds: None,
             tags: None,
             top_k: Some(20),
+            // Asserts on retrieval semantics, not the wire shape (#1178).
+            full: Some(true),
         },
         None,
     )
     .await
-    .expect("memory_search");
+    .expect("memory_search")
+    .into_full()
+    .expect("full: true was requested");
     assert!(!hits.is_empty(), "expected at least one search hit");
     // Sprint 016: each result is a ScoredMemory envelope. The score is
     // present (finite) and source_rank is a real per-source rank.
@@ -137,11 +141,15 @@ async fn memory_search_smoke() {
             kinds: Some(vec![MemoryKindFilter::Knowledge]),
             tags: None,
             top_k: Some(20),
+            // Asserts on retrieval semantics, not the wire shape (#1178).
+            full: Some(true),
         },
         None,
     )
     .await
-    .expect("memory_search knowledge-only");
+    .expect("memory_search knowledge-only")
+    .into_full()
+    .expect("full: true was requested");
     assert!(only_knowledge
         .iter()
         .all(|h| h.memory.kind() == MemoryKind::Knowledge));
@@ -176,11 +184,15 @@ async fn memory_search_smoke() {
             kinds: Some(vec![MemoryKindFilter::Knowledge]),
             tags: Some(vec!["phase4".into()]),
             top_k: Some(20),
+            // Asserts on retrieval semantics, not the wire shape (#1178).
+            full: Some(true),
         },
         None,
     )
     .await
-    .expect("memory_search tagged");
+    .expect("memory_search tagged")
+    .into_full()
+    .expect("full: true was requested");
     assert!(tagged
         .iter()
         .all(|h| h.memory.tags.iter().any(|t| t == "phase4")));
@@ -208,11 +220,15 @@ async fn zero_hit_search_records_a_miss() {
             kinds: None,
             tags: None,
             top_k: Some(10),
+            // Asserts on retrieval semantics, not the wire shape (#1178).
+            full: Some(true),
         },
         Some(caller.as_str()),
     )
     .await
-    .expect("memory_search");
+    .expect("memory_search")
+    .into_full()
+    .expect("full: true was requested");
     assert!(hits.is_empty(), "query should be a guaranteed zero-hit");
 
     // The insert is fire-and-forget (spawned), so poll for the row.

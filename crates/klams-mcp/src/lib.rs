@@ -16,6 +16,7 @@
 //! - [`transport`] — Streamable HTTP service construction.
 
 pub mod auth_bridge;
+pub mod contract;
 pub mod errors;
 pub mod maintenance;
 pub mod metrics;

@@ -82,11 +82,15 @@ async fn memory_delete_soft_smoke() {
             kinds: None,
             tags: None,
             top_k: Some(20),
+            // Asserts on retrieval semantics, not the wire shape (#1178).
+            full: Some(true),
         },
         None,
     )
     .await
-    .expect("memory_search");
+    .expect("memory_search")
+    .into_full()
+    .expect("full: true was requested");
     assert!(
         hits.iter().all(|h| h.memory.id != fact.id),
         "soft-deleted fact still surfaced by search"
@@ -183,11 +187,15 @@ async fn memory_admin_restore_smoke() {
             kinds: None,
             tags: None,
             top_k: Some(20),
+            // Asserts on retrieval semantics, not the wire shape (#1178).
+            full: Some(true),
         },
         None,
     )
     .await
-    .expect("memory_search");
+    .expect("memory_search")
+    .into_full()
+    .expect("full: true was requested");
     assert!(
         hits.iter().any(|h| h.memory.id == fact.id),
         "restored fact missing from search"

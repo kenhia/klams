@@ -219,7 +219,7 @@ never sees a tool it cannot call.
 
 | Tools | Scope |
 |---|---|
-| `memory_search`, `memory_related`, `event_search` | `read` |
+| `memory_search`, `memory_get`, `memory_related`, `event_search` | `read` |
 | `memory_add`, `memory_append_event`, `memory_delete`, `memory_supersede`, `memory_update`, `dissent_propose`, `register_author` | `write` |
 | `memory_admin_*` (restore, hard-delete, list-deleted, list/remove/merge authors) | `admin` |
 

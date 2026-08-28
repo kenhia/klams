@@ -13,6 +13,7 @@ pub mod memory_admin_list_deleted;
 pub mod memory_admin_restore;
 pub mod memory_append_event;
 pub mod memory_delete;
+pub mod memory_get;
 pub mod memory_related;
 pub mod memory_search;
 pub mod memory_supersede;
@@ -76,7 +77,7 @@ pub const SERVER_INSTRUCTIONS: &str = "klams memory server. Writes are attribute
 #[must_use]
 pub fn required_scope(tool: &str) -> Option<Scope> {
     Some(match tool {
-        "memory_search" | "memory_related" | "event_search" => Scope::Read,
+        "memory_search" | "memory_get" | "memory_related" | "event_search" => Scope::Read,
         // Sprint 025 (#633): `register_author` moved Read -> Write. It
         // mints identities, which was a read-scope operation until now —
         // a read-only token could manufacture authors at will.
@@ -493,6 +494,21 @@ impl<S: Store> ToolRegistry<S> {
                     Err(env) => Ok(envelope_result(&env)),
                 }
             }
+            "memory_get" => {
+                let args = match serde_json::from_value(args_value) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        return Ok(envelope_result(&crate::errors::envelope(
+                            crate::errors::SCHEMA_VALIDATION_FAILED,
+                            format!("invalid memory_get arguments: {e}"),
+                        )))
+                    }
+                };
+                match memory_get::run(&self.state, args).await {
+                    Ok(out) => Ok(json_result(&out)),
+                    Err(env) => Ok(envelope_result(&env)),
+                }
+            }
             "dissent_propose" => {
                 let args = match serde_json::from_value(args_value) {
                     Ok(a) => a,
@@ -696,7 +712,11 @@ pub fn all_tool_descriptors() -> Vec<Tool> {
         ),
         tool_descriptor::<memory_search::MemorySearchArgs>(
             "memory_search",
-            "Search memory across facts, knowledge, and events; returns merged results ranked by relevance. Pass `tags` to search *within* a tagged subset rather than the whole corpus — e.g. tags:[\"gotcha\"] for the curated gotchas. Multiple tags are AND.",
+            "Search memory across facts, knowledge, and events; returns merged results ranked by relevance. Hits are COMPACT: a match-window snippet (<=320 chars) plus an `id` — call `memory_get` with that id for the full record. Pass `full: true` to get whole texts inline instead. Pass `tags` to search *within* a tagged subset rather than the whole corpus — e.g. tags:[\"gotcha\"] for the curated gotchas. Multiple tags are AND.",
+        ),
+        tool_descriptor::<memory_get::MemoryGetArgs>(
+            "memory_get",
+            "Fetch one memory in full by id — the follow-up read for a `memory_search` hit whose snippet did not carry what you needed. Pass the hit's `id`. Works for facts, knowledge and events alike.",
         ),
         tool_descriptor::<memory_related::MemoryRelatedArgs>(
             "memory_related",

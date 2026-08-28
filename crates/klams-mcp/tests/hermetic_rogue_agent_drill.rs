@@ -30,6 +30,8 @@ fn search(query: &str) -> MemorySearchArgs {
         kinds: None,
         tags: None,
         top_k: Some(50),
+        // Asserts on retrieval semantics, not the wire shape (#1178).
+        full: Some(true),
     }
 }
 
@@ -58,7 +60,9 @@ async fn a_rogue_memory_can_be_found_retracted_and_reinstated() {
     // 2. It is findable — which is the problem.
     let before = memory_search(&st, search("port"), None)
         .await
-        .expect("search");
+        .expect("search")
+        .into_full()
+        .expect("full: true was requested");
     assert!(
         before.iter().any(|h| h.memory.id == rogue),
         "pre-condition: the bad memory is in the corpus: {before:?}"
@@ -98,7 +102,9 @@ async fn a_rogue_memory_can_be_found_retracted_and_reinstated() {
     //    containment must be surgical, not a purge of the author.
     let after = memory_search(&st, search("port"), None)
         .await
-        .expect("search");
+        .expect("search")
+        .into_full()
+        .expect("full: true was requested");
     assert!(
         !after.iter().any(|h| h.memory.id == rogue),
         "the retracted memory must be gone from search: {after:?}"
@@ -115,7 +121,9 @@ async fn a_rogue_memory_can_be_found_retracted_and_reinstated() {
         .expect("restore");
     let restored = memory_search(&st, search("port"), None)
         .await
-        .expect("search");
+        .expect("search")
+        .into_full()
+        .expect("full: true was requested");
     assert!(
         restored.iter().any(|h| h.memory.id == rogue),
         "a restored memory is findable again: {restored:?}"
@@ -128,6 +136,8 @@ async fn a_rogue_memory_can_be_found_retracted_and_reinstated() {
     assert_eq!(store.knowledge_count(), 2, "the point is gone, not hidden");
     let finally = memory_search(&st, search("port"), None)
         .await
-        .expect("search");
+        .expect("search")
+        .into_full()
+        .expect("full: true was requested");
     assert!(!finally.iter().any(|h| h.memory.id == rogue));
 }

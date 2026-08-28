@@ -35,6 +35,9 @@ fn search_args(query: &str) -> MemorySearchArgs {
         kinds: None,
         tags: None,
         top_k: None,
+        // These assert on retrieval semantics, not on the wire shape,
+        // so they want the records themselves (sprint 046, #1178).
+        full: Some(true),
     }
 }
 
@@ -75,7 +78,9 @@ async fn memory_search_projects_live_knowledge_with_its_author() {
 
     let hits = memory_search(&st, search_args("scanner"), None)
         .await
-        .expect("search");
+        .expect("search")
+        .into_full()
+        .expect("full: true was requested");
 
     assert_eq!(hits.len(), 1, "{hits:?}");
     assert_eq!(hits[0].memory.author.agent_name, "s031-search");
@@ -93,7 +98,9 @@ async fn memory_search_omits_soft_deleted_memories() {
 
     let hits = memory_search(&st, search_args("retracted"), None)
         .await
-        .expect("search");
+        .expect("search")
+        .into_full()
+        .expect("full: true was requested");
     assert!(
         hits.is_empty(),
         "a retracted memory must not come back in search — that is the \
@@ -250,7 +257,9 @@ async fn delete_then_restore_round_trips() {
 
     let hits = memory_search(&st, search_args("reinstate"), None)
         .await
-        .expect("search");
+        .expect("search")
+        .into_full()
+        .expect("full: true was requested");
     assert_eq!(hits.len(), 1, "a restored memory is findable again");
 }
 
