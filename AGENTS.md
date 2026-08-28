@@ -140,7 +140,7 @@ external APIs, file I/O) — trust internal code.
 |-----------|---------|---------|
 | `sprints/` | Sprint records (`###-<stub>/`) + `planning/` | Yes |
 | `crates/` | Rust workspace crates | Yes |
-| `tools/` | Non-shipping ops tooling (bench, soak, repair) | Yes |
+| `tools/` | Non-shipping ops tooling (bench, soak, repair, token admin, eval) | Yes |
 | `docs/` | Architecture, setup, usage | Yes |
 | `deploy/` | Compose, systemd units, Grafana/Prometheus | Yes |
 | `migrations/` | Postgres migrations (sqlx) | Yes |

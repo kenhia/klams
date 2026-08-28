@@ -413,6 +413,18 @@ and REST `POST /memory/search`
 ([`crates/klams-api/src/handlers/search.rs`](../crates/klams-api/src/handlers/search.rs))
 are validation + envelope shells over this one function; they differ
 only in wire shape and failure contract (below), never in ranking.
+
+Since sprint 046 (#1178) the *wire shapes* diverge further: MCP
+`memory_search` answers with **compact hits** — a match-window snippet
+(≤320 chars) plus a locator, and an unconditional `more.fetch` pointer
+at `memory_get` — while REST still returns full records. Measured on
+khound's frozen suite over the live corpus, that is 9,599 → 4,193
+tokens per answered query (2.29×) with follow-up reads charged, and
+only 1 answered query in 19 needed the follow-up
+([`tools/response-tokens`](../tools/response-tokens/src/main.rs)). The
+split is deliberate: the token argument is an agent-context argument,
+and REST has non-agent consumers. `full: true` opts an MCP caller back
+into whole records.
 Stages, in execution order:
 
 1. **Validate** — non-empty query ≤ 1024 chars; `top_k` 1..=50
@@ -600,6 +612,17 @@ does the endpoint return `503 + Retry-After`.
   invokes the embedder (sprint 008 contract: cheap event lookup). Since
   sprint 033 it attributes the caller in the search counter and log,
   like `memory_search`.
+* **`memory_get` (MCP)** — fetch one memory of any kind by id, via
+  [`klams_core::fetch::memory_by_id`](../crates/klams-core/src/fetch.rs).
+  Added in sprint 046 (#1178) as the explicit fetch op the compact
+  `memory_search` contract depends on: without a one-call follow-up
+  read, a compact response is strictly *worse* than full text, because
+  an agent whose snippet fell short has to re-run the whole ranked
+  search to recover one body. Composed from primitives that already
+  exist rather than new SQL, so it works for `CompositeStore` unchanged.
+  A deleted id and an unknown id return the same `NOT_FOUND` —
+  distinguishing them would leak the existence of records the caller
+  cannot see.
 * **`memory_related` (MCP)** — nearest-neighbour walk from a given
   memory, through `klams_core::retrieval::related` since sprint 036
   (#730): duplicate collapse with `copies` annotation, exclusion of
@@ -752,7 +775,7 @@ every grant lists what it needs. Full model: [auth.md](auth.md).
 
 | Surface | Scope |
 |---------|-------|
-| `memory_search`, `memory_related`, `event_search`; REST reads (`/memory/search`, `/memory/context`, `GET /memory/*`, `/v1/authors*`, `/v1/memories`) | `Read` |
+| `memory_search`, `memory_get`, `memory_related`, `event_search`; REST reads (`/memory/search`, `/memory/context`, `GET /memory/*`, `/v1/authors*`, `/v1/memories`) | `Read` |
 | `memory_add`, `memory_append_event`, `memory_delete`, `memory_supersede`, `memory_update`, `dissent_propose`, `register_author`; REST writes (`POST /memory/facts`, `/memory/events`, `/memory/knowledge/{index,delete}`) | `Write` |
 | `memory_admin_*` (restore, hard_delete, list_deleted, list/remove/merge authors) | `Admin` |
 | Cross-author curation: deleting/superseding/updating somebody else's memory; REST dissent promote/discard | `Manage` |
