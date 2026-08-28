@@ -23,8 +23,23 @@ pub struct RegisterAuthorInput {
     pub client_app: Option<String>,
     #[serde(default)]
     pub client_version: Option<String>,
-    #[serde(default)]
+    /// Free-form session metadata.
+    ///
+    /// Object schema for the same reason as `memory_add.payload`
+    /// (sprint 046, WI #850): the class test found this third instance
+    /// the WI had not spotted. `#[serde(default)]` renders it as
+    /// `{"default": null}` — no `type`, so unsendable as an object.
+    ///
+    /// The default is `{}`, not `null`, so the advertised default does
+    /// not contradict the advertised type. Behaviour is unchanged: the
+    /// store already normalizes a null `extra` to `{}` before insert.
+    #[serde(default = "empty_object")]
+    #[schemars(with = "serde_json::Map<String, serde_json::Value>")]
     pub extra: serde_json::Value,
+}
+
+fn empty_object() -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::new())
 }
 
 impl From<RegisterAuthorInput> for RegisterAuthorArgs {
