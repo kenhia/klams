@@ -187,6 +187,58 @@ them), and not the proxy. The server was sending exactly the frames
 that should have kept the connection alive, and was killing the
 connection for not hearing them come back.
 
+### #1178 measured, and the harness needed replacing to do it
+
+The WI says to measure with khound's eval harness. That harness could
+not answer the question: **its klams adapter talks to REST**, and this
+sprint deliberately left REST alone (the token argument is an
+agent-context argument; REST has non-agent consumers). Running it would
+have reported no change and been true.
+
+So the measurement is a small non-shipping tool,
+`tools/response-tokens`, over the same frozen suite
+(`suite-002.toml`, sha256 `4b2ea7aa…`) and the same live corpus. It
+projects each real search response into both wire shapes using **the
+snippet code that actually ships**, and it keeps khound's rule that
+makes the comparison honest: when the snippet did not carry what the
+answer key wanted, it charges a follow-up `memory_get`. Without that
+rule "compact" would just mean "truncated", and truncation always wins
+a token comparison while losing the thing the tokens were for.
+
+Result over 41 queries, 19 answered, top_k 10
+(`token-measurement.txt`):
+
+| | tokens per answered query |
+|---|---|
+| full text | 9,599 |
+| compact | 4,193 |
+| | **2.29× reduction** |
+
+**Follow-up reads charged: 1 of 19.** That is the number that decides
+whether the contract is a win, and it says the match-window snippet is
+carrying the answer 18 times out of 19.
+
+These absolutes are not comparable to khound's 4,491 — different token
+accounting and a corpus several months further along. The *relative*
+result on the same suite under the same rule is the claim.
+
+The one query that forced a fetch, `con2-ports`, is the self-reference
+fixture the suite header flags as a deliberate contaminant.
+
+### #859: one ask was already done
+
+The uncommitted `reload` recipe the WI describes is **not** uncommitted —
+it landed in sprint 042 (`e3d9c44`) and the working tree was clean at
+sprint start. The WI was written 2026-08-01 against a clone whose drift
+has since been resolved; nothing to do but verify and say so.
+
+The skill dedupe stands and is done. Note the WI's own correction held
+up: the two skills do **not** disagree about `[skip ci]` — they agreed,
+which is exactly when a restatement is pure liability. The shared skill
+has since grown a hazard note (the marker is contagious through a quoted
+PR body) that the local copy never had, so the local copy was already
+the worse of two identical rules.
+
 ### Remaining
 
 Decisions and surprises get appended as the work happens.

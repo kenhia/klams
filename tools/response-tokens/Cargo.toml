@@ -1,0 +1,28 @@
+[package]
+name = "klams-response-tokens"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Sprint 046 (WI #1178) — measures the token cost of the compact
+# `memory_search` response contract against the full-text one, over a
+# frozen eval suite and the live corpus.
+#
+# The WI is explicit that this must be measured rather than asserted:
+# "a compact response that forces extra reads shows up as a regression,
+# not a win". So the token model here charges a follow-up `memory_get`
+# whenever the snippet did not carry what the suite's answer key wanted
+# — the same rule khound's harness applied.
+#
+# Non-shipping. Workspace member so `just gate` keeps it compiling.
+
+[dependencies]
+klams-core = { workspace = true }
+klams-types = { workspace = true }
+anyhow = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+toml = { workspace = true }

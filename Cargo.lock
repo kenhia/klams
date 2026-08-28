@@ -1963,6 +1963,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "klams-response-tokens"
+version = "0.1.46"
+dependencies = [
+ "anyhow",
+ "klams-core",
+ "klams-types",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+]
+
+[[package]]
 name = "klams-scanner"
 version = "0.1.46"
 dependencies = [

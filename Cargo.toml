@@ -14,6 +14,7 @@ members = [
     "tools/soak",
     "tools/reattribute-system",
     "tools/klams-token",
+    "tools/response-tokens",
 ]
 
 [workspace.package]
