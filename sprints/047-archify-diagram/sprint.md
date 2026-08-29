@@ -86,10 +86,26 @@ Requested explicitly.
       `docs/diagrams/` is hand-authored.
 - [x] Provenance is recorded where someone will find it — beside the
       files, not only in this sprint doc.
-- [ ] The htmlpreview URL renders the committed HTML. **Verify after
-      merge**; the link resolves against `main`, so it cannot be checked
-      from the branch. 739 KB is ~37x the largest file the repo currently
-      shares this way, and that is the one genuine unknown here.
+- [x] The htmlpreview URL renders the committed HTML. Verified after
+      merge: the page loads and is fully interactive at 739 KB — guided
+      views, legend, cards and viewer controls all present, theme
+      following the browser. `raw.githubusercontent` serves the artifact
+      at the receipt's sha256 (`53886dab…`, 739232 bytes). The size
+      concern did not materialise.
+
+## Post-merge notes
+
+- **The squash subject missed the house style.** It landed as `docs: add
+  the archify runtime-architecture diagram (sprint 047) (#51)` rather
+  than `docs(047): …`. The PR title *was* corrected to the house form
+  before merging, but this repo's squash setting takes the message from
+  the single commit rather than the PR title, so the correction had no
+  effect. Left alone — rewriting `main` to fix a subject line is not
+  worth a force-push. For 048: put the `type(NNN):` prefix on the
+  **commit**, not only on the PR title, whenever the branch has one
+  commit.
+- No deploy phase ran, so there is no `docs(NNN): record the deploy`
+  commit for this sprint. This note is its equivalent.
 
 ## Follow-ups, not done here
 
