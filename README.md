@@ -72,6 +72,13 @@ self-contained page: [docs/pitch/klams-pitch.html](docs/pitch/klams-pitch.html)
 ([rendered preview](https://htmlpreview.github.io/?https://github.com/kenhia/klams/blob/main/docs/pitch/klams-pitch.html)).
 It renders offline straight from a checkout too.
 
+The runtime architecture has an interactive companion:
+[docs/diagrams/klams-architecture.html](docs/diagrams/klams-architecture.html)
+([rendered preview](https://htmlpreview.github.io/?https://github.com/kenhia/klams/blob/main/docs/diagrams/klams-architecture.html))
+— components, trust boundaries, and the paths between them, with guided
+views over the same material [docs/architecture.md](docs/architecture.md)
+covers in prose.
+
 ## Support & posture
 
 - **Support**: best effort, no SLA. Issues are welcome; PRs are

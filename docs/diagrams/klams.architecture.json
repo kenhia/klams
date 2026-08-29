@@ -1,0 +1,413 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "klams — Local Agent Memory System",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/kenhia/klams",
+      "revision": "ceffb6c61e1876eb6c3c1b670587ef41b9fd8d2b"
+    },
+    "views": [
+      {
+        "id": "agent-read",
+        "label": "An agent recalls",
+        "focus": [
+          "agents",
+          "mcp",
+          "core",
+          "store",
+          "qdrant",
+          "reranker"
+        ],
+        "note": "MCP search and REST search are shells over one retrieval pipeline."
+      },
+      {
+        "id": "state",
+        "label": "Where state lives",
+        "focus": [
+          "store",
+          "postgres",
+          "qdrant",
+          "tei",
+          "reranker"
+        ],
+        "note": "Four Compose containers on one bridge; the service holds none of it."
+      },
+      {
+        "id": "writers",
+        "label": "Non-agentic writers",
+        "focus": [
+          "scanner",
+          "monitor",
+          "api",
+          "core",
+          "postgres"
+        ],
+        "note": "Scanner and monitor use the same attributed REST contract agents do."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "agents",
+      "type": "external",
+      "label": "MCP Agents",
+      "sublabel": "Claude Code, Copilot",
+      "pos": [
+        40,
+        150
+      ],
+      "size": [
+        165,
+        62
+      ]
+    },
+    {
+      "id": "view",
+      "type": "frontend",
+      "label": "klams-view",
+      "sublabel": "axum + SvelteKit SPA",
+      "tag": "separate repo",
+      "pos": [
+        40,
+        300
+      ],
+      "size": [
+        165,
+        62
+      ]
+    },
+    {
+      "id": "mcp",
+      "type": "backend",
+      "label": "klams-mcp",
+      "sublabel": "/mcp · rmcp over HTTP",
+      "pos": [
+        315,
+        150
+      ],
+      "size": [
+        165,
+        62
+      ],
+      "sources": [
+        {
+          "path": "crates/klams-mcp/src/lib.rs",
+          "label": "MCP tool surface"
+        }
+      ]
+    },
+    {
+      "id": "api",
+      "type": "security",
+      "label": "klams-api",
+      "sublabel": "bearer auth + scopes",
+      "pos": [
+        315,
+        300
+      ],
+      "size": [
+        165,
+        62
+      ],
+      "sources": [
+        {
+          "path": "crates/klams-api/src/lib.rs",
+          "label": "axum router"
+        }
+      ]
+    },
+    {
+      "id": "core",
+      "type": "backend",
+      "label": "klams-core",
+      "sublabel": "queue · retrieval · RRF",
+      "pos": [
+        590,
+        225
+      ],
+      "size": [
+        165,
+        62
+      ],
+      "sources": [
+        {
+          "path": "crates/klams-core/src/retrieval.rs",
+          "label": "one pipeline"
+        },
+        {
+          "path": "crates/klams-core/src/hybrid.rs",
+          "label": "RRF fusion"
+        }
+      ]
+    },
+    {
+      "id": "store",
+      "type": "backend",
+      "label": "klams-store",
+      "sublabel": "CompositeStore adapters",
+      "pos": [
+        865,
+        225
+      ],
+      "size": [
+        165,
+        62
+      ],
+      "sources": [
+        {
+          "path": "crates/klams-store/src/lib.rs",
+          "label": "Store trait"
+        }
+      ]
+    },
+    {
+      "id": "postgres",
+      "type": "database",
+      "label": "Postgres 16",
+      "sublabel": "facts · events · authors",
+      "pos": [
+        1140,
+        40
+      ],
+      "size": [
+        165,
+        62
+      ]
+    },
+    {
+      "id": "qdrant",
+      "type": "database",
+      "label": "Qdrant",
+      "sublabel": "knowledge vectors",
+      "pos": [
+        1140,
+        165
+      ],
+      "size": [
+        165,
+        62
+      ]
+    },
+    {
+      "id": "tei",
+      "type": "cloud",
+      "label": "TEI Embedder",
+      "sublabel": "Qwen3-Embedding-0.6B",
+      "pos": [
+        1140,
+        290
+      ],
+      "size": [
+        165,
+        62
+      ],
+      "sources": [
+        {
+          "path": "crates/klams-store/src/embeddings.rs",
+          "label": "Embedder trait"
+        }
+      ]
+    },
+    {
+      "id": "reranker",
+      "type": "cloud",
+      "label": "TEI Reranker",
+      "sublabel": "bge-reranker-v2-m3",
+      "pos": [
+        1140,
+        415
+      ],
+      "size": [
+        165,
+        62
+      ],
+      "sources": [
+        {
+          "path": "crates/klams-store/src/rerank.rs",
+          "label": "cross-encoder"
+        }
+      ]
+    },
+    {
+      "id": "scanner",
+      "type": "backend",
+      "label": "klams-scanner",
+      "sublabel": "systemd timer · hourly",
+      "pos": [
+        315,
+        530
+      ],
+      "size": [
+        165,
+        62
+      ],
+      "sources": [
+        {
+          "path": "crates/klams-scanner/src/main.rs",
+          "label": "filesystem writer"
+        }
+      ]
+    },
+    {
+      "id": "monitor",
+      "type": "backend",
+      "label": "klams-monitor",
+      "sublabel": "systemd unit edges",
+      "pos": [
+        560,
+        530
+      ],
+      "size": [
+        165,
+        62
+      ],
+      "sources": [
+        {
+          "path": "crates/klams-monitor/src/main.rs",
+          "label": "unit-state writer"
+        }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "kubs0 · Linux x86_64",
+      "wraps": [
+        "mcp",
+        "api",
+        "core",
+        "store",
+        "scanner",
+        "monitor",
+        "postgres",
+        "qdrant",
+        "tei",
+        "reranker"
+      ],
+      "pad": 24
+    },
+    {
+      "kind": "security-group",
+      "label": "klams-service · systemd · 127.0.0.1:7777",
+      "wraps": [
+        "mcp",
+        "api",
+        "core",
+        "store"
+      ],
+      "pad": 16
+    },
+    {
+      "kind": "security-group",
+      "label": "Docker Compose · bridge klams-net",
+      "wraps": [
+        "postgres",
+        "qdrant",
+        "tei",
+        "reranker"
+      ],
+      "pad": 14
+    }
+  ],
+  "connections": [
+    {
+      "from": "agents",
+      "to": "mcp",
+      "label": "MCP over HTTPS",
+      "variant": "emphasis"
+    },
+    {
+      "from": "view",
+      "to": "api",
+      "label": "REST · read scope",
+      "variant": "security"
+    },
+    {
+      "from": "mcp",
+      "to": "core",
+      "label": "PublicMemory",
+      "variant": "emphasis"
+    },
+    {
+      "from": "api",
+      "to": "core",
+      "label": "validated writes",
+      "variant": "emphasis"
+    },
+    {
+      "from": "core",
+      "to": "store",
+      "label": "Store trait",
+      "variant": "emphasis"
+    },
+    {
+      "from": "store",
+      "to": "postgres",
+      "label": "sqlx",
+      "labelSegment": 2
+    },
+    {
+      "from": "store",
+      "to": "qdrant",
+      "label": "gRPC",
+      "labelSegment": 2
+    },
+    {
+      "from": "store",
+      "to": "tei",
+      "label": "embed",
+      "labelSegment": 2
+    },
+    {
+      "from": "store",
+      "to": "reranker",
+      "label": "rerank",
+      "variant": "dashed",
+      "labelSegment": 2
+    },
+    {
+      "from": "scanner",
+      "to": "api",
+      "label": "POST /memory/knowledge/index",
+      "variant": "dashed"
+    },
+    {
+      "from": "monitor",
+      "to": "api",
+      "label": "POST service events",
+      "variant": "dashed"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "One Retrieval Pipeline",
+      "items": [
+        "MCP memory_search and REST /memory/search are shells over klams_core::retrieval",
+        "Four rank lists — global ANN, curated stratum, lexical, Postgres FTS — fuse by weighted RRF",
+        "Cross-encoder rerank is best-effort: any failure serves the un-reranked order"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Trust Boundary",
+      "items": [
+        "Bearer tokens carry scope and author; every write is attributed",
+        "MCP callers see only the PublicMemory projection, never raw records",
+        "All bind 127.0.0.1 — service :7777, pg :5432, qdrant :6334, TEI :7070/:7071"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Non-Agentic Writers",
+      "items": [
+        "klams-scanner keeps the knowledge corpus in sync with configured roots",
+        "klams-monitor turns systemd unit-state edges into events",
+        "Both use the same attributed REST contract as agents, via klams-client"
+      ]
+    }
+  ]
+}
