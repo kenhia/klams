@@ -1,4 +1,20 @@
 global:
+  # KEEP THIS BELOW 30s. klams-service's hyper `header_read_timeout`
+  # defaults to 30s and (hyper 1.x) re-arms on every request head, so it
+  # FINs an idle pooled connection at exactly that mark. A scrape interval
+  # at or above 30s puts the next scrape and that FIN on top of each other;
+  # when they cross, Prometheus writes to a closing socket and the scrape
+  # fails. That is WI 1806 — it cost the kpidash health card months of
+  # intermittent "Unreachable" and a packet capture to diagnose — and at 30s
+  # it reproduces here, on the metrics path.
+  #
+  # 15s is what makes this safe, and the safety is accidental rather than
+  # designed: under 30s the connection is never idle long enough to be
+  # reaped. Raising it is not a tuning decision, it is re-opening a fixed
+  # bug. If you need a slower scrape, give `/metrics` the same
+  # `Connection: close` treatment `/healthz` has rather than retuning the
+  # server timeout — retuning only relocates the collision to whatever
+  # cadence matches the new number. See docs/architecture.md §4.1.
   scrape_interval: 15s
   evaluation_interval: 15s
   external_labels:

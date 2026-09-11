@@ -145,7 +145,22 @@ impl Reporter {
 
     /// Poll healthz once and publish the resulting status to Redis.
     pub async fn report_once(&mut self) {
-        let (state, text) = self.check_health().await;
+        let (state, text, detail) = self.check_health().await;
+        // Sprint 048 (#1806): a bad health result is worth a line in the
+        // journal. Publishing a `down` card is a *successful* publish, so
+        // until now the only trace of a failed poll was the Pi screen — which
+        // is why the keep-alive race ran for months before anyone could say
+        // what it was. `detail` carries the error's full source chain; the
+        // card text stays short and unchanged.
+        if state != "ok" {
+            tracing::warn!(
+                state,
+                text,
+                detail = detail.as_deref().unwrap_or(""),
+                url = %self.healthz_url,
+                "klams health poll did not come back ok",
+            );
+        }
         match self.publish(state, &text).await {
             Ok(()) => tracing::debug!(state, text, "kpidash report"),
             Err(e) => tracing::warn!(error = %e, "kpidash publish failed"),
@@ -161,21 +176,23 @@ impl Reporter {
         }
     }
 
-    /// Fetch healthz and reduce it to a `(state, text)` pair, matching the
-    /// legacy looper's `check_health`.
-    async fn check_health(&self) -> (&'static str, String) {
+    /// Fetch healthz and reduce it to a `(state, text, detail)` triple. The
+    /// first two match the legacy looper's `check_health` and are what the
+    /// dashboard card shows; `detail` is journal-only diagnostics (#1806) and
+    /// is never published.
+    async fn check_health(&self) -> (&'static str, String, Option<String>) {
         let resp = match self.http.get(&self.healthz_url).send().await {
             Ok(r) => r,
-            Err(e) => return ("down", format!("Unreachable: {e}")),
+            Err(e) => return ("down", format!("Unreachable: {e}"), Some(error_chain(&e))),
         };
         // A 503 still carries the snapshot body, so parse regardless of status.
         let snap: HealthSnapshot = match resp.json().await {
             Ok(s) => s,
-            Err(e) => return ("down", format!("Unreachable: {e}")),
+            Err(e) => return ("down", format!("Unreachable: {e}"), Some(error_chain(&e))),
         };
 
         if snap.maintenance.as_ref().is_some_and(|m| m.active) {
-            return ("maintenance", "Maintenance mode".into());
+            return ("maintenance", "Maintenance mode".into(), None);
         }
 
         let mut problems = Vec::new();
@@ -192,13 +209,15 @@ impl Reporter {
             }
         }
         if !problems.is_empty() {
-            return ("unhealthy", problems.join("; "));
+            let joined = problems.join("; ");
+            return ("unhealthy", joined.clone(), Some(joined));
         }
 
         let up = snap.uptime_seconds;
         (
             "ok",
             format!("v{} up {}h{}m", snap.version, up / 3600, (up % 3600) / 60),
+            None,
         )
     }
 
@@ -254,6 +273,26 @@ impl Reporter {
         };
         redis::Client::open(info).context("open redis client")
     }
+}
+
+/// Flatten an error's `source()` chain onto one line.
+///
+/// Sprint 048 (#1806): reqwest's `Display` for a transport failure is only
+/// `error sending request for url (http://…/healthz)` — it names no cause at
+/// all, because the cause (`connection closed before message completed`, a
+/// peer RST, a DNS failure) lives exclusively in `Error::source()`. That bare
+/// string was what the kpidash card showed and what the journal did not show,
+/// and diagnosing the keep-alive race behind it ultimately took a packet
+/// capture. One walk of the chain is what makes the next one readable.
+fn error_chain(e: &dyn std::error::Error) -> String {
+    use std::fmt::Write as _;
+    let mut out = e.to_string();
+    let mut source = e.source();
+    while let Some(cause) = source {
+        let _ = write!(out, ": {cause}");
+        source = cause.source();
+    }
+    out
 }
 
 fn status_str(s: HealthStatus) -> &'static str {
@@ -328,5 +367,48 @@ mod tests {
         assert_eq!(c.interval_secs, 30);
         assert!(c.healthz_url.is_none());
         assert!(c.password.is_none());
+    }
+
+    // ---- Sprint 048 (#1806): the source chain is the whole diagnostic.
+
+    #[derive(Debug)]
+    struct Layer(&'static str, Option<Box<Layer>>);
+
+    impl std::fmt::Display for Layer {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.0)
+        }
+    }
+
+    impl std::error::Error for Layer {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            self.1
+                .as_deref()
+                .map(|l| l as &(dyn std::error::Error + 'static))
+        }
+    }
+
+    #[test]
+    fn error_chain_walks_every_source() {
+        // Shaped like the real one: reqwest's Display names only the url, and
+        // "connection closed before message completed" — the sentence that
+        // actually identifies the keep-alive race — is two levels down.
+        let e = Layer(
+            "error sending request for url (http://127.0.0.1:7777/healthz)",
+            Some(Box::new(Layer(
+                "connection closed before message completed",
+                Some(Box::new(Layer("connection reset by peer", None))),
+            ))),
+        );
+        assert_eq!(
+            error_chain(&e),
+            "error sending request for url (http://127.0.0.1:7777/healthz): \
+connection closed before message completed: connection reset by peer",
+        );
+    }
+
+    #[test]
+    fn error_chain_of_a_lone_error_is_just_its_display() {
+        assert_eq!(error_chain(&Layer("boom", None)), "boom");
     }
 }

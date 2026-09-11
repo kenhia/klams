@@ -228,3 +228,74 @@ async fn t4_streaming_response_is_not_idle() {
         "expected streamed bytes from the SSE endpoint, got none"
     );
 }
+
+// ---- Sprint 048 (#1806): the mechanism behind `/healthz`'s
+// `Connection: close`.
+//
+// T4 pins the half that is hyper's, not ours: a handler that sets
+// `Connection: close` on its response must actually end the connection, not
+// merely advertise it. If hyper ever stopped honouring the response header the
+// `/healthz` fix would degrade silently back into the pooled keep-alive race —
+// the card would flicker again and every unit test would still pass, because
+// the header would still be there. This test is what makes that loud.
+//
+// `keep_alive_timeout_secs` is 300 here deliberately: nothing but the header
+// can be what closes the socket within the assertion window.
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn t4_connection_close_response_header_ends_the_connection() {
+    let cfg = LimitsConfig {
+        header_read_timeout_secs: 300,
+        keep_alive_timeout_secs: 300,
+        per_peer_max_concurrent: 64,
+    };
+    let router = Router::new().route(
+        "/probe",
+        get(|| async { ([(axum::http::header::CONNECTION, "close")], "pong") }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("local_addr");
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    std::mem::forget(tx);
+    tokio::spawn(async move {
+        let shutdown = async move {
+            let _ = rx.await;
+        };
+        let _ = serve_with_limits(listener, router, cfg, shutdown).await;
+    });
+
+    let mut sock = TcpStream::connect(addr).await.expect("connect");
+    sock.write_all(b"GET /probe HTTP/1.1\r\nHost: x\r\n\r\n")
+        .await
+        .expect("write");
+
+    // Read to EOF. A keep-alive connection would sit here until the 300s
+    // watchdog; an honoured `Connection: close` ends it as soon as the
+    // response is written.
+    let start = Instant::now();
+    let mut seen = Vec::new();
+    let mut buf = [0u8; 1024];
+    let res = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match sock.read(&mut buf).await {
+                Ok(0) => return Ok::<(), std::io::Error>(()),
+                Ok(n) => seen.extend_from_slice(&buf[..n]),
+                Err(e) => return Err(e),
+            }
+        }
+    })
+    .await;
+    let elapsed = start.elapsed();
+
+    res.expect("connection stayed open: `Connection: close` was not honoured (#1806)")
+        .expect("read err");
+    let text = String::from_utf8_lossy(&seen);
+    assert!(
+        text.starts_with("HTTP/1.1 200"),
+        "expected a 200 before the close, got: {text:?}",
+    );
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "close took {elapsed:?}; expected it at response time, not on the watchdog",
+    );
+}

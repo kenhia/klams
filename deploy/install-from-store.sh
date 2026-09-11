@@ -39,6 +39,7 @@ usage() {
 usage: install-from-store.sh [OPTIONS] BINARY [BINARY...]
 
   BINARY            klams-service | klams-scanner | klams-monitor
+                    | klams-token
 
 options:
   --store URL       package store base URL (default: $KLAMS_STORE_URL)
@@ -187,6 +188,12 @@ for bin in "${BINS[@]}"; do
             printf '                 force one now with: systemctl start klams-scanner.service\n' ;;
         klams-service) printf '  klams-service  systemctl restart klams-service\n' ;;
         klams-monitor) printf '  klams-monitor  systemctl restart klams-monitor\n' ;;
+        klams-token)
+            # Sprint 048 (#1697): an operator CLI, not a unit — there is
+            # nothing to restart, and saying "restart it by hand" would send
+            # the reader looking for a service that does not exist.
+            printf '  klams-token    nothing to restart (operator CLI);\n'
+            printf '                 confirm with: sudo klams-token list --verify\n' ;;
         *)             printf '  %s  (unknown unit — restart it by hand)\n' "$bin" ;;
     esac
 done

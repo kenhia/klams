@@ -200,7 +200,29 @@ pub async fn healthz<S: Store>(
         HealthStatus::Ok => StatusCode::OK,
         _ => StatusCode::SERVICE_UNAVAILABLE,
     };
-    (code, Json(snapshot)).into_response()
+    // Sprint 048 (#1806): never let a watcher pool this connection.
+    //
+    // `/healthz` is polled on a fixed cadence by external observers —
+    // klams-monitor's kpidash reporter every 30s, and whatever else grows a
+    // health card later. A pooled keep-alive connection between those polls is
+    // racing the server's own idle reaper: hyper 1.x re-arms
+    // `header_read_timeout` (30s by default, `limits.rs`) on every request
+    // head, so it FINs the idle connection at the same instant the next poll
+    // goes out. When they cross, the client writes to a closing socket, the
+    // server RSTs, and reqwest surfaces a sourceless
+    // `error sending request for url (...)` that lands verbatim on the
+    // dashboard as `Unreachable`.
+    //
+    // Retuning the timeout only moves the collision to whichever cadence
+    // matches the new number. Declining the pooled connection removes it:
+    // there is no idle connection left to race. One loopback handshake per
+    // poll is not a cost worth weighing against a flickering health card.
+    (
+        code,
+        [(axum::http::header::CONNECTION, "close")],
+        Json(snapshot),
+    )
+        .into_response()
 }
 
 #[derive(Debug, Default, Deserialize)]
