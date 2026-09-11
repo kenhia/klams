@@ -1,14 +1,24 @@
 ---
 name: deploy-kubs0
-description: Publish the klams release binaries to the homelab package store from a clean working tree, then install them onto the kubs0 systemd units (service + scanner + monitor) and restart. Use when asked to deploy/redeploy/ship klams. Runs locally on kubs0 — klams is built where it runs.
+description: Publish the klams release binaries to the homelab package store from a clean working tree, then install them onto the kubs0 systemd units (service + scanner + monitor, plus the klams-token CLI) and restart. Use when asked to deploy/redeploy/ship klams. Runs locally on kubs0 — klams is built where it runs.
 ---
 
 # Deploy klams to kubs0
 
-Builds `klams-service`, `klams-scanner` and `klams-monitor` in release mode from
-**committed code**, publishes them to the homelab package store, installs the
-published binaries into `/usr/local/bin` (rotating the previous copy to
-`.prev`), and restarts the long-running units.
+Builds `klams-service`, `klams-scanner`, `klams-monitor` and `klams-token` in
+release mode from **committed code**, publishes them to the homelab package
+store, installs the published binaries into `/usr/local/bin` (rotating the
+previous copy to `.prev`), and restarts the long-running units.
+
+`klams-token` is the odd one out and is **deliberately** in the set (sprint
+048, #1697). It is an operator CLI with no unit, which is how it went missing
+from the deploy path in the first place: after a textbook 0.1.46 deploy it was
+still 0.1.45, and nothing said so — `/healthz` is green whatever version of it
+is on disk. That gap is not cosmetic. Sprint 046 taught `klams-token` to
+age-encrypt its durable backups, so a stale copy quietly mints a fresh
+**plaintext** backup holding every live grant the next time anyone runs `add`,
+`rotate` or `scopes` — a security regression that looks exactly like a
+successful deploy.
 
 Unlike korg, there is no image and no SSH *to build*: klams is compiled on the
 host it runs on. This skill is **local**.
@@ -60,7 +70,7 @@ Postgres / Qdrant / TEI as Docker containers underneath (hence
 
 | Path | What |
 |---|---|
-| `/usr/local/bin/klams-{service,scanner,monitor}` | deployed binaries (`.prev` = one-step rollback) |
+| `/usr/local/bin/klams-{service,scanner,monitor,token}` | deployed binaries (`.prev` = one-step rollback) |
 | `/etc/klams/klams.toml` | config — **not** in this repo; holds bearer tokens |
 | `/var/lib/klams` | state |
 | `/gratch/klams-backup` | nightly `postgres-<date>.dump` + `qdrant-<date>.snapshot` |
@@ -161,7 +171,7 @@ build.
 
 ## Procedure
 
-1. **Build + publish.** Compiles all three binaries in release mode and
+1. **Build + publish.** Compiles all four binaries in release mode and
    publishes each under its own artifact name. Takes several minutes — run it
    in the background and poll.
    ```bash
@@ -188,8 +198,8 @@ build.
    version floor, which is the only drift alarm the fleet has.
 
    **Every binary is verified before any is installed.** A failure on the
-   third one leaves the first two untouched — there is no half-applied state
-   to reason about.
+   fourth one leaves the first three untouched — there is no half-applied
+   state to reason about.
 
    Unlike `install-systemd`, this **touches no unit files and restarts
    nothing**. That is why a deliberately paused scanner timer survives a
@@ -216,6 +226,18 @@ build.
    value. `status` should be `Ok` with all three backends `Ok`. If the version
    did not change, the restart did not take — do not proceed, and do not
    describe the deploy as done.
+
+   **Then check the binary that `/healthz` cannot speak for** (sprint 048,
+   #1697):
+   ```bash
+   klams-token --version
+   ```
+   It must report the same version. `/healthz` is served by `klams-service`
+   alone, so it is green whatever `klams-token` is on disk — which is exactly
+   how 0.1.45 survived the 0.1.46 deploy unnoticed. "0.1.NN is live on kubs0"
+   is a claim about **four** binaries; say it only once you have seen all
+   four. Put the `klams-token --version` output in the deploy record beside
+   the `/healthz` version.
 
 5. **Functional smoke.**
    ```bash

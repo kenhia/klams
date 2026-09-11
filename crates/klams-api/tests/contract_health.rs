@@ -332,3 +332,39 @@ async fn healthz_includes_active_maintenance_block_with_run_id() {
     assert!(m["started_at"].is_string());
     assert!(m["expected_end_at"].is_string());
 }
+
+// ---- Sprint 048 (#1806): `/healthz` must not be served on a pooled
+// keep-alive connection.
+//
+// klams-monitor's kpidash reporter polls this endpoint every 30s through a
+// default reqwest client, which pools the connection; klams-service's hyper
+// `header_read_timeout` also defaults to 30s and (hyper 1.x) re-arms on every
+// request head, so it reaps the idle pooled connection at the same instant the
+// next poll goes out. The request and the FIN cross, the server RSTs, and the
+// dashboard card reads `Unreachable: error sending request for url (...)`.
+//
+// Retuning the timeout only relocates the collision to whatever cadence
+// matches the new number. Telling the client not to pool removes it: there is
+// no idle connection left to race. `/healthz` is a fixed-cadence liveness
+// probe, so it loses nothing by paying one handshake per poll.
+
+#[tokio::test]
+async fn healthz_sets_connection_close() {
+    let app = router();
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/healthz")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+
+    let conn = resp
+        .headers()
+        .get(axum::http::header::CONNECTION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    assert!(
+        conn.eq_ignore_ascii_case("close"),
+        "/healthz must send `Connection: close` so no client pools it (#1806); got {conn:?}",
+    );
+}

@@ -716,6 +716,24 @@ All in-process in `klams-service`; no external scheduler.
   reranker is deliberately **not** health-checked today; since the
   rerank stage is best-effort a dead reranker degrades quality
   silently. That is a tracked gap (WI filed in sprint 033).
+* **`/healthz` answers with `Connection: close`** (sprint 048, #1806).
+  It is the one endpoint polled on a fixed cadence by outside watchers,
+  and a pooled keep-alive connection between those polls races the
+  server's own idle reaper: under hyper 1.x `header_read_timeout`
+  re-arms on *every* request head, so an idle keep-alive connection is
+  FINed at `header_read_timeout_secs` (30s by default) — the same
+  cadence klams-monitor's kpidash reporter polls on. When the FIN and
+  the next request cross, the client writes to a closing socket, the
+  server RSTs, and reqwest reports a sourceless `error sending request
+  for url (...)` that landed verbatim on the kpidash card as
+  `Unreachable` for months.
+
+  Retuning the timeout only relocates the collision to whatever cadence
+  matches the new number — a 47s timeout collides with a 47s poller.
+  Declining the pooled connection removes it outright: there is no idle
+  connection left to race, at any cadence, for any watcher present or
+  future. A liveness probe gains nothing from pooling, and one loopback
+  handshake per poll is noise.
 * **`/metrics`** (Prometheus). The authoritative series contract is
   [`deploy/grafana/SERIES.md`](../deploy/grafana/SERIES.md) —
   `crates/klams-service/tests/grafana_dashboard_json.rs` fails if the
@@ -953,6 +971,30 @@ Rationale in
   a UFW subnet rule; `0.0.0.0` was abandoned because it conflicted with
   `tailscaled` already holding :7777, and the access boundary is the
   tailnet.)
+* **The effective idle keep-alive window is
+  `min(header_read_timeout_secs, keep_alive_timeout_secs)`** — 30s at
+  the defaults, not the 75s the sprint-009 contract describes. Sprint
+  009 documented `header_read_timeout` as reaping peers that *never
+  send headers* and `keep_alive_timeout` as governing idle keep-alive,
+  implemented by the watchdog in `limits.rs`. Under hyper 1.x
+  `Conn::poll_read_head` re-arms the header-read timer for every
+  request head, **including after a response on a keep-alive
+  connection**, so it preempts the 75s watchdog and that watchdog can
+  never fire first for an HTTP/1.1 keep-alive client. Sprint 048
+  (#1806) corrected the description rather than the number: raising
+  `header_read_timeout` to meet `keep_alive_timeout` would only move
+  the collision to 75s while weakening the slowloris defence the timer
+  exists for.
+
+  The operational consequence, which is the part worth carrying:
+  **an endpoint polled on a fixed cadence at or near the effective idle
+  window must not be served over a pooled connection.** `/healthz`
+  handles this by sending `Connection: close` (§2.9). `/metrics` is
+  safe today only because `deploy/prometheus/prometheus.yml` sets
+  `scrape_interval: 15s` — comfortably under 30s, so the connection is
+  never idle long enough to be reaped. Moving that scrape to 30s would
+  reproduce #1806 on the metrics path; give `/metrics` the same
+  `Connection: close` treatment rather than retuning the timeout.
 * Compose dependencies are bound to `127.0.0.1` only; they are reached
   by the service over loopback and never exposed to the LAN.
 * All inter-container traffic stays on the `klams-net` bridge.
@@ -969,11 +1011,22 @@ Rationale in
 ### 4.3 Binary distribution (sprint 042)
 
 The deploy asset is the **binary**, not the source. `just publish`
-builds all three and publishes each under its own name in the homelab
-package store (`artifacts/klams-{service,scanner,monitor}/<version>/`,
+builds all four and publishes each under its own name in the homelab
+package store (`artifacts/klams-{service,scanner,monitor,token}/<version>/`,
 with `SHA256SUMS` and a `latest` pointer); hosts install with
 `just deploy-from-store`, which fetches, verifies the checksum, and
 asserts the fetched binary reports the version it was published under.
+
+`klams-token` joined the set in sprint 048 (#1697). It has no unit, and
+that is precisely why it was absent: `/healthz` is served by
+`klams-service` alone, so it reports green whatever version of the token
+CLI is on disk, and a textbook 0.1.46 deploy left 0.1.45 in place with
+nothing reporting the gap. The stale copy predates sprint 046's
+age-encrypted durable backups, so the next `add`/`rotate`/`scopes`
+through it would have written a fresh **plaintext** backup of every live
+grant — a security regression wearing the shape of a successful deploy.
+Publishing it is also the only version of the fix that lets an audit ask
+the store which `klams-token` a host should be on.
 
 This exists because the scanner is a **multi-host** component (§2.4)
 while the repo lives on one host. Requiring a checkout and a Rust

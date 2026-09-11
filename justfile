@@ -244,6 +244,16 @@ reload:
 #
 # The store refuses to overwrite a published version: bump the workspace
 # version (the sprint number, per AGENTS.md) before republishing.
+#
+# Sprint 048 (#1697) added klams-token to the set. It is an operator CLI
+# rather than a unit, which is exactly why it was missed: a textbook
+# deploy left it a version behind and nothing reported the gap, because
+# /healthz is green whatever klams-token happens to be. That is not a
+# cosmetic drift — sprint 046 taught klams-token to age-encrypt its
+# durable backups, so a stale copy silently mints a fresh PLAINTEXT
+# backup holding every live token the next time anyone runs `add`,
+# `rotate` or `scopes`. Publishing it is also what lets an audit ask the
+# store which klams-token a host should be on.
 publish:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -259,13 +269,14 @@ publish:
         git status --short >&2
         exit 1
     fi
-    cargo build --release --bin klams-service --bin klams-scanner --bin klams-monitor
+    cargo build --release --bin klams-service --bin klams-scanner \
+        --bin klams-monitor --bin klams-token
     suffix="$(uname -m)-$(uname -s | tr '[:upper:]' '[:lower:]')"
     # Take the version from the binaries rather than Cargo.toml, and
-    # require all three to agree. install-from-store.sh asserts the
+    # require all four to agree. install-from-store.sh asserts the
     # label on the way in; this is the same assertion on the way out.
     version=""
-    for bin in klams-service klams-scanner klams-monitor; do
+    for bin in klams-service klams-scanner klams-monitor klams-token; do
         v=$(./target/release/"$bin" --version | awk '{print $NF}')
         if [[ -z "$version" ]]; then version="$v"
         elif [[ "$v" != "$version" ]]; then
@@ -277,7 +288,7 @@ publish:
     stage=$(ssh -n '{{klams_store_host}}' mktemp -d)
     trap 'ssh -n "{{klams_store_host}}" rm -rf "$stage"' EXIT
     scp -q deploy/install-from-store.sh "{{klams_store_host}}:$stage/"
-    for bin in klams-service klams-scanner klams-monitor; do
+    for bin in klams-service klams-scanner klams-monitor klams-token; do
         scp -q "./target/release/$bin" "{{klams_store_host}}:$stage/$bin-$suffix"
         ssh -n '{{klams_store_host}}' \
             "kpkg artifact $bin $version $stage/$bin-$suffix $stage/install-from-store.sh"
@@ -285,7 +296,7 @@ publish:
     echo "==> published klams $version"
 
 # Sprint 042 (#1012) — install klams binaries on THIS host from the
-# package store, checksum-verified. Names default to all three; pass
+# package store, checksum-verified. Names default to all four; pass
 # specific ones (e.g. `just deploy-from-store klams-scanner`) on a host
 # that only runs some. Add `--version <v>` to roll back to a published
 # release. Restarts nothing — the script prints what to activate.
@@ -297,7 +308,7 @@ deploy-from-store *ARGS:
         exit 1
     fi
     args=({{ARGS}})
-    # Default to all three, but only when the caller named none: bare
+    # Default to all four, but only when the caller named none: bare
     # flags must not suppress the default, and a flag's *value*
     # (`--version 0.1.42`) is not a binary name.
     has_bin=0; skip=0
@@ -310,7 +321,7 @@ deploy-from-store *ARGS:
         esac
     done
     if [[ $has_bin -eq 0 ]]; then
-        args+=(klams-service klams-scanner klams-monitor)
+        args+=(klams-service klams-scanner klams-monitor klams-token)
     fi
     # A dry run writes nothing, so it should not cost a sudo prompt.
     sudo=(sudo)

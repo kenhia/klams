@@ -71,3 +71,57 @@ async fn metrics_endpoint_exposes_named_counters_after_a_write() {
     let snap = server.client.health().await.expect("health");
     assert_eq!(snap.status, HealthStatus::Ok);
 }
+
+/// Sprint 048 (#1806) — `/healthz` must decline the pooled connection **on
+/// the wire**, against the real router and a real store.
+///
+/// The unit tests either side of this one each prove half of it: the router
+/// sets `Connection: close`, and hyper honours the header when a handler sets
+/// it. Neither would notice if the two stopped meeting — a middleware that
+/// stripped hop-by-hop headers, or a future axum that reordered the response
+/// parts, would leave both green and put the kpidash card back to flickering.
+/// So this speaks HTTP/1.1 down a socket and checks what actually comes back.
+#[tokio::test]
+#[ignore = "requires docker-compose.test.yml"]
+async fn healthz_declines_keep_alive_on_the_wire() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let server = TestServer::spawn().await;
+    let mut sock = tokio::net::TcpStream::connect(server.addr)
+        .await
+        .expect("connect");
+    sock.write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n")
+        .await
+        .expect("write");
+
+    // Read to EOF. A keep-alive connection would block here until the client
+    // timeout; `Connection: close` ends it as soon as the body is written.
+    let mut raw = Vec::new();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        sock.read_to_end(&mut raw),
+    )
+    .await
+    .expect("/healthz kept the connection open — the client will pool it and race the idle reaper (#1806)")
+    .expect("read");
+
+    let text = String::from_utf8_lossy(&raw);
+    let head = text.split("\r\n\r\n").next().unwrap_or_default();
+    assert!(
+        head.starts_with("HTTP/1.1 200"),
+        "expected 200, got head: {head:?}",
+    );
+    assert!(
+        head.lines()
+            .any(|l| l.to_ascii_lowercase().trim() == "connection: close"),
+        "no `Connection: close` on the wire; head was: {head:?}",
+    );
+    // The request asked for keep-alive explicitly; the server must still
+    // refuse. Anything else means a watcher gets a pooled connection back.
+    assert!(
+        !head.to_ascii_lowercase().contains("connection: keep-alive"),
+        "server agreed to keep-alive on /healthz: {head:?}",
+    );
+
+    server.cleanup().await;
+}

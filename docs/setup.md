@@ -399,8 +399,25 @@ Adding, rotating, rescoping or retiring an `[[auth.tokens]]` grant is
 [usage.md](usage.md#sprint-045--klams-token-auth-grant-cli).
 
 ```sh
-just install-klams-token      # once, onto this host's PATH
 sudo klams-token list --verify
+```
+
+`klams-token` arrives with the ordinary deploy — `just publish` and
+`just deploy-from-store` carry it alongside the three services (sprint
+048, #1697). `just install-klams-token` still exists for a
+build-from-source install, but it is no longer the only way the binary
+reaches a host, and reaching for it is no longer how you keep it
+current.
+
+**Check its version whenever you check `/healthz`.** `/healthz` is
+served by `klams-service` and says nothing about the token CLI, so a
+`klams-token` left a version behind is invisible there — which is
+exactly what happened across the 0.1.46 deploy. A stale copy predates
+the age-encrypted durable backups below, and would mint a fresh
+plaintext one holding every live grant on its next write:
+
+```sh
+klams-token --version        # must match the version /healthz reports
 ```
 
 `--verify` is worth running after any provisioning round: it asks the
@@ -937,7 +954,7 @@ before republishing.
 ### Installing on the klams host
 
 ```sh
-just deploy-from-store                    # all three, at `latest`
+just deploy-from-store                    # all four, at `latest`
 just deploy-from-store klams-scanner      # just one
 just deploy-from-store --version 0.1.41   # roll back to a published release
 ```
