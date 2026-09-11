@@ -261,3 +261,80 @@ only in the wrap-up handoff:
   (`overseen-sprint` Branch B). The deploy *path* is fixed here; 2280 is the
   independent alarm that would notice if it ever silently stopped being
   fixed.
+
+## Deployed 2026-09-10
+
+- Version `0.1.48` live on kubs0 (`/healthz` confirms; was `0.1.46`).
+- **All four binaries moved together — this is WI 1697's actual evidence**, not
+  a formality, and it is the first deploy in which `klams-token` travelled on
+  its own rather than being repaired by hand afterwards:
+
+  | binary | before | after |
+  |---|---|---|
+  | `klams-service` | 0.1.46 | **0.1.48** |
+  | `klams-scanner` | 0.1.46 | **0.1.48** |
+  | `klams-monitor` | 0.1.46 | **0.1.48** |
+  | `klams-token` | 0.1.46 | **0.1.48** |
+
+  `/healthz` reports `0.1.48`; `klams-token --version` reports
+  `klams-token 0.1.48`. Both recorded because `/healthz` is served by
+  klams-service alone and cannot speak for the fourth binary — which is the
+  whole of 1697.
+
+- **The store confirmed the defect from the other side before the fix landed.**
+  At preflight, `artifacts/klams-service/latest` read `0.1.46` and
+  `artifacts/klams-token/latest` returned **404** — `klams-token` had never
+  been published at all, in any version. It now exists at
+  `artifacts/klams-token/0.1.48/`.
+- Published to the store as `artifacts/klams-{service,scanner,monitor,token}/0.1.48/`.
+- `install-from-store.sh` printed `klams-token`'s new activation line
+  ("nothing to restart (operator CLI)") rather than the `*)` fallback's
+  "unknown unit — restart it by hand". That fallback was the reason the case
+  was added.
+- Unit files: unchanged (no `deploy/*.service` or `deploy/*.timer` in the
+  diff), so `install-systemd` was not run.
+- kai's `klams-scanner`: **left at its current version, deliberately.** This
+  sprint changed nothing the scanner executes — the `/healthz` header, the
+  monitor's logging and the publish set are all kubs0-side. 0.1.48 is in the
+  store whenever kai wants it (`just deploy-remote kai klams-scanner`). Noted
+  because a scanner-affecting sprint that leaves kai behind is how the drift
+  in #836 accumulated, and this one is not that.
+- Rollback target: `0.1.46` via `just rollback` (`.prev` binaries in place for
+  all four); any published version via `just deploy-from-store --version`.
+- Migrations applied: none (no new files in `migrations/`).
+- Config changes required: none. `/etc/klams/klams.toml` untouched.
+
+### Verified live, beyond `/healthz`
+
+- **The 1806 fix, on the production socket.** `curl -i --http1.1 -H 'Connection:
+  keep-alive' http://127.0.0.1:7777/healthz` returns `connection: close`, and a
+  raw `/dev/tcp` request that explicitly asks for keep-alive gets EOF from the
+  server — the connection is genuinely closed, not merely labelled. There is no
+  pooled connection left for a poll to race.
+- **The new monitor logging, proving itself on its first run.** The restart
+  produced exactly one failed poll, and the journal named its cause:
+
+  ```
+  WARN klams_monitor::kpidash: klams health poll did not come back ok
+    state="down" text="Unreachable: error sending request for url (…/healthz)"
+    detail="… : client error (Connect): tcp connect error: Connection refused (os error 111)"
+  ```
+
+  That is the known startup shape — the monitor comes up a few hundred ms
+  before klams-service binds `:7777` — and it is *expected*, not a regression.
+  What is new is the `detail` field: the `text` half is the same sourceless
+  string that sat on the kpidash card for months saying nothing, and the
+  `source()` chain beside it names `Connection refused` outright. Before this
+  sprint that line did not exist at all, at any level.
+- **15 of 15 grants live** against the new binary (`klams-token list
+  --verify`), including idx 14 `kmon` — the consumer the overseer named for
+  1697. That is 15 authenticated round-trips through the 0.1.48 service, and it
+  also confirms the 0.1.48 `klams-token` works against the 0.1.48 service.
+- **Ten poll cycles watched** after the restart (300s from 23:20:46 local):
+  **zero** failed polls, no kpidash warn/error lines, no klams-service request
+  errors. Because of this sprint's own logging, a failure in that window could
+  not have been silent — which is what makes the zero mean something.
+- `just health` / `just verify` were **not** run: both require `KLAMS_TOKEN`,
+  which is not in `.env`, and sourcing a live grant into a session transcript
+  is worse than the coverage is worth. `klams-token list --verify` is the
+  stronger authenticated check and leaks nothing.
