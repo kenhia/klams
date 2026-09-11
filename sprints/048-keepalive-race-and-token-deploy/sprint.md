@@ -206,6 +206,41 @@ beside the `/healthz` version. The live consumer to verify against is grant
 idx 14, `kmon` (read,write), minted by kmon sprint 18 — confirmed present via
 `sudo klams-token list`.
 
+## For the PR description (overseer's direction, post-review)
+
+Two findings the overseer ruled belong in the PR description rather than
+only in the wrap-up handoff:
+
+1. **Both colliding numbers were defaults.** Deployed `klams.toml` has no
+   `[service.limits]` section and deployed `monitor.toml` no `interval_secs`,
+   so a stock klams polled by a stock klams-monitor races itself. This
+   shipped to anyone who installs klams — it was never a kubs0 tuning
+   accident.
+2. **`deploy-from-store` now defaults to four binaries, so kai gains
+   `klams-token`.** `just deploy-remote kai klams-scanner` names its binary
+   and is unaffected; a bare `deploy-from-store` on kai would now also
+   install the CLI. Harmless and arguably the point of 1697, but it is a
+   behaviour change on a host this slice never otherwise touched. Also
+   recorded on k-homelab 2280 so the fold-in captures the machine-state
+   change.
+
+## Post-review additions
+
+- `deploy/prometheus/prometheus.yml` — the 30s constraint is now a comment
+  beside `scrape_interval` itself. §4.1 was the wrong and only place for it:
+  whoever one day raises that number will be editing prometheus.yml, not
+  reading the architecture doc. The comment says what breaks, why 15s is
+  what makes it safe, that the safety is accidental rather than designed,
+  and that the fix for a slower scrape is `Connection: close` on `/metrics`
+  rather than retuning the server.
+- **klams 2283** filed — the documented `up -d` then `just test-integration`
+  sequence fails, because `up -d` returns before healthchecks pass and
+  `reset-test-stack.sh` probes once with no wait. Its hint then tells the
+  operator to run the command they just ran. Filed with an explicit
+  correction: the suite **cannot** pass without running — `reset-test-stack.sh`
+  exits 1 and `just` propagates it. The exit-0 seen during this sprint was a
+  caller-side `| tail` pipeline swallowing the status, not a repo defect.
+
 ## korg housekeeping
 
 - **kpidash 658** is the same defect as 1806, per the overseer's ruling.
