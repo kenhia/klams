@@ -14,7 +14,7 @@
 //! `klams-service` boots from.
 
 use anyhow::{anyhow, bail, Context, Result};
-use klams_types::{AuthConfig, Scope, TokenGrantConfig};
+use klams_types::{AuthConfig, IdentityConfig, Scope, TokenGrantConfig};
 use serde::Deserialize;
 use toml_edit::{value, Array, DocumentMut, Item, Table};
 
@@ -55,6 +55,45 @@ impl GrantView {
     #[must_use]
     pub fn fingerprint(&self) -> GrantFingerprint {
         GrantFingerprint::new(self.identity(), &self.token)
+    }
+
+    #[must_use]
+    pub fn scope_list(&self) -> String {
+        self.scopes
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+}
+
+/// One `[[auth.identities]]` row, as the CLI presents it (sprint 049).
+///
+/// Deliberately not folded into [`GrantView`] with an `Option<String>`
+/// token: "a grant whose token happens to be absent" is exactly the
+/// wrong mental model for a table whose point is that there is no
+/// token. Two views, two commands, no field that means "not
+/// applicable".
+#[derive(Debug, Clone)]
+pub struct IdentityView {
+    pub index: usize,
+    pub label: Option<String>,
+    pub agent_name: String,
+    pub scopes: Vec<Scope>,
+    pub nodes: Vec<String>,
+}
+
+impl IdentityView {
+    /// The row's identity — always the `agent_name`, because that is
+    /// the key rather than a fallback.
+    #[must_use]
+    pub fn identity(&self) -> String {
+        self.agent_name.clone()
+    }
+
+    #[must_use]
+    pub fn fingerprint(&self) -> GrantFingerprint {
+        GrantFingerprint::identity(self.agent_name.clone())
     }
 
     #[must_use]
@@ -119,6 +158,74 @@ impl GrantsDoc {
     /// If `[auth]` does not deserialize.
     pub fn fingerprints(&self) -> Result<Vec<GrantFingerprint>> {
         Ok(self.grants()?.iter().map(GrantView::fingerprint).collect())
+    }
+
+    /// The `[[auth.identities]]` rows (sprint 049).
+    ///
+    /// # Errors
+    /// If `[auth]` does not deserialize.
+    pub fn identities(&self) -> Result<Vec<IdentityView>> {
+        Ok(self
+            .auth()?
+            .identities
+            .into_iter()
+            .enumerate()
+            .map(|(index, i)| IdentityView {
+                index,
+                label: i.label,
+                agent_name: i.agent_name,
+                scopes: i.scopes,
+                nodes: i.nodes,
+            })
+            .collect())
+    }
+
+    /// # Errors
+    /// If `[auth]` does not deserialize.
+    pub fn identity_fingerprints(&self) -> Result<Vec<GrantFingerprint>> {
+        Ok(self
+            .identities()?
+            .iter()
+            .map(IdentityView::fingerprint)
+            .collect())
+    }
+
+    /// Resolve a `<selector>` — an `agent_name` or a `label` — to one
+    /// identity row.
+    ///
+    /// # Errors
+    /// If nothing matches, or more than one does. Same refusal as
+    /// [`Self::find`], for the same reason.
+    pub fn find_identity(&self, selector: &str) -> Result<IdentityView> {
+        let identities = self.identities()?;
+        let matches: Vec<&IdentityView> = identities
+            .iter()
+            .filter(|i| i.agent_name == selector || i.label.as_deref() == Some(selector))
+            .collect();
+        match matches.as_slice() {
+            [one] => Ok((*one).clone()),
+            [] => {
+                let known: Vec<String> = identities.iter().map(IdentityView::identity).collect();
+                bail!(
+                    "no identity matches `{selector}` (matched against agent_name and label)\n\
+                     known identities: {}",
+                    if known.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        known.join(", ")
+                    }
+                )
+            }
+            many => bail!(
+                "`{selector}` matches {} identities (indices {}) — refusing to guess which one \
+                 you meant; disambiguate with the agent_name",
+                many.len(),
+                many.iter()
+                    .map(|i| i.index.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        }
     }
 
     /// Resolve a `<selector>` — an `agent_name` or a `label` — to one
@@ -234,11 +341,100 @@ impl GrantsDoc {
         self.set_field(index, "token", value(token))
     }
 
+    /// Append a new `[[auth.identities]]` block (sprint 049). Never
+    /// touches an existing one.
+    ///
+    /// # Errors
+    /// If `[auth]` exists but is not a table, or `auth.identities`
+    /// exists but is not an array of tables.
+    pub fn add_identity(&mut self, id: &IdentityConfig) -> Result<()> {
+        let mut table = Table::new();
+        table["agent_name"] = value(id.agent_name.clone());
+        let mut scopes = Array::new();
+        for s in &id.scopes {
+            scopes.push(s.as_str());
+        }
+        table["scopes"] = value(scopes);
+        if let Some(label) = &id.label {
+            table["label"] = value(label.clone());
+        }
+        if !id.nodes.is_empty() {
+            let mut nodes = Array::new();
+            for n in &id.nodes {
+                nodes.push(n.as_str());
+            }
+            table["nodes"] = value(nodes);
+        }
+
+        // Same positioning rule as `add`: render the block beside its
+        // siblings rather than after `[postgres]`.
+        let insert_at = self.next_position_in("identities");
+        shift_positions_from(self.doc.as_table_mut(), insert_at);
+        table.set_position(insert_at);
+
+        self.auth_array_mut("identities")?.push(table);
+        Ok(())
+    }
+
+    /// Delete the identity at `index`.
+    ///
+    /// # Errors
+    /// If `auth.identities` is missing or `index` is out of range.
+    pub fn remove_identity(&mut self, index: usize) -> Result<()> {
+        let array = self.auth_array_mut("identities")?;
+        if index >= array.len() {
+            bail!(
+                "identity index {index} is out of range ({} identities)",
+                array.len()
+            );
+        }
+        array.remove(index);
+        Ok(())
+    }
+
+    /// Replace one identity's `scopes`, touching nothing else.
+    ///
+    /// # Errors
+    /// If `auth.identities` is missing or `index` is out of range.
+    pub fn set_identity_scopes(&mut self, index: usize, scopes: &[Scope]) -> Result<()> {
+        let mut array = Array::new();
+        for s in scopes {
+            array.push(s.as_str());
+        }
+        self.set_field_in("identities", index, "scopes", value(array))
+    }
+
+    /// Replace one identity's `nodes` pin list, touching nothing else.
+    /// An empty list removes the key entirely rather than leaving
+    /// `nodes = []`, which reads like a pin to nowhere.
+    ///
+    /// # Errors
+    /// If `auth.identities` is missing or `index` is out of range.
+    pub fn set_identity_nodes(&mut self, index: usize, nodes: &[String]) -> Result<()> {
+        if nodes.is_empty() {
+            let array = self.auth_array_mut("identities")?;
+            let table = array
+                .get_mut(index)
+                .ok_or_else(|| anyhow!("identity index {index} is out of range"))?;
+            table.remove("nodes");
+            return Ok(());
+        }
+        let mut array = Array::new();
+        for n in nodes {
+            array.push(n.as_str());
+        }
+        self.set_field_in("identities", index, "nodes", value(array))
+    }
+
     fn set_field(&mut self, index: usize, key: &str, new: Item) -> Result<()> {
-        let array = self.tokens_array_mut()?;
+        self.set_field_in("tokens", index, key, new)
+    }
+
+    fn set_field_in(&mut self, array_key: &str, index: usize, key: &str, new: Item) -> Result<()> {
+        let array = self.auth_array_mut(array_key)?;
         let table = array
             .get_mut(index)
-            .ok_or_else(|| anyhow!("grant index {index} is out of range"))?;
+            .ok_or_else(|| anyhow!("{array_key} index {index} is out of range"))?;
 
         // Carry the old value's decor across so a trailing comment on
         // the line ("# rotated after the 401") survives the edit.
@@ -254,6 +450,14 @@ impl GrantsDoc {
     }
 
     fn tokens_array_mut(&mut self) -> Result<&mut toml_edit::ArrayOfTables> {
+        self.auth_array_mut("tokens")
+    }
+
+    /// `auth.<key>` as a mutable array of tables, creating `[auth]` and
+    /// the array if they are absent. Sprint 049 generalized this from
+    /// `tokens` so `identities` gets the same treatment rather than a
+    /// second near-copy.
+    fn auth_array_mut(&mut self, key: &str) -> Result<&mut toml_edit::ArrayOfTables> {
         let auth = self
             .doc
             .entry("auth")
@@ -264,28 +468,50 @@ impl GrantsDoc {
         let auth = auth
             .as_table_mut()
             .ok_or_else(|| anyhow!("`auth` exists but is not a table"))?;
-        let tokens = auth
-            .entry("tokens")
+        let array = auth
+            .entry(key)
             .or_insert_with(|| Item::ArrayOfTables(toml_edit::ArrayOfTables::new()));
-        tokens.as_array_of_tables_mut().ok_or_else(|| {
-            anyhow!("`auth.tokens` exists but is not an array of `[[auth.tokens]]` tables")
+        array.as_array_of_tables_mut().ok_or_else(|| {
+            anyhow!("`auth.{key}` exists but is not an array of `[[auth.{key}]]` tables")
         })
     }
 
     /// Where a new grant block should be rendered: right after the last
     /// existing one, or at the end of the document if there are none.
     fn next_grant_position(&self) -> usize {
-        let existing_max = self
-            .doc
+        self.next_position_in("tokens")
+    }
+
+    fn next_position_in(&self, key: &str) -> usize {
+        // After the last block of this kind, when there is one.
+        if let Some(p) = self.last_position_of(key) {
+            return p + 1;
+        }
+        // Otherwise after the last block of the SIBLING auth array.
+        // Adding the very first `[[auth.identities]]` to today's
+        // tokens-only config would otherwise fall through to
+        // end-of-document and render below `[postgres]` — valid TOML
+        // that reads exactly like the file was mangled, which is the
+        // failure `add`'s positioning was written to avoid. Measured:
+        // the first CLI run of `identity add` did precisely this.
+        let sibling = if key == "tokens" {
+            "identities"
+        } else {
+            "tokens"
+        };
+        if let Some(p) = self.last_position_of(sibling) {
+            return p + 1;
+        }
+        max_position(self.doc.as_table()) + 1
+    }
+
+    fn last_position_of(&self, key: &str) -> Option<usize> {
+        self.doc
             .get("auth")
             .and_then(Item::as_table)
-            .and_then(|t| t.get("tokens"))
+            .and_then(|t| t.get(key))
             .and_then(Item::as_array_of_tables)
-            .and_then(|aot| aot.iter().filter_map(Table::position).max());
-        match existing_max {
-            Some(p) => p + 1,
-            None => max_position(self.doc.as_table()) + 1,
-        }
+            .and_then(|aot| aot.iter().filter_map(Table::position).max())
     }
 }
 
@@ -537,5 +763,176 @@ scopes = "read"
         .unwrap_err()
         .to_string();
         assert!(err.contains("[auth] block"), "{err}");
+    }
+
+    // ---------------------------------------------- identities (049)
+
+    const IDENTITY_FIXTURE: &str = r#"# klams-service runtime configuration.
+
+[server]
+listen_addr = "127.0.0.1"
+port = 7777
+
+[auth]
+# Scoped grants. SCOPES ARE FLAT, NOT HIERARCHICAL.
+
+[[auth.tokens]]
+token      = "klams-view-0123456789abcdef"
+scopes     = ["read"]
+label      = "klams-view"
+agent_name = "klams-view"
+
+# Declared identities (sprint 049).
+[[auth.identities]]
+agent_name = "claude"
+scopes     = ["read", "write", "manage"]
+label      = "claude"
+
+[[auth.identities]]
+agent_name = "kmon"
+scopes     = ["read", "write"]
+label      = "kmon"
+nodes      = ["kubs0"]
+
+[postgres]
+url = "postgres://localhost/klams"
+"#;
+
+    #[test]
+    fn reads_identities_through_the_service_schema() {
+        let doc = GrantsDoc::parse(IDENTITY_FIXTURE).unwrap();
+        let ids = doc.identities().unwrap();
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids[0].agent_name, "claude");
+        assert_eq!(
+            ids[0].scopes,
+            vec![Scope::Read, Scope::Write, Scope::Manage]
+        );
+        assert!(ids[0].nodes.is_empty());
+        assert_eq!(ids[1].nodes, vec!["kubs0".to_string()]);
+        // The token table is untouched by reading identities.
+        assert_eq!(doc.grants().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn finds_an_identity_by_agent_name_or_label() {
+        let doc = GrantsDoc::parse(IDENTITY_FIXTURE).unwrap();
+        assert_eq!(doc.find_identity("kmon").unwrap().index, 1);
+        assert!(doc.find_identity("nope").is_err());
+    }
+
+    /// The comments in this file ARE the operator documentation, so an
+    /// edit that dropped them would be a regression even though the
+    /// TOML stayed valid.
+    #[test]
+    fn adding_an_identity_preserves_comments_and_siblings() {
+        let mut doc = GrantsDoc::parse(IDENTITY_FIXTURE).unwrap();
+        doc.add_identity(&IdentityConfig {
+            agent_name: "klams-mind-eval".into(),
+            scopes: vec![Scope::Read],
+            label: Some("klams-mind-eval".into()),
+            nodes: vec![],
+        })
+        .unwrap();
+        let out = doc.to_string();
+        assert!(out.contains("SCOPES ARE FLAT"), "comments must survive");
+        assert!(out.contains("Declared identities (sprint 049)"));
+        assert!(out.contains("klams-mind-eval"));
+
+        let reparsed = GrantsDoc::parse(&out).unwrap();
+        assert_eq!(reparsed.identities().unwrap().len(), 3);
+        // Neither the token grant nor the existing identities moved.
+        assert_eq!(reparsed.grants().unwrap().len(), 1);
+        assert_eq!(reparsed.identities().unwrap()[0].agent_name, "claude");
+
+        // And the new block renders beside its siblings, not after
+        // [postgres] — the failure that reads like a mangled file.
+        let mind = out.find("klams-mind-eval").unwrap();
+        let postgres = out.find("[postgres]").unwrap();
+        assert!(mind < postgres, "new identity rendered below [postgres]");
+    }
+
+    #[test]
+    fn identity_scopes_and_nodes_edit_only_their_own_row() {
+        let mut doc = GrantsDoc::parse(IDENTITY_FIXTURE).unwrap();
+        doc.set_identity_scopes(0, &[Scope::Read]).unwrap();
+        doc.set_identity_nodes(0, &["kai".to_string(), "kubs0".to_string()])
+            .unwrap();
+        let reparsed = GrantsDoc::parse(&doc.to_string()).unwrap();
+        let ids = reparsed.identities().unwrap();
+        assert_eq!(ids[0].scopes, vec![Scope::Read]);
+        assert_eq!(ids[0].nodes, vec!["kai".to_string(), "kubs0".to_string()]);
+        // The sibling is byte-for-byte what it was.
+        assert_eq!(ids[1].scopes, vec![Scope::Read, Scope::Write]);
+        assert_eq!(ids[1].nodes, vec!["kubs0".to_string()]);
+        assert_eq!(
+            reparsed.grants().unwrap()[0].agent_name.as_deref(),
+            Some("klams-view")
+        );
+    }
+
+    /// Unpinning removes the key rather than leaving `nodes = []`,
+    /// which reads like a pin to nowhere.
+    #[test]
+    fn unpinning_removes_the_nodes_key() {
+        let mut doc = GrantsDoc::parse(IDENTITY_FIXTURE).unwrap();
+        doc.set_identity_nodes(1, &[]).unwrap();
+        let out = doc.to_string();
+        assert!(!out.contains("nodes"), "{out}");
+        assert!(GrantsDoc::parse(&out).unwrap().identities().unwrap()[1]
+            .nodes
+            .is_empty());
+    }
+
+    #[test]
+    fn removing_an_identity_leaves_the_token_table_alone() {
+        let mut doc = GrantsDoc::parse(IDENTITY_FIXTURE).unwrap();
+        doc.remove_identity(0).unwrap();
+        let reparsed = GrantsDoc::parse(&doc.to_string()).unwrap();
+        assert_eq!(reparsed.identities().unwrap().len(), 1);
+        assert_eq!(reparsed.identities().unwrap()[0].agent_name, "kmon");
+        assert_eq!(reparsed.grants().unwrap().len(), 1);
+    }
+
+    /// A file with no `[[auth.identities]]` at all — today's live
+    /// config — grows the array rather than failing.
+    #[test]
+    fn adding_the_first_identity_to_a_tokens_only_config() {
+        let mut doc = GrantsDoc::parse(FIXTURE).unwrap();
+        assert!(doc.identities().unwrap().is_empty());
+        doc.add_identity(&IdentityConfig {
+            agent_name: "claude".into(),
+            scopes: vec![Scope::Read, Scope::Write],
+            label: Some("claude".into()),
+            nodes: vec![],
+        })
+        .unwrap();
+        let out = doc.to_string();
+        let reparsed = GrantsDoc::parse(&out).unwrap();
+        assert_eq!(reparsed.identities().unwrap().len(), 1);
+        assert_eq!(reparsed.grants().unwrap().len(), 2, "tokens untouched");
+        // The first identity block belongs beside the token grants it
+        // supersedes, not after `[postgres]`. Measured failure: without
+        // the sibling-array fallback in `next_position_in`, the very
+        // first `identity add` against a tokens-only config rendered
+        // the block at the end of the file — valid TOML that reads
+        // exactly like the file was mangled.
+        let identity_at = out.find("[[auth.identities]]").unwrap();
+        let postgres_at = out.find("[postgres]").unwrap();
+        assert!(
+            identity_at < postgres_at,
+            "first identity rendered below [postgres]:\n{out}"
+        );
+    }
+
+    /// An identity fingerprint is its name — there is no token to
+    /// digest — so the set-level guard is over names.
+    #[test]
+    fn identity_fingerprints_are_names() {
+        let doc = GrantsDoc::parse(IDENTITY_FIXTURE).unwrap();
+        let fps = doc.identity_fingerprints().unwrap();
+        assert_eq!(fps.len(), 2);
+        assert_eq!(fps[0].key, "claude");
+        assert_eq!(fps[0].token, crate::fingerprint::NO_TOKEN);
     }
 }

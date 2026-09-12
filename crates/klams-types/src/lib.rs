@@ -50,8 +50,9 @@ pub fn system_author_id() -> uuid::Uuid {
 }
 
 pub use auth::{
-    validate_agent_name, AgentNameInvalidReason, AuthConfig, AuthConfigError, AuthenticatedAuthor,
-    AuthenticatedScopes, Scope, TokenGrantConfig,
+    validate_agent_name, AgentNameInvalidReason, AuthConfig, AuthConfigError, AuthMethod,
+    AuthenticatedAuthor, AuthenticatedPeer, AuthenticatedScopes, IdentityConfig, Scope,
+    TokenGrantConfig, WhoisConfig,
 };
 pub use author::{AuthorRecord, PublicAuthorRef, RegisterAuthorArgs, RegisterAuthorError};
 pub use config::{ApiConfig, BackupConfig, BackupConfigError, SameDayStrategy, WindowStartUtc};

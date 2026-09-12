@@ -10,6 +10,88 @@ listen_addr = "127.0.0.1"
 port = 7777
 
 [auth]
+# ---------------------------------------------------------------------
+# Sprint 049 — IDENTITIES are the current form; token grants are legacy.
+# ---------------------------------------------------------------------
+#
+# A klams bearer token was a name tag, not a lock: its only job was to
+# say WHICH agent was calling. So a caller now declares its name in a
+# header instead, and there is no secret to rotate or leak:
+#
+#     X-Homelab-Agent: <agent_name>
+#
+# An unknown name is a 401, exactly as an unknown token is. Scopes are
+# looked up by name, and authorship is unchanged — klams has keyed
+# attribution on `agent_name` rather than on token bytes since sprint
+# 009, so moving a consumer from a token to a header does not orphan
+# anything it ever wrote.
+#
+# EDIT THESE WITH `klams-token`, NOT AN EDITOR:
+#
+#   sudo klams-token identity list
+#   sudo klams-token identity add <name> --scopes read,write
+#   sudo klams-token identity scopes <name> --add manage
+#   sudo klams-token identity nodes <name> --set kubs0,kai
+#   sudo klams-token identity remove <name>
+#
+# Then `sudo systemctl reload klams-service` (SIGHUP hot-reloads both
+# tables).
+#
+# [[auth.identities]]
+# agent_name = "claude"
+# scopes     = ["read", "write", "manage"]
+# label      = "claude"
+#
+# `nodes` pins an identity to the tailnet nodes it may arrive from. It
+# is documentation until `[auth.whois] enforce = true` (below), which is
+# off by default.
+# [[auth.identities]]
+# agent_name = "kmon"
+# scopes     = ["read", "write"]
+# label      = "kmon"
+# nodes      = ["kubs0"]
+
+# ---------------------------------------------------------------------
+# [auth.whois] — record which tailnet node each caller came from.
+# ---------------------------------------------------------------------
+#
+# Authentication is by declared name, and a name says nothing about
+# where it was declared from. `tailscale whois` closes that gap: the
+# caller's tailnet address is resolved to a node and recorded beside the
+# declared `agent_name` in the request log, so "why did a write from X
+# turn up here" is answerable afterwards.
+#
+# It is DATA, NOT A CHECK. tailscaled being down, the binary being
+# absent, and the address being unknown all record `unknown`, and none
+# of them refuses a request.
+#
+# [auth.whois]
+# # Turn OFF on a host with no `tailscale` binary, so the resolver is
+# # never invoked. Default true.
+# enabled = true
+# # Refuse a request whose resolved node is not in its identity's
+# # `nodes` list. DEFAULT OFF. Only identities that declare `nodes` are
+# # constrained, so turning this on cannot lock every caller out at
+# # once — and `--validate-config` warns about the ones it leaves
+# # unconstrained.
+# #
+# # Before turning it on, know what it trusts: the caller's address
+# # comes from `X-Forwarded-For`, which is only as trustworthy as the
+# # proxy in front of the service. klams behind `tailscale serve` is
+# # fine for the RECORD; enforcement additionally assumes the loopback
+# # port is not reachable by untrusted local callers. See docs/auth.md.
+# enforce = false
+# # How long a resolved (or unresolvable) address stays cached.
+# cache_ttl_secs = 300
+
+# ---------------------------------------------------------------------
+# [[auth.tokens]] — the legacy form, kept for the transition window.
+# ---------------------------------------------------------------------
+#
+# The window is open exactly while this table has rows: there is no
+# separate flag, because deleting the rows is what closes it. Until
+# then both credentials authenticate, so no consumer breaks mid-cutover.
+#
 # Sprint 034 (#703) — the legacy `bearer_token` form is RETIRED. It
 # materialized one grant carrying every scope with no `agent_name`, so
 # every action through it was unattributable — and privileged scopes
@@ -28,14 +110,17 @@ port = 7777
 # (Sprint 032 (#670) had already stopped provisioning one by default;
 # this closes the path entirely.)
 
-# Sprint 007 — scoped MCP tokens. At least one `[[auth.tokens]]` grant
-# must be set or the service refuses to start. Every token MUST be
+# Sprint 007 — scoped MCP tokens. At least one `[[auth.identities]]` or
+# `[[auth.tokens]]` entry must be set or the service refuses to start
+# (either table satisfies it — sprint 049). Every token MUST be
 # ≥ 16 characters; `scopes` MUST be non-empty; grants holding `manage`
 # or `admin` MUST declare `agent_name` (sprint 034, #703).
 #
 # EDIT THESE WITH `klams-token`, NOT AN EDITOR (sprint 045, #265). It
 # edits the blocks structurally, so a write cannot clobber a sibling
-# grant, and it validates the result before anything reaches disk:
+# grant, and it validates the result before anything reaches disk.
+# These subcommands act on the LEGACY table; their `identity`
+# counterparts above act on the current one:
 #
 #   sudo klams-token list [--verify]
 #   sudo klams-token add <name> --scopes read,write --reveal

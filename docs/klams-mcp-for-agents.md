@@ -18,18 +18,19 @@ operator provides across machines (see
 | Endpoint | `<klams-url>/mcp` |
 | Transport | MCP Streamable HTTP (rmcp; HTTP+SSE fallback on the same mount) |
 | Protocol | MCP `2024-11-05` … `2026-07-28`; older clients negotiate down cleanly |
-| Auth | `Authorization: Bearer <token>` — required on every request |
+| Auth | `X-Homelab-Agent: <agent_name>` — required on every request (`Authorization: Bearer <token>` still accepted during the sprint-049 transition window) |
 | Server name | `klams-mcp` |
 
-The tool catalog you see is filtered by your token's scopes, so it is
+The tool catalog you see is filtered by your identity's scopes, so it is
 advertised as privately cacheable — two agents with different scopes get
 different catalogs from the same endpoint.
 
-Tokens are `[[auth.tokens]]` entries in the service's `klams.toml`,
-each with a `scopes` list and an `agent_name` that writes are
-attributed to — see [auth.md](auth.md). Each agent should get its
-**own token** (read+write, distinct `agent_name`) so its memories are
-attributable. Since sprint 018 a token edit takes effect with
+Identities are `[[auth.identities]]` entries in the service's
+`klams.toml`, each with a `scopes` list and an `agent_name` that writes
+are attributed to — see [auth.md](auth.md). Each agent should get its
+**own identity** (read+write, distinct `agent_name`) so its memories are
+attributable. There is no secret to hand out and nothing to rotate: you
+declare the name. An identity edit takes effect with
 `sudo systemctl reload klams-service` — no restart.
 
 ## Enable it — Claude Code
@@ -39,7 +40,7 @@ of any repo. Recommended:
 
 ```bash
 claude mcp add --scope user --transport http klams <klams-url>/mcp \
-  --header "Authorization: Bearer <token>"
+  --header "X-Homelab-Agent: <agent_name>"
 ```
 
 **Repo (project) setup** — only if a specific repo should pin its own

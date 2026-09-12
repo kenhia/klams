@@ -32,6 +32,7 @@ use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::service::TowerToHyperService;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpListener;
+use tower::ServiceExt as _;
 use tracing::{info, warn};
 
 use crate::config::LimitsConfig;
@@ -236,7 +237,18 @@ async fn serve_one_connection(
 ) {
     let last_activity = Arc::new(AtomicU64::new(now_ms()));
     let io = TokioIo::new(IdleTrackedIo::new(tcp, Arc::clone(&last_activity)));
-    let svc = TowerToHyperService::new(router);
+    // Sprint 049 (WI 2389): the accept loop is the only place that knows
+    // the socket peer, so it stamps it here for the auth middleware's
+    // whois lookup. It is the FALLBACK address — in production klams
+    // sits behind `tailscale serve` and this is always loopback, with
+    // `X-Forwarded-For` carrying the caller's real tailnet IP. The
+    // fallback is what makes a direct (non-`serve`) deployment work.
+    let svc = TowerToHyperService::new(router.map_request(
+        move |mut req: hyper::Request<hyper::body::Incoming>| {
+            req.extensions_mut().insert(klams_api::PeerAddr(peer));
+            req
+        },
+    ));
 
     let mut builder = http1::Builder::new();
     builder

@@ -74,10 +74,82 @@ pub struct TokenGrantConfig {
     pub agent_name: Option<String>,
 }
 
+/// TOML-facing identity entry (`[[auth.identities]]`, sprint 049).
+///
+/// The successor to [`TokenGrantConfig`]: same scope set, same author
+/// binding, no secret. The caller declares its name in the
+/// `X-Homelab-Agent` header and klams looks the row up by that name.
+///
+/// Under the homelab threat model — single user, his agents, one
+/// tailnet, agents already holding sudo everywhere — a bearer token's
+/// only job was to say *which agent*. A declared name does that without
+/// a secret, so there is nothing to rotate and nothing to leak.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IdentityConfig {
+    /// The declared name. Unlike [`TokenGrantConfig::agent_name`] this
+    /// is the row's **key**, so it is mandatory rather than optional —
+    /// there is nothing else to look the row up by.
+    pub agent_name: String,
+    pub scopes: Vec<Scope>,
+    #[serde(default)]
+    pub label: Option<String>,
+    /// Tailnet node short names this identity may arrive from.
+    ///
+    /// Consulted **only** when `[auth.whois] enforce = true`, which is
+    /// off by default (sprint 049 / WI 2389). An identity that declares
+    /// no nodes is unconstrained even with enforcement on — pinning is
+    /// opt-in per identity, so turning the toggle on cannot lock out
+    /// every caller at once.
+    #[serde(default)]
+    pub nodes: Vec<String>,
+}
+
+/// `[auth.whois]` — the tailnet cross-check (sprint 049, WI 2389).
+///
+/// Record-only by default: the resolved node name is written beside the
+/// declared `agent_name` in the request log so "why did X come from Y"
+/// is answerable, and **a whois failure never refuses a request**.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WhoisConfig {
+    /// Resolve the caller's tailnet address at all. Leave on for a
+    /// tailnet deployment; turn it off on a host with no `tailscale`
+    /// binary so the resolver is never invoked.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Refuse a request whose resolved node is not in the identity's
+    /// `nodes` list. **Default off** — this is the mechanism being put
+    /// in place, not switched on.
+    #[serde(default)]
+    pub enforce: bool,
+    /// How long a resolved (or unresolvable) address stays cached.
+    #[serde(default = "default_whois_cache_ttl_secs")]
+    pub cache_ttl_secs: u64,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_whois_cache_ttl_secs() -> u64 {
+    300
+}
+
+impl Default for WhoisConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_true(),
+            enforce: false,
+            cache_ttl_secs: default_whois_cache_ttl_secs(),
+        }
+    }
+}
+
 /// Validation errors for a bearer-token configuration.
 #[derive(Debug, thiserror::Error)]
 pub enum AuthConfigError {
-    #[error("auth: at least one `[[auth.tokens]]` grant must be set")]
+    /// Sprint 049: an `[[auth.identities]]` row satisfies this too —
+    /// the transition window means either table may carry the grants.
+    #[error("auth: at least one `[[auth.identities]]` or `[[auth.tokens]]` entry must be set")]
     NoTokens,
     #[error("auth: token must be at least 16 characters")]
     TokenTooShort,
@@ -101,6 +173,13 @@ pub enum AuthConfigError {
          for the migration note"
     )]
     LegacyBearerTokenRetired,
+    /// Sprint 049: `agent_name` is the identities table's key, so two
+    /// rows claiming the same one make the lookup ambiguous. Refusing
+    /// is the only honest answer — silently picking the first would
+    /// attribute writes to whichever row happened to be earlier in the
+    /// file.
+    #[error("auth: duplicate `agent_name` {agent_name:?} in `[[auth.identities]]`")]
+    DuplicateIdentity { agent_name: String },
 }
 
 /// Reason an `agent_name` failed validation.
@@ -189,6 +268,30 @@ impl TokenGrantConfig {
     }
 }
 
+impl IdentityConfig {
+    /// Apply per-identity validation: `agent_name` present and legal,
+    /// and a non-empty scope set.
+    ///
+    /// There is no [`AuthConfigError::PrivilegedGrantNeedsAgentName`]
+    /// case here — sprint 034 added that rule so every privileged
+    /// action would be attributable, and an identity row cannot be
+    /// unattributable: the name *is* the credential.
+    ///
+    /// # Errors
+    /// [`AuthConfigError::InvalidAgentName`] if `agent_name` fails the
+    /// charset/length rules, or [`AuthConfigError::EmptyScopes`] if
+    /// `scopes` is empty.
+    pub fn validate(&self) -> Result<(), AuthConfigError> {
+        if let Err(reason) = validate_agent_name(&self.agent_name) {
+            return Err(AuthConfigError::InvalidAgentName { reason });
+        }
+        if self.scopes.is_empty() {
+            return Err(AuthConfigError::EmptyScopes);
+        }
+        Ok(())
+    }
+}
+
 /// The `[auth]` block of `klams.toml`.
 ///
 /// Sprint 045 (#265): this lived in `klams-service::config` until
@@ -211,8 +314,25 @@ pub struct AuthConfig {
     /// Token grants (`[[auth.tokens]]`). Each entry carries its own
     /// scope set; grants holding `manage`/`admin` must declare an
     /// `agent_name` (#703).
+    ///
+    /// Sprint 049: superseded by [`Self::identities`], and kept for the
+    /// transition window. **The window is open exactly while this table
+    /// is non-empty** — there is no separate flag, because deleting the
+    /// rows is what closes it and a second mechanism for one fact is a
+    /// second thing to get wrong (sprint 049 D-1; korg:2450 does the
+    /// deletion).
     #[serde(default)]
     pub tokens: Vec<TokenGrantConfig>,
+
+    /// Declared identities (`[[auth.identities]]`, sprint 049). Keyed
+    /// on `agent_name`, presented by the caller in `X-Homelab-Agent`.
+    #[serde(default)]
+    pub identities: Vec<IdentityConfig>,
+
+    /// `[auth.whois]` — the tailnet cross-check (WI 2389). Absent block
+    /// means resolve-and-record with enforcement off.
+    #[serde(default)]
+    pub whois: WhoisConfig,
 }
 
 impl AuthConfig {
@@ -233,7 +353,10 @@ impl AuthConfig {
                 AuthConfigError::LegacyBearerTokenRetired
             ));
         }
-        if self.tokens.is_empty() {
+        // Sprint 049: either table may carry the grants while the
+        // transition window is open, so "no grants at all" is the
+        // failure — not "no tokens".
+        if self.tokens.is_empty() && self.identities.is_empty() {
             errors.push(format!("[auth]: {}", AuthConfigError::NoTokens));
         }
         for (i, g) in self.tokens.iter().enumerate() {
@@ -241,6 +364,23 @@ impl AuthConfig {
                 errors.push(format!(
                     "[auth.tokens[{i}]] ({label}): {e}",
                     label = g.label.as_deref().unwrap_or("<no label>")
+                ));
+            }
+        }
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for (i, id) in self.identities.iter().enumerate() {
+            if let Err(e) = id.validate() {
+                errors.push(format!(
+                    "[auth.identities[{i}]] ({label}): {e}",
+                    label = id.label.as_deref().unwrap_or(&id.agent_name)
+                ));
+            }
+            if !seen.insert(id.agent_name.as_str()) {
+                errors.push(format!(
+                    "[auth.identities[{i}]]: {}",
+                    AuthConfigError::DuplicateIdentity {
+                        agent_name: id.agent_name.clone()
+                    }
                 ));
             }
         }
@@ -252,14 +392,41 @@ impl AuthConfig {
     /// empty, which is worth saying out loud.
     #[must_use]
     pub fn warnings(&self) -> Vec<String> {
-        self.tokens
+        let mut warnings: Vec<String> = self
+            .tokens
             .iter()
             .enumerate()
             .filter(|(_, g)| g.label.is_none())
             .map(|(i, _)| {
                 format!("[auth.tokens[{i}]]: no `label` set; log/metric attribution will be empty")
             })
-            .collect()
+            .collect();
+        // Sprint 049: enforcement is per-identity opt-in, so turning the
+        // toggle on with no `nodes` anywhere enforces nothing. That is a
+        // config that looks locked down and is not — worth saying out
+        // loud rather than discovering from an audit.
+        if self.whois.enforce {
+            let unpinned: Vec<&str> = self
+                .identities
+                .iter()
+                .filter(|i| i.nodes.is_empty())
+                .map(|i| i.agent_name.as_str())
+                .collect();
+            if !unpinned.is_empty() {
+                let (noun, declares, is) = if unpinned.len() == 1 {
+                    ("identity", "declares", "is")
+                } else {
+                    ("identities", "declare", "are")
+                };
+                warnings.push(format!(
+                    "[auth.whois]: enforce = true, but {n} {noun} {declares} no `nodes` and \
+                     {is} therefore unconstrained: {list}",
+                    n = unpinned.len(),
+                    list = unpinned.join(", ")
+                ));
+            }
+        }
+        warnings
     }
 }
 
@@ -284,6 +451,62 @@ pub struct AuthenticatedScopes(pub std::sync::Arc<Vec<Scope>>);
 pub struct AuthenticatedAuthor {
     pub author_id: uuid::Uuid,
     pub agent_name: std::sync::Arc<String>,
+}
+
+/// How the caller proved who they are (sprint 049). Recorded beside the
+/// resolved author so the transition window's progress is readable off
+/// the logs: while any caller is still `Bearer`, the window cannot
+/// close.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthMethod {
+    /// `X-Homelab-Agent: <agent_name>` matched an `[[auth.identities]]`
+    /// row.
+    Identity,
+    /// `Authorization: Bearer <token>` matched an `[[auth.tokens]]`
+    /// grant — the legacy path, live only while the window is open.
+    Bearer,
+}
+
+impl AuthMethod {
+    /// The log/wire spelling.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Identity => "identity",
+            Self::Bearer => "bearer",
+        }
+    }
+}
+
+impl std::fmt::Display for AuthMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The caller's tailnet origin, as resolved by `tailscale whois`
+/// (sprint 049, WI 2389). Stamped on every authenticated request.
+///
+/// `node` is `None` when whois is disabled, the address is absent, or
+/// tailscaled did not answer — all three are reported as `unknown`, and
+/// none of them refuses the request.
+#[derive(Clone, Debug)]
+pub struct AuthenticatedPeer {
+    /// The address whois was asked about, when there was one.
+    pub addr: Option<std::net::IpAddr>,
+    /// Short tailnet node name, e.g. `kai`.
+    pub node: Option<String>,
+    pub method: AuthMethod,
+}
+
+impl AuthenticatedPeer {
+    /// The node name for logs: the resolved short name, or the literal
+    /// `unknown` (WI 2389 — "`unknown` when tailscaled does not
+    /// answer").
+    #[must_use]
+    pub fn node_or_unknown(&self) -> &str {
+        self.node.as_deref().unwrap_or("unknown")
+    }
 }
 
 #[cfg(test)]
@@ -400,6 +623,261 @@ mod tests {
             agent_name: Some("alice".into()),
         };
         g.validate().unwrap();
+    }
+
+    // -----------------------------------------------------------------
+    // Sprint 049 — `[[auth.identities]]`.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn identity_round_trips_through_toml() {
+        let id: IdentityConfig = toml::from_str(
+            r#"
+            agent_name = "claude"
+            scopes     = ["read", "write", "manage"]
+            label      = "claude"
+            nodes      = ["kai", "kubs0"]
+            "#,
+        )
+        .expect("[[auth.identities]] must parse");
+        assert_eq!(id.agent_name, "claude");
+        assert_eq!(id.scopes, vec![Scope::Read, Scope::Write, Scope::Manage]);
+        assert_eq!(id.nodes, vec!["kai".to_string(), "kubs0".to_string()]);
+        id.validate().unwrap();
+    }
+
+    /// `nodes` is opt-in: the common row omits it, and omitting it must
+    /// not make the row invalid.
+    #[test]
+    fn identity_without_nodes_is_valid() {
+        let id: IdentityConfig = toml::from_str(
+            r#"
+            agent_name = "klams-view"
+            scopes     = ["read"]
+            "#,
+        )
+        .expect("an identity without `nodes` or `label` must parse");
+        assert!(id.nodes.is_empty());
+        assert!(id.label.is_none());
+        id.validate().unwrap();
+    }
+
+    /// The identities table has no unattributable row by construction —
+    /// sprint 034's `PrivilegedGrantNeedsAgentName` cannot arise here,
+    /// because the name *is* the credential. A privileged identity
+    /// validates with nothing extra.
+    #[test]
+    fn privileged_identity_needs_no_extra_attribution() {
+        let id = IdentityConfig {
+            agent_name: "ken_admin".into(),
+            scopes: vec![Scope::Read, Scope::Write, Scope::Manage, Scope::Admin],
+            label: Some("ken-admin".into()),
+            nodes: vec![],
+        };
+        id.validate().unwrap();
+    }
+
+    #[test]
+    fn identity_rejects_bad_name_and_empty_scopes() {
+        let bad_name = IdentityConfig {
+            agent_name: "Claude".into(), // uppercase is outside the charset
+            scopes: vec![Scope::Read],
+            label: None,
+            nodes: vec![],
+        };
+        assert!(matches!(
+            bad_name.validate(),
+            Err(AuthConfigError::InvalidAgentName {
+                reason: AgentNameInvalidReason::Charset
+            })
+        ));
+
+        let no_scopes = IdentityConfig {
+            agent_name: "claude".into(),
+            scopes: vec![],
+            label: None,
+            nodes: vec![],
+        };
+        assert!(matches!(
+            no_scopes.validate(),
+            Err(AuthConfigError::EmptyScopes)
+        ));
+    }
+
+    /// The transition window: a config carrying ONLY identities is
+    /// startable (that is what korg:2450 leaves behind), a config
+    /// carrying only tokens still is (that is today), and one carrying
+    /// neither is not.
+    #[test]
+    fn either_table_satisfies_the_grant_requirement() {
+        let identities_only = AuthConfig {
+            identities: vec![IdentityConfig {
+                agent_name: "claude".into(),
+                scopes: vec![Scope::Read, Scope::Write],
+                label: None,
+                nodes: vec![],
+            }],
+            ..AuthConfig::default()
+        };
+        assert!(
+            identities_only.errors().is_empty(),
+            "identities alone must boot: {:?}",
+            identities_only.errors()
+        );
+
+        let tokens_only = AuthConfig {
+            tokens: vec![TokenGrantConfig {
+                token: "abcdefghijklmnop".into(),
+                scopes: vec![Scope::Read],
+                label: None,
+                agent_name: None,
+            }],
+            ..AuthConfig::default()
+        };
+        assert!(tokens_only.errors().is_empty());
+
+        let neither = AuthConfig::default();
+        assert_eq!(neither.errors().len(), 1);
+        assert!(neither.errors()[0].contains("auth.identities"));
+    }
+
+    /// `agent_name` is the identities table's key, so a duplicate is
+    /// refused rather than resolved by file order.
+    #[test]
+    fn duplicate_identity_agent_name_is_rejected() {
+        let cfg = AuthConfig {
+            identities: vec![
+                IdentityConfig {
+                    agent_name: "claude".into(),
+                    scopes: vec![Scope::Read],
+                    label: Some("first".into()),
+                    nodes: vec![],
+                },
+                IdentityConfig {
+                    agent_name: "claude".into(),
+                    scopes: vec![Scope::Read, Scope::Write],
+                    label: Some("second".into()),
+                    nodes: vec![],
+                },
+            ],
+            ..AuthConfig::default()
+        };
+        let errors = cfg.errors();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains("duplicate"), "{errors:?}");
+        assert!(errors[0].contains("claude"), "{errors:?}");
+    }
+
+    /// An `agent_name` shared between a token grant and an identity is
+    /// NOT a duplicate — it is the expected state for the whole
+    /// transition window, and both resolve to the same author.
+    #[test]
+    fn same_name_in_both_tables_is_the_transition_window_not_an_error() {
+        let cfg = AuthConfig {
+            tokens: vec![TokenGrantConfig {
+                token: "abcdefghijklmnop".into(),
+                scopes: vec![Scope::Read, Scope::Write],
+                label: Some("claude".into()),
+                agent_name: Some("claude".into()),
+            }],
+            identities: vec![IdentityConfig {
+                agent_name: "claude".into(),
+                scopes: vec![Scope::Read, Scope::Write],
+                label: Some("claude".into()),
+                nodes: vec![],
+            }],
+            ..AuthConfig::default()
+        };
+        assert!(cfg.errors().is_empty(), "{:?}", cfg.errors());
+    }
+
+    /// The whois block defaults to resolve-and-record: enforcement is
+    /// the mechanism being put in place, not switched on (WI 2389).
+    #[test]
+    fn whois_defaults_to_recording_without_enforcing() {
+        let w = WhoisConfig::default();
+        assert!(w.enabled);
+        assert!(!w.enforce, "enforcement must default OFF");
+        assert_eq!(w.cache_ttl_secs, 300);
+
+        // And an `[auth]` block with no `[auth.whois]` at all gets them.
+        let cfg: AuthConfig = toml::from_str(
+            r#"
+            [[identities]]
+            agent_name = "claude"
+            scopes     = ["read"]
+            "#,
+        )
+        .expect("parse");
+        assert!(cfg.whois.enabled);
+        assert!(!cfg.whois.enforce);
+    }
+
+    /// Enforcement is per-identity opt-in, so `enforce = true` with no
+    /// `nodes` anywhere enforces nothing. That config looks locked down
+    /// and is not, so it must say so.
+    #[test]
+    fn enforce_without_any_pinned_nodes_warns() {
+        let cfg = AuthConfig {
+            identities: vec![
+                IdentityConfig {
+                    agent_name: "claude".into(),
+                    scopes: vec![Scope::Read],
+                    label: None,
+                    nodes: vec![],
+                },
+                IdentityConfig {
+                    agent_name: "kmon".into(),
+                    scopes: vec![Scope::Read],
+                    label: None,
+                    nodes: vec!["kubs0".into()],
+                },
+            ],
+            whois: WhoisConfig {
+                enforce: true,
+                ..WhoisConfig::default()
+            },
+            ..AuthConfig::default()
+        };
+        assert!(cfg.errors().is_empty());
+        let warnings = cfg.warnings();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("claude"), "{warnings:?}");
+        // The operator reads this line; it should be a sentence.
+        assert!(
+            warnings[0].contains("1 identity declares no `nodes` and is therefore"),
+            "{warnings:?}"
+        );
+        assert!(
+            !warnings[0].contains("kmon"),
+            "a pinned identity is constrained and must not be listed: {warnings:?}"
+        );
+
+        // Enforcement off — nothing to warn about, pinned or not.
+        let off = AuthConfig {
+            whois: WhoisConfig::default(),
+            ..cfg
+        };
+        assert!(off.warnings().is_empty(), "{:?}", off.warnings());
+    }
+
+    #[test]
+    fn authenticated_peer_reports_unknown_when_unresolved() {
+        let peer = AuthenticatedPeer {
+            addr: None,
+            node: None,
+            method: AuthMethod::Identity,
+        };
+        assert_eq!(peer.node_or_unknown(), "unknown");
+        assert_eq!(peer.method.as_str(), "identity");
+
+        let resolved = AuthenticatedPeer {
+            addr: Some("100.97.109.60".parse().unwrap()),
+            node: Some("kai".into()),
+            method: AuthMethod::Bearer,
+        };
+        assert_eq!(resolved.node_or_unknown(), "kai");
+        assert_eq!(resolved.method.as_str(), "bearer");
     }
 
     #[test]

@@ -394,7 +394,8 @@ owner and mode yourself.
 
 ### Managing grants after provisioning
 
-Adding, rotating, rescoping or retiring an `[[auth.tokens]]` grant is
+Adding, rescoping or retiring an `[[auth.identities]]` row — or
+rotating a legacy `[[auth.tokens]]` grant — is
 `klams-token`'s job, not an editor's — see
 [usage.md](usage.md#sprint-045--klams-token-auth-grant-cli).
 
@@ -784,10 +785,11 @@ violation):
   the previous rule forbids. The key still parses so it can be
   refused loudly: a config that sets it fails startup,
   `--validate-config`, and SIGHUP reload alike. Migration note:
-  [auth.md](auth.md). At least one `[[auth.tokens]]` grant is now
+  [auth.md](auth.md). At least one entry across `[[auth.identities]]`
+  and `[[auth.tokens]]` is now
   required.
 
-### Hot-reloading `[[auth.tokens]]`
+### Hot-reloading the auth tables
 
 Sprint 018 (WI #61): adding, removing, or rotating bearer tokens no
 longer needs a service restart. Send SIGHUP and the service re-reads
@@ -802,13 +804,18 @@ kill -HUP "$(pidof klams-service)"
 
 Semantics:
 
-- New `[[auth.tokens]]` entries authenticate immediately after the
+Sprint 049 added `[[auth.identities]]`; SIGHUP swaps **both** tables
+atomically together, so everything below applies to identities too.
+`[auth.whois]` is the exception and needs a restart — its resolver owns a
+cache and its `enforce` flag can refuse requests.
+
+- New `[[auth.identities]]` / `[[auth.tokens]]` entries authenticate immediately after the
   reload; removed entries stop authenticating. In-flight requests are
   not dropped — a request already past its auth check completes
   normally.
 - Only the `[auth]` block is applied. Changes to any other section
   (postgres, qdrant, embeddings, backup, …) still require a restart.
-- A reload that fails (unparseable TOML, no `[[auth.tokens]]` grants,
+- A reload that fails (unparseable TOML, no entries in *either* auth table,
   a still-set retired `bearer_token`, invalid or missing
   `agent_name`) is logged as an error and the **previous token table
   stays active** — a broken edit can't lock every caller out. Check

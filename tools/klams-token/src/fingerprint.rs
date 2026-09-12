@@ -38,7 +38,30 @@ impl GrantFingerprint {
             token: token_digest(token_value),
         }
     }
+
+    /// Fingerprint of an `[[auth.identities]]` row (sprint 049).
+    ///
+    /// There is no token to digest — that is the whole point of the
+    /// change — so the row reduces to its `agent_name`, which is
+    /// exactly what it reduces to for klams too. The guard is
+    /// unweakened: an identity set is a set of names, so `add` gains
+    /// one name, `remove` loses one, and a `scopes`/`nodes` edit must
+    /// leave the set identical. That is the same property the token
+    /// fingerprints give, expressed over the thing identities actually
+    /// have.
+    #[must_use]
+    pub fn identity(key: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            token: NO_TOKEN.to_string(),
+        }
+    }
 }
+
+/// Stands in for the token digest on an identity fingerprint. Not a
+/// digest of anything: an identity has no secret, and printing a real
+/// hash of the empty string would invite someone to read it as one.
+pub const NO_TOKEN: &str = "-";
 
 impl std::fmt::Display for GrantFingerprint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

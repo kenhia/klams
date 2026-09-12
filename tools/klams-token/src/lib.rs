@@ -32,5 +32,5 @@ pub mod paths;
 pub mod verify;
 pub mod writer;
 
-pub use doc::{GrantView, GrantsDoc};
+pub use doc::{GrantView, GrantsDoc, IdentityView};
 pub use fingerprint::{verify_delta, Change, GrantFingerprint};

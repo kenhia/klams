@@ -415,3 +415,164 @@ fn a_missing_config_names_every_path_it_tried() {
     assert!(!out.status.success());
     assert!(stderr(&out).contains("/nonexistent/klams.toml"));
 }
+
+// ------------------------------------------------ identities (sprint 049)
+
+#[test]
+fn identity_add_appends_a_row_and_leaves_every_token_grant_alone() {
+    let f = Fixture::new();
+    let before = f.text();
+    let out = f.run(&["identity", "add", "claude", "--scopes", "read,write,manage"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    let after = f.text();
+    // Every original line survives, in order, with its comments — the
+    // token grants included, because this slice deletes nothing.
+    for line in before.lines() {
+        assert!(
+            after.contains(line),
+            "`identity add` disturbed an existing line: {line:?}"
+        );
+    }
+    assert!(after.contains("[[auth.identities]]"));
+    assert!(after.contains(r#"agent_name = "claude""#));
+    assert_eq!(f.backups().len(), 1);
+    // The block belongs beside the grants it supersedes, inside the
+    // `[auth]` run — not appended after `[postgres]`.
+    assert!(
+        after.find("[[auth.identities]]").unwrap() < after.find("[postgres]").unwrap(),
+        "identity block rendered below [postgres]:\n{after}"
+    );
+}
+
+#[test]
+fn identity_add_refuses_a_duplicate_name() {
+    let f = Fixture::new();
+    assert!(f
+        .run(&["identity", "add", "claude", "--scopes", "read"])
+        .status
+        .success());
+    let out = f.run(&["identity", "add", "claude", "--scopes", "read,write"]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("already exists"), "{}", stderr(&out));
+}
+
+#[test]
+fn identity_add_refuses_a_row_klams_service_would_not_accept() {
+    let f = Fixture::new();
+    // Uppercase is outside the agent_name charset.
+    let out = f.run(&["identity", "add", "Claude", "--scopes", "read"]);
+    assert!(!out.status.success());
+    assert_eq!(f.text(), FIXTURE, "nothing may be written on a refusal");
+}
+
+#[test]
+fn identity_list_reports_scopes_and_pins() {
+    let f = Fixture::new();
+    assert!(f
+        .run(&[
+            "identity",
+            "add",
+            "kmon",
+            "--scopes",
+            "read,write",
+            "--nodes",
+            "kubs0"
+        ])
+        .status
+        .success());
+    let out = f.run(&["--json", "identity", "list"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let rows = json(&out);
+    assert_eq!(rows[0]["agent_name"], "kmon");
+    assert_eq!(rows[0]["nodes"][0], "kubs0");
+    // There is no token to leak, so no field can carry one.
+    assert!(rows[0].get("token").is_none());
+    assert!(rows[0].get("token_fingerprint").is_none());
+}
+
+#[test]
+fn identity_scopes_changes_one_row_and_no_token_grant() {
+    let f = Fixture::new();
+    assert!(f
+        .run(&["identity", "add", "claude", "--scopes", "read"])
+        .status
+        .success());
+    let before = f.text();
+    let out = f.run(&["identity", "scopes", "claude", "--add", "write"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    let after = f.text();
+    assert!(after.contains(r#"scopes = ["read", "write"]"#));
+    // Every token grant's line is untouched.
+    for line in before.lines().filter(|l| l.starts_with("token ")) {
+        assert!(after.contains(line), "token line moved: {line:?}");
+    }
+}
+
+#[test]
+fn identity_nodes_pins_and_unpins() {
+    let f = Fixture::new();
+    assert!(f
+        .run(&["identity", "add", "kmon", "--scopes", "read"])
+        .status
+        .success());
+    assert!(f
+        .run(&["identity", "nodes", "kmon", "--set", "kubs0,kai"])
+        .status
+        .success());
+    assert!(f.text().contains(r#"nodes = ["kubs0", "kai"]"#));
+
+    // Unpinning removes the key rather than leaving a pin to nowhere.
+    let out = f.run(&["identity", "nodes", "kmon", "--set", ""]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(!f.text().contains("nodes ="), "{}", f.text());
+}
+
+#[test]
+fn identity_remove_deletes_exactly_one_row() {
+    let f = Fixture::new();
+    for name in ["claude", "kmon"] {
+        assert!(f
+            .run(&["identity", "add", name, "--scopes", "read"])
+            .status
+            .success());
+    }
+    let out = f.run(&["identity", "remove", "claude", "--yes"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let after = f.text();
+    assert!(!after.contains(r#"agent_name = "claude""#));
+    assert!(after.contains(r#"agent_name = "kmon""#));
+    // And all three token grants are still there.
+    assert_eq!(after.matches("[[auth.tokens]]").count(), 3);
+}
+
+#[test]
+fn identity_remove_without_yes_refuses_rather_than_prompting_a_pipe() {
+    let f = Fixture::new();
+    assert!(f
+        .run(&["identity", "add", "claude", "--scopes", "read"])
+        .status
+        .success());
+    let out = f.run(&["identity", "remove", "claude"]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("--yes"), "{}", stderr(&out));
+}
+
+/// The transition window: after this sprint the config carries both
+/// tables, and a config carrying both must still be one klams-service
+/// would boot. `commit` gates every write on exactly that.
+#[test]
+fn a_config_holding_both_tables_still_validates() {
+    let f = Fixture::new();
+    assert!(f
+        .run(&["identity", "add", "claude", "--scopes", "read,write,manage"])
+        .status
+        .success());
+    let after = f.text();
+    assert!(after.contains("[[auth.tokens]]"));
+    assert!(after.contains("[[auth.identities]]"));
+    // A subsequent token-side edit still works with identities present.
+    let out = f.run(&["scopes", "klams-view", "--add", "write"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+}
