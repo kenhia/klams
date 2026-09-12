@@ -228,3 +228,69 @@ the shipped example config follow.
   Covered at both layers
   (`adding_the_first_identity_to_a_tokens_only_config`,
   `identity_add_appends_a_row_and_leaves_every_token_grant_alone`).
+
+## A note on `path` in the request log
+
+The audit line for an MCP call reads `path=/`, not `path=/mcp`. That is
+the nested router reporting the path *within* its mount, and it is left
+as it is deliberately: every MCP call is `POST /mcp`, so the path field
+carries no information there in the first place, while REST calls log
+their real path (`/memory/facts`, …). Nothing is lost, and changing it
+would mean re-publishing an immutable store artifact for a cosmetic.
+
+## Deployed 2026-09-12
+
+- Version `0.1.49` live on kubs0 (`/healthz` confirms; was `0.1.48`).
+  `klams-token --version` → `klams-token 0.1.49` (the binary `/healthz`
+  cannot speak for, sprint 048 #1697).
+- Published to the store as `artifacts/klams-{service,scanner,monitor,token}/0.1.49/`.
+- Unit files: **unchanged** (`git diff -- deploy/` touched only
+  `config/klams.example.toml`), so `install-systemd` was not run.
+- kai's `klams-scanner`: **deployed to 0.1.49**. It was found at
+  **0.1.45** — four releases behind, which is exactly the drift the
+  deploy skill warns accumulates when a ship leaves kai out. Nothing in
+  this sprint changes scanner behaviour; it was taken along to close the
+  gap.
+- Rollback target: `0.1.48` via `just rollback` (`.prev` binaries in
+  place); any published version via `just deploy-from-store --version`.
+- Migrations applied: **none** (this sprint adds no SQL migration).
+- Config changes required: **yes, and made here** — 16
+  `[[auth.identities]]` rows added to `/etc/klams/klams.toml` with
+  `klams-token identity add`. No secret was handled: an identity row is
+  a name, a scope list and an optional label. Fifteen mirror the live
+  token grants exactly (verified field by field before writing); the
+  sixteenth is `klams-mind-eval` (`read`), which has no token row and
+  which klams-mind WI 2398 needs. All 15 `[[auth.tokens]]` grants are
+  untouched and still authenticate.
+
+### Verified live — and from which host
+
+Every probe below was run **from kai**, not from kubs0, because the
+fact being established is "a caller on another tailnet node can
+authenticate and is recorded as coming from there". Running them
+locally would have measured a different thing and recorded
+`tailnet_node=kubs0`.
+
+- **A header write lands under the right author.** `memory_add` over
+  MCP as `X-Homelab-Agent: claude` wrote knowledge memory
+  `01a09746-4953-7bc1-a15c-0729206ec141` under author `claude`
+  (`019f4986-0ee3-7ae3-8de5-f697e2692dc6`).
+- **Attribution provably did not move** — the strongest evidence for
+  the whole design. Startup logged both:
+  `bound bearer to author  agent=claude  author_id=019f4986-…` and
+  `bound identity to author  agent=claude  author_id=019f4986-…`.
+  The same author row, from both tables. Nothing `claude` ever wrote is
+  orphaned by the cutover.
+- **whois records the node**:
+  `authenticated write agent_name=claude tailnet_node=kai auth=identity`.
+- **Refusals**: unknown declared name → 401; no credential → 401;
+  read-only identity (`klams-view`) → 200 on `GET /memory/policy` and
+  403 on `POST /memory/knowledge/index`.
+- **The window is open**: a legacy bearer still returns 200, and startup
+  logged `sprint-049 transition window OPEN … Deleting those rows is
+  what closes it (korg:2450)`. 16 identities bound at startup.
+- `just health` and `just verify` pass (7 passed, 0 failed, 3 skipped);
+  both units `active`, zero service ERROR lines, one expected
+  `klams-monitor publish failed` at restart.
+- Gate green, plus the full integration suite (`just test-integration`)
+  against the docker stack, which was torn down afterwards.
