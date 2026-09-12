@@ -294,3 +294,46 @@ locally would have measured a different thing and recorded
   `klams-monitor publish failed` at restart.
 - Gate green, plus the full integration suite (`just test-integration`)
   against the docker stack, which was torn down afterwards.
+
+## Deployed — post-merge confirmation (2026-09-12)
+
+The deploy above ran **during implementation**, because the proposal made
+it part of this slice's acceptance ("the new binary is deployed on
+kubs0 … a live write with the header lands under the right author —
+that is the proof"). This section closes the loop after the merge.
+
+**No re-publish and no re-install were needed, and that is verified, not
+assumed.** The only file that changed between the published build
+(`a037508`) and merged `main` (`1b33421`) is `docs/install.md`:
+
+```
+git diff --name-only a037508 HEAD   →   docs/install.md
+git diff --stat a037508 HEAD -- ':(exclude)*.md' ':(exclude)docs/**' ':(exclude)sprints/**'   →   (empty)
+```
+
+So the store's immutable `0.1.49` artifact **is** main's code. Per the
+deploy skill's preflight step 8 that is the "skip the publish" case, not
+the `--force` case.
+
+Live state after the merge: `/healthz` → `0.1.49`, `klams-token
+--version` → `0.1.49`, `Cargo.toml` → `0.1.49`.
+
+### Re-verified from kai, after the merge
+
+| probe | result |
+|---|---|
+| declared identity `claude`, `GET /memory/policy` | 200 |
+| unknown declared name | 401 |
+| read-only identity `klams-view`, write | 403 |
+| no credential | 401 |
+| `/healthz` (public) | 200 |
+| legacy bearer (`klams-view`) | 200 — window still open |
+
+And the whois record is already doing the job it was built for: over
+three minutes the request log attributed **629** authenticated requests
+to node `kai` and **1** to `cleo`. Before this sprint, "which host did
+that write come from" had no answer at all.
+
+- Rollback target: `0.1.48` via `just rollback`; any published version
+  via `just deploy-from-store --version`.
+- Migrations applied: none.
