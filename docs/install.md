@@ -205,10 +205,14 @@ instructions file. Don't skip the blurb: an agent that is merely
 a routing rule ("recall-shaped question → `memory_search` FIRST")
 gets used.
 
-Mint each agent its own token: add a `[[auth.tokens]]` grant to
-`klams.toml` (scopes `["read", "write"]`, a distinct `agent_name` —
-see [auth.md](auth.md)), then `sudo systemctl reload klams-service`
-(or restart `just run`).
+Give each agent its own identity: add an `[[auth.identities]]` row to
+`klams.toml` with `sudo klams-token identity add <name> --scopes
+read,write` (a distinct `agent_name` — see [auth.md](auth.md)), then
+`sudo systemctl reload klams-service` (or restart `just run`). The
+agent declares that name in an `X-Homelab-Agent` header; there is no
+secret to hand it. Bearer tokens still work — the sprint-049
+transition window is open while `[[auth.tokens]]` has rows — so an
+existing agent keeps working until you move it.
 
 ### The networking truth
 
