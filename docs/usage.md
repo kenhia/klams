@@ -13,16 +13,30 @@ there.
 
 ## Authentication
 
-All `/memory/*` routes require a bearer token. Tokens are loaded from
-the `[[auth.tokens]]` grants in the service config and compared in
-constant time. The legacy single `auth.bearer_token` field (and its
-`KLAMS_AUTH__BEARER_TOKEN` env form) is **retired** — sprint 034
-(#703): a config that still sets it refuses to start; see the
-migration note in [auth.md](auth.md).
+All `/memory/*` routes require a caller identity. Since sprint 049 that
+is a **declared name**, not a secret:
+
+```text
+X-Homelab-Agent: <agent_name>
+```
+
+The name is looked up in the `[[auth.identities]]` grants in the service
+config; an unknown name is a `401`, exactly as an unknown token is. Full
+model — including why a name tag was never a lock — in
+[auth.md](auth.md).
+
+Bearer tokens still work while the transition window is open (that is,
+while `[[auth.tokens]]` has rows), loaded from the service config and
+compared in constant time:
 
 ```text
 Authorization: Bearer <token>
 ```
+
+The legacy single `auth.bearer_token` field (and its
+`KLAMS_AUTH__BEARER_TOKEN` env form) is **retired** — sprint 034
+(#703): a config that still sets it refuses to start; see the
+migration note in [auth.md](auth.md).
 
 `/healthz` and `/metrics` are **unauthenticated** so probes and
 scrapers don't need credentials.
@@ -132,7 +146,7 @@ Operate with:
 sudo systemctl daemon-reload
 sudo systemctl enable --now klams-service.service
 sudo systemctl status klams-service.service
-sudo systemctl reload klams-service.service   # SIGHUP: hot-reload [[auth.tokens]]
+sudo systemctl reload klams-service.service   # SIGHUP: hot-reload both auth tables
 journalctl -u klams-service.service -f        # tail logs
 journalctl -u klams-service.service --since "1 hour ago"
 ```

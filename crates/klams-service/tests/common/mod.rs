@@ -197,6 +197,12 @@ pub struct TestServer {
     pub manage_token: String,
     /// The author id `manage_token` is bound to.
     pub manage_author_id: Uuid,
+    /// Sprint 049 — an `[[auth.identities]]` row bound to its own
+    /// author. Callers declare this in `X-Homelab-Agent`; there is no
+    /// token, which is the point.
+    pub identity_agent_name: String,
+    /// The author id the identity resolves to.
+    pub identity_author_id: Uuid,
     pub store: Arc<TestStore>,
     /// gRPC Qdrant URL — retained so `cleanup()` can drop the
     /// per-test collection on teardown (sprint 009 T039 / FR-021).
@@ -430,6 +436,12 @@ impl TestServer {
         // be exercised — one write-only peer, one manage-scoped curator.
         let other_write_token = "test-token-other-write".to_string();
         let other_author_id = resolve_test_author(&store, "other-write-test-agent").await;
+
+        // Sprint 049 — a declared identity, resolved through the same
+        // author path as a token grant. Both tables live side by side
+        // here on purpose: that IS the transition window.
+        let identity_agent_name = "declared-test-agent".to_string();
+        let identity_author_id = resolve_test_author(&store, &identity_agent_name).await;
         let manage_token = "test-token-manage".to_string();
         let manage_author_id = resolve_test_author(&store, "manage-test-agent").await;
 
@@ -515,7 +527,19 @@ impl TestServer {
                     "manage-test-agent",
                 ),
             ];
-            let auth_state = klams_api::auth::AuthState::with_grants(grants);
+            let identities = vec![klams_api::auth::Identity {
+                agent_name: std::sync::Arc::new(identity_agent_name.clone()),
+                scopes: std::sync::Arc::new(vec![
+                    klams_types::Scope::Read,
+                    klams_types::Scope::Write,
+                ]),
+                label: Some("declared".into()),
+                author_id: identity_author_id,
+                nodes: std::sync::Arc::new(Vec::new()),
+            }];
+            let auth_state = klams_api::auth::AuthState::with_tables(
+                klams_api::auth::AuthTables::new(grants, identities),
+            );
             let mut mcp_state = klams_mcp::tools::McpState::new(
                 Arc::clone(&store),
                 std::sync::Arc::new(klams_types::MaintenanceState::default()),
@@ -550,6 +574,8 @@ impl TestServer {
             other_author_id,
             manage_token,
             manage_author_id,
+            identity_agent_name,
+            identity_author_id,
             store,
             qdrant_url,
             qdrant_collection,
@@ -594,8 +620,27 @@ impl TestServer {
 pub struct McpSession {
     client: reqwest::Client,
     base: String,
-    token: String,
+    credential: Credential,
     session_id: String,
+}
+
+/// How a test caller proves who it is (sprint 049). Both forms are live
+/// while the transition window is open, and the point of modelling them
+/// together is that the *same* suite can be driven either way.
+#[derive(Clone, Debug)]
+pub enum Credential {
+    Bearer(String),
+    /// `X-Homelab-Agent: <agent_name>` — no secret.
+    Identity(String),
+}
+
+impl Credential {
+    pub fn apply(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match self {
+            Self::Bearer(t) => req.header("Authorization", format!("Bearer {t}")),
+            Self::Identity(name) => req.header("X-Homelab-Agent", name.as_str()),
+        }
+    }
 }
 
 pub const INIT_BODY: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}"#;
@@ -617,13 +662,20 @@ pub fn parse_sse_json(body: &str) -> serde_json::Value {
 
 impl McpSession {
     pub async fn handshake(addr: SocketAddr, token: &str) -> Self {
+        Self::handshake_with(addr, Credential::Bearer(token.to_string())).await
+    }
+
+    /// Sprint 049 — handshake under either credential form.
+    pub async fn handshake_with(addr: SocketAddr, credential: Credential) -> Self {
         let client = reqwest::Client::new();
         let base = format!("http://{addr}/mcp");
-        let init = client
-            .post(&base)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json, text/event-stream")
-            .header("Authorization", format!("Bearer {token}"))
+        let init = credential
+            .apply(
+                client
+                    .post(&base)
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/json, text/event-stream"),
+            )
             .body(INIT_BODY)
             .send()
             .await
@@ -637,12 +689,14 @@ impl McpSession {
             .unwrap()
             .to_string();
         let _ = init.text().await;
-        let notif = client
-            .post(&base)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json, text/event-stream")
-            .header("Authorization", format!("Bearer {token}"))
-            .header("mcp-session-id", &session_id)
+        let notif = credential
+            .apply(
+                client
+                    .post(&base)
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/json, text/event-stream")
+                    .header("mcp-session-id", &session_id),
+            )
             .body(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
             .send()
             .await
@@ -651,7 +705,7 @@ impl McpSession {
         Self {
             client,
             base,
-            token: token.to_string(),
+            credential,
             session_id,
         }
     }
@@ -667,11 +721,13 @@ impl McpSession {
             "params": {"name": name, "arguments": arguments},
         });
         let resp = self
-            .client
-            .post(&self.base)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json, text/event-stream")
-            .header("Authorization", format!("Bearer {}", self.token))
+            .credential
+            .apply(
+                self.client
+                    .post(&self.base)
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/json, text/event-stream"),
+            )
             .header("mcp-session-id", &self.session_id)
             .body(body.to_string())
             .send()
@@ -735,11 +791,13 @@ impl McpSession {
             "jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}
         });
         let resp = self
-            .client
-            .post(&self.base)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json, text/event-stream")
-            .header("Authorization", format!("Bearer {}", self.token))
+            .credential
+            .apply(
+                self.client
+                    .post(&self.base)
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/json, text/event-stream"),
+            )
             .header("mcp-session-id", &self.session_id)
             .body(body.to_string())
             .send()

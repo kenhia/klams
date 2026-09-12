@@ -320,8 +320,25 @@ async fn main() -> Result<()> {
     // layer to both the REST router and the nested `/mcp` router.
     // Previously /mcp was unauthenticated because the layer only sat on
     // the REST sub-router inside `build_router`.
-    let all_grants = build_auth_grants(&store, &cfg.auth).await?;
-    let auth_state = klams_api::auth::AuthState::with_grants(all_grants);
+    let auth_tables = build_auth_tables(&store, &cfg.auth).await?;
+    let mut auth_state = klams_api::auth::AuthState::with_tables(auth_tables);
+    // Sprint 049 (WI 2389) — the tailnet cross-check. Record-only
+    // unless `[auth.whois] enforce` is on, which it is not by default;
+    // `enabled = false` installs no resolver at all, which is the
+    // configuration for a host with no `tailscale` binary.
+    if cfg.auth.whois.enabled {
+        let resolver = std::sync::Arc::new(klams_api::whois::TailscaleWhois::new(
+            std::time::Duration::from_secs(cfg.auth.whois.cache_ttl_secs),
+        ));
+        auth_state = auth_state.with_whois(resolver, cfg.auth.whois.enforce);
+        info!(
+            enforce = cfg.auth.whois.enforce,
+            cache_ttl_secs = cfg.auth.whois.cache_ttl_secs,
+            "tailnet whois enabled"
+        );
+    } else {
+        info!("tailnet whois disabled ([auth.whois].enabled=false); node recorded as unknown");
+    }
 
     // Sprint 018 (WI #61) — SIGHUP re-reads the config and atomically
     // swaps the token table shared by the REST and /mcp layers, so
@@ -490,35 +507,30 @@ async fn shutdown_signal() {
 /// rather than silently ignored — an operator who still carries one
 /// believes they hold a working credential, so the honest failure is
 /// refusing to start with the migration note, not 401ing mysteriously.
-async fn build_auth_grants(
+/// Sprint 049: both tables are built here, and the whole `[auth]` block
+/// is validated through `AuthConfig::errors()` — the same list
+/// `--validate-config` and `klams-token` gate on — rather than a second
+/// copy of the rules that could accept a config the CLI rejects.
+async fn build_auth_tables(
     store: &Arc<CompositeStore>,
     auth: &config::AuthConfig,
-) -> Result<Vec<klams_api::auth::TokenGrant>> {
-    if !auth.bearer_token.is_empty() {
-        anyhow::bail!(
-            "[auth]: {}",
-            klams_types::AuthConfigError::LegacyBearerTokenRetired
-        );
+) -> Result<klams_api::auth::AuthTables> {
+    let errors = auth.errors();
+    if !errors.is_empty() {
+        anyhow::bail!("{}", errors.join("; "));
     }
-    if auth.tokens.is_empty() {
-        anyhow::bail!("[auth]: {}", klams_types::AuthConfigError::NoTokens);
-    }
-    let mut all_grants: Vec<klams_api::auth::TokenGrant> = Vec::new();
-    for (i, g) in auth.tokens.iter().enumerate() {
-        if let Err(e) = g.validate() {
-            anyhow::bail!(
-                "[auth.tokens[{i}]] ({label}): {e}",
-                label = g.label.as_deref().unwrap_or("<no label>")
-            );
-        }
-        let (author_id, agent_name) = resolve_token_author(store, g).await?;
+
+    let mut tokens: Vec<klams_api::auth::TokenGrant> = Vec::new();
+    for g in &auth.tokens {
+        let (author_id, agent_name) =
+            resolve_agent_author(store, g.agent_name.as_deref(), g.label.clone()).await?;
         tracing::info!(
             token_label = %g.label.as_deref().unwrap_or(""),
             agent_name = %agent_name,
             %author_id,
             "bound bearer to author"
         );
-        all_grants.push(klams_api::auth::TokenGrant::new_with_author(
+        tokens.push(klams_api::auth::TokenGrant::new_with_author(
             g.token.clone(),
             g.scopes.clone(),
             g.label.clone(),
@@ -526,7 +538,46 @@ async fn build_auth_grants(
             agent_name,
         ));
     }
-    Ok(all_grants)
+
+    let mut identities: Vec<klams_api::auth::Identity> = Vec::new();
+    for id in &auth.identities {
+        // `agent_name` is mandatory on an identity, so this never takes
+        // the `system` fallback — and it resolves to exactly the author
+        // the equivalent token grant resolves to, which is why the
+        // cutover needs no migration.
+        let (author_id, agent_name) =
+            resolve_agent_author(store, Some(&id.agent_name), id.label.clone()).await?;
+        tracing::info!(
+            identity_label = %id.label.as_deref().unwrap_or(""),
+            agent_name = %agent_name,
+            %author_id,
+            pinned_nodes = id.nodes.len(),
+            "bound identity to author"
+        );
+        identities.push(klams_api::auth::Identity {
+            agent_name: Arc::new(agent_name),
+            scopes: Arc::new(id.scopes.clone()),
+            label: id.label.clone(),
+            author_id,
+            nodes: Arc::new(id.nodes.clone()),
+        });
+    }
+
+    if tokens.is_empty() {
+        tracing::info!(
+            identities = identities.len(),
+            "transition window closed: no legacy `[[auth.tokens]]` grants remain"
+        );
+    } else {
+        tracing::info!(
+            legacy_grants = tokens.len(),
+            identities = identities.len(),
+            "sprint-049 transition window OPEN: legacy `[[auth.tokens]]` grants still \
+             authenticate. Deleting those rows is what closes it (korg:2450)."
+        );
+    }
+
+    Ok(klams_api::auth::AuthTables::new(tokens, identities))
 }
 
 /// Sprint 018 (WI #61) — install the SIGHUP-triggered auth reload.
@@ -548,16 +599,17 @@ fn spawn_auth_reload_on_sighup(
             }
         };
         while hup.recv().await.is_some() {
-            match reload_auth_grants(&config_path, &store).await {
-                Ok(grants) => {
-                    let count = grants.len();
-                    auth_state.replace_grants(grants);
-                    info!(grants = count, "SIGHUP: auth token table reloaded");
+            match reload_auth_tables(&config_path, &store).await {
+                Ok(tables) => {
+                    let grants = tables.tokens.len();
+                    let identities = tables.identities.len();
+                    auth_state.replace_tables(tables);
+                    info!(grants, identities, "SIGHUP: auth tables reloaded");
                 }
                 Err(e) => {
                     tracing::error!(
                         error = %e,
-                        "SIGHUP: auth reload failed; previous token table remains active"
+                        "SIGHUP: auth reload failed; previous auth tables remain active"
                     );
                 }
             }
@@ -565,28 +617,40 @@ fn spawn_auth_reload_on_sighup(
     });
 }
 
-async fn reload_auth_grants(
+async fn reload_auth_tables(
     config_path: &str,
     store: &Arc<CompositeStore>,
-) -> Result<Vec<klams_api::auth::TokenGrant>> {
+) -> Result<klams_api::auth::AuthTables> {
     let cfg = config::Config::from_path(config_path)
         .with_context(|| format!("re-loading config from {config_path}"))?;
     // All [auth] validation (no retired bearer_token, at least one
-    // grant, every grant individually valid) lives in
-    // `build_auth_grants`, shared with the startup path.
-    build_auth_grants(store, &cfg.auth).await
+    // grant or identity, every entry individually valid) lives in
+    // `build_auth_tables`, shared with the startup path.
+    //
+    // Sprint 049: `[auth.whois]` is deliberately NOT hot-reloaded. The
+    // resolver owns a cache and the enforcement flag decides whether a
+    // request can be refused; swapping either under live traffic is a
+    // restart-shaped change, and SIGHUP exists for the grant table.
+    build_auth_tables(store, &cfg.auth).await
 }
 
-/// Sprint 009 — resolve a bearer token's bound author. If the grant
-/// carries an `agent_name`, look it up in the `authors` table (or
-/// register a fresh `Uuid::now_v7()` row if absent) and bind the
-/// token to that author. Otherwise the grant attributes writes to
-/// `system`.
-async fn resolve_token_author(
+/// Sprint 009 — resolve a grant's bound author. If it carries an
+/// `agent_name`, look it up in the `authors` table (or register a fresh
+/// `Uuid::now_v7()` row if absent) and bind to that author. Otherwise
+/// writes are attributed to `system`.
+///
+/// Sprint 049: shared by `[[auth.tokens]]` and `[[auth.identities]]`,
+/// which is the whole reason the cutover carries no migration — both
+/// tables key authorship on the name, so a row in either resolves to
+/// the same author row. (Proven live on 2026-07-31, when the
+/// klams-mind token was rotated and `register_author` under the new
+/// token resolved to the pre-existing author.)
+async fn resolve_agent_author(
     store: &CompositeStore,
-    g: &klams_types::TokenGrantConfig,
+    agent_name: Option<&str>,
+    label: Option<String>,
 ) -> Result<(uuid::Uuid, String)> {
-    let Some(name) = g.agent_name.as_deref() else {
+    let Some(name) = agent_name else {
         return Ok((klams_types::SYSTEM_AUTHOR_ID, "system".to_string()));
     };
     klams_types::validate_agent_name(name)
@@ -602,7 +666,7 @@ async fn resolve_token_author(
     let args = klams_types::RegisterAuthorArgs {
         agent_name: name.to_string(),
         model: None,
-        session_title: g.label.clone(),
+        session_title: label,
         repo: None,
         client_app: Some("klams-service".to_string()),
         client_version: None,
@@ -644,7 +708,21 @@ fn validate_config_cli(config_path: &str) -> ! {
     errors.extend(cfg.auth.errors());
     warnings.extend(cfg.auth.warnings());
     if errors.is_empty() {
-        println!("OK: [auth] scoped_grants={}", cfg.auth.tokens.len());
+        // Sprint 049: report both tables. `scoped_grants` alone now
+        // reads `0` for a perfectly good identities-only config, which
+        // is the shape korg:2450 leaves behind — an "OK" line that
+        // says zero of the thing the operator just configured is worse
+        // than no line.
+        println!(
+            "OK: [auth] identities={}, legacy_grants={} (transition window {})",
+            cfg.auth.identities.len(),
+            cfg.auth.tokens.len(),
+            if cfg.auth.tokens.is_empty() {
+                "closed"
+            } else {
+                "OPEN"
+            }
+        );
     }
 
     // [backup]

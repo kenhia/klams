@@ -51,8 +51,12 @@ Then, going deeper:
 - [docs/architecture.md](docs/architecture.md) — design and component
   map (diagrams under [docs/diagrams/](docs/diagrams/)).
 - [docs/usage.md](docs/usage.md) — day-to-day operator recipes.
-- [docs/auth.md](docs/auth.md) — who can do what; how tokens are
-  granted. Grants are managed with `klams-token`, which edits them
+- [docs/auth.md](docs/auth.md) — who can do what; how identities are
+  granted. Since sprint 049 a caller declares its name in an
+  `X-Homelab-Agent` header rather than presenting a secret — a klams
+  bearer token was a name tag, not a lock, so the secret went and the
+  name stayed. Bearer tokens still work during the transition window.
+  Grants are managed with `klams-token`, which edits them
   structurally and can tell you which ones the service still accepts
   (`klams-token list --verify`).
 - [docs/klams-mcp-for-agents.md](docs/klams-mcp-for-agents.md) — hand

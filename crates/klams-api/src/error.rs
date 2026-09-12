@@ -33,6 +33,19 @@ pub enum ApiError {
     Unauthorized,
     #[error("insufficient scope: {needed:?} required")]
     ScopeInsufficient { needed: klams_types::Scope },
+    /// Sprint 049 (WI 2389) — whois enforcement refused a caller whose
+    /// tailnet node is not one its identity is pinned to. Only
+    /// reachable with `[auth.whois] enforce = true`, which is off by
+    /// default.
+    #[error(
+        "identity `{agent_name}` may not be used from node `{node}` \
+         (allowed: {allowed})"
+    )]
+    NodeNotAllowed {
+        agent_name: String,
+        node: String,
+        allowed: String,
+    },
     /// Sprint 027 (#420/#629): carries the size numbers rather than a
     /// bare "too large". Before this, a caller learned only that some
     /// unnamed limit existed and had to bisect to find it.
@@ -92,9 +105,9 @@ impl ApiError {
             ApiError::Validation { .. } => StatusCode::BAD_REQUEST,
             ApiError::ValidationDetailed { .. } => StatusCode::UNPROCESSABLE_ENTITY,
             ApiError::VersionConflict { .. } => StatusCode::CONFLICT,
-            ApiError::TrustRequired { .. } | ApiError::ScopeInsufficient { .. } => {
-                StatusCode::FORBIDDEN
-            }
+            ApiError::TrustRequired { .. }
+            | ApiError::ScopeInsufficient { .. }
+            | ApiError::NodeNotAllowed { .. } => StatusCode::FORBIDDEN,
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
             ApiError::TooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
             ApiError::QueueFull { .. } | ApiError::AllSourcesUnavailable { .. } => {
@@ -162,6 +175,20 @@ impl ApiError {
             ApiError::ScopeInsufficient { needed } => WireApiError {
                 code: "scope_insufficient".into(),
                 message: format!("this token does not carry the required `{needed}` scope"),
+                field: None,
+                request_id: None,
+                details: None,
+                current_version: None,
+                window_max_days: None,
+            },
+            ApiError::NodeNotAllowed { .. } => WireApiError {
+                code: "node_not_allowed".into(),
+                // The Display impl names the identity, the node it
+                // actually arrived from, and what was allowed — an
+                // operator debugging this needs all three, and a
+                // tailnet node name is not a secret from a caller
+                // already on that tailnet.
+                message: self.to_string(),
                 field: None,
                 request_id: None,
                 details: None,

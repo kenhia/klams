@@ -95,7 +95,7 @@ service) — see §2.4.
 | `klams-client` | Typed HTTP client. Used by `klams-scanner`, `klams-monitor` and `tools/bench`, and by `klams-service`'s integration tests, so every Rust caller shares one API contract. |
 | `klams-scanner` | Non-agentic filesystem writer: walks configured roots, chunks, publishes to `/memory/knowledge/index` (sprint 003; §2.4). |
 | `klams-monitor` | Non-agentic systemd-state writer: posts `Service` events on unit-state edges; optional kpidash `/healthz` reporter (sprint 003/010; §2.4). |
-| `tools/klams-token` | Operator CLI over the `[[auth.tokens]]` grants in `klams.toml` (sprint 045, #265). Not part of the service: it never runs in-process, and it edits config the service only reads. It shares the schema, though — grants are read and validated through `klams_types::AuthConfig`, the same type the service boots from, which is why it lives here rather than in k-homelab. Writes are structural (`toml_edit`), guarded by a before/after fingerprint of the grant set, and rolled back from a timestamped backup if the result would not start the service. `--verify` probes each grant against the running service, since a dead credential is invisible in the file. |
+| `tools/klams-token` | Operator CLI over the `[[auth.identities]]` rows and `[[auth.tokens]]` grants in `klams.toml` (sprint 045, #265; identities added in sprint 049, where every write is additionally guarded against disturbing the *other* table). Not part of the service: it never runs in-process, and it edits config the service only reads. It shares the schema, though — grants are read and validated through `klams_types::AuthConfig`, the same type the service boots from, which is why it lives here rather than in k-homelab. Writes are structural (`toml_edit`), guarded by a before/after fingerprint of the grant set, and rolled back from a timestamped backup if the result would not start the service. `--verify` probes each grant against the running service, since a dead credential is invisible in the file. |
 
 ### 1.2 The human surface (`klams-view`, out of tree)
 
@@ -704,8 +704,12 @@ All in-process in `klams-service`; no external scheduler.
   (`klams-service.service.d/backup.conf` — recipe in
   [setup.md](setup.md)).
 * **Oversize-log prune** — daily timer, §2.2.
-* **Auth reload** — SIGHUP re-reads `[[auth.tokens]]` and atomically
-  swaps the grant table (WI #61); token rotation needs no restart.
+* **Auth reload** — SIGHUP re-reads `[[auth.identities]]` *and*
+  `[[auth.tokens]]` and atomically swaps **both** tables together (WI
+  #61; sprint 049); adding an identity or rotating a token needs no
+  restart. `[auth.whois]` is deliberately excluded — its resolver owns a
+  cache and its `enforce` flag can refuse requests, so changing either
+  is restart-shaped.
 
 ### 2.9 Health and observability
 
@@ -815,8 +819,21 @@ route (previously exactly one route checked, so any valid bearer could
 bulk-delete knowledge) — see the route table in
 [`crates/klams-api/src/router.rs`](../crates/klams-api/src/router.rs).
 
-**Tokens.** `[[auth.tokens]]` grants are the only token source, and at
-least one must be set. Each issues a per-purpose bearer token with a
+**Identities** (sprint 049). `[[auth.identities]]` rows are the current
+form: a caller declares its `agent_name` in an `X-Homelab-Agent` header
+and klams looks the row up by that name. A klams bearer token was a name
+tag rather than a lock — under the homelab threat model its only job was
+to say which agent was calling — so the secret was removed and the name
+kept. Authorship was already keyed on `agent_name` rather than token
+bytes (sprint 009), so nothing about attribution moved. The caller's
+tailnet node is resolved by `tailscale whois` and recorded beside the
+name, record-only, with an enforcement toggle that ships off
+(`[auth.whois]`). Details and the threat-model argument: [auth.md](auth.md).
+
+**Tokens.** `[[auth.tokens]]` grants are the legacy source, live for the
+transition window — which is open exactly while that table has rows, with
+no separate flag, because deleting the rows is what closes it. At least
+one entry across *either* table must be set. Each issues a per-purpose bearer token with a
 scope list and an `agent_name` (strict charset, validated at startup;
 optional only for grants without `manage`/`admin` — a privileged grant
 must declare one so its actions are attributable, sprint 034 #703).

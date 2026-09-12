@@ -530,6 +530,16 @@ mod tests {
             cfg.auth.bearer_token.is_empty(),
             "the shipped example must not render a full-scope legacy token (#670)"
         );
+        // Sprint 049: the example ships every auth entry commented out,
+        // so this also pins the `[auth.whois]` defaults an operator gets
+        // by saying nothing — record the node, never enforce.
+        assert!(cfg.auth.identities.is_empty());
+        assert!(cfg.auth.whois.enabled);
+        assert!(
+            !cfg.auth.whois.enforce,
+            "whois enforcement must be OFF for an operator who configures nothing"
+        );
+        assert_eq!(cfg.auth.whois.cache_ttl_secs, 300);
         assert!(cfg.postgres.url.starts_with("postgres://"));
         // Sprint 032 (#647): these tracked the pre-028 corpus, so the
         // example provisioned the retired collection at the wrong
