@@ -305,3 +305,28 @@ is measured rather than argued.
 Fleet sweep, counts only: zero `Authorization` headers for klams in any
 of the seven host files, and zero `token =` lines in either daemon
 config.
+
+## A third lesson, found during the ship itself
+
+The sprint-record commit `a33a513` was written with the CI-skip marker in its
+message, copying the shape of 049's `docs(049): record the post-merge deploy
+confirmation`. That was the wrong place for it.
+
+The marker belongs on a **post-merge** record pushed straight to `main`
+(sprint-ship Phase 7.3), where its job is to stop a trailing docs push
+cancelling the merge commit's in-flight CI run. Put on a commit that becomes a
+**branch head**, it does something else entirely: GitHub Actions honours it for
+`pull_request` events too, so the pull request got no workflow run at all.
+`gh pr checks` reported "no checks reported on the branch", which reads exactly
+like CI-not-yet-registered rather than CI-deliberately-suppressed.
+
+So this sprint hit the same hazard twice in two registers — a suppressed signal
+that is indistinguishable from an absent one. First a piped `tail` reporting its
+own exit status over a failing test suite; then a skip marker reporting no CI
+where the honest answer is "none was asked for". Both times the failure mode is
+that the *quiet* result and the *good* result look identical.
+
+Fixed forward rather than by rewriting pushed history: this commit carries no
+marker, so it re-triggers the workflow on the PR. The squash body is composed by
+hand and deliberately does not quote the marker either, which is the guard
+sprint-ship Step 5.1 already carries.
