@@ -26,18 +26,20 @@ model — including why a name tag was never a lock — in
 [auth.md](auth.md).
 
 Bearer tokens are gone. The transition window closed in sprint 050 when
-the last `[[auth.tokens]]` row was deleted; klams carries no credential
-of any kind, and a caller that sends only an `Authorization` header gets
-a `401`.
+the last `[[auth.tokens]]` row was deleted, and sprint 052 deleted the
+code that parsed them; klams carries no credential of any kind, and a
+caller that sends only an `Authorization` header gets a `401` whose body
+names the header to send and the one to drop.
 
 ```text
 X-Homelab-Agent: <agent_name>
 ```
 
-The legacy single `auth.bearer_token` field (and its
-`KLAMS_AUTH__BEARER_TOKEN` env form) is **retired** — sprint 034
-(#703): a config that still sets it refuses to start; see the
-migration note in [auth.md](auth.md).
+`[[auth.tokens]]` and the older single `auth.bearer_token` field (with
+its `KLAMS_AUTH__BEARER_TOKEN` env form) are **retired**, and a config
+that still names either **refuses to start** with a message naming the
+field and the fix. See [auth.md](auth.md) for why that is a refusal
+rather than a silent ignore.
 
 `/healthz` and `/metrics` are **unauthenticated** so probes and
 scrapers don't need credentials.
@@ -124,7 +126,7 @@ invented "suggested unit" that stood here: it named the service
 `klams.service`, pointed `KLAMS_CONFIG` at a path that does not exist
 (`/etc/klams/service.toml`, real: `/etc/klams/klams.toml`), and omitted
 both `ExecReload` — so `systemctl reload` would not hot-reload
-`[[auth.tokens]]` — and any way for backups to write at all under
+`[[auth.identities]]` — and any way for backups to write at all under
 `ProtectSystem=strict`. Every `journalctl` example alongside it used
 the wrong unit name too, so they returned nothing.
 
@@ -717,57 +719,55 @@ also answers 204 (not 202) so mcp python-sdk clients no longer log
 
 ### Scope configuration
 
-All tokens are `[[auth.tokens]]` grants. Sprint 007 introduced the
-array alongside the legacy single `auth.bearer_token` field (which
-materialized into one all-scope grant bound to the seeded `system`
-author); sprint 034 (#703) **retired** the legacy field — an
-unattributable all-scope credential is exactly what the grant model
-exists to prevent. The key still parses so it can be refused loudly
-rather than silently ignored: a config with a non-empty
-`bearer_token` refuses to start, fails `--validate-config`, and fails
-a SIGHUP reload (the previous grant table stays active), with an
-error pointing at the migration note in [auth.md](auth.md).
+Every caller is an `[[auth.identities]]` row. Sprint 007 introduced
+per-grant scopes on a `[[auth.tokens]]` array; sprint 049 replaced the
+token with a declared name, sprint 050 emptied the table and sprint 052
+deleted its code. Both retired forms are **refused loudly** rather than
+ignored — a config naming `[[auth.tokens]]` or `bearer_token` fails
+startup, `--validate-config`, and a SIGHUP reload (the previous table
+stays active), with an error pointing at the migration note in
+[auth.md](auth.md).
 
 ```toml
-[[auth.tokens]]
-token = "klams-view-XXXXXXXXXXXXXXXXXXXX"
+[[auth.identities]]
+agent_name = "klams-view"
 scopes = ["read"]                      # the dashboard only reads
 label = "klams-view"
-agent_name = "klams-view"
 
-[[auth.tokens]]
-token = "ghcp-write-XXXXXXXXXXXXXXXX"
+[[auth.identities]]
+agent_name = "ghcp"
 scopes = ["read", "write", "manage"]
 label = "ghcp"
-agent_name = "ghcp"
 
-[[auth.tokens]]
-token = "scanner-XXXXXXXXXXXXXXXXXXXX"
+[[auth.identities]]
+agent_name = "klams-scanner"
 scopes = ["read", "write"]             # retracts only its own chunks
 label = "scanner"
-agent_name = "klams-scanner"
 
-[[auth.tokens]]
-token = "ken-admin-XXXXXXXXXXXXXXXXXX"
+[[auth.identities]]
+agent_name = "ken"
 scopes = ["read", "write", "manage", "admin"]
 label = "ken-admin"
-agent_name = "ken"                     # mandatory: the grant holds manage/admin
 ```
 
 Validation rules (enforced at load):
 
-- At least one `[[auth.tokens]]` grant must be present ("auth: at
-  least one `[[auth.tokens]]` grant must be set" — sprint 034, #703).
-- Every token must be ≥ 16 characters (loose entropy floor — real
-  entropy is the operator's responsibility).
-- Every grant's `scopes` array must be non-empty.
-- A grant holding `manage` or `admin` must declare `agent_name`, so
-  privileged actions are attributable (sprint 034, #703).
+- At least one `[[auth.identities]]` row must be present ("auth: at
+  least one `[[auth.identities]]` entry must be set").
+- Every row's `scopes` array must be non-empty.
+- `agent_name` is the row's key: mandatory, charset `[a-z0-9_-]`,
+  2–64 bytes, and duplicates are refused rather than resolved by file
+  order.
 - Scopes are **flat**: `write` does not imply `read`, `admin` does not
   imply `write`. List each one explicitly.
 
+There is no minimum length and no entropy rule, because there is no
+secret. Sprint 034's "a grant holding `manage`/`admin` must declare
+`agent_name`" rule retired with the token table: an identity row cannot
+be unattributable, since the name *is* the credential.
+
 The `label` is surfaced in the startup/SIGHUP log line that binds each
-bearer to its author (`token_label=…`). It is **not** a metric
+identity to its author (`identity_label=…`). It is **not** a metric
 dimension: `klams_mcp_calls_total` does not exist, and no series carries
 a `token_label` label — sprint 032 (#648) corrected this claim, and
 #670 had to audit configs by hand rather than query Prometheus as a
@@ -1302,103 +1302,87 @@ rejections never reach it).
 
 ## Sprint 045 — `klams-token` (auth-grant CLI)
 
-`klams.toml`'s `[[auth.tokens]]` blocks used to be edited by hand, with
-`sudo` and a text editor, on a file that lives outside any repo. korg
-#264 is what that costs: an edit clobbered an existing grant, because
-nothing in the loop understood the file's structure and there was no
-diff or review step. `klams-token` is the tool that closes it.
+`klams.toml`'s auth blocks used to be edited by hand, with `sudo` and a
+text editor, on a file that lives outside any repo. korg #264 is what
+that costs: an edit clobbered an existing row, because nothing in the
+loop understood the file's structure and there was no diff or review
+step. `klams-token` is the tool that closes it.
+
+Since sprint 052 it edits `[[auth.identities]]` only — the token
+subcommands (`list`, `add`, `remove`, `scopes`, `rotate`) and `--reveal`
+went with the table they operated on, and now fail as unrecognised.
 
 ```bash
 cargo build --release -p klams-token          # or: just install-klams-token
-sudo klams-token list
+sudo klams-token identity list
 ```
 
 ### What it guarantees
 
 Every mutation runs one pipeline, and each step is a refusal point:
 
-1. **Structural edit** — grants are addressed as TOML tables via
+1. **Structural edit** — rows are addressed as TOML tables via
    `toml_edit`, so a write cannot overwrite a sibling, and the file's
    comments, ordering and `=` alignment survive untouched.
-2. **Fingerprint-and-refuse** — the grant set is reduced to
-   `{identity → sha256(token)[:12]}` before and after. The command
+2. **Fingerprint-and-refuse** — the identity set is reduced to its set
+   of `agent_name`s before and after. The command
    declares the one change it intends; anything else in the delta
    aborts the write before it happens.
 3. **Schema validation** — the result is checked against
    `klams_types::AuthConfig`, *the same type `klams-service` boots
    from*, using the same rule list `--validate-config` reports. A
    config the service would refuse to start on never reaches disk.
-4. **Timestamped durable backup** — age-encrypted since sprint 046
-   (#1384) when a recipient is configured, with a plaintext fingerprint
-   manifest beside it; plaintext with a loud warning when one is not.
-   Then the new content is written **through the existing inode** —
+4. **Timestamped durable backup** — a plain copy since sprint 050
+   retired the age encryption sprint 046 added: the file's `[auth]`
+   tables are a list of names and scopes, so there is nothing left in a
+   backup to encrypt. Then the new content is written **through the
+   existing inode** —
    `/etc/klams/klams.toml` is `root:klams 0640` and a
    write-temp-and-rename would hand it to whoever ran `sudo`, locking
    the service out of its own config.
 5. **Re-read and re-validate**; on failure the config is rolled back
    **from the in-memory copy** — not from the durable backup, which by
    then may be encrypted to a key that is not on this machine. That
-   split is what lets a failed validate at 2am self-heal without Ken.
+   split predates, and outlived, the encryption it was introduced to
+   afford.
 
-Set-up, the restore path, and why backups are encrypted at all:
-[auth.md](auth.md#backups-of-this-file-are-secret-bearing-too).
+Why backups stopped being secret-bearing:
+[auth.md](auth.md#backups-of-this-file-are-not-secret-bearing-sprint-050).
 
-`--dry-run` runs steps 1–3 and stops. It reports in the conditional
-("would remove grant `x`"), and `add`/`rotate` under `--dry-run` print
-**no token value even with `--reveal`** — the value was generated and
-discarded, so printing it would hand you a credential that exists
-nowhere.
+`--dry-run` runs steps 1–3 and stops, reporting in the conditional
+("would remove identity `x`").
 
 ### Recipes
 
 ```bash
-# What grants exist? Token values are NEVER printed without --reveal;
-# the FINGERPRINT column is sha256(token)[:12].
-sudo klams-token list
+# Who may call, and with what scopes? This is also the ONLY supported
+# way to read the roster — never `cat` or `grep` the config, which
+# still carries the Postgres password under [postgres] (krot WI 2466).
+sudo klams-token identity list
+sudo klams-token --json identity list
 
-# Which of them does the service actually still accept? One
-# authenticated request per grant. 401 = dead, 403 = live but
-# scope-limited (a write-only grant is healthy), 2xx = live.
-sudo klams-token list --verify
+# Allow a new caller. Nothing is minted: the name IS the credential.
+sudo klams-token identity add krot --scopes read,write
 
-# Issue a grant. The token is <name>-<openssl rand -hex 32>; you get
-# one chance to read it.
-sudo klams-token add krot --scopes read,write --reveal
+# Widen or narrow one row's permissions, touching nothing else.
+sudo klams-token identity scopes klams-view --add manage
+sudo klams-token identity scopes klams-view --set read
 
-# Widen or narrow one grant's permissions, touching nothing else.
-sudo klams-token scopes klams-view --add manage
-sudo klams-token scopes klams-view --set read
+# Pin an identity to the tailnet nodes it may arrive from. Documentation
+# until `[auth.whois] enforce = true`, which is off by default.
+sudo klams-token identity nodes kmon --set kubs0,kai
+sudo klams-token identity nodes kmon --set ""          # unpin
 
-# Replace a token, keeping the identity. klams attributes memories by
-# agent_name, not by token value, so nothing that agent wrote is
-# orphaned by this.
-sudo klams-token rotate klams-scanner --reveal
-
-# Retire a grant.
-sudo klams-token remove ansible-k --yes
-
-# Read an encrypted backup (sprint 046). --identity - takes the age
-# identity on stdin, so it never lands on this filesystem.
-sudo klams-token restore /etc/klams/klams.toml.bak-20260827T120000Z.age --identity -
-sudo klams-token restore <backup> --identity - --apply     # make it live again
+# Retire a caller.
+sudo klams-token identity remove ansible-k --yes
 ```
 
-A grant is addressed by its `agent_name` or its `label`. If a selector
-matches two grants the command refuses rather than picking one.
+A row is addressed by its `agent_name` or its `label`. If a selector
+matches two rows the command refuses rather than picking one.
 
-### `--verify`, and why it exists
-
-k-homelab sprint 016 found the `ansible_k` grant returning **401**
-while `/etc/ansible/klams.token` and the ansible vault both held a
-different, also-dead value. Something had rotated the grant and neither
-deployed copy was updated — and nothing could notice, because a listing
-of label / agent_name / scopes shows a dead grant looking perfectly
-healthy. `--verify` asks the service instead of the file.
-
-It exits **2** when any grant returns 401 — distinct from 1 ("the
-command failed"), so a monitor can tell a broken credential from a
-broken config. An unreachable service is reported as `unreachable` and
-exits 0: that is an operator problem, not a grant problem.
+There is no `identity rotate` and no `--reveal`: an identity has no
+secret to rotate or print. The token subcommands that had them were
+deleted in sprint 052 and now fail as unrecognised.
 
 ### Backups
 
@@ -1415,7 +1399,8 @@ the pair went wrong. The suffix sorts after the bare name, so the
 directory still lists chronologically.
 
 Backups inherit the original's ownership and mode: they are verbatim
-copies of a file full of live bearer tokens.
+copies of the config, which still carries the Postgres password under
+`[postgres]` even though its `[auth]` block no longer carries a secret.
 
 ### After a write
 
@@ -1425,7 +1410,7 @@ The command prints the reminder itself:
 sudo systemctl reload klams-service
 ```
 
-`reload`, not `restart` — SIGHUP hot-reloads `[[auth.tokens]]` with no
+`reload`, not `restart` — SIGHUP hot-reloads `[[auth.identities]]` with no
 dropped requests (sprint 018). The tool never reloads for you; a config
 edit and a service action bundled together is a bigger blast radius
 than this tool should take on.

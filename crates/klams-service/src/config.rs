@@ -27,6 +27,16 @@ pub enum ConfigError {
         min: u64,
         max: u64,
     },
+    /// Sprint 052 (D-1) — the config names something this build no
+    /// longer honours.
+    ///
+    /// `AuthConfig` is not `deny_unknown_fields`, so serde would drop a
+    /// surviving `[[auth.tokens]]` row without a word and the service
+    /// would start looking healthy while the operator believed a
+    /// credential was live. Refusing, and naming the field and the fix,
+    /// is the honest outcome.
+    #[error("{path}: {fields}")]
+    RetiredField { fields: String, path: String },
 }
 
 impl From<figment::Error> for ConfigError {
@@ -451,8 +461,31 @@ impl Config {
     /// (double underscore separates nested keys, e.g.
     /// `KLAMS_SERVER__PORT=8000`).
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
+        let path = path.as_ref();
+        // Sprint 052 (D-1): scan the raw text BEFORE serde sees it. A
+        // retired field is not an unknown-field error here — this
+        // config model tolerates unknown fields — so the only way to
+        // tell an operator their `[[auth.tokens]]` row is inert is to
+        // look for it ourselves. A missing/unreadable file is not this
+        // check's business: figment reports that below, and better.
+        if let Ok(raw) = std::fs::read_to_string(path) {
+            let retired = klams_types::retired_fields(&raw);
+            if !retired.is_empty() {
+                // All of them, not just the first — the same rule
+                // `AuthConfig::errors()` follows: an operator fixing a
+                // config wants the whole list in one pass.
+                return Err(ConfigError::RetiredField {
+                    fields: retired
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                    path: path.display().to_string(),
+                });
+            }
+        }
         let cfg: Self = Figment::new()
-            .merge(Toml::file(path.as_ref()))
+            .merge(Toml::file(path))
             .merge(Env::prefixed("KLAMS_").split("__"))
             .extract()?;
         cfg.service.limits.validate()?;
@@ -521,15 +554,12 @@ mod tests {
         let cfg = Config::from_path(&path).expect("example toml should parse");
         assert_eq!(cfg.server.listen_addr, "127.0.0.1");
         assert_eq!(cfg.server.port, 7777);
-        // Sprint 032 (#670): this asserted the OPPOSITE — that the
-        // shipped example renders a `bearer_token`. That assertion was
-        // pinning the very default the WI was filed about. The example
-        // must now ship WITHOUT a full-scope credential; an operator
-        // opts in.
-        assert!(
-            cfg.auth.bearer_token.is_empty(),
-            "the shipped example must not render a full-scope legacy token (#670)"
-        );
+        // Sprint 052: the example documents the retired `[[auth.tokens]]`
+        // and `bearer_token` forms in prose. That it LOADS at all is the
+        // live proof of the guard's comment-stripping (D-1) — a scan
+        // that fired on a comment would fail here, which is exactly the
+        // fleet-wide outage the stripping exists to prevent.
+        //
         // Sprint 049: the example ships every auth entry commented out,
         // so this also pins the `[auth.whois]` defaults an operator gets
         // by saying nothing — record the node, never enforce.
@@ -821,5 +851,69 @@ mod tests {
             .expect("reparse");
         assert_eq!(reparsed.decay.lambda.len(), 3);
         assert!((reparsed.decay.lambda_for(FactType::TaskFact) - 2.0e-5).abs() < 1e-9);
+    }
+
+    /// Sprint 052 (D-1) — the enforcement point. `AuthConfig` is not
+    /// `deny_unknown_fields`, so without this scan a surviving
+    /// `[[auth.tokens]]` row parses to nothing and the service starts
+    /// looking healthy while the operator believes a credential is
+    /// live. The refusal must name the field and the fix.
+    #[test]
+    fn a_config_carrying_a_retired_token_row_refuses_to_load() {
+        let dir = std::env::temp_dir().join(format!("klams-cfg-retired-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("retired.toml");
+        std::fs::write(
+            &path,
+            r#"
+[server]
+listen_addr = "127.0.0.1"
+port = 7777
+
+[auth]
+[[auth.tokens]]
+token      = "a-token-that-is-long-enough"
+agent_name = "claude"
+scopes     = ["read", "write"]
+
+[postgres]
+url = "postgres://localhost/klams"
+"#,
+        )
+        .unwrap();
+
+        let err = Config::from_path(&path).expect_err("must refuse a retired field");
+        let msg = err.to_string();
+        assert!(msg.contains("[[auth.tokens]]"), "{msg}");
+        assert!(msg.contains("052"), "{msg}");
+        assert!(msg.contains("auth.identities"), "{msg}");
+        assert!(msg.contains("retired.toml"), "names the file: {msg}");
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// The other half, and the one that would take the fleet down if it
+    /// regressed: prose *about* the retired form is not a refusal. Built
+    /// from the shipped example — which documents both retired forms in
+    /// comments — plus a real identity row, so this exercises the guard
+    /// against content an operator actually has on disk.
+    #[test]
+    fn a_config_that_only_mentions_the_retired_form_in_comments_loads() {
+        let mut body = std::fs::read_to_string(example_path()).expect("example toml");
+        assert!(
+            body.contains("[[auth.tokens]]") && body.contains("bearer_token"),
+            "this test is only meaningful while the example still documents both forms"
+        );
+        body.push_str(
+            "\n[[auth.identities]]\nagent_name = \"claude\"\nscopes = [\"read\", \"write\"]\n",
+        );
+
+        let dir = std::env::temp_dir().join(format!("klams-cfg-comment-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("commented.toml");
+        std::fs::write(&path, body).unwrap();
+
+        let cfg = Config::from_path(&path).expect("comments must not be a refusal");
+        assert_eq!(cfg.auth.identities.len(), 1);
+        std::fs::remove_file(&path).ok();
     }
 }

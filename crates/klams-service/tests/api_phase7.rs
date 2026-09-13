@@ -18,7 +18,7 @@ async fn http_get(server: &TestServer, path: &str) -> (reqwest::StatusCode, Valu
     let url = format!("http://{}{}", server.addr, path);
     let resp = reqwest::Client::new()
         .get(&url)
-        .bearer_auth(&server.bearer_token)
+        .header("X-Homelab-Agent", &server.full_agent)
         .send()
         .await
         .expect("send");

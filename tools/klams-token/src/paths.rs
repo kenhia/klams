@@ -86,7 +86,7 @@ mod tests {
     /// against on a deployed host, and it is only reachable because
     /// the unit exports `KLAMS_CONFIG` — which the operator's shell
     /// does not. Dropping it from the chain would make a bare
-    /// `sudo klams-token list` claim there is no config.
+    /// `sudo klams-token identity list` claim there is no config.
     #[test]
     fn the_chain_covers_both_shipped_locations() {
         let c = candidates();

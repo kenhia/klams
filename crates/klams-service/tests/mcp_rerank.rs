@@ -59,7 +59,7 @@ const SEEDS: [&str; 3] = [
 async fn a_dead_reranker_never_fails_a_search() {
     // Port 9 (discard) refuses immediately — the fastest honest "dead".
     let server = TestServer::spawn_isolated_with_reranker("http://127.0.0.1:9").await;
-    let session = McpSession::handshake(server.addr, &server.author_token).await;
+    let session = McpSession::handshake(server.addr, &server.author_agent).await;
 
     let mut seeded = Vec::new();
     for text in SEEDS {
@@ -84,7 +84,7 @@ async fn a_live_rerank_permutes_but_never_drops_or_duplicates() {
         return;
     };
     let server = TestServer::spawn_isolated_with_reranker(&url).await;
-    let session = McpSession::handshake(server.addr, &server.author_token).await;
+    let session = McpSession::handshake(server.addr, &server.author_agent).await;
 
     let mut seeded = Vec::new();
     for text in SEEDS {
@@ -114,7 +114,7 @@ async fn rest_search_runs_the_same_reranked_pipeline() {
         return;
     };
     let server = TestServer::spawn_isolated_with_reranker(&url).await;
-    let session = McpSession::handshake(server.addr, &server.author_token).await;
+    let session = McpSession::handshake(server.addr, &server.author_agent).await;
 
     let mut seeded = Vec::new();
     for text in SEEDS {

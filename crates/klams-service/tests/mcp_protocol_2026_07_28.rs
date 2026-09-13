@@ -56,7 +56,7 @@ async fn initialize(server: &TestServer, token: &str, version: &str) -> (Value, 
         .post(format!("http://{}/mcp", server.addr))
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
-        .header("Authorization", format!("Bearer {token}"))
+        .header("X-Homelab-Agent", token)
         .body(body.to_string())
         .send()
         .await
@@ -103,7 +103,7 @@ async fn tools_list_2026(server: &TestServer, token: &str) -> Value {
         .post(format!("http://{}/mcp", server.addr))
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
-        .header("Authorization", format!("Bearer {token}"))
+        .header("X-Homelab-Agent", token)
         .header("MCP-Protocol-Version", V_2026)
         .header("Mcp-Method", "tools/list")
         .body(body.to_string())
@@ -129,7 +129,7 @@ async fn tools_list_2026(server: &TestServer, token: &str) -> Value {
 #[tokio::test]
 async fn tools_list_carries_well_typed_cache_metadata_at_2026_07_28() {
     let server = TestServer::spawn().await;
-    let result = tools_list_2026(&server, &server.bearer_token).await;
+    let result = tools_list_2026(&server, &server.full_agent).await;
 
     let ttl = &result["ttlMs"];
     assert!(
@@ -159,7 +159,7 @@ async fn tools_list_carries_well_typed_cache_metadata_at_2026_07_28() {
 #[tokio::test]
 async fn cache_metadata_absent_for_legacy_peer() {
     let server = TestServer::spawn().await;
-    let (init, session_id) = initialize(&server, &server.bearer_token, V_2025).await;
+    let (init, session_id) = initialize(&server, &server.full_agent, V_2025).await;
     assert_eq!(init["result"]["protocolVersion"], V_2025);
     let session_id = session_id.expect("legacy lifecycle issues a session id");
 
@@ -169,7 +169,7 @@ async fn cache_metadata_absent_for_legacy_peer() {
         .post(&base)
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
-        .header("Authorization", format!("Bearer {}", server.bearer_token))
+        .header("X-Homelab-Agent", &server.full_agent)
         .header("mcp-session-id", &session_id)
         .body(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
         .send()
@@ -180,7 +180,7 @@ async fn cache_metadata_absent_for_legacy_peer() {
         .post(&base)
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
-        .header("Authorization", format!("Bearer {}", server.bearer_token))
+        .header("X-Homelab-Agent", &server.full_agent)
         .header("mcp-session-id", &session_id)
         .body(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#)
         .send()
@@ -212,7 +212,7 @@ async fn cache_metadata_absent_for_legacy_peer() {
 async fn every_supported_revision_negotiates_as_itself() {
     let server = TestServer::spawn().await;
     for version in ["2024-11-05", "2025-03-26", "2025-06-18", V_2025, V_2026] {
-        let (init, _) = initialize(&server, &server.bearer_token, version).await;
+        let (init, _) = initialize(&server, &server.full_agent, version).await;
         assert_eq!(
             init["result"]["protocolVersion"], version,
             "klams claims {version} in supported_protocol_versions, so it must serve it"
@@ -226,7 +226,7 @@ async fn every_supported_revision_negotiates_as_itself() {
 #[tokio::test]
 async fn unknown_future_version_falls_back_to_the_pinned_ceiling() {
     let server = TestServer::spawn().await;
-    let (init, _) = initialize(&server, &server.bearer_token, "9999-12-31").await;
+    let (init, _) = initialize(&server, &server.full_agent, "9999-12-31").await;
     assert_eq!(
         init["result"]["protocolVersion"], V_2026,
         "an unknown version must fall back to klams's ceiling, never be echoed"
@@ -251,8 +251,8 @@ async fn catalog_differs_by_token_scope_which_is_why_it_is_private() {
             .collect()
     };
 
-    let full = tools_list_2026(&server, &server.bearer_token).await;
-    let read_only = tools_list_2026(&server, &server.read_token).await;
+    let full = tools_list_2026(&server, &server.full_agent).await;
+    let read_only = tools_list_2026(&server, &server.read_agent).await;
 
     let full_names = names(&full);
     let read_names = names(&read_only);
@@ -284,7 +284,7 @@ async fn catalog_differs_by_token_scope_which_is_why_it_is_private() {
 #[tokio::test]
 async fn tools_call_round_trips_under_2026_07_28() {
     let server = TestServer::spawn().await;
-    let (_, session_id) = initialize(&server, &server.bearer_token, V_2026).await;
+    let (_, session_id) = initialize(&server, &server.full_agent, V_2026).await;
     assert!(session_id.is_none());
 
     let body = json!({
@@ -304,7 +304,7 @@ async fn tools_call_round_trips_under_2026_07_28() {
         .post(format!("http://{}/mcp", server.addr))
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
-        .header("Authorization", format!("Bearer {}", server.bearer_token))
+        .header("X-Homelab-Agent", &server.full_agent)
         .header("MCP-Protocol-Version", V_2026)
         .header("Mcp-Method", "tools/call")
         .header("Mcp-Name", "memory_search")

@@ -1,42 +1,40 @@
-//! Bearer-token auth middleware.
+//! Identity auth middleware.
 //!
-//! Uses constant-time comparison (`subtle`) to resist timing oracles.
 //! Public paths (e.g. `/healthz`, `/metrics`) should be mounted
 //! outside the protected router.
 //!
-//! Sprint 007 — multi-token + scoped tokens:
-//! [`AuthState`] now holds a slice of [`TokenGrant`]s. On every request
-//! the middleware compares the presented bearer against every grant
-//! using a constant-time loop with **no early exit** so timing leaks
-//! cannot reveal which (or how many) grants match. The matched grant's
-//! [`klams_types::Scope`] set is stashed in the request extensions as
-//! [`AuthenticatedScopes`] so downstream `require_scope(...)` layers
-//! can enforce per-route permission tiers.
-//!
-//! # Sprint 049 — identities replace bearer tokens
+//! # The credential is a declared name
 //!
 //! A klams bearer token was a name tag, not a lock. Under the homelab
 //! threat model — single user, his agents, one tailnet, agents already
 //! holding sudo everywhere — the token's only job was to say *which
 //! `agent_name`*, and a declared name does that without a secret.
 //!
-//! So [`AuthState`] now holds **two** tables and this middleware checks
-//! them in a fixed order:
+//! So a caller sends `X-Homelab-Agent: <agent_name>` and klams looks
+//! the row up in `[[auth.identities]]`. An unknown name is a 401,
+//! exactly as an unknown token was. Authorship has been keyed on
+//! `agent_name` rather than on token bytes since sprint 009, which is
+//! why the change needed no migration: nothing about attribution moved.
 //!
-//! 1. `X-Homelab-Agent: <agent_name>` against `[[auth.identities]]`.
-//!    An unknown name is a 401, exactly as an unknown token is.
-//! 2. Failing that, `Authorization: Bearer` against `[[auth.tokens]]`
-//!    — the legacy path, unchanged, constant-time.
+//! Scopes are per-identity; [`klams_types::Scope`] sets are stashed in
+//! the request extensions as [`AuthenticatedScopes`] so downstream
+//! `require_scope(...)` layers enforce per-route permission tiers.
 //!
-//! Both resolve to the same author, because authorship has been keyed
-//! on `agent_name` rather than on the token bytes since sprint 009.
-//! That is why this change needs no migration: nothing about
-//! attribution moves.
+//! # Sprint 052 — the bearer path is gone
 //!
-//! **The transition window is open exactly while `[[auth.tokens]]` has
-//! rows.** There is no flag; deleting the rows is what closes it
-//! (sprint 049 D-1), and korg:2450 does that after every client is on
-//! the header.
+//! Sprint 049 opened a transition window by keeping `[[auth.tokens]]`
+//! alive beside the identities; sprint 050 deleted every row, which is
+//! what closed it (049 D-1: the rows *were* the flag). This sprint
+//! deletes `resolve_bearer`, its constant-time loop and the token
+//! table. No token authenticates anything.
+//!
+//! `Authorization` is still **read**, and authenticates nothing
+//! (sprint 052 D-2, borrowed from kaed 024 D-2): a request carrying a
+//! bearer and no `X-Homelab-Agent` gets a 401 whose body names the
+//! header to send and the one to drop. WI 2490 is the justification —
+//! three clients sat sending a retired credential and getting 401 for a
+//! full day, because from outside "sent a retired credential" and "sent
+//! nothing" were indistinguishable.
 //!
 //! The caller's tailnet node is resolved alongside (see [`crate::whois`])
 //! and recorded. It is record-only unless `[auth.whois] enforce` is on,
@@ -50,10 +48,9 @@ use axum::{
     middleware::Next,
     response::Response,
 };
-use klams_types::{AuthMethod, AuthenticatedAuthor, AuthenticatedPeer, AuthenticatedScopes, Scope};
+use klams_types::{AuthenticatedAuthor, AuthenticatedPeer, AuthenticatedScopes, Scope};
 use std::net::IpAddr;
 use std::sync::Arc;
-use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
 /// The header a caller declares its identity in (sprint 049).
@@ -67,65 +64,6 @@ pub const AGENT_HEADER: &str = "x-homelab-agent";
 /// informative one. See [`crate::whois`] for the measurement.
 #[derive(Clone, Copy, Debug)]
 pub struct PeerAddr(pub std::net::SocketAddr);
-
-/// Materialized form of a `TokenGrantConfig`. The token bytes are
-/// retained as `Vec<u8>` (not zeroized) so that constant-time compare
-/// has a stable buffer to compare against.
-#[derive(Clone)]
-pub struct TokenGrant {
-    pub token_bytes: Arc<Vec<u8>>,
-    pub scopes: Arc<Vec<Scope>>,
-    pub label: Option<String>,
-    /// Author that writes via this grant are attributed to. Defaults
-    /// to `SYSTEM_AUTHOR_ID` ("system") for grants without an explicit
-    /// `agent_name` binding.
-    pub author_id: Uuid,
-    pub agent_name: Arc<String>,
-}
-
-impl TokenGrant {
-    /// Back-compat constructor: binds the grant to the system author.
-    #[must_use]
-    pub fn new(token: impl Into<String>, scopes: Vec<Scope>, label: Option<String>) -> Self {
-        Self::new_with_author(
-            token,
-            scopes,
-            label,
-            klams_types::SYSTEM_AUTHOR_ID,
-            "system",
-        )
-    }
-
-    /// Sprint 009: bind the grant to a specific author.
-    #[must_use]
-    pub fn new_with_author(
-        token: impl Into<String>,
-        scopes: Vec<Scope>,
-        label: Option<String>,
-        author_id: Uuid,
-        agent_name: impl Into<String>,
-    ) -> Self {
-        Self {
-            token_bytes: Arc::new(token.into().into_bytes()),
-            scopes: Arc::new(scopes),
-            label,
-            author_id,
-            agent_name: Arc::new(agent_name.into()),
-        }
-    }
-}
-
-impl std::fmt::Debug for TokenGrant {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TokenGrant")
-            .field("token_len", &self.token_bytes.len())
-            .field("scopes", &*self.scopes)
-            .field("label", &self.label)
-            .field("author_id", &self.author_id)
-            .field("agent_name", &*self.agent_name)
-            .finish()
-    }
-}
 
 /// Materialized form of a `klams_types::IdentityConfig` (sprint 049):
 /// an `agent_name` the caller declares, its scopes, and its resolved
@@ -146,29 +84,22 @@ pub struct Identity {
     pub nodes: Arc<Vec<String>>,
 }
 
-/// Both auth tables, swapped together (sprint 049).
+/// The auth table, swapped as a unit on SIGHUP.
 ///
-/// One struct rather than two locks because SIGHUP re-reads one file
-/// and must install both halves atomically — a reload that published
-/// new identities against old tokens would be a state the config never
-/// described.
+/// Sprint 049 made this two tables (tokens + identities) so a reload
+/// could install both halves atomically; sprint 052 deleted the token
+/// half. The struct stays — it is what [`AuthState::replace_tables`]
+/// swaps, and the name is the one both routers and the reload task
+/// already use.
 #[derive(Clone, Debug, Default)]
 pub struct AuthTables {
-    pub tokens: Vec<TokenGrant>,
     pub identities: Vec<Identity>,
 }
 
 impl AuthTables {
     #[must_use]
-    pub fn new(tokens: Vec<TokenGrant>, identities: Vec<Identity>) -> Self {
-        Self { tokens, identities }
-    }
-
-    /// Is the sprint-049 transition window open? True while any legacy
-    /// `[[auth.tokens]]` grant survives (D-1: the rows *are* the flag).
-    #[must_use]
-    pub fn legacy_window_open(&self) -> bool {
-        !self.tokens.is_empty()
+    pub fn new(identities: Vec<Identity>) -> Self {
+        Self { identities }
     }
 }
 
@@ -178,17 +109,16 @@ impl AuthTables {
 // depend on the REST crate for two structs and nothing else. Imported
 // above; `require_bearer` still stamps them.
 
-/// Sprint 018 (WI #61) — the grant table sits behind an `RwLock` so
-/// `[[auth.tokens]]` edits can be hot-reloaded (SIGHUP) without a
+/// Sprint 018 (WI #61) — the auth table sits behind an `RwLock` so
+/// `[[auth.identities]]` edits can be hot-reloaded (SIGHUP) without a
 /// service restart. All clones (REST layer, `/mcp` layer, the reload
-/// task) share one table; [`AuthState::replace_grants`] swaps it
+/// task) share one table; [`AuthState::replace_tables`] swaps it
 /// atomically. In-flight requests hold at most a snapshot `Arc` for
 /// the duration of their own auth check.
 ///
-/// Sprint 049: the table became two (tokens + identities), and the
-/// state grew the whois resolver, because the node cross-check happens
-/// at exactly the same point as the identity lookup and reads the same
-/// request.
+/// Sprint 049 added the whois resolver, because the node cross-check
+/// happens at exactly the same point as the identity lookup and reads
+/// the same request.
 #[derive(Clone)]
 pub struct AuthState {
     tables: Arc<std::sync::RwLock<Arc<AuthTables>>>,
@@ -199,31 +129,14 @@ pub struct AuthState {
 }
 
 impl AuthState {
-    /// Legacy single-token constructor. Materializes one grant carrying
-    /// **all** scopes — preserves pre-sprint-007 behaviour for callers
-    /// that have not yet migrated to scoped tokens.
-    ///
-    /// Sprint 025: `Manage` is included. Scopes are flat, so omitting it
-    /// here would have *removed* capability from the one token some
-    /// deployments have — this grant is the "everything" token by
-    /// construction, and must stay that way across the upgrade.
-    pub fn new(bearer_token: impl Into<String>) -> Self {
-        let grant = TokenGrant::new(
-            bearer_token,
-            vec![Scope::Read, Scope::Write, Scope::Manage, Scope::Admin],
-            Some("legacy".into()),
-        );
-        Self::with_grants(vec![grant])
-    }
-
-    /// New multi-token constructor. Order of grants is irrelevant; the
-    /// auth check compares against every grant with no early exit.
+    /// Build from an identity list. Whois is off until
+    /// [`Self::with_whois`] installs a resolver.
     #[must_use]
-    pub fn with_grants(grants: Vec<TokenGrant>) -> Self {
-        Self::with_tables(AuthTables::new(grants, Vec::new()))
+    pub fn with_identities(identities: Vec<Identity>) -> Self {
+        Self::with_tables(AuthTables::new(identities))
     }
 
-    /// Sprint 049 — both tables. Whois is off until
+    /// Build from a prepared [`AuthTables`]. Whois is off until
     /// [`Self::with_whois`] installs a resolver.
     #[must_use]
     pub fn with_tables(tables: AuthTables) -> Self {
@@ -250,8 +163,8 @@ impl AuthState {
         self
     }
 
-    /// Atomically swap both auth tables (WI #61 hot-reload, extended to
-    /// identities in sprint 049). Visible to every clone of this
+    /// Atomically swap the auth table (WI #61 hot-reload). Visible to
+    /// every clone of this
     /// `AuthState` — the next auth check on any route uses the new
     /// tables; requests already past their auth check are unaffected.
     pub fn replace_tables(&self, tables: AuthTables) {
@@ -262,12 +175,6 @@ impl AuthState {
         *w = Arc::new(tables);
     }
 
-    /// Swap the token table only, leaving identities in place.
-    pub fn replace_grants(&self, grants: Vec<TokenGrant>) {
-        let identities = self.tables().identities.clone();
-        self.replace_tables(AuthTables::new(grants, identities));
-    }
-
     /// Snapshot the current tables. The snapshot is immutable and
     /// outlives a concurrent [`Self::replace_tables`].
     fn tables(&self) -> Arc<AuthTables> {
@@ -275,15 +182,6 @@ impl AuthState {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
-    }
-
-    /// Test-only accessor for the installed grant list. Exposed via a
-    /// public method (rather than `pub` field) so the storage shape
-    /// stays free to evolve.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn grants_for_test(&self) -> Vec<TokenGrant> {
-        self.tables().tokens.clone()
     }
 
     /// Test-only accessor for the installed identity list.
@@ -298,13 +196,10 @@ impl std::fmt::Debug for AuthState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let tables = self.tables();
         f.debug_struct("AuthState")
-            .field("grant_count", &tables.tokens.len())
             .field("identity_count", &tables.identities.len())
             .field("whois", &self.whois.is_some())
             .field("enforce_nodes", &self.enforce_nodes)
-            // The table itself is summarised by the two counts above;
-            // dumping every grant would put live token bytes in a log
-            // line, which is the one thing this type must never do.
+            // The table itself is summarised by the count above.
             .finish_non_exhaustive()
     }
 }
@@ -317,7 +212,6 @@ struct Resolved {
     agent_name: Arc<String>,
     /// Tailnet nodes this caller is pinned to; empty = unpinned.
     nodes: Arc<Vec<String>>,
-    method: AuthMethod,
 }
 
 /// The caller's tailnet address.
@@ -351,64 +245,26 @@ fn resolve_identity(tables: &AuthTables, declared: &str) -> Option<Resolved> {
         author_id: id.author_id,
         agent_name: id.agent_name.clone(),
         nodes: id.nodes.clone(),
-        method: AuthMethod::Identity,
     })
 }
 
-/// Match a presented bearer against every token grant in constant time.
-///
-/// Unchanged from sprint 007 and deliberately so: while the transition
-/// window is open these are still live credentials, and the timing
-/// property they were given is not something to drop on the way past.
-fn resolve_bearer(tables: &AuthTables, provided: &[u8]) -> Option<Resolved> {
-    // Constant-time loop: compare against every grant unconditionally.
-    // Accumulate match flag via subtle's choice; never early-exit on
-    // length or content mismatch so observable timing is grant-count
-    // dependent only, not token-shape dependent.
-    let mut matched: Option<Resolved> = None;
-    let mut any_match: u8 = 0;
-    for g in &tables.tokens {
-        let len_eq = u8::from(provided.len() == g.token_bytes.len());
-        // ct_eq panics on length mismatch; gate behind the length check
-        // but still iterate every grant so the loop bound is constant.
-        let ct = if provided.len() == g.token_bytes.len() {
-            u8::from(bool::from(provided.ct_eq(&g.token_bytes)))
-        } else {
-            0
-        };
-        let m = len_eq & ct;
-        any_match |= m;
-        if m == 1 && matched.is_none() {
-            matched = Some(Resolved {
-                scopes: g.scopes.clone(),
-                author_id: g.author_id,
-                agent_name: g.agent_name.clone(),
-                nodes: Arc::new(Vec::new()),
-                method: AuthMethod::Bearer,
-            });
-        }
-    }
-    if any_match == 0 {
-        return None;
-    }
-    matched
-}
-
 /// Axum middleware: authenticates a request by declared identity
-/// (`X-Homelab-Agent`, sprint 049) or, while the transition window is
-/// open, by `Authorization: Bearer` against the legacy grants. On a
-/// match the caller's scope set is inserted into request extensions as
-/// [`AuthenticatedScopes`], the author as [`AuthenticatedAuthor`], and
-/// the resolved tailnet origin as [`AuthenticatedPeer`].
+/// (`X-Homelab-Agent`). On a match the caller's scope set is inserted
+/// into request extensions as [`AuthenticatedScopes`], the author as
+/// [`AuthenticatedAuthor`], and the resolved tailnet origin as
+/// [`AuthenticatedPeer`].
 ///
 /// The name is kept (rather than `require_auth`) because it is the
 /// installed layer everywhere in both routers and in the MCP mount;
 /// renaming it would be churn across the codebase for no behaviour.
 ///
 /// # Errors
-/// [`ApiError::Unauthorized`] when neither credential matches, or
-/// [`ApiError::NodeNotAllowed`] when whois enforcement is on and the
-/// caller's node is not one this identity is pinned to.
+/// [`ApiError::Unauthorized`] when no name is declared or the declared
+/// name is unknown, [`ApiError::BearerRetired`] when the caller sent a
+/// bearer instead of a name (sprint 052 D-2 — still a 401, but one that
+/// says what to change), or [`ApiError::NodeNotAllowed`] when whois
+/// enforcement is on and the caller's node is not one this identity is
+/// pinned to.
 pub async fn require_bearer(
     State(state): State<AuthState>,
     mut req: Request<Body>,
@@ -416,11 +272,10 @@ pub async fn require_bearer(
 ) -> Result<Response, ApiError> {
     let tables = state.tables();
 
-    // 1. The declared identity, when one is presented. A header that is
-    //    present but unknown is a 401 and does NOT fall through to the
-    //    bearer path: the caller said who it was and was wrong, and
-    //    silently authenticating it as something else would be the
-    //    least honest outcome available.
+    // 1. The declared identity. A name that is present but unknown is a
+    //    401: the caller said who it was and was wrong, and silently
+    //    authenticating it as something else would be the least honest
+    //    outcome available.
     let declared = req
         .headers()
         .get(AGENT_HEADER)
@@ -428,19 +283,20 @@ pub async fn require_bearer(
         .map(str::trim)
         .filter(|d| !d.is_empty());
 
-    let resolved = if let Some(name) = declared {
-        resolve_identity(&tables, name).ok_or(ApiError::Unauthorized)?
-    } else {
-        // 2. Legacy bearer — live only while the window is open.
-        let token = req
-            .headers()
-            .get(AUTHORIZATION)
-            .and_then(|h| h.to_str().ok())
-            .and_then(|h| h.strip_prefix("Bearer "))
-            .map(str::trim)
-            .ok_or(ApiError::Unauthorized)?;
-        resolve_bearer(&tables, token.as_bytes()).ok_or(ApiError::Unauthorized)?
+    let Some(name) = declared else {
+        // 2. No name. If the caller sent a bearer instead, say so
+        //    (sprint 052 D-2): it authenticates nothing, but "you sent
+        //    a retired credential" and "you sent nothing" are different
+        //    facts and the caller can only act on the first.
+        //    `had_bearer` is a bool and never reaches a lookup.
+        let had_bearer = req.headers().contains_key(AUTHORIZATION);
+        return Err(if had_bearer {
+            ApiError::BearerRetired
+        } else {
+            ApiError::Unauthorized
+        });
     };
+    let resolved = resolve_identity(&tables, name).ok_or(ApiError::Unauthorized)?;
 
     // 3. The tailnet cross-check. Record-only unless enforcement is on,
     //    and a failure to resolve is `unknown`, never a refusal.
@@ -466,11 +322,7 @@ pub async fn require_bearer(
         }
     }
 
-    let peer = AuthenticatedPeer {
-        addr,
-        node,
-        method: resolved.method,
-    };
+    let peer = AuthenticatedPeer { addr, node };
 
     // The request log (WI 2389). Writes at info, reads at debug: a
     // write is the thing the record exists to explain after the fact,
@@ -485,7 +337,7 @@ pub async fn require_bearer(
         tracing::info!(
             agent_name = %resolved.agent_name,
             tailnet_node = %peer.node_or_unknown(),
-            auth = %resolved.method,
+            auth = "identity",
             method = %req.method(),
             %path,
             "authenticated write"
@@ -494,7 +346,7 @@ pub async fn require_bearer(
         tracing::debug!(
             agent_name = %resolved.agent_name,
             tailnet_node = %peer.node_or_unknown(),
-            auth = %resolved.method,
+            auth = "identity",
             method = %req.method(),
             %path,
             "authenticated read"
@@ -557,14 +409,18 @@ mod tests {
         Router::new()
             .route("/protected", get(|| async { "ok" }))
             .layer(middleware::from_fn_with_state(
-                AuthState::new("super-secret"),
+                AuthState::with_identities(vec![identity(
+                    "claude",
+                    vec![Scope::Read, Scope::Write],
+                    &[],
+                )]),
                 require_bearer,
             ))
             .route("/healthz", get(|| async { "ok" }))
     }
 
     #[tokio::test]
-    async fn missing_header_is_unauthorized() {
+    async fn missing_credential_is_unauthorized() {
         let resp = app()
             .oneshot(
                 Request::builder()
@@ -578,12 +434,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wrong_token_is_unauthorized() {
+    async fn unknown_name_is_unauthorized() {
         let resp = app()
             .oneshot(
                 Request::builder()
                     .uri("/protected")
-                    .header(AUTHORIZATION, "Bearer wrong-token-x")
+                    .header(AGENT_HEADER, "nobody")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -593,12 +449,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn correct_token_passes() {
+    async fn declared_name_passes() {
         let resp = app()
             .oneshot(
                 Request::builder()
                     .uri("/protected")
-                    .header(AUTHORIZATION, "Bearer super-secret")
+                    .header(AGENT_HEADER, "claude")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -609,59 +465,8 @@ mod tests {
         assert_eq!(&body[..], b"ok");
     }
 
-    async fn probe(router: &Router, token: &str) -> StatusCode {
-        router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/protected")
-                    .header(AUTHORIZATION, format!("Bearer {token}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap()
-            .status()
-    }
-
-    /// Sprint 018 (WI #61) — grants are hot-swappable: the router keeps
-    /// its middleware (holding a CLONE of `AuthState`), and a
-    /// `replace_grants` on the original handle must be visible to it —
-    /// added tokens authenticate, removed tokens stop authenticating.
-    #[tokio::test]
-    async fn replace_grants_swaps_token_table_for_live_router() {
-        let state = AuthState::new("old-token");
-        let router = Router::new()
-            .route("/protected", get(|| async { "ok" }))
-            .layer(middleware::from_fn_with_state(
-                state.clone(),
-                require_bearer,
-            ));
-
-        assert_eq!(probe(&router, "old-token").await, StatusCode::OK);
-        assert_eq!(probe(&router, "new-token").await, StatusCode::UNAUTHORIZED);
-
-        state.replace_grants(vec![TokenGrant::new(
-            "new-token",
-            vec![Scope::Read],
-            Some("rotated".into()),
-        )]);
-
-        assert_eq!(
-            probe(&router, "old-token").await,
-            StatusCode::UNAUTHORIZED,
-            "removed token must stop authenticating after reload"
-        );
-        assert_eq!(
-            probe(&router, "new-token").await,
-            StatusCode::OK,
-            "added token must authenticate after reload"
-        );
-    }
-
     // -----------------------------------------------------------------
-    // Sprint 049 — declared identities, the transition window, and the
-    // tailnet cross-check.
+    // Declared identities and the tailnet cross-check.
     // -----------------------------------------------------------------
 
     /// A resolver that answers from a fixed map, so the middleware can
@@ -696,12 +501,7 @@ mod tests {
         axum::Extension(author): axum::Extension<AuthenticatedAuthor>,
         axum::Extension(peer): axum::Extension<AuthenticatedPeer>,
     ) -> String {
-        format!(
-            "{}|{}|{}",
-            author.agent_name,
-            peer.node_or_unknown(),
-            peer.method
-        )
+        format!("{}|{}", author.agent_name, peer.node_or_unknown())
     }
 
     fn app_with(state: AuthState) -> Router {
@@ -721,10 +521,11 @@ mod tests {
     /// configured scopes, and binds to its author — no secret involved.
     #[tokio::test]
     async fn declared_identity_authenticates_and_attributes() {
-        let state = AuthState::with_tables(AuthTables::new(
-            vec![],
-            vec![identity("claude", vec![Scope::Read, Scope::Write], &[])],
-        ));
+        let state = AuthState::with_tables(AuthTables::new(vec![identity(
+            "claude",
+            vec![Scope::Read, Scope::Write],
+            &[],
+        )]));
         let (status, body) = send(
             &app_with(state),
             Request::builder()
@@ -735,16 +536,17 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body, "claude|unknown|identity");
+        assert_eq!(body, "claude|unknown");
     }
 
     /// "An unknown name is a 401 exactly as an unknown token is today."
     #[tokio::test]
     async fn unknown_declared_identity_is_unauthorized() {
-        let state = AuthState::with_tables(AuthTables::new(
-            vec![],
-            vec![identity("claude", vec![Scope::Read], &[])],
-        ));
+        let state = AuthState::with_tables(AuthTables::new(vec![identity(
+            "claude",
+            vec![Scope::Read],
+            &[],
+        )]));
         let (status, _) = send(
             &app_with(state),
             Request::builder()
@@ -757,24 +559,19 @@ mod tests {
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 
-    /// A caller that declares an unknown name while ALSO holding a
-    /// valid bearer is refused rather than quietly authenticated as the
-    /// token's identity. Falling through would attribute its writes to
-    /// an agent it did not claim to be — the one outcome worse than a
-    /// 401.
+    /// An unknown declared name is refused even when the caller also
+    /// presents an `Authorization` header. Nothing falls through: the
+    /// bearer is never looked up (there is nothing to look it up in),
+    /// and the 401 is the plain one, not the retired-bearer
+    /// diagnostic — the caller DID declare a name, it was just wrong.
     #[tokio::test]
-    async fn a_bad_declared_name_does_not_fall_back_to_the_bearer() {
-        let state = AuthState::with_tables(AuthTables::new(
-            vec![TokenGrant::new_with_author(
-                "token-that-is-long-enough",
-                vec![Scope::Read],
-                Some("legacy".into()),
-                Uuid::from_u128(7),
-                "kmon",
-            )],
-            vec![identity("claude", vec![Scope::Read], &[])],
-        ));
-        let (status, _) = send(
+    async fn a_bad_declared_name_is_refused_even_with_a_bearer() {
+        let state = AuthState::with_tables(AuthTables::new(vec![identity(
+            "claude",
+            vec![Scope::Read],
+            &[],
+        )]));
+        let (status, body) = send(
             &app_with(state),
             Request::builder()
                 .uri("/protected")
@@ -785,58 +582,15 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert!(!body.contains("bearer_retired"), "{body}");
     }
 
-    /// The transition window (proposal guardrail): while
-    /// `[[auth.tokens]]` rows exist, both credentials work and resolve
-    /// to their own authors. This is the property that means no client
-    /// breaks during the sprint.
+    /// Sprint 052: no token authenticates, whatever its value, and
+    /// whatever the identities table holds. This is the deletion's
+    /// headline property.
     #[tokio::test]
-    async fn both_credentials_work_while_the_window_is_open() {
-        let tables = AuthTables::new(
-            vec![TokenGrant::new_with_author(
-                "token-that-is-long-enough",
-                vec![Scope::Read],
-                Some("kmon".into()),
-                Uuid::from_u128(7),
-                "kmon",
-            )],
-            vec![identity("claude", vec![Scope::Read], &[])],
-        );
-        assert!(tables.legacy_window_open());
-        let app = app_with(AuthState::with_tables(tables));
-
-        let (status, body) = send(
-            &app,
-            Request::builder()
-                .uri("/protected")
-                .header(AUTHORIZATION, "Bearer token-that-is-long-enough")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body, "kmon|unknown|bearer");
-
-        let (status, body) = send(
-            &app,
-            Request::builder()
-                .uri("/protected")
-                .header(AGENT_HEADER, "claude")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body, "claude|unknown|identity");
-    }
-
-    /// What korg:2450 leaves behind: no token rows, so the window is
-    /// closed and a bearer — any bearer — no longer authenticates.
-    #[tokio::test]
-    async fn closing_the_window_is_deleting_the_token_rows() {
-        let tables = AuthTables::new(vec![], vec![identity("claude", vec![Scope::Read], &[])]);
-        assert!(!tables.legacy_window_open());
+    async fn no_bearer_authenticates() {
+        let tables = AuthTables::new(vec![identity("claude", vec![Scope::Read], &[])]);
         let (status, _) = send(
             &app_with(AuthState::with_tables(tables)),
             Request::builder()
@@ -849,17 +603,56 @@ mod tests {
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 
+    /// Sprint 052 D-2: a bearer with no declared name gets a 401 whose
+    /// body names the header to send and the one to drop. WI 2490 is
+    /// the justification — three clients sat on a bare 401 for a day
+    /// because "sent a retired credential" and "sent nothing" looked
+    /// identical from outside.
+    #[tokio::test]
+    async fn a_retired_bearer_gets_a_self_diagnosing_401() {
+        let tables = AuthTables::new(vec![identity("claude", vec![Scope::Read], &[])]);
+        let (status, body) = send(
+            &app_with(AuthState::with_tables(tables)),
+            Request::builder()
+                .uri("/protected")
+                .header(AUTHORIZATION, "Bearer anything-at-all")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert!(body.contains("bearer_retired"), "{body}");
+        assert!(body.contains("X-Homelab-Agent"), "{body}");
+        assert!(body.contains("Authorization"), "{body}");
+    }
+
+    /// ...and a caller sending nothing at all still gets the plain 401,
+    /// so the two cases stay distinguishable. That distinction is the
+    /// whole point of D-2; collapsing them would restore WI 2490.
+    #[tokio::test]
+    async fn no_credential_at_all_is_the_plain_401() {
+        let tables = AuthTables::new(vec![identity("claude", vec![Scope::Read], &[])]);
+        let (status, body) = send(
+            &app_with(AuthState::with_tables(tables)),
+            Request::builder()
+                .uri("/protected")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert!(body.contains("unauthorized"), "{body}");
+        assert!(!body.contains("bearer_retired"), "{body}");
+    }
+
     /// Scopes are looked up by name and stay flat: a read-only identity
     /// cannot write (WI 2388 acceptance).
     #[tokio::test]
     async fn a_read_only_identity_cannot_write() {
-        let state = AuthState::with_tables(AuthTables::new(
-            vec![],
-            vec![
-                identity("klams-view", vec![Scope::Read], &[]),
-                identity("claude", vec![Scope::Read, Scope::Write], &[]),
-            ],
-        ));
+        let state = AuthState::with_tables(AuthTables::new(vec![
+            identity("klams-view", vec![Scope::Read], &[]),
+            identity("claude", vec![Scope::Read, Scope::Write], &[]),
+        ]));
         let app = Router::new()
             .route("/w", axum::routing::post(|| async { "ok" }))
             .route_layer(middleware::from_fn(require_scope(Scope::Write)))
@@ -895,10 +688,11 @@ mod tests {
     /// serve` sets (measured — see `crate::whois`).
     #[tokio::test]
     async fn the_tailnet_node_is_recorded_from_the_forwarded_address() {
-        let state = AuthState::with_tables(AuthTables::new(
-            vec![],
-            vec![identity("claude", vec![Scope::Read], &[])],
-        ))
+        let state = AuthState::with_tables(AuthTables::new(vec![identity(
+            "claude",
+            vec![Scope::Read],
+            &[],
+        )]))
         .with_whois(
             Arc::new(FakeWhois(vec![
                 ("100.97.109.60", "kai"),
@@ -920,7 +714,7 @@ mod tests {
             )
             .await;
             assert_eq!(status, StatusCode::OK);
-            assert_eq!(body, format!("claude|{expected}|identity"));
+            assert_eq!(body, format!("claude|{expected}"));
         }
     }
 
@@ -928,10 +722,11 @@ mod tests {
     /// client in the standard's ordering.
     #[tokio::test]
     async fn the_first_forwarded_entry_is_the_client() {
-        let state = AuthState::with_tables(AuthTables::new(
-            vec![],
-            vec![identity("claude", vec![Scope::Read], &[])],
-        ))
+        let state = AuthState::with_tables(AuthTables::new(vec![identity(
+            "claude",
+            vec![Scope::Read],
+            &[],
+        )]))
         .with_whois(Arc::new(FakeWhois(vec![("100.97.109.60", "kai")])), false);
         let (_, body) = send(
             &app_with(state),
@@ -943,17 +738,18 @@ mod tests {
                 .unwrap(),
         )
         .await;
-        assert_eq!(body, "claude|kai|identity");
+        assert_eq!(body, "claude|kai");
     }
 
     /// "With tailscaled stopped, writes still succeed and record
     /// `unknown`." An unresolvable address is data, not a refusal.
     #[tokio::test]
     async fn an_unresolvable_node_is_unknown_and_never_refuses() {
-        let state = AuthState::with_tables(AuthTables::new(
-            vec![],
-            vec![identity("claude", vec![Scope::Read, Scope::Write], &[])],
-        ))
+        let state = AuthState::with_tables(AuthTables::new(vec![identity(
+            "claude",
+            vec![Scope::Read, Scope::Write],
+            &[],
+        )]))
         .with_whois(Arc::new(FakeWhois(vec![])), false);
         let (status, body) = send(
             &app_with(state),
@@ -967,16 +763,17 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "a whois miss must never refuse");
-        assert_eq!(body, "claude|unknown|identity");
+        assert_eq!(body, "claude|unknown");
     }
 
     /// Enforcement OFF (the default) records a mismatch and allows it.
     #[tokio::test]
     async fn a_mismatched_node_is_recorded_not_refused_by_default() {
-        let state = AuthState::with_tables(AuthTables::new(
-            vec![],
-            vec![identity("kmon", vec![Scope::Read], &["kubs0"])],
-        ))
+        let state = AuthState::with_tables(AuthTables::new(vec![identity(
+            "kmon",
+            vec![Scope::Read],
+            &["kubs0"],
+        )]))
         .with_whois(Arc::new(FakeWhois(vec![("100.97.109.60", "kai")])), false);
         let (status, body) = send(
             &app_with(state),
@@ -989,17 +786,18 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body, "kmon|kai|identity");
+        assert_eq!(body, "kmon|kai");
     }
 
     /// Enforcement ON: a mismatch is a 403 that names the identity, the
     /// node it actually came from, and what was allowed.
     #[tokio::test]
     async fn enforcement_on_refuses_a_mismatched_node_and_names_both() {
-        let state = AuthState::with_tables(AuthTables::new(
-            vec![],
-            vec![identity("kmon", vec![Scope::Read], &["kubs0"])],
-        ))
+        let state = AuthState::with_tables(AuthTables::new(vec![identity(
+            "kmon",
+            vec![Scope::Read],
+            &["kubs0"],
+        )]))
         .with_whois(Arc::new(FakeWhois(vec![("100.97.109.60", "kai")])), true);
         let (status, body) = send(
             &app_with(state),
@@ -1022,13 +820,10 @@ mod tests {
     /// on cannot lock every caller out at once.
     #[tokio::test]
     async fn enforcement_leaves_unpinned_identities_alone() {
-        let state = AuthState::with_tables(AuthTables::new(
-            vec![],
-            vec![
-                identity("kmon", vec![Scope::Read], &["kubs0"]),
-                identity("claude", vec![Scope::Read], &[]),
-            ],
-        ))
+        let state = AuthState::with_tables(AuthTables::new(vec![
+            identity("kmon", vec![Scope::Read], &["kubs0"]),
+            identity("claude", vec![Scope::Read], &[]),
+        ]))
         .with_whois(Arc::new(FakeWhois(vec![("100.97.109.60", "kai")])), true);
         let app = app_with(state);
 
@@ -1069,10 +864,11 @@ mod tests {
     /// "could not tell" is not a proof.
     #[tokio::test]
     async fn enforcement_refuses_a_pinned_identity_it_cannot_place() {
-        let state = AuthState::with_tables(AuthTables::new(
-            vec![],
-            vec![identity("kmon", vec![Scope::Read], &["kubs0"])],
-        ))
+        let state = AuthState::with_tables(AuthTables::new(vec![identity(
+            "kmon",
+            vec![Scope::Read],
+            &["kubs0"],
+        )]))
         .with_whois(Arc::new(FakeWhois(vec![])), true);
         let (status, body) = send(
             &app_with(state),
@@ -1092,10 +888,11 @@ mod tests {
     /// address — the direct (non-`tailscale serve`) deployment.
     #[tokio::test]
     async fn the_socket_peer_is_used_when_nothing_was_forwarded() {
-        let state = AuthState::with_tables(AuthTables::new(
-            vec![],
-            vec![identity("claude", vec![Scope::Read], &[])],
-        ))
+        let state = AuthState::with_tables(AuthTables::new(vec![identity(
+            "claude",
+            vec![Scope::Read],
+            &[],
+        )]))
         .with_whois(Arc::new(FakeWhois(vec![("100.97.109.60", "kai")])), false);
         let mut req = Request::builder()
             .uri("/protected")
@@ -1106,17 +903,18 @@ mod tests {
             .insert(PeerAddr("100.97.109.60:44321".parse().unwrap()));
         let (status, body) = send(&app_with(state), req).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body, "claude|kai|identity");
+        assert_eq!(body, "claude|kai");
     }
 
     /// SIGHUP hot-reload covers the new table too (WI 2388: "SIGHUP
     /// hot-reload keeps working for the new table").
     #[tokio::test]
     async fn replace_tables_swaps_identities_for_a_live_router() {
-        let state = AuthState::with_tables(AuthTables::new(
-            vec![],
-            vec![identity("old-agent", vec![Scope::Read], &[])],
-        ));
+        let state = AuthState::with_tables(AuthTables::new(vec![identity(
+            "old-agent",
+            vec![Scope::Read],
+            &[],
+        )]));
         let app = app_with(state.clone());
 
         let probe = |name: &'static str| {
@@ -1138,10 +936,11 @@ mod tests {
         assert_eq!(probe("old-agent").await, StatusCode::OK);
         assert_eq!(probe("new-agent").await, StatusCode::UNAUTHORIZED);
 
-        state.replace_tables(AuthTables::new(
-            vec![],
-            vec![identity("new-agent", vec![Scope::Read], &[])],
-        ));
+        state.replace_tables(AuthTables::new(vec![identity(
+            "new-agent",
+            vec![Scope::Read],
+            &[],
+        )]));
 
         assert_eq!(
             probe("old-agent").await,
@@ -1152,21 +951,17 @@ mod tests {
     }
 
     /// An empty or whitespace-only header is treated as "not presented"
-    /// rather than as an identity named "", so a client that sets the
-    /// header to nothing falls back to its bearer instead of being
-    /// refused with a confusing 401.
+    /// rather than as an identity named "". Sprint 052: with no bearer
+    /// path left to fall through to, that means a 401 — and, when the
+    /// caller also sent an `Authorization` header, the D-2 diagnostic
+    /// one, which is exactly the client this case describes.
     #[tokio::test]
-    async fn an_empty_agent_header_falls_through_to_the_bearer() {
-        let state = AuthState::with_tables(AuthTables::new(
-            vec![TokenGrant::new_with_author(
-                "token-that-is-long-enough",
-                vec![Scope::Read],
-                Some("kmon".into()),
-                Uuid::from_u128(7),
-                "kmon",
-            )],
-            vec![identity("claude", vec![Scope::Read], &[])],
-        ));
+    async fn an_empty_agent_header_is_not_an_identity() {
+        let state = AuthState::with_tables(AuthTables::new(vec![identity(
+            "claude",
+            vec![Scope::Read],
+            &[],
+        )]));
         let (status, body) = send(
             &app_with(state),
             Request::builder()
@@ -1177,8 +972,8 @@ mod tests {
                 .unwrap(),
         )
         .await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body, "kmon|unknown|bearer");
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert!(body.contains("bearer_retired"), "{body}");
     }
 
     #[tokio::test]

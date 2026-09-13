@@ -10,8 +10,8 @@
 //! spans the middleware, the store, and the author-resolution path that
 //! was already keyed on `agent_name` before this sprint.
 //!
-//! It also pins the transition window: both credentials work, side by
-//! side, against one running service.
+//! Sprint 052: it also pins the deletion — no bearer authenticates,
+//! and one that is presented gets a self-diagnosing 401.
 //!
 //! Marked `#[ignore]` like the rest of the integration suite — run via
 //!   `cargo test -p klams-service --test mcp_identity_header -- --ignored`
@@ -54,12 +54,11 @@ async fn a_declared_identity_write_lands_under_its_own_author() {
     );
 }
 
-/// The transition window, against one running service: the legacy
-/// bearer still authenticates and still attributes to *its* author,
-/// while the header path works alongside it.
+/// Two declared identities against one running service attribute to
+/// their own authors and do not collapse into one.
 #[ignore = "requires docker compose test stack"]
 #[tokio::test]
-async fn both_credentials_work_against_one_service() {
+async fn two_identities_attribute_to_their_own_authors() {
     let server = TestServer::spawn().await;
 
     let by_header = McpSession::handshake_with(server.addr, identity(&server)).await;
@@ -74,14 +73,14 @@ async fn both_credentials_work_against_one_service() {
         )
         .await;
 
-    let by_bearer = McpSession::handshake(server.addr, &server.author_token).await;
-    let bearer_out = by_bearer
+    let by_name = McpSession::handshake(server.addr, &server.author_agent).await;
+    let other_out = by_name
         .call_tool(
             "memory_add",
             serde_json::json!({
                 "kind": "fact",
                 "fact_type": "EnvFact",
-                "payload": {"key": "WI2388_WINDOW_BEARER", "value": "ok"},
+                "payload": {"key": "WI2388_WINDOW_OTHER", "value": "ok"},
             }),
         )
         .await;
@@ -92,19 +91,18 @@ async fn both_credentials_work_against_one_service() {
         "{header_out}"
     );
     assert_eq!(
-        bearer_out["author"]["agent_name"].as_str(),
+        other_out["author"]["agent_name"].as_str(),
         Some(server.author_agent_name.as_str()),
-        "the legacy bearer must keep working while the window is open: {bearer_out}"
+        "{other_out}"
     );
     assert_ne!(
         header_out["author"]["id"].as_str(),
-        bearer_out["author"]["id"].as_str(),
-        "the two credentials name different agents and must not collapse"
+        other_out["author"]["id"].as_str(),
+        "the two identities name different agents and must not collapse"
     );
 }
 
-/// An unknown declared name is a 401 on the MCP mount, exactly as an
-/// unknown bearer is.
+/// An unknown declared name is a 401 on the MCP mount.
 #[ignore = "requires docker compose test stack"]
 #[tokio::test]
 async fn an_unknown_declared_name_is_401_on_the_mcp_mount() {
@@ -121,19 +119,19 @@ async fn an_unknown_declared_name_is_401_on_the_mcp_mount() {
     assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
 }
 
-/// A caller that declares an unknown name while holding a VALID bearer
-/// is still refused. The alternative — falling through to the token —
-/// would attribute its writes to an agent it never claimed to be.
+/// A caller that declares an unknown name while also sending a bearer
+/// is refused. Nothing falls through — there is nothing left to fall
+/// through to (sprint 052).
 #[ignore = "requires docker compose test stack"]
 #[tokio::test]
-async fn a_bad_declared_name_is_refused_even_with_a_valid_bearer() {
+async fn a_bad_declared_name_is_refused_even_with_a_bearer() {
     let server = TestServer::spawn().await;
     let resp = reqwest::Client::new()
         .post(format!("http://{}/mcp", server.addr))
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
         .header("X-Homelab-Agent", "not-a-configured-identity")
-        .header("Authorization", format!("Bearer {}", server.author_token))
+        .header("Authorization", "Bearer anything-at-all")
         .body(INIT_BODY)
         .send()
         .await
@@ -141,9 +139,32 @@ async fn a_bad_declared_name_is_refused_even_with_a_valid_bearer() {
     assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
 }
 
-/// The tool catalog is filtered by the identity's scopes, the same way
-/// it is filtered by a token's — the declared name carries the scope
-/// set, so nothing about catalog filtering is special-cased.
+/// Sprint 052, end to end on the real transport: a bearer and no name
+/// is a 401 whose body names the header to send and the one to drop.
+/// The unit test pins the middleware; this pins that the body survives
+/// the MCP mount rather than being flattened into a bare status.
+#[ignore = "requires docker compose test stack"]
+#[tokio::test]
+async fn a_retired_bearer_gets_a_self_diagnosing_401_on_the_mcp_mount() {
+    let server = TestServer::spawn().await;
+    let resp = reqwest::Client::new()
+        .post(format!("http://{}/mcp", server.addr))
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .header("Authorization", "Bearer a-retired-credential")
+        .body(INIT_BODY)
+        .send()
+        .await
+        .expect("POST /mcp");
+    assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let body = resp.text().await.expect("body");
+    assert!(body.contains("bearer_retired"), "{body}");
+    assert!(body.contains("X-Homelab-Agent"), "{body}");
+}
+
+/// The tool catalog is filtered by the identity's scopes — the declared
+/// name carries the scope set, so nothing about catalog filtering is
+/// special-cased.
 #[ignore = "requires docker compose test stack"]
 #[tokio::test]
 async fn the_catalog_is_filtered_by_the_identitys_scopes() {

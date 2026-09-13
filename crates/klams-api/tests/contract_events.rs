@@ -108,7 +108,7 @@ async fn post_events_returns_202_with_id() {
             Request::builder()
                 .method(Method::POST)
                 .uri("/memory/events")
-                .header(header::AUTHORIZATION, "Bearer test-bearer")
+                .header("x-homelab-agent", "test-bearer")
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(serde_json::to_vec(&body).unwrap()))
                 .unwrap(),
@@ -156,7 +156,7 @@ async fn post_events_invalid_payload_is_validation_error() {
             Request::builder()
                 .method(Method::POST)
                 .uri("/memory/events")
-                .header(header::AUTHORIZATION, "Bearer test-bearer")
+                .header("x-homelab-agent", "test-bearer")
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(serde_json::to_vec(&body).unwrap()))
                 .unwrap(),
@@ -181,7 +181,7 @@ async fn get_events_returns_event_page_shape() {
             Request::builder()
                 .method(Method::GET)
                 .uri("/memory/events")
-                .header(header::AUTHORIZATION, "Bearer test-bearer")
+                .header("x-homelab-agent", "test-bearer")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -209,7 +209,7 @@ async fn get_events_accepts_service_task_id_and_since() {
             Request::builder()
                 .method(Method::GET)
                 .uri(uri)
-                .header(header::AUTHORIZATION, "Bearer test-bearer")
+                .header("x-homelab-agent", "test-bearer")
                 .body(Body::empty())
                 .unwrap(),
         )

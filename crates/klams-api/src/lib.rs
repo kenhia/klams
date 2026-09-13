@@ -10,7 +10,7 @@ pub mod middleware;
 pub mod router;
 pub mod whois;
 
-pub use auth::{require_bearer, AuthState, AuthTables, Identity, PeerAddr, TokenGrant};
+pub use auth::{require_bearer, AuthState, AuthTables, Identity, PeerAddr};
 pub use error::ApiError;
 pub use router::{build_router, build_router_with_auth, with_metrics, ApiState};
 pub use whois::{NodeResolver, TailscaleWhois};

@@ -174,32 +174,33 @@ async fn resolve_test_author(store: &Arc<CompositeStore>, agent_name: &str) -> U
 pub struct TestServer {
     pub client: Client,
     pub addr: SocketAddr,
-    pub bearer_token: String,
-    /// Read-only scope token (sprint 007 T066).
-    pub read_token: String,
-    /// Write+Read scope token (sprint 007 T066).
-    pub write_token: String,
-    /// Token bound to a named author (sprint 018 / WI #62) — writes
+    /// Full-scope identity (sprint 007 T066; a name, not a secret,
+    /// since sprint 052).
+    pub full_agent: String,
+    /// Read-only scope identity (sprint 007 T066).
+    pub read_agent: String,
+    /// Write+Read scope identity (sprint 007 T066).
+    pub write_agent: String,
+    /// Identity bound to a named author (sprint 018 / WI #62) — writes
     /// through it may omit `author_id`.
-    pub author_token: String,
-    /// The `agent_name` the author-bound token attributes writes to.
+    pub author_agent: String,
+    /// The `agent_name` the author-bound identity attributes writes to.
     pub author_agent_name: String,
-    /// The author id `author_token` is bound to.
+    /// The author id `author_agent` is bound to.
     pub bound_author_id: Uuid,
-    /// Sprint 025 (#633) — token bound to a *different* author with
+    /// Sprint 025 (#633) — identity bound to a *different* author with
     /// only `[read, write]`. Used to prove a write-scoped caller cannot
     /// delete somebody else's memory.
-    pub other_write_token: String,
-    /// The author id `other_write_token` is bound to.
+    pub other_write_agent: String,
+    /// The author id `other_write_agent` is bound to.
     pub other_author_id: Uuid,
-    /// Sprint 025 (#633) — token bound to a third author carrying
+    /// Sprint 025 (#633) — identity bound to a third author carrying
     /// `[read, write, manage]`: cross-author curation is permitted.
-    pub manage_token: String,
-    /// The author id `manage_token` is bound to.
+    pub manage_agent: String,
+    /// The author id `manage_agent` is bound to.
     pub manage_author_id: Uuid,
     /// Sprint 049 — an `[[auth.identities]]` row bound to its own
-    /// author. Callers declare this in `X-Homelab-Agent`; there is no
-    /// token, which is the point.
+    /// author, declared in `X-Homelab-Agent`.
     pub identity_agent_name: String,
     /// The author id the identity resolves to.
     pub identity_author_id: Uuid,
@@ -297,9 +298,9 @@ impl std::fmt::Debug for TestServer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TestServer")
             .field("addr", &self.addr)
-            .field("bearer_token", &"<redacted>")
-            .field("read_token", &"<redacted>")
-            .field("write_token", &"<redacted>")
+            .field("full_agent", &self.full_agent)
+            .field("read_agent", &self.read_agent)
+            .field("write_agent", &self.write_agent)
             .field("client", &"<klams_client>")
             .field("store", &"<CompositeStore>")
             .finish_non_exhaustive()
@@ -382,9 +383,9 @@ impl TestServer {
         let pg_url = test_pg_url();
         let qdrant_url = test_qdrant_grpc_url();
         let tei_url = test_tei_url();
-        let bearer = "test-token-do-not-use-in-prod".to_string();
-        let read_token = "test-token-read-only".to_string();
-        let write_token = "test-token-write".to_string();
+        let full_agent = "full-scope-test-agent".to_string();
+        let read_agent = "read-only-test-agent".to_string();
+        let write_agent = "write-test-agent".to_string();
 
         // Sprint 031 (#679): an isolated server migrates into its own
         // schema instead of TRUNCATEing the shared one. Create the
@@ -430,33 +431,33 @@ impl TestServer {
         let embedder = Arc::new(TeiEmbedder::new(tei_url, TEST_EMBED_DIM).expect("tei client"));
         let store = Arc::new(CompositeStore::new(postgres, qdrant, embedder));
 
-        // Sprint 018 (WI #62) — mirror main.rs's resolve_token_author:
-        // bind a test token to a named author so bearer-fallback
-        // attribution is exercisable.
-        let author_token = "test-token-author-bound".to_string();
-        let author_agent_name = "bearer-bound-test-agent".to_string();
+        // Sprint 018 (WI #62) — mirror main.rs's author resolution: bind
+        // a test identity to a named author so the caller-bound
+        // attribution fallback is exercisable.
+        let author_agent = "author-bound-test-agent".to_string();
+        let author_agent_name = author_agent.clone();
         let bound_author_id = resolve_test_author(&store, &author_agent_name).await;
 
         // Sprint 025 (#633): two more bound identities so ownership can
         // be exercised — one write-only peer, one manage-scoped curator.
-        let other_write_token = "test-token-other-write".to_string();
-        let other_author_id = resolve_test_author(&store, "other-write-test-agent").await;
+        let other_write_agent = "other-write-test-agent".to_string();
+        let other_author_id = resolve_test_author(&store, &other_write_agent).await;
 
         // Sprint 049 — a declared identity, resolved through the same
-        // author path as a token grant. Both tables live side by side
-        // here on purpose: that IS the transition window.
+        // author path every other row uses.
         let identity_agent_name = "declared-test-agent".to_string();
         let identity_author_id = resolve_test_author(&store, &identity_agent_name).await;
 
         // Sprint 050 — the typed `klams_client::Client` sends a declared
         // name and no credential, so the harness needs a full-scope
-        // identity to drive it with. It mirrors the `bearer` grant's
-        // scopes exactly, which is what keeps every pre-050 test that
-        // goes through `server.client` asserting the same thing.
+        // identity to drive it with.
         let harness_agent_name = "harness-client-agent".to_string();
         let harness_author_id = resolve_test_author(&store, &harness_agent_name).await;
-        let manage_token = "test-token-manage".to_string();
-        let manage_author_id = resolve_test_author(&store, "manage-test-agent").await;
+        let manage_agent = "manage-test-agent".to_string();
+        let manage_author_id = resolve_test_author(&store, &manage_agent).await;
+        let full_author_id = resolve_test_author(&store, &full_agent).await;
+        let read_author_id = resolve_test_author(&store, &read_agent).await;
+        let write_author_id = resolve_test_author(&store, &write_agent).await;
 
         let (queue, rx) = MemoryQueue::new(256);
         let _workers = spawn_workers(2, rx, Arc::clone(&store));
@@ -493,54 +494,51 @@ impl TestServer {
         let router = {
             // Mirror main.rs's wiring: single AuthState gates both REST
             // and the nested /mcp router. Sprint 007 T064.
-            let grants = vec![
-                klams_api::auth::TokenGrant::new(
-                    bearer.clone(),
-                    vec![
-                        klams_types::Scope::Read,
-                        klams_types::Scope::Write,
-                        klams_types::Scope::Manage,
-                        klams_types::Scope::Admin,
-                    ],
-                    Some("legacy".into()),
-                ),
-                klams_api::auth::TokenGrant::new(
-                    read_token.clone(),
-                    vec![klams_types::Scope::Read],
-                    Some("read-only".into()),
-                ),
-                klams_api::auth::TokenGrant::new(
-                    write_token.clone(),
-                    vec![klams_types::Scope::Read, klams_types::Scope::Write],
-                    Some("write".into()),
-                ),
-                klams_api::auth::TokenGrant::new_with_author(
-                    author_token.clone(),
-                    vec![klams_types::Scope::Read, klams_types::Scope::Write],
-                    Some("author-bound".into()),
-                    bound_author_id,
-                    author_agent_name.clone(),
-                ),
-                klams_api::auth::TokenGrant::new_with_author(
-                    other_write_token.clone(),
-                    vec![klams_types::Scope::Read, klams_types::Scope::Write],
-                    Some("other-write".into()),
-                    other_author_id,
-                    "other-write-test-agent",
-                ),
-                klams_api::auth::TokenGrant::new_with_author(
-                    manage_token.clone(),
-                    vec![
-                        klams_types::Scope::Read,
-                        klams_types::Scope::Write,
-                        klams_types::Scope::Manage,
-                    ],
-                    Some("manage".into()),
-                    manage_author_id,
-                    "manage-test-agent",
-                ),
-            ];
+            use klams_types::Scope as Sc;
+            let identity_row = |name: &str,
+                                scopes: Vec<klams_types::Scope>,
+                                label: &str,
+                                author_id: uuid::Uuid| {
+                klams_api::auth::Identity {
+                    agent_name: std::sync::Arc::new(name.to_string()),
+                    scopes: std::sync::Arc::new(scopes),
+                    label: Some(label.to_string()),
+                    author_id,
+                    nodes: std::sync::Arc::new(Vec::new()),
+                }
+            };
             let identities = vec![
+                identity_row(
+                    &full_agent,
+                    vec![Sc::Read, Sc::Write, Sc::Manage, Sc::Admin],
+                    "full-scope",
+                    full_author_id,
+                ),
+                identity_row(&read_agent, vec![Sc::Read], "read-only", read_author_id),
+                identity_row(
+                    &write_agent,
+                    vec![Sc::Read, Sc::Write],
+                    "write",
+                    write_author_id,
+                ),
+                identity_row(
+                    &author_agent,
+                    vec![Sc::Read, Sc::Write],
+                    "author-bound",
+                    bound_author_id,
+                ),
+                identity_row(
+                    &other_write_agent,
+                    vec![Sc::Read, Sc::Write],
+                    "other-write",
+                    other_author_id,
+                ),
+                identity_row(
+                    &manage_agent,
+                    vec![Sc::Read, Sc::Write, Sc::Manage],
+                    "manage",
+                    manage_author_id,
+                ),
                 klams_api::auth::Identity {
                     agent_name: std::sync::Arc::new(identity_agent_name.clone()),
                     scopes: std::sync::Arc::new(vec![
@@ -565,7 +563,7 @@ impl TestServer {
                 },
             ];
             let auth_state = klams_api::auth::AuthState::with_tables(
-                klams_api::auth::AuthTables::new(grants, identities),
+                klams_api::auth::AuthTables::new(identities),
             );
             let mut mcp_state = klams_mcp::tools::McpState::new(
                 Arc::clone(&store),
@@ -591,15 +589,15 @@ impl TestServer {
         Self {
             client,
             addr,
-            bearer_token: bearer,
-            read_token,
-            write_token,
-            author_token,
+            full_agent,
+            read_agent,
+            write_agent,
+            author_agent,
             author_agent_name,
             bound_author_id,
-            other_write_token,
+            other_write_agent,
             other_author_id,
-            manage_token,
+            manage_agent,
             manage_author_id,
             identity_agent_name,
             identity_author_id,
@@ -653,12 +651,14 @@ pub struct McpSession {
     session_id: String,
 }
 
-/// How a test caller proves who it is (sprint 049). Both forms are live
-/// while the transition window is open, and the point of modelling them
-/// together is that the *same* suite can be driven either way.
+/// How a test caller proves who it is: a declared name.
+///
+/// Sprint 049 made this an enum so the same suite could be driven by
+/// either a bearer or a header while the transition window was open.
+/// Sprint 052 deleted the bearer arm with the code path it exercised;
+/// the type stays because the call sites read better for it.
 #[derive(Clone, Debug)]
 pub enum Credential {
-    Bearer(String),
     /// `X-Homelab-Agent: <agent_name>` — no secret.
     Identity(String),
 }
@@ -666,7 +666,6 @@ pub enum Credential {
 impl Credential {
     pub fn apply(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         match self {
-            Self::Bearer(t) => req.header("Authorization", format!("Bearer {t}")),
             Self::Identity(name) => req.header("X-Homelab-Agent", name.as_str()),
         }
     }
@@ -690,11 +689,11 @@ pub fn parse_sse_json(body: &str) -> serde_json::Value {
 }
 
 impl McpSession {
-    pub async fn handshake(addr: SocketAddr, token: &str) -> Self {
-        Self::handshake_with(addr, Credential::Bearer(token.to_string())).await
+    pub async fn handshake(addr: SocketAddr, agent: &str) -> Self {
+        Self::handshake_with(addr, Credential::Identity(agent.to_string())).await
     }
 
-    /// Sprint 049 — handshake under either credential form.
+    /// Handshake under an explicit credential.
     pub async fn handshake_with(addr: SocketAddr, credential: Credential) -> Self {
         let client = reqwest::Client::new();
         let base = format!("http://{addr}/mcp");

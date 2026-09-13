@@ -6,30 +6,26 @@
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
-use klams_token::doc::{GrantView, GrantsDoc, IdentityView};
-use klams_token::fingerprint::{token_digest, verify_delta, Change, GrantFingerprint};
-use klams_token::{paths, verify, writer};
-use klams_types::{validate_agent_name, IdentityConfig, Scope, TokenGrantConfig};
-use rand::RngCore;
+use klams_token::doc::{GrantsDoc, IdentityView};
+use klams_token::fingerprint::{verify_delta, Change, GrantFingerprint};
+use klams_token::{paths, writer};
+use klams_types::{IdentityConfig, Scope};
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
-
-/// Exit code when `--verify` found at least one dead grant. Distinct
-/// from 1 (the command failed) so a monitoring wrapper can tell "your
-/// config is broken" from "a credential is broken".
-const EXIT_DEAD_GRANT: i32 = 2;
 
 #[derive(Debug, Parser)]
 #[command(
     name = "klams-token",
     version,
-    about = "Structural editor for the [[auth.tokens]] grants in klams.toml",
-    long_about = "Edits klams.toml's auth grants structurally, so a write cannot clobber a \
-                  sibling grant (korg #264). Every mutation takes a timestamped backup, \
-                  fingerprints the grant set before and after, refuses anything but the change \
-                  you asked for, validates the result against the schema klams-service boots \
-                  from, and restores the backup if that validation fails.\n\n\
-                  Token values are never printed without --reveal."
+    about = "Structural editor for the [[auth.identities]] rows in klams.toml",
+    long_about = "Edits klams.toml's auth identities structurally, so a write cannot clobber a \
+                  sibling row (korg #264). Every mutation takes a timestamped backup, \
+                  fingerprints the identity set before and after, refuses anything but the \
+                  change you asked for, validates the result against the schema klams-service \
+                  boots from, and restores the backup if that validation fails.\n\n\
+                  The `[[auth.tokens]]` grants this tool was built for are retired \
+                  (sprint 052); an identity carries no secret, so there is nothing to reveal \
+                  and nothing to rotate."
 )]
 struct Cli {
     /// Config to edit. Defaults to `$KLAMS_CONFIG`, then the shipped
@@ -53,84 +49,18 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// List the grants.
-    List {
-        /// Print token values. Off by default: these are live secrets
-        /// and a terminal is a log.
-        #[arg(long)]
-        reveal: bool,
-        /// Probe every grant against the running service — one
-        /// authenticated request each — and report live/dead.
-        #[arg(long)]
-        verify: bool,
-        /// Service base URL for `--verify`. Defaults to `$KLAMS_URL`,
-        /// then the `[server]` block of the config being inspected.
-        #[arg(long, value_name = "URL")]
-        url: Option<String>,
-    },
-
-    /// Append a new grant. Never edits an existing one.
-    Add {
-        /// Short name. Prefixes the generated token and, unless
-        /// --agent-name says otherwise, becomes the grant's identity.
-        name: String,
-        /// Comma-separated: read, write, manage, admin. Scopes are
-        /// flat — "write" does not imply "read".
-        #[arg(long, required = true, value_delimiter = ',', value_parser = parse_scope)]
-        scopes: Vec<Scope>,
-        /// Defaults to <name>.
-        #[arg(long)]
-        label: Option<String>,
-        /// Identity memories written through this grant are attributed
-        /// to. Defaults to <name>.
-        #[arg(long)]
-        agent_name: Option<String>,
-        /// Print the generated token. You need it once, to hand to
-        /// whatever will present it.
-        #[arg(long)]
-        reveal: bool,
-    },
-
-    /// Delete a grant by `agent_name` or label.
-    Remove {
-        selector: String,
-        /// Skip the confirmation prompt.
-        #[arg(long)]
-        yes: bool,
-    },
-
-    /// Change a grant's scopes, touching nothing else.
-    Scopes {
-        selector: String,
-        /// Replace the scope set outright.
-        #[arg(long, value_delimiter = ',', value_parser = parse_scope)]
-        set: Vec<Scope>,
-        /// Add these scopes to the existing set.
-        #[arg(long, value_delimiter = ',', value_parser = parse_scope)]
-        add: Vec<Scope>,
-        /// Remove these scopes from the existing set.
-        #[arg(long = "remove", value_delimiter = ',', value_parser = parse_scope)]
-        remove: Vec<Scope>,
-    },
-
-    /// Replace a grant's token, preserving its identity and scopes.
+    /// Edit the `[[auth.identities]]` table.
     ///
-    /// klams attributes memories by `agent_name`, not by token value,
-    /// so rotating here does not orphan anything that agent wrote.
-    Rotate {
-        selector: String,
-        /// Print the new token.
-        #[arg(long)]
-        reveal: bool,
-    },
-
-    /// Edit the `[[auth.identities]]` table (sprint 049).
+    /// The successor to the retired token grants: a caller declares its
+    /// name in `X-Homelab-Agent` and klams looks the row up by that
+    /// name. There is no secret here, so there is nothing to reveal and
+    /// nothing to rotate — which is why the subcommands are
+    /// list/add/remove/scopes/nodes and stop there.
     ///
-    /// The successor to the token grants: a caller declares its name in
-    /// `X-Homelab-Agent` and klams looks the row up by that name. There
-    /// is no secret here, so there is nothing to reveal and nothing to
-    /// rotate — which is why the subcommands are list/add/remove/scopes
-    /// and stop there.
+    /// Kept as a subcommand group rather than flattened in sprint 052,
+    /// even though it is now the only one: `klams-token identity list`
+    /// is the documented way to read the live roster without opening
+    /// the file (krot WI 2466), and it is in operator muscle memory.
     #[command(subcommand)]
     Identity(IdentityCommand),
 }
@@ -198,15 +128,14 @@ fn parse_scope(s: &str) -> Result<Scope, String> {
     }
 }
 
-/// Both fingerprint sets, taken together before a write (sprint 049).
+/// The identity set's fingerprints, taken before a write.
 ///
-/// Two sets rather than one merged list, because the guard they feed is
-/// "this edit touched exactly one table in exactly one way". A token
-/// edit that silently dropped an identity row — or the reverse — is
-/// precisely the clobber this tool exists to make impossible, and a
-/// merged set could not express the difference.
+/// Sprint 049 made this two sets, one per auth table, so "my identity
+/// edit also removed a token grant" was a refusal rather than a
+/// discovery. Sprint 052 deleted the token table, so there is one set
+/// again — but the guard it feeds is unchanged: an edit must produce
+/// exactly the declared change and nothing else.
 struct Snapshot {
-    tokens: Vec<GrantFingerprint>,
     identities: Vec<GrantFingerprint>,
 }
 
@@ -230,15 +159,14 @@ struct Session {
     notes: Vec<String>,
 }
 
-#[tokio::main]
-async fn main() {
-    if let Err(e) = run().await {
+fn main() {
+    if let Err(e) = run() {
         eprintln!("error: {e:#}");
         std::process::exit(1);
     }
 }
 
-async fn run() -> Result<()> {
+fn run() -> Result<()> {
     let cli = Cli::parse();
     let path = paths::resolve(cli.config.clone())?;
     let before_text = std::fs::read_to_string(&path).with_context(|| {
@@ -259,32 +187,6 @@ async fn run() -> Result<()> {
     };
 
     let result = match &cli.command {
-        Command::List {
-            reveal,
-            verify: do_verify,
-            url,
-        } => s.list(*reveal, *do_verify, url.as_deref()).await,
-        Command::Add {
-            name,
-            scopes,
-            label,
-            agent_name,
-            reveal,
-        } => s.add(
-            name,
-            scopes,
-            label.as_deref(),
-            agent_name.as_deref(),
-            *reveal,
-        ),
-        Command::Remove { selector, yes } => s.remove(selector, *yes),
-        Command::Scopes {
-            selector,
-            set,
-            add: to_add,
-            remove: to_remove,
-        } => s.scopes(selector, set, to_add, to_remove),
-        Command::Rotate { selector, reveal } => s.rotate(selector, *reveal),
         Command::Identity(cmd) => match cmd {
             IdentityCommand::List => s.identity_list(),
             IdentityCommand::Add {
@@ -310,375 +212,7 @@ async fn run() -> Result<()> {
 }
 
 impl Session {
-    // ------------------------------------------------------------ list
-
-    async fn list(&self, reveal: bool, do_verify: bool, url: Option<&str>) -> Result<()> {
-        let grants = self.doc.grants()?;
-        let mut liveness: Vec<Option<verify::Liveness>> = vec![None; grants.len()];
-
-        if do_verify {
-            let base = self.probe_url(url)?;
-            eprintln!("probing {} grants against {base}", grants.len());
-            let client = verify::client()?;
-            for (i, g) in grants.iter().enumerate() {
-                liveness[i] = Some(verify::probe(&client, &base, &g.token).await);
-            }
-        }
-
-        if self.json {
-            let rows: Vec<serde_json::Value> = grants
-                .iter()
-                .zip(&liveness)
-                .map(|(g, l)| {
-                    let mut row = serde_json::json!({
-                        "index": g.index,
-                        "identity": g.identity(),
-                        "label": g.label,
-                        "agent_name": g.agent_name,
-                        "scopes": g.scopes.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-                        "token_fingerprint": token_digest(&g.token),
-                    });
-                    if reveal {
-                        row["token"] = serde_json::Value::String(g.token.clone());
-                    }
-                    if let Some(l) = l {
-                        row["liveness"] = serde_json::Value::String(l.label());
-                    }
-                    row
-                })
-                .collect();
-            println!("{}", serde_json::to_string_pretty(&rows)?);
-        } else {
-            print_table(&grants, &liveness, reveal);
-        }
-
-        let dead: Vec<&GrantView> = grants
-            .iter()
-            .zip(&liveness)
-            .filter(|(_, l)| l.as_ref().is_some_and(verify::Liveness::is_dead))
-            .map(|(g, _)| g)
-            .collect();
-        if !dead.is_empty() {
-            eprintln!(
-                "\n{} grant(s) returned 401 — the service holds no such token: {}",
-                dead.len(),
-                dead.iter()
-                    .map(|g| g.identity())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-            eprintln!(
-                "whatever presents these has a value the service does not; rotate with \
-                 `klams-token rotate <identity>` and redeploy the consumer, or remove the grant."
-            );
-            std::process::exit(EXIT_DEAD_GRANT);
-        }
-        Ok(())
-    }
-
-    /// Where `--verify` should probe: `--url`, then `$KLAMS_URL`, then
-    /// the `[server]` block of the very config being inspected.
-    fn probe_url(&self, explicit: Option<&str>) -> Result<String> {
-        if let Some(u) = explicit {
-            return Ok(u.to_string());
-        }
-        if let Ok(u) = std::env::var("KLAMS_URL") {
-            if !u.is_empty() {
-                return Ok(u);
-            }
-        }
-        let parsed: ServerSlice = toml::from_str(&self.doc.to_string()).context(
-            "no --url and no $KLAMS_URL, and the config has no readable [server] block to \
-             derive one from",
-        )?;
-        Ok(verify::base_url_from_config(
-            &parsed.server.listen_addr,
-            parsed.server.port,
-        ))
-    }
-
-    // ------------------------------------------------------------- add
-
-    fn add(
-        &mut self,
-        name: &str,
-        scopes: &[Scope],
-        label: Option<&str>,
-        agent_name: Option<&str>,
-        reveal: bool,
-    ) -> Result<()> {
-        // The short name prefixes a live credential, so it gets the
-        // same charset rules as an identity rather than none at all.
-        validate_agent_name(name)
-            .map_err(|r| anyhow::anyhow!("`{name}` is not a usable short name ({r})"))?;
-        let agent = agent_name.unwrap_or(name).to_string();
-        validate_agent_name(&agent)
-            .map_err(|r| anyhow::anyhow!("`{agent}` is not a valid agent_name ({r})"))?;
-
-        let before = self.snapshot()?;
-        if let Ok(existing) = self.doc.find(&agent) {
-            bail!(
-                "a grant with identity `{}` already exists (index {}) — `add` never edits an \
-                 existing grant; use `rotate` to replace its token or `scopes` to change its \
-                 permissions",
-                existing.identity(),
-                existing.index
-            );
-        }
-
-        let token = generate_token(name);
-        let grant = TokenGrantConfig {
-            token: token.clone(),
-            scopes: scopes.to_vec(),
-            label: Some(label.unwrap_or(name).to_string()),
-            agent_name: Some(agent.clone()),
-        };
-        grant
-            .validate()
-            .context("the grant you asked for is not one klams-service would accept")?;
-
-        self.doc.add(&grant)?;
-        let change = Change::Added(GrantFingerprint::new(agent.clone(), &token));
-        self.commit(&before, &change, &Change::None)?;
-
-        // A dry run generated a token and threw it away — reporting
-        // it would hand the operator a credential that exists nowhere.
-        if self.dry_run {
-            return self.report(
-                &serde_json::json!({
-                    "action": "add",
-                    "identity": agent,
-                    "scopes": scopes.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-                    "dry_run": true,
-                }),
-                &format!(
-                    "would add grant `{agent}` [{}]; re-run without --dry-run to \
-                     generate and write its token",
-                    render_scopes(scopes)
-                ),
-            );
-        }
-
-        if self.json {
-            let mut out = serde_json::json!({
-                "action": "add",
-                "identity": agent,
-                "scopes": scopes.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-                "token_fingerprint": token_digest(&token),
-                "dry_run": false,
-            });
-            if reveal {
-                out["token"] = serde_json::Value::String(token.clone());
-            }
-            println!("{}", serde_json::to_string_pretty(&out)?);
-        } else {
-            println!(
-                "added grant `{agent}` [{}] (token {})",
-                render_scopes(scopes),
-                token_digest(&token)
-            );
-            if reveal {
-                println!("token: {token}");
-            } else {
-                println!("re-run with --reveal to print the token value (you need it once).");
-            }
-        }
-        Ok(())
-    }
-
-    // ---------------------------------------------------------- remove
-
-    fn remove(&mut self, selector: &str, yes: bool) -> Result<()> {
-        let target = self.doc.find(selector)?;
-        let before = self.snapshot()?;
-
-        if !yes && !self.dry_run && !self.confirm_removal(&target)? {
-            println!("aborted; nothing was written.");
-            return Ok(());
-        }
-
-        self.doc.remove(target.index)?;
-        self.commit(
-            &before,
-            &Change::Removed(target.fingerprint()),
-            &Change::None,
-        )?;
-
-        self.report(
-            &serde_json::json!({
-                "action": "remove",
-                "identity": target.identity(),
-                "dry_run": self.dry_run,
-            }),
-            &format!(
-                "{} grant `{}`",
-                if self.dry_run {
-                    "would remove"
-                } else {
-                    "removed"
-                },
-                target.identity()
-            ),
-        )
-    }
-
-    fn confirm_removal(&self, target: &GrantView) -> Result<bool> {
-        if self.json {
-            bail!("--json requires --yes (there is nobody to answer the confirmation prompt)");
-        }
-        if !std::io::stdin().is_terminal() {
-            bail!(
-                "removing `{}` needs confirmation and stdin is not a terminal — pass --yes",
-                target.identity()
-            );
-        }
-        print!(
-            "remove grant `{}` (label {}, scopes {}, token {})? [y/N] ",
-            target.identity(),
-            target.label.as_deref().unwrap_or("-"),
-            target.scope_list(),
-            token_digest(&target.token)
-        );
-        std::io::stdout().flush()?;
-        let mut answer = String::new();
-        std::io::stdin().read_line(&mut answer)?;
-        Ok(matches!(
-            answer.trim().to_ascii_lowercase().as_str(),
-            "y" | "yes"
-        ))
-    }
-
-    // ---------------------------------------------------------- scopes
-
-    fn scopes(
-        &mut self,
-        selector: &str,
-        set: &[Scope],
-        to_add: &[Scope],
-        to_remove: &[Scope],
-    ) -> Result<()> {
-        if set.is_empty() && to_add.is_empty() && to_remove.is_empty() {
-            bail!("nothing to do: pass --set, --add or --remove");
-        }
-        if !set.is_empty() && (!to_add.is_empty() || !to_remove.is_empty()) {
-            bail!("--set replaces the whole scope set; it cannot be combined with --add/--remove");
-        }
-
-        let target = self.doc.find(selector)?;
-        let before = self.snapshot()?;
-        let next = next_scopes(&target.scopes, set, to_add, to_remove);
-
-        if next == target.scopes {
-            return self.report(
-                &serde_json::json!({
-                    "action": "scopes",
-                    "identity": target.identity(),
-                    "changed": false,
-                    "scopes": next.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-                }),
-                &format!(
-                    "`{}` already has scopes {} — nothing to write",
-                    target.identity(),
-                    render_scopes(&next)
-                ),
-            );
-        }
-
-        self.doc.set_scopes(target.index, &next)?;
-        // Scopes are not part of a fingerprint, so the declared change
-        // is "the grant set must come out identical" — which is exactly
-        // the guarantee wanted here: no sibling touched, no token
-        // disturbed.
-        self.commit(&before, &Change::None, &Change::None)?;
-
-        self.report(
-            &serde_json::json!({
-                "action": "scopes",
-                "identity": target.identity(),
-                "changed": true,
-                "from": target.scopes.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-                "to": next.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-                "dry_run": self.dry_run,
-            }),
-            &format!(
-                "`{}` scopes {} -> {}",
-                target.identity(),
-                render_scopes(&target.scopes),
-                render_scopes(&next)
-            ),
-        )
-    }
-
-    // ---------------------------------------------------------- rotate
-
-    fn rotate(&mut self, selector: &str, reveal: bool) -> Result<()> {
-        let target = self.doc.find(selector)?;
-        let before = self.snapshot()?;
-
-        // Keep the existing prefix if the token has one, so a rotated
-        // value still announces which consumer it belongs to.
-        let prefix = target
-            .token
-            .split_once('-')
-            .map_or_else(|| target.identity(), |(p, _)| p.to_string());
-        let new_token = generate_token(&prefix);
-
-        self.doc.set_token(target.index, &new_token)?;
-        self.commit(
-            &before,
-            &Change::Rotated {
-                key: target.identity(),
-            },
-            &Change::None,
-        )?;
-
-        if self.dry_run {
-            return self.report(
-                &serde_json::json!({
-                    "action": "rotate",
-                    "identity": target.identity(),
-                    "old_fingerprint": token_digest(&target.token),
-                    "dry_run": true,
-                }),
-                &format!(
-                    "would rotate `{}` (token {}), keeping its agent_name; re-run without \
-                     --dry-run to generate and write the new value",
-                    target.identity(),
-                    token_digest(&target.token)
-                ),
-            );
-        }
-
-        if self.json {
-            let mut out = serde_json::json!({
-                "action": "rotate",
-                "identity": target.identity(),
-                "old_fingerprint": token_digest(&target.token),
-                "new_fingerprint": token_digest(&new_token),
-                "dry_run": false,
-            });
-            if reveal {
-                out["token"] = serde_json::Value::String(new_token.clone());
-            }
-            println!("{}", serde_json::to_string_pretty(&out)?);
-        } else {
-            println!(
-                "rotated `{}`: token {} -> {} (agent_name unchanged, so its memories stay \
-                 attributed)",
-                target.identity(),
-                token_digest(&target.token),
-                token_digest(&new_token)
-            );
-            if reveal {
-                println!("token: {new_token}");
-            } else {
-                println!("re-run with --reveal to print the new token value.");
-            }
-        }
-        Ok(())
-    }
-
-    // -------------------------------------------------- identities (049)
+    // ---------------------------------------------------- identities
 
     fn identity_list(&self) -> Result<()> {
         let identities = self.doc.identities()?;
@@ -728,9 +262,10 @@ impl Session {
                 }
             );
         }
-        // There is nothing to reveal and nothing to verify: an identity
-        // carries no secret, so `list --reveal` and `list --verify`
-        // would have nothing to print and nothing to probe with.
+        // There is nothing to reveal: an identity carries no secret, so
+        // `--reveal` would have nothing to print. Sprint 049 ruled
+        // there is nothing to verify either, and sprint 052 did not
+        // reopen that — the token path's `--verify` went with it.
         Ok(())
     }
 
@@ -765,11 +300,7 @@ impl Session {
             .context("the identity you asked for is not one klams-service would accept")?;
 
         self.doc.add_identity(&id)?;
-        self.commit(
-            &before,
-            &Change::None,
-            &Change::Added(GrantFingerprint::identity(name)),
-        )?;
+        self.commit(&before, &Change::Added(GrantFingerprint::identity(name)))?;
 
         self.report(
             &serde_json::json!({
@@ -802,11 +333,7 @@ impl Session {
         }
 
         self.doc.remove_identity(target.index)?;
-        self.commit(
-            &before,
-            &Change::None,
-            &Change::Removed(target.fingerprint()),
-        )?;
+        self.commit(&before, &Change::Removed(target.fingerprint()))?;
 
         self.report(
             &serde_json::json!({
@@ -886,7 +413,7 @@ impl Session {
         // Scopes are not part of a fingerprint, so BOTH sets must come
         // out identical: no sibling identity touched, no token grant
         // disturbed.
-        self.commit(&before, &Change::None, &Change::None)?;
+        self.commit(&before, &Change::None)?;
 
         self.report(
             &serde_json::json!({
@@ -942,7 +469,7 @@ impl Session {
         }
 
         self.doc.set_identity_nodes(target.index, set)?;
-        self.commit(&before, &Change::None, &Change::None)?;
+        self.commit(&before, &Change::None)?;
 
         self.report(
             &serde_json::json!({
@@ -972,31 +499,19 @@ impl Session {
 
     // ---------------------------------------------------------- commit
 
-    /// Snapshot both auth tables' fingerprints.
+    /// Snapshot the identity table's fingerprints.
     fn snapshot(&self) -> Result<Snapshot> {
         Ok(Snapshot {
-            tokens: self.doc.fingerprints()?,
             identities: self.doc.identity_fingerprints()?,
         })
     }
 
     /// The write pipeline every mutation goes through.
-    ///
-    /// Sprint 049: both tables are verified on every write. A command
-    /// declares its change to one of them and `Change::None` for the
-    /// other, so "my identity edit also removed a token grant" is a
-    /// refusal rather than a discovery.
-    fn commit(
-        &mut self,
-        before: &Snapshot,
-        tokens_change: &Change,
-        identities_change: &Change,
-    ) -> Result<()> {
+    fn commit(&mut self, before: &Snapshot, identities_change: &Change) -> Result<()> {
         // 1. Fingerprint-and-refuse: nothing but the declared change.
         let after = self.snapshot()?;
-        verify_delta(&before.tokens, &after.tokens, tokens_change)?;
         verify_delta(&before.identities, &after.identities, identities_change)?;
-        let after = after.tokens;
+        let after = after.identities;
 
         // 2. Would klams-service boot on the result? Same rules, same
         //    definition — `AuthConfig::errors` is what
@@ -1021,7 +536,7 @@ impl Session {
 
         if self.dry_run {
             eprintln!(
-                "dry run: {} would be rewritten ({} grants, delta verified, result validates)",
+                "dry run: {} would be rewritten ({} identities, delta verified, result validates)",
                 self.path.display(),
                 after.len()
             );
@@ -1079,18 +594,6 @@ impl Session {
     }
 }
 
-/// Just the `[server]` block, for deriving a probe URL.
-#[derive(serde::Deserialize)]
-struct ServerSlice {
-    server: ServerBlock,
-}
-
-#[derive(serde::Deserialize)]
-struct ServerBlock {
-    listen_addr: String,
-    port: u16,
-}
-
 /// Apply `--set` / `--add` / `--remove` and canonicalize, so a re-run
 /// that changes nothing produces byte-identical output.
 fn next_scopes(
@@ -1120,20 +623,6 @@ fn next_scopes(
     next
 }
 
-/// `<short-name>-<32 random bytes, hex>` — the convention already
-/// visible in the live file (`alice_…`, `mind-…`, `bench-…`), which is
-/// `openssl rand -hex 32` with a readable prefix.
-fn generate_token(name: &str) -> String {
-    let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
-    let hex = bytes.iter().fold(String::with_capacity(64), |mut acc, b| {
-        use std::fmt::Write as _;
-        let _ = write!(acc, "{b:02x}");
-        acc
-    });
-    format!("{name}-{hex}")
-}
-
 fn render_scopes(scopes: &[Scope]) -> String {
     if scopes.is_empty() {
         return "(none)".into();
@@ -1143,62 +632,4 @@ fn render_scopes(scopes: &[Scope]) -> String {
         .map(|s| s.as_str())
         .collect::<Vec<_>>()
         .join(",")
-}
-
-fn print_table(grants: &[GrantView], liveness: &[Option<verify::Liveness>], reveal: bool) {
-    let token_header = if reveal { "TOKEN" } else { "FINGERPRINT" };
-    let token_col: Vec<String> = grants
-        .iter()
-        .map(|g| {
-            if reveal {
-                g.token.clone()
-            } else {
-                token_digest(&g.token)
-            }
-        })
-        .collect();
-
-    let w_id = width("IDENTITY", grants.iter().map(GrantView::identity));
-    let w_label = width(
-        "LABEL",
-        grants
-            .iter()
-            .map(|g| g.label.clone().unwrap_or_else(|| "-".into())),
-    );
-    let w_scopes = width("SCOPES", grants.iter().map(GrantView::scope_list));
-    let w_token = width(token_header, token_col.iter().cloned());
-
-    let verifying = liveness.iter().any(Option::is_some);
-    let mut header = format!(
-        "{:<4}{:<w_id$}  {:<w_label$}  {:<w_scopes$}  {:<w_token$}",
-        "IDX", "IDENTITY", "LABEL", "SCOPES", token_header
-    );
-    if verifying {
-        header.push_str("  STATUS");
-    }
-    println!("{header}");
-
-    for ((g, token), l) in grants.iter().zip(&token_col).zip(liveness) {
-        let mut row = format!(
-            "{:<4}{:<w_id$}  {:<w_label$}  {:<w_scopes$}  {:<w_token$}",
-            g.index,
-            g.identity(),
-            g.label.clone().unwrap_or_else(|| "-".into()),
-            g.scope_list(),
-            token
-        );
-        if let Some(l) = l {
-            row.push_str("  ");
-            row.push_str(&l.label());
-        }
-        println!("{}", row.trim_end());
-    }
-}
-
-fn width(header: &str, values: impl Iterator<Item = String>) -> usize {
-    values
-        .map(|v| v.chars().count())
-        .max()
-        .unwrap_or(0)
-        .max(header.len())
 }

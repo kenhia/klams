@@ -149,7 +149,7 @@ async fn post_context(
             Request::builder()
                 .method(Method::POST)
                 .uri("/memory/context")
-                .header(header::AUTHORIZATION, "Bearer test-bearer")
+                .header("x-homelab-agent", "test-bearer")
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(body.to_string()))
                 .unwrap(),

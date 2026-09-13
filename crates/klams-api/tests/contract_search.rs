@@ -253,7 +253,7 @@ async fn search(app: &axum::Router, body: serde_json::Value) -> (StatusCode, ser
             Request::builder()
                 .method(Method::POST)
                 .uri("/memory/search")
-                .header(header::AUTHORIZATION, "Bearer test-bearer")
+                .header("x-homelab-agent", "test-bearer")
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(serde_json::to_vec(&body).unwrap()))
                 .unwrap(),

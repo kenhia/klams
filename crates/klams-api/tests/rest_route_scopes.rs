@@ -2,11 +2,14 @@
 //!
 //! Before this sprint `require_scope` was layered on exactly one route
 //! (`/v1/memories`). Every other protected route accepted *any* valid
-//! bearer, so the read-only token could index knowledge, bulk-delete
-//! it, and resolve dissents — the `scopes` list in
-//! `[[auth.tokens]]` was decorative on this surface.
+//! credential, so the read-only caller could index knowledge,
+//! bulk-delete it, and resolve dissents — the `scopes` list was
+//! decorative on this surface.
 //!
-//! These tests assert the gate, not the handlers: a read-only token
+//! Sprint 052: the callers are `[[auth.identities]]` rows declaring
+//! `X-Homelab-Agent`. The gate they exercise is unchanged.
+//!
+//! These tests assert the gate, not the handlers: a read-only caller
 //! must be refused *before* any handler runs, which is why they can use
 //! an `unimplemented!()` mock store. If a route regressed to
 //! no-scope-check, the mock would panic instead of returning 403 —
@@ -15,7 +18,7 @@
 use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
-use klams_api::auth::{AuthState, TokenGrant};
+use klams_api::auth::{AuthState, Identity};
 use klams_api::{build_router_with_auth, ApiState};
 use klams_core::MemoryQueue;
 use klams_store::{EventQuery, FactQuery, Store, StoreResult, TextHit};
@@ -26,9 +29,19 @@ use std::sync::Arc;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-const READ_TOKEN: &str = "read-only-token-abcdefgh";
-const WRITE_TOKEN: &str = "write-token-abcdefghijkl";
-const MANAGE_TOKEN: &str = "manage-token-abcdefghijk";
+const READ_AGENT: &str = "klams-view";
+const WRITE_AGENT: &str = "klams-scanner";
+const MANAGE_AGENT: &str = "claude";
+
+fn identity(name: &str, scopes: Vec<Scope>) -> Identity {
+    Identity {
+        agent_name: Arc::new(name.to_string()),
+        scopes: Arc::new(scopes),
+        label: Some(name.to_string()),
+        author_id: klams_types::SYSTEM_AUTHOR_ID,
+        nodes: Arc::new(Vec::new()),
+    }
+}
 
 #[derive(Debug, Default)]
 struct PanicStore;
@@ -87,21 +100,13 @@ impl Store for PanicStore {
 
 fn app() -> axum::Router {
     let (queue, _rx) = MemoryQueue::new(32);
-    let auth = AuthState::with_grants(vec![
+    let auth = AuthState::with_identities(vec![
         // A genuinely read-only consumer — a dashboard (klams-view) or
-        // a scrape job. Curation tokens are the contrast: resolving a
-        // dissent needs `manage` (see docs/auth.md).
-        TokenGrant::new(READ_TOKEN, vec![Scope::Read], Some("dashboard".into())),
-        TokenGrant::new(
-            WRITE_TOKEN,
-            vec![Scope::Read, Scope::Write],
-            Some("scanner".into()),
-        ),
-        TokenGrant::new(
-            MANAGE_TOKEN,
-            vec![Scope::Read, Scope::Write, Scope::Manage],
-            Some("claude".into()),
-        ),
+        // a scrape job. Curation identities are the contrast: resolving
+        // a dissent needs `manage` (see docs/auth.md).
+        identity(READ_AGENT, vec![Scope::Read]),
+        identity(WRITE_AGENT, vec![Scope::Read, Scope::Write]),
+        identity(MANAGE_AGENT, vec![Scope::Read, Scope::Write, Scope::Manage]),
     ]);
     build_router_with_auth(
         ApiState {
@@ -126,13 +131,13 @@ fn app() -> axum::Router {
     )
 }
 
-async fn status(method: Method, uri: &str, token: &str) -> StatusCode {
+async fn status(method: Method, uri: &str, agent: &str) -> StatusCode {
     app()
         .oneshot(
             Request::builder()
                 .method(method)
                 .uri(uri)
-                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header("x-homelab-agent", agent)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from("{}"))
                 .unwrap(),
@@ -167,7 +172,7 @@ fn mutating_routes() -> Vec<(Method, &'static str)> {
 #[tokio::test]
 async fn read_only_token_is_refused_on_every_mutating_route() {
     for (method, uri) in mutating_routes() {
-        let got = status(method.clone(), uri, READ_TOKEN).await;
+        let got = status(method.clone(), uri, READ_AGENT).await;
         assert_eq!(
             got,
             StatusCode::FORBIDDEN,
@@ -185,7 +190,7 @@ async fn refusal_names_the_missing_scope() {
             Request::builder()
                 .method(Method::POST)
                 .uri("/memory/knowledge/index")
-                .header(header::AUTHORIZATION, format!("Bearer {READ_TOKEN}"))
+                .header("x-homelab-agent", READ_AGENT)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from("{}"))
                 .unwrap(),
@@ -208,12 +213,12 @@ async fn refusal_names_the_missing_scope() {
 async fn write_token_cannot_resolve_dissents_but_manage_can() {
     let promote = "/memory/dissents/00000000-0000-0000-0000-000000000001/promote";
     assert_eq!(
-        status(Method::POST, promote, WRITE_TOKEN).await,
+        status(Method::POST, promote, WRITE_AGENT).await,
         StatusCode::FORBIDDEN,
         "write alone must not resolve dissents"
     );
     assert_ne!(
-        status(Method::POST, promote, MANAGE_TOKEN).await,
+        status(Method::POST, promote, MANAGE_AGENT).await,
         StatusCode::FORBIDDEN,
         "manage must pass the scope gate"
     );
@@ -225,7 +230,7 @@ async fn write_token_cannot_resolve_dissents_but_manage_can() {
 async fn write_token_may_still_run_delete_before_reindex() {
     let uri = "/memory/knowledge/delete?source_file=%2Fa%2Fb.md&machine=kubs0";
     assert_ne!(
-        status(Method::POST, uri, WRITE_TOKEN).await,
+        status(Method::POST, uri, WRITE_AGENT).await,
         StatusCode::FORBIDDEN,
         "scanner cleanup must remain available to a write token"
     );
@@ -242,7 +247,7 @@ async fn read_only_token_still_passes_the_gate_on_read_routes() {
         "/v1/memories",
     ] {
         assert_ne!(
-            status(Method::GET, uri, READ_TOKEN).await,
+            status(Method::GET, uri, READ_AGENT).await,
             StatusCode::FORBIDDEN,
             "read token must pass the scope gate on {uri}"
         );
@@ -254,7 +259,7 @@ async fn read_only_token_still_passes_the_gate_on_read_routes() {
 #[tokio::test]
 async fn method_mismatch_is_405_not_403() {
     assert_eq!(
-        status(Method::DELETE, "/memory/facts", READ_TOKEN).await,
+        status(Method::DELETE, "/memory/facts", READ_AGENT).await,
         StatusCode::METHOD_NOT_ALLOWED
     );
 }
