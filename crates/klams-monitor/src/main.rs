@@ -55,7 +55,8 @@ struct Args {
 #[derive(Debug, Deserialize)]
 struct Config {
     url: String,
-    token: String,
+    /// The `[[auth.identities]]` name this monitor declares (sprint 050).
+    agent: String,
     units: Vec<String>,
     #[serde(default = "default_interval")]
     interval_secs: u64,
@@ -102,7 +103,7 @@ async fn main() -> Result<()> {
         .with_context(|| format!("read config {}", args.config.display()))?;
     let cfg: Config = toml::from_str(&body).context("parse config TOML")?;
     let interval = Duration::from_secs(args.interval_secs.unwrap_or(cfg.interval_secs));
-    let client = Client::new(&cfg.url, cfg.token.clone()).context("build klams client")?;
+    let client = Client::new(&cfg.url, cfg.agent.clone()).context("build klams client")?;
     let mut prev: HashMap<String, PreviousState> = HashMap::new();
     tracing::info!(
         units = cfg.units.len(),

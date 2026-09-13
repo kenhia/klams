@@ -30,7 +30,7 @@ The seed/run recipes always exit 0 (per FR-022) — the harness surfaces
 measurement but never gates `just gate`.
 
 Bench rows are identified by author attribution (sprint 009 FR-011):
-the bench `$KLAMS_TOKEN` is bound to a dedicated `klams-bench`
+the bench `$KLAMS_AGENT` is a dedicated `klams-bench`
 agent_name via `klams.toml`, so every fact, event, and knowledge
 point it writes carries `author_id = <klams-bench-uuid>`. `just
 bench-clean` resolves that UUID and deletes by it directly — no
@@ -41,7 +41,20 @@ payload-pattern fallback.
 | Variable      | Used by    | Notes                                   |
 |---------------|------------|-----------------------------------------|
 | `KLAMS_URL`   | seed, run  | Defaults to `http://127.0.0.1:7777`.     |
-| `KLAMS_TOKEN` | seed, run  | Required. Use a token with `read,write`. |
+| `KLAMS_AGENT` | seed, run  | Required. An `[[auth.identities]]` name with `read,write`. |
+
+> **The `klams-bench` identity is not provisioned** (sprint 050). It was
+> one of four zero-consumer grants deleted when the transition window
+> closed, so a live klams does not know the name until you add it:
+>
+> ```bash
+> sudo klams-token identity add klams-bench --scopes read,write
+> sudo systemctl reload klams-service
+> ```
+>
+> That is a name, not a credential — adding it mints nothing and there
+> is nothing to register in krot. Remove it again when the run is over
+> if you would rather the roster stayed minimal.
 
 > **Sprint 009 (FR-007):** the bench `$KLAMS_TOKEN` should be bound
 > to a dedicated author. Configure it in `klams.toml` as a scoped
@@ -57,7 +70,7 @@ payload-pattern fallback.
 | `--facts`        | `10000`                 | Fact count to write.                        |
 | `--knowledge`    | `50000`                 | Knowledge-item count to write.              |
 | `--klams-url`    | `$KLAMS_URL`            | Service base URL.                           |
-| `--klams-token`  | `$KLAMS_TOKEN`          | Bearer token.                               |
+| `--klams-agent`  | `$KLAMS_AGENT`          | Declared identity.                          |
 | `--dry-run`      | false                   | Generate corpus, skip writes.               |
 
 The seed binary retries 503 `queue_full` responses with exponential
@@ -68,7 +81,7 @@ backoff so a slow embedder doesn't drop rows.
 | Flag             | Default                                              | Notes |
 |------------------|------------------------------------------------------|-------|
 | `--klams-url`    | `$KLAMS_URL`                                         | Service base URL. |
-| `--klams-token`  | `$KLAMS_TOKEN`                                       | Bearer token. |
+| `--klams-agent`  | `$KLAMS_AGENT`                                       | Declared identity. |
 | `--queries`      | `tools/bench/queries.txt`                             | Query file. |
 | `--repeats`      | `10`                                                  | Calls per query. |
 | `--output`       | `sprints/008-activity-observability/perf-baseline.md`   | Markdown output. |

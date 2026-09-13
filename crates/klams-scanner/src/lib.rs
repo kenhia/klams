@@ -134,7 +134,6 @@ impl RepoCache {
 pub async fn scan_root(
     client: &Client,
     base_url: &str,
-    bearer: &str,
     host: &str,
     cursor_path: &Path,
     root: &Path,
@@ -193,7 +192,7 @@ pub async fn scan_root(
         // (leave the cursor unadvanced to retry) rather than publish new
         // chunks on top of stale ones.
         if prev.is_some() {
-            match publish_delete(base_url, bearer, host, &abs).await {
+            match publish_delete(base_url, client.agent(), host, &abs).await {
                 Ok(n) => {
                     if n > 0 {
                         tracing::info!(path = %abs, deleted = n, "cleared stale chunks before reindex");
@@ -257,7 +256,7 @@ pub async fn scan_root(
             // Belongs to a different root; not this scan's responsibility.
             continue;
         }
-        match publish_delete(base_url, bearer, host, &prev.absolute_path).await {
+        match publish_delete(base_url, client.agent(), host, &prev.absolute_path).await {
             Ok(n) => {
                 tracing::info!(path = %prev.absolute_path, deleted = n, "pruned");
                 cursor.delete(&prev.absolute_path)?;

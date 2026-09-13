@@ -45,12 +45,13 @@ The repo ships `scripts/provision-storage-root.sh` which:
    `deploy/` examples *only if absent* (idempotent).
 4. Generates a fresh Postgres password (injected into both rendered
    files) and a 32-byte hex operator token, appended to the rendered
-   `klams.toml` as a scoped `[[auth.tokens]]` grant —
-   `scopes = ["read", "write", "manage"]`, `label = "operator"`,
-   `agent_name = "operator"` — and printed once at the end of the run.
-   The printed next steps close with a
-   `curl -H "Authorization: Bearer <token>" /healthz` round-trip, so a
-   fresh provision is verified working rather than assumed.
+   `klams.toml` as an `[[auth.identities]]` row —
+   `agent_name = "operator"`, `scopes = ["read", "write", "manage"]`.
+   Nothing is generated and nothing is printed as a secret, because a
+   klams identity is a name (sprint 050). The printed next steps close
+   with a `curl -H "X-Homelab-Agent: operator" /memory/policy`
+   round-trip, so a fresh provision is verified working rather than
+   assumed.
 
 Sprint 034 (#773) fixed step 4: between sprints 032 and 034 the script
 sed'd a token placeholder that no longer existed in
@@ -327,8 +328,8 @@ missing):
 `KLAMS_CONFIG`):
 
 ```toml
-url = "http://127.0.0.1:7777"
-token = "<bearer from /etc/klams/klams.toml>"
+url   = "http://127.0.0.1:7777"
+agent = "klams-scanner"         # an [[auth.identities]] name, not a secret
 roots = ["/home/ken/src"]       # MUST be absolute
 interval_secs = 3600            # ignored when running with --once
 state_dir = "/var/lib/klams"    # SQLite cursor lives here
@@ -364,8 +365,8 @@ For ad-hoc runs (outside the timer): `just scanner-once`.
 `klams-monitor` reads `/etc/klams/monitor.toml`:
 
 ```toml
-url = "http://127.0.0.1:7777"
-token = "<bearer>"
+url   = "http://127.0.0.1:7777"
+agent = "klams-monitor"             # an [[auth.identities]] name
 units = ["klams-service.service"]   # systemd units to watch
 interval_secs = 30
 # host = "kubs0"                     # optional; defaults to the system hostname (/proc/sys/kernel/hostname)
@@ -378,10 +379,16 @@ generate zero traffic. For a one-off probe: `just monitor-once`.
 
 ### Config file permissions
 
-`/etc/klams/klams.toml`, `scanner.toml`, and `monitor.toml` hold bearer
-tokens and the Postgres DSN. They MUST be `root:klams 0640` (owner
-root, group `klams`, group-readable) so the `klams`-user daemons can
-read them while keeping the secrets off world-read. A wrong owner/mode
+`/etc/klams/klams.toml` holds the Postgres DSN, which carries the
+database password; `scanner.toml` and `monitor.toml` hold only a URL and
+an identity name since sprint 050. All three MUST be `root:klams 0640`
+(owner root, group `klams`, group-readable) so the `klams`-user daemons
+can read them while keeping the DSN off world-read.
+
+Read `klams.toml` with `sudo klams-token identity list`, never with
+`cat`, `grep` or `sed`: a redaction pattern written for token rows
+missed the `postgres://user:pass@host` form on 2026-09-12 and printed
+the database password into an agent transcript (krot WI 2466). A wrong owner/mode
 (e.g. `root:root 0600`) makes a daemon crash-loop with
 `read config …: Permission denied (os error 13)`.
 
@@ -533,7 +540,8 @@ Create or extend `<workspace>/.vscode/mcp.json`:
 
 Reload the VS Code window. The status bar shows the klams MCP server
 connected and GHCP's tool palette lists the klams tools (filtered
-to the scopes the token grants — `read` + `write` for `ghcp`).
+to the scopes the identity holds — `read` + `write` + `manage` for
+`ghcp`).
 
 VS Code's "MCP: klams" Output panel will log two harmless warnings
 on startup (`Could not fetch resource metadata` and
@@ -620,8 +628,8 @@ This starts two extra containers:
   Scrape config is mounted from
   [`deploy/prometheus/prometheus.yml`](../deploy/prometheus/prometheus.yml);
   WAL/TSDB lives under `${KLAMS_DATA_ROOT}/prometheus`. The single
-  scrape job targets `klams-service:7777/metrics` with the
-  service bearer token.
+  scrape job targets `klams-service:7777/metrics`, which is mounted
+  outside the authenticated router and needs no credential.
 - `klams-grafana` (image pinned via `GRAFANA_IMAGE_TAG`, default
   `11.2.2`), bound to `127.0.0.1:3000`. The klams dashboard JSON is
   bind-mounted read-only at `/var/lib/grafana/dashboards/klams.json`
@@ -729,12 +737,13 @@ is overriding the value. Check with
 > Otherwise systemctl will refuse to start the service citing
 > missing dependencies.
 
-### Token attribution (`agent_name`)
+### Identity attribution (`agent_name`)
 
-Each `[[auth.tokens]]` entry in `klams.toml` accepts an `agent_name`
-field (optional for `read`/`write`-only grants; mandatory when the
-grant holds `manage` or `admin` — sprint 034, #703, see the rules
-below). The agent name is resolved to an `author_id` at
+Each `[[auth.identities]]` entry in `klams.toml` is keyed by its
+`agent_name` — it is the row's identity, not an optional binding. (The
+retired `[[auth.tokens]]` form treated it as optional for
+`read`/`write`-only grants and mandatory for `manage`/`admin` — sprint
+034, #703.) The agent name is resolved to an `author_id` at
 service startup (the row is created in the `authors` table if it
 doesn't already exist) and again on each [auth reload](#hot-reloading-authtokens).
 Every REST write under that bearer is then attributed to the
@@ -785,9 +794,9 @@ violation):
   the previous rule forbids. The key still parses so it can be
   refused loudly: a config that sets it fails startup,
   `--validate-config`, and SIGHUP reload alike. Migration note:
-  [auth.md](auth.md). At least one entry across `[[auth.identities]]`
-  and `[[auth.tokens]]` is now
-  required.
+  [auth.md](auth.md). Since sprint 050 the `[[auth.tokens]]` table is
+  empty, so at least one `[[auth.identities]]` row is what a startable
+  config needs.
 
 ### Hot-reloading the auth tables
 

@@ -76,13 +76,13 @@ fn handoff_example_script_posts_userfact() {
         eprintln!("KLAMS_URL unset, skipping live POST");
         return;
     };
-    let token = std::env::var("KLAMS_TOKEN").unwrap_or_else(|_| "dev-token".into());
+    let agent = std::env::var("KLAMS_AGENT").unwrap_or_else(|_| "declared-test-agent".into());
 
     let script = handoff_dir().join("examples").join("post-userfact.sh");
     let out = Command::new("sh")
         .arg(&script)
         .env("KLAMS_URL", url)
-        .env("KLAMS_TOKEN", token)
+        .env("KLAMS_AGENT", agent)
         .output()
         .expect("spawn");
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();

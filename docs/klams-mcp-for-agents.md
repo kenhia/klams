@@ -4,8 +4,8 @@ You (an AI coding agent — Claude Code, GitHub Copilot, or any
 MCP-capable client) have been pointed at this document to wire
 yourself up to **klams**, this installation's shared memory store,
 and to start using it as **cross-agent memory**. Everything you need
-is below; ask your operator only for the endpoint URL and a bearer
-token if they haven't been provided. This document uses
+is below; ask your operator only for the endpoint URL and the agent
+name they have registered for you, if they haven't been provided. This document uses
 `<klams-url>` as a placeholder — `http://127.0.0.1:7777` when the
 agent runs on the klams host itself, or whatever HTTPS front door the
 operator provides across machines (see
@@ -18,7 +18,7 @@ operator provides across machines (see
 | Endpoint | `<klams-url>/mcp` |
 | Transport | MCP Streamable HTTP (rmcp; HTTP+SSE fallback on the same mount) |
 | Protocol | MCP `2024-11-05` … `2026-07-28`; older clients negotiate down cleanly |
-| Auth | `X-Homelab-Agent: <agent_name>` — required on every request (`Authorization: Bearer <token>` still accepted during the sprint-049 transition window) |
+| Auth | `X-Homelab-Agent: <agent_name>` — required on every request. No credential of any kind; the sprint-049 transition window closed in sprint 050 and `Authorization: Bearer` no longer authenticates. |
 | Server name | `klams-mcp` |
 
 The tool catalog you see is filtered by your identity's scopes, so it is
@@ -35,8 +35,7 @@ declare the name. An identity edit takes effect with
 
 ## Enable it — Claude Code
 
-**Global (user) setup** — available in every project; token stays out
-of any repo. Recommended:
+**Global (user) setup** — available in every project. Recommended:
 
 ```bash
 claude mcp add --scope user --transport http klams <klams-url>/mcp \
@@ -44,8 +43,9 @@ claude mcp add --scope user --transport http klams <klams-url>/mcp \
 ```
 
 **Repo (project) setup** — only if a specific repo should pin its own
-klams wiring. `.mcp.json` is committed, so reference the token via an
-environment variable instead of inlining it:
+klams wiring. `.mcp.json` is committed, and since sprint 050 that is
+fine: the header holds a name, not a credential, so it can be inlined
+and reviewed like any other config.
 
 ```json
 {
@@ -53,13 +53,11 @@ environment variable instead of inlining it:
     "klams": {
       "type": "http",
       "url": "<klams-url>/mcp",
-      "headers": { "Authorization": "Bearer ${KLAMS_MCP_TOKEN}" }
+      "headers": { "X-Homelab-Agent": "<agent_name>" }
     }
   }
 }
 ```
-
-…and export `KLAMS_MCP_TOKEN` in the shell/user environment.
 
 Verify with `claude mcp list` (or `/mcp` inside a session) — `klams`
 should show connected, with `memory_search`, `memory_add`, etc. in
@@ -67,24 +65,16 @@ the tool list.
 
 ## Enable it — GitHub Copilot
 
-**Workspace** — `<repo>/.vscode/mcp.json`, prompting for the token so
-nothing secret lands in git:
+**Workspace** — `<repo>/.vscode/mcp.json`. There is no `inputs` block
+and no prompt: nothing here is secret.
 
 ```jsonc
 {
-  "inputs": [
-    {
-      "id": "klams-token",
-      "type": "promptString",
-      "password": true,
-      "description": "klams bearer token"
-    }
-  ],
   "servers": {
     "klams": {
       "type": "http",
       "url": "<klams-url>/mcp",
-      "headers": { "Authorization": "Bearer ${input:klams-token}" }
+      "headers": { "X-Homelab-Agent": "<agent_name>" }
     }
   }
 }
@@ -92,13 +82,12 @@ nothing secret lands in git:
 
 **Global (user)** — same `servers` block in the user-level MCP config
 (VS Code: **MCP: Open User Configuration**; Copilot CLI:
-`~/.copilot/mcp-config.json`, which uses the key `mcpServers` and
-accepts a literal `headers.Authorization`). See
+`~/.copilot/mcp-config.json`, which uses the key `mcpServers`). See
 [setup.md § MCP server registration](setup.md#sprint-007--mcp-server-registration)
 for the exact CLI shape and two known-harmless VS Code startup
 warnings.
 
-**Any other MCP client**: Streamable HTTP + the URL + the bearer
+**Any other MCP client**: Streamable HTTP + the URL + the declared
 header is all there is; no OAuth, no session pre-registration.
 
 ## Using it (the part that matters)
@@ -208,7 +197,7 @@ instructions alongside the routing blurb:
 > Don't declare a fault until a loaded call has actually failed; don't
 > keep retrying ToolSearch once it has explicitly returned no match.
 > Loading a schema is not proof of connectivity — confirm with one real
-> round-trip before trusting it. (Probing klams without a bearer token
+> round-trip before trusting it. (Probing klams without a declared name
 > returning `401` is the server *working*, not down.)
 
 ## Smoke check

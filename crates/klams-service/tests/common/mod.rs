@@ -203,6 +203,11 @@ pub struct TestServer {
     pub identity_agent_name: String,
     /// The author id the identity resolves to.
     pub identity_author_id: Uuid,
+    /// Sprint 050 — the full-scope identity `client` declares. Writes
+    /// through the typed client are attributed to `harness_author_id`.
+    pub harness_agent_name: String,
+    /// The author id the typed client's identity resolves to.
+    pub harness_author_id: Uuid,
     pub store: Arc<TestStore>,
     /// gRPC Qdrant URL — retained so `cleanup()` can drop the
     /// per-test collection on teardown (sprint 009 T039 / FR-021).
@@ -442,6 +447,14 @@ impl TestServer {
         // here on purpose: that IS the transition window.
         let identity_agent_name = "declared-test-agent".to_string();
         let identity_author_id = resolve_test_author(&store, &identity_agent_name).await;
+
+        // Sprint 050 — the typed `klams_client::Client` sends a declared
+        // name and no credential, so the harness needs a full-scope
+        // identity to drive it with. It mirrors the `bearer` grant's
+        // scopes exactly, which is what keeps every pre-050 test that
+        // goes through `server.client` asserting the same thing.
+        let harness_agent_name = "harness-client-agent".to_string();
+        let harness_author_id = resolve_test_author(&store, &harness_agent_name).await;
         let manage_token = "test-token-manage".to_string();
         let manage_author_id = resolve_test_author(&store, "manage-test-agent").await;
 
@@ -527,16 +540,30 @@ impl TestServer {
                     "manage-test-agent",
                 ),
             ];
-            let identities = vec![klams_api::auth::Identity {
-                agent_name: std::sync::Arc::new(identity_agent_name.clone()),
-                scopes: std::sync::Arc::new(vec![
-                    klams_types::Scope::Read,
-                    klams_types::Scope::Write,
-                ]),
-                label: Some("declared".into()),
-                author_id: identity_author_id,
-                nodes: std::sync::Arc::new(Vec::new()),
-            }];
+            let identities = vec![
+                klams_api::auth::Identity {
+                    agent_name: std::sync::Arc::new(identity_agent_name.clone()),
+                    scopes: std::sync::Arc::new(vec![
+                        klams_types::Scope::Read,
+                        klams_types::Scope::Write,
+                    ]),
+                    label: Some("declared".into()),
+                    author_id: identity_author_id,
+                    nodes: std::sync::Arc::new(Vec::new()),
+                },
+                klams_api::auth::Identity {
+                    agent_name: std::sync::Arc::new(harness_agent_name.clone()),
+                    scopes: std::sync::Arc::new(vec![
+                        klams_types::Scope::Read,
+                        klams_types::Scope::Write,
+                        klams_types::Scope::Manage,
+                        klams_types::Scope::Admin,
+                    ]),
+                    label: Some("harness".into()),
+                    author_id: harness_author_id,
+                    nodes: std::sync::Arc::new(Vec::new()),
+                },
+            ];
             let auth_state = klams_api::auth::AuthState::with_tables(
                 klams_api::auth::AuthTables::new(grants, identities),
             );
@@ -560,7 +587,7 @@ impl TestServer {
             let _ = axum::serve(listener, router).await;
         });
 
-        let client = Client::new(&format!("http://{addr}"), &bearer).expect("client");
+        let client = Client::new(&format!("http://{addr}"), &harness_agent_name).expect("client");
         Self {
             client,
             addr,
@@ -576,6 +603,8 @@ impl TestServer {
             manage_author_id,
             identity_agent_name,
             identity_author_id,
+            harness_agent_name,
+            harness_author_id,
             store,
             qdrant_url,
             qdrant_collection,

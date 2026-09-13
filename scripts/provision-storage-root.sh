@@ -41,18 +41,10 @@ if [[ "$(stat -c '%U' "$KLAMS_ROOT")" != "$USER" ]]; then
         sudo chown -R "$USER:$USER" "$KLAMS_ROOT"
 fi
 
-TOKEN_FILE="$KLAMS_ROOT/config/klams.toml"
+CONFIG_FILE="$KLAMS_ROOT/config/klams.toml"
 ENV_FILE="$KLAMS_ROOT/config/compose.env"
 SCANNER_FILE="$KLAMS_ROOT/config/scanner.toml"
 MONITOR_FILE="$KLAMS_ROOT/config/monitor.toml"
-
-generate_token() {
-    if command -v openssl >/dev/null 2>&1; then
-        openssl rand -hex 32
-    else
-        head -c 32 /dev/urandom | xxd -p -c 64
-    fi
-}
 
 generate_password() {
     if command -v openssl >/dev/null 2>&1; then
@@ -62,77 +54,71 @@ generate_password() {
     fi
 }
 
-if [[ -f "$TOKEN_FILE" || -f "$ENV_FILE" ]]; then
+if [[ -f "$CONFIG_FILE" || -f "$ENV_FILE" ]]; then
     echo "==> Existing config detected; skipping render."
-    echo "    klams.toml:   $TOKEN_FILE"
+    echo "    klams.toml:   $CONFIG_FILE"
     echo "    compose.env:  $ENV_FILE"
     echo "    scanner.toml: $SCANNER_FILE"
     echo "    monitor.toml: $MONITOR_FILE"
 else
-    OPERATOR_TOKEN="$(generate_token)"
-    SCANNER_TOKEN="$(generate_token)"
-    MONITOR_TOKEN="$(generate_token)"
     PG_PASSWORD="$(generate_password)"
 
-    echo "==> Rendering $TOKEN_FILE"
-    cp "$EXAMPLE_TOML" "$TOKEN_FILE"
+    echo "==> Rendering $CONFIG_FILE"
+    cp "$EXAMPLE_TOML" "$CONFIG_FILE"
     sed -i \
         -e "s|postgres://klams:changeme@127.0.0.1:5432/klams|postgres://klams:$PG_PASSWORD@127.0.0.1:5432/klams|" \
-        "$TOKEN_FILE"
-    # Sprint 034 (#773): the example ships every token form commented out
-    # (#670), so a rendered config MUST append a grant or the service
+        "$CONFIG_FILE"
+    # Sprint 034 (#773): the example ships every auth form commented out
+    # (#670), so a rendered config MUST append a row or the service
     # refuses to start (AuthConfigError::NoTokens) — which is exactly what
     # this script silently produced between 032 and 034 (its old sed
-    # pattern matched nothing in klams.example.toml). Emit a scoped,
-    # attributed operator grant; `manage` requires `agent_name` (#703).
-    # Sprint 035 (#776): scanner + monitor get their own read+write
-    # grants here too, matching the rendered scanner.toml/monitor.toml.
-    cat >>"$TOKEN_FILE" <<TOML
+    # pattern matched nothing in klams.example.toml).
+    #
+    # Sprint 050: those rows are `[[auth.identities]]` now. A klams
+    # identity is a declared NAME, not a credential — nothing is
+    # generated, nothing is printed, and nothing here needs protecting.
+    # A caller sends `X-Homelab-Agent: <name>`; an unknown name is a 401.
+    cat >>"$CONFIG_FILE" <<'TOML'
 
 # Rendered by provision-storage-root.sh — the operator's starting
-# credential (read+write+manage, attributed to "operator"). Add more
-# grants per consumer as needed; the service reloads [[auth.tokens]]
-# on SIGHUP. For admin verbs (restore / hard-delete), add an explicit
-# admin grant — see docs/auth.md.
-[[auth.tokens]]
-token      = "$OPERATOR_TOKEN"
+# identity (read+write+manage). Add rows per consumer as needed with
+# `klams-token identity add`; the service reloads on SIGHUP. For admin
+# verbs (restore / hard-delete), add an explicit admin scope — see
+# docs/auth.md.
+[[auth.identities]]
+agent_name = "operator"
 scopes     = ["read", "write", "manage"]
 label      = "operator"
-agent_name = "operator"
 
-# Daemon grants (rendered with scanner.toml / monitor.toml): write-only
-# identities, deliberately without \`manage\` — they curate nothing.
-[[auth.tokens]]
-token      = "$SCANNER_TOKEN"
+# Daemon identities, matching the rendered scanner.toml / monitor.toml.
+# Deliberately without `manage` — they curate nothing.
+[[auth.identities]]
+agent_name = "klams-scanner"
 scopes     = ["read", "write"]
 label      = "scanner"
-agent_name = "klams-scanner"
 
-[[auth.tokens]]
-token      = "$MONITOR_TOKEN"
+[[auth.identities]]
+agent_name = "klams-monitor"
 scopes     = ["read", "write"]
 label      = "monitor"
-agent_name = "klams-monitor"
 TOML
-    chmod 600 "$TOKEN_FILE"
+    chmod 600 "$CONFIG_FILE"
 
-    # Sprint 035 (#776): render scanner.toml and monitor.toml with url +
-    # token filled, instead of leaving the operator to copy the examples
-    # and discover the fields the hard way. The scanner's \`roots\`
-    # placeholder is left as-is on purpose — the scanner refuses to
-    # start until it points at real paths.
+    # Sprint 035 (#776): render scanner.toml and monitor.toml so the
+    # operator is not left to copy the examples and discover the fields
+    # the hard way. The scanner's \`roots\` placeholder is left as-is on
+    # purpose — the scanner refuses to start until it points at real
+    # paths.
+    #
+    # Sprint 050: nothing is substituted any more. The examples already
+    # declare `agent = "klams-scanner"` / `"klams-monitor"`, matching the
+    # identity rows appended above, and a name needs no rendering.
     echo "==> Rendering $SCANNER_FILE"
     cp "$EXAMPLE_SCANNER" "$SCANNER_FILE"
-    sed -i \
-        -e "s|CHANGE-ME-scanner-bearer|$SCANNER_TOKEN|" \
-        "$SCANNER_FILE"
     chmod 600 "$SCANNER_FILE"
 
     echo "==> Rendering $MONITOR_FILE"
     cp "$EXAMPLE_MONITOR" "$MONITOR_FILE"
-    sed -i \
-        -e "s|CHANGE-ME-monitor-bearer|$MONITOR_TOKEN|" \
-        "$MONITOR_FILE"
     chmod 600 "$MONITOR_FILE"
 
     echo "==> Rendering $ENV_FILE"
@@ -151,12 +137,13 @@ cat <<EOF
 
 Done.
 EOF
-if [[ -n "${OPERATOR_TOKEN:-}" ]]; then
+if [[ -n "${PG_PASSWORD:-}" ]]; then
     cat <<EOF
 
-Operator bearer token (also in $TOKEN_FILE, mode 600):
+Your operator identity is "operator" (read+write+manage). klams has no
+bearer tokens: callers declare a name and the service allow-lists it.
 
-    $OPERATOR_TOKEN
+    curl -H "X-Homelab-Agent: operator" http://127.0.0.1:7777/memory/policy
 
 EOF
 fi
@@ -165,7 +152,7 @@ Next steps (docs/install.md walks these in full):
 
   1. Review and adjust (CPU-only hosts: see the decision tree in
      docs/install.md — TEI image tag, model, vector_dim all change):
-       \$EDITOR $TOKEN_FILE
+       \$EDITOR $CONFIG_FILE
        \$EDITOR $ENV_FILE
 
   2. Bring up the backing services (postgres, qdrant, tei, reranker):
@@ -175,12 +162,12 @@ Next steps (docs/install.md walks these in full):
   3. Build and run klams-service:
        cd $REPO_ROOT
        cargo build --release -p klams-service
-       KLAMS_CONFIG=$TOKEN_FILE ./target/release/klams-service
+       KLAMS_CONFIG=$CONFIG_FILE ./target/release/klams-service
 
-  4. Prove the install end-to-end (uses the operator token):
-       KLAMS_TOKEN=<token> just smoke
+  4. Prove the install end-to-end (declares the operator identity):
+       KLAMS_AGENT=operator just smoke
 
   5. To index your files, set \`roots\` in $SCANNER_FILE
-     and run the scanner (its token is already rendered).
+     and run the scanner (its identity is already rendered).
 
 EOF

@@ -15,7 +15,7 @@ struct Args {
     facts: usize,
     knowledge: usize,
     klams_url: String,
-    klams_token: String,
+    klams_agent: String,
     dry_run: bool,
 }
 
@@ -25,7 +25,7 @@ fn parse_args() -> Result<Args> {
         facts: DEFAULT_FACTS,
         knowledge: DEFAULT_KNOWLEDGE,
         klams_url: env::var("KLAMS_URL").unwrap_or_else(|_| "http://127.0.0.1:7777".to_string()),
-        klams_token: env::var("KLAMS_TOKEN").unwrap_or_default(),
+        klams_agent: env::var("KLAMS_AGENT").unwrap_or_default(),
         dry_run: false,
     };
     let mut it = env::args().skip(1);
@@ -35,7 +35,7 @@ fn parse_args() -> Result<Args> {
             "--facts" => args.facts = it.next().context("--facts value")?.parse()?,
             "--knowledge" => args.knowledge = it.next().context("--knowledge value")?.parse()?,
             "--klams-url" => args.klams_url = it.next().context("--klams-url value")?,
-            "--klams-token" => args.klams_token = it.next().context("--klams-token value")?,
+            "--klams-agent" => args.klams_agent = it.next().context("--klams-agent value")?,
             "--dry-run" => args.dry_run = true,
             other => anyhow::bail!("unknown arg: {other}"),
         }
@@ -79,10 +79,10 @@ async fn run() -> Result<()> {
         return Ok(());
     }
 
-    if args.klams_token.is_empty() {
-        anyhow::bail!("--klams-token (or KLAMS_TOKEN env var) required for live writes");
+    if args.klams_agent.is_empty() {
+        anyhow::bail!("--klams-agent (or KLAMS_AGENT env var) required for live writes");
     }
-    let client = Client::new(&args.klams_url, args.klams_token.clone())?;
+    let client = Client::new(&args.klams_url, args.klams_agent.clone())?;
 
     let progress_every = 500usize;
     let total = facts.len() + knowledge.len();

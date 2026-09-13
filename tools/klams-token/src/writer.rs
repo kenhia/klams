@@ -47,6 +47,11 @@ pub fn backup_suffix(now: time::OffsetDateTime) -> String {
     )
 }
 
+/// Suffixes sprint 046's encrypted durable backups carried. Retired in
+/// sprint 050; recognised only so `prune` can clean up after it.
+const LEGACY_AGE_EXT: &str = ".age";
+const LEGACY_MANIFEST_EXT: &str = ".manifest.json";
+
 /// True if `name` is a backup *this tool* wrote for `config_name`:
 /// `<config>.bak-YYYYMMDDTHHMMSSZ`, optionally with a `-N`
 /// disambiguator for a second edit inside the same second.
@@ -58,14 +63,15 @@ pub fn is_our_backup(config_name: &str, name: &str) -> bool {
     else {
         return false;
     };
-    // Sprint 046 (#1384): durable backups are age-encrypted and carry a
-    // `.age` suffix, with the plaintext fingerprint manifest beside
-    // them. All three are ours, and prune must see them as one
-    // generation or it would keep manifests for backups it deleted.
-    let rest = rest
-        .strip_suffix(crate::backup::MANIFEST_EXT)
-        .unwrap_or(rest);
-    let rest = rest.strip_suffix(crate::backup::AGE_EXT).unwrap_or(rest);
+    // Sprint 046 (#1384) wrote age-encrypted durable backups with a
+    // `.age` suffix and a plaintext fingerprint manifest beside them.
+    // Sprint 050 retired that machinery — the config holds no secret —
+    // but the suffixes stay recognised here so `prune` can still sweep
+    // backups an older klams-token left behind, and so it sees all
+    // three as ONE generation rather than keeping manifests for
+    // backups it just deleted.
+    let rest = rest.strip_suffix(LEGACY_MANIFEST_EXT).unwrap_or(rest);
+    let rest = rest.strip_suffix(LEGACY_AGE_EXT).unwrap_or(rest);
     // YYYYMMDDTHHMMSSZ, then an optional -N.
     let (stamp, seq) = match rest.split_once("Z-") {
         Some((s, n)) => (s, Some(n)),
@@ -175,65 +181,7 @@ pub fn restore(path: &Path, backup: &Path) -> Result<()> {
 #[derive(Debug)]
 pub struct Written {
     pub backup: PathBuf,
-    /// Whether the durable backup is age-encrypted (#1384). False means
-    /// a live-token plaintext copy just landed on disk, which the CLI
-    /// says out loud rather than leaving the operator to assume.
-    pub encrypted: bool,
-    pub manifest: Option<PathBuf>,
     pub pruned: Vec<PathBuf>,
-}
-
-/// How the durable backup should be written.
-///
-/// `recipient: None` keeps the sprint-045 behaviour — a plaintext copy
-/// — because refusing to edit the config when encryption is not
-/// configured would turn a hardening feature into an outage. The caller
-/// reports which one happened.
-#[derive(Debug, Default)]
-pub struct DurableBackup<'a> {
-    pub recipient: Option<&'a str>,
-    /// `{agent_name: sha256(token)[:12]}` for the config being replaced,
-    /// written in the clear beside an encrypted backup so what it holds
-    /// stays knowable to krot and to an audit without decrypting it.
-    pub fingerprints: Vec<(String, String)>,
-}
-
-/// What one durable backup produced.
-#[derive(Debug)]
-pub struct DurableWritten {
-    pub path: PathBuf,
-    pub encrypted: bool,
-    pub manifest: Option<PathBuf>,
-}
-
-impl DurableBackup<'_> {
-    /// Write the durable backup of `original` beside `path`.
-    ///
-    /// # Errors
-    /// If the backup cannot be named or written, or `age` fails.
-    pub fn write(
-        &self,
-        path: &Path,
-        original: &str,
-        now: time::OffsetDateTime,
-    ) -> Result<DurableWritten> {
-        let Some(recipient) = self.recipient else {
-            return Ok(DurableWritten {
-                path: back_up(path, now)?,
-                encrypted: false,
-                manifest: None,
-            });
-        };
-        let dest = free_backup_path(path, now, crate::backup::AGE_EXT)?;
-        crate::backup::encrypt(recipient, original, &dest, path)?;
-        let manifest =
-            crate::backup::write_manifest(&dest, &crate::backup::manifest(&self.fingerprints)).ok();
-        Ok(DurableWritten {
-            path: dest,
-            encrypted: true,
-            manifest,
-        })
-    }
 }
 
 /// Back up, write in place, then re-read and hand the bytes that
@@ -253,18 +201,18 @@ pub fn write_validated(
     new_text: &str,
     now: time::OffsetDateTime,
     retain: usize,
-    durable: &DurableBackup<'_>,
     validate: impl Fn(&str) -> Result<()>,
 ) -> Result<Written> {
     // Sprint 046 (#1384): the rollback copy is held in MEMORY, not read
-    // back off the durable backup. That split is what makes encrypting
-    // the durable copy affordable — the same-run transactional undo no
-    // longer depends on being able to read it, so a failed validate at
-    // 2am still self-heals without Ken's passphrase.
+    // back off the durable backup, so the same-run transactional undo
+    // does not depend on being able to read the file on disk and a
+    // failed validate at 2am self-heals with nobody awake. Sprint 050
+    // retired the encryption that split was introduced to afford; the
+    // split itself is worth keeping on its own merits.
     let rollback = fs::read_to_string(path)
         .with_context(|| format!("reading {} before editing it", path.display()))?;
 
-    let backup = durable.write(path, &rollback, now)?;
+    let backup = back_up(path, now)?;
     write_in_place(path, new_text)?;
 
     let landed = fs::read_to_string(path)
@@ -274,13 +222,13 @@ pub fn write_validated(
             Ok(()) => bail!(
                 "the written config failed validation and was rolled back \
                  (durable backup: {})\n  cause: {e:#}",
-                backup.path.display()
+                backup.display()
             ),
             Err(restore_err) => bail!(
                 "the written config failed validation AND the rollback failed — {} is live and \
                  broken, recover it from {}\n  validation: {e:#}\n  rollback: {restore_err:#}",
                 path.display(),
-                backup.path.display()
+                backup.display()
             ),
         }
     }
@@ -288,12 +236,7 @@ pub fn write_validated(
     // Pruning is housekeeping; a completed edit must not be reported as
     // failed because an old backup was stubborn.
     let pruned = prune_backups(path, retain).unwrap_or_default();
-    Ok(Written {
-        backup: backup.path,
-        encrypted: backup.encrypted,
-        manifest: backup.manifest,
-        pruned,
-    })
+    Ok(Written { backup, pruned })
 }
 
 /// Delete all but the newest `retain` backups this tool wrote for
@@ -471,7 +414,6 @@ mod tests {
             "the bad config\n",
             datetime!(2026-08-16 23:45:01 UTC),
             DEFAULT_RETAIN,
-            &DurableBackup::default(),
             |_| bail!("nope"),
         )
         .unwrap_err()
@@ -500,7 +442,6 @@ mod tests {
             "new\n",
             datetime!(2026-08-16 23:45:01 UTC),
             DEFAULT_RETAIN,
-            &DurableBackup::default(),
             |landed| {
                 assert_eq!(landed, "new\n", "validator sees what actually landed");
                 Ok(())
@@ -513,19 +454,17 @@ mod tests {
     }
 
     /// Sprint 046 (#1384): the rollback must not depend on being able
-    /// to READ the durable backup, because once it is age-encrypted
-    /// nothing on this machine can. The in-memory copy is what makes a
-    /// failed validate at 2am self-heal without Ken's passphrase.
+    /// to READ the durable backup. That was introduced because the
+    /// backup was age-encrypted and nothing on this machine could read
+    /// it; sprint 050 retired the encryption, and the property is kept
+    /// on its own merits — a rollback that needs the disk copy fails
+    /// exactly when the disk is the problem.
     #[test]
     fn rollback_does_not_read_the_durable_backup() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("klams.toml");
         fs::write(&path, "the good config\n").unwrap();
 
-        let durable = DurableBackup {
-            recipient: None,
-            fingerprints: Vec::new(),
-        };
         let backup = dir.path().join("klams.toml.bak-20260816T234501Z");
 
         let err = write_validated(
@@ -533,7 +472,6 @@ mod tests {
             "the bad config\n",
             datetime!(2026-08-16 23:45:01 UTC),
             DEFAULT_RETAIN,
-            &durable,
             |_| {
                 // Make the durable copy unreadable mid-flight. A
                 // rollback that reaches for it now would fail.
@@ -552,66 +490,12 @@ mod tests {
         );
     }
 
-    /// An encrypted durable backup must not carry the plaintext, and
-    /// its manifest must stay readable — that is the whole trade: krot
-    /// can still tell what a backup holds without decrypting it.
-    #[test]
-    fn an_encrypted_backup_hides_the_config_but_not_its_manifest() {
-        if std::process::Command::new("age")
-            .arg("--version")
-            .output()
-            .is_err()
-        {
-            eprintln!("age not installed; skipping");
-            return;
-        }
-        let out = std::process::Command::new("age-keygen").output().unwrap();
-        let keytext = String::from_utf8(out.stdout).unwrap();
-        let recipient = keytext
-            .lines()
-            .find_map(|l| l.strip_prefix("# public key: "))
-            .unwrap()
-            .to_string();
-
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("klams.toml");
-        fs::write(&path, "token = \"live-secret\"\n").unwrap();
-
-        let durable = DurableBackup {
-            recipient: Some(&recipient),
-            fingerprints: vec![("claude-kubs0".into(), "0123456789ab".into())],
-        };
-        let written = write_validated(
-            &path,
-            "token = \"new-secret\"\n",
-            datetime!(2026-08-16 23:45:01 UTC),
-            DEFAULT_RETAIN,
-            &durable,
-            |_| Ok(()),
-        )
-        .unwrap();
-
-        assert!(written.encrypted);
-        assert!(written.backup.to_string_lossy().ends_with(".age"));
-        let raw = fs::read(&written.backup).unwrap();
-        assert!(
-            !String::from_utf8_lossy(&raw).contains("live-secret"),
-            "the durable backup still holds the old token in the clear"
-        );
-
-        let manifest = written.manifest.expect("manifest written");
-        let text = fs::read_to_string(&manifest).unwrap();
-        assert!(text.contains("claude-kubs0"), "{text}");
-        assert!(text.contains("0123456789ab"), "{text}");
-        assert!(
-            !text.contains("live-secret"),
-            "the manifest must carry fingerprints, never values: {text}"
-        );
-    }
-
-    /// Prune must treat an encrypted backup and its manifest as ONE
-    /// generation, or it would delete backups and leave their manifests
-    /// behind describing files that no longer exist.
+    /// Prune must treat a sprint-046 encrypted backup and its manifest
+    /// as ONE generation, or it would delete backups and leave their
+    /// manifests behind describing files that no longer exist. klams
+    /// stopped writing that pair in sprint 050, but installs upgrading
+    /// across it still have them on disk and prune is what removes
+    /// them.
     #[test]
     fn prune_counts_an_encrypted_backup_and_its_manifest_together() {
         let dir = tempfile::tempdir().unwrap();
