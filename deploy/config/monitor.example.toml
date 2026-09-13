@@ -38,6 +38,9 @@ interval_secs = 30
 # icon         = 8              # dashboard card icon index 0..15
 # interval_secs = 30            # report cadence (own clock; default 30)
 # healthz_url  = "http://127.0.0.1:7777/healthz"  # optional; defaults to url + /healthz
-# Provide the Redis password via the REDISCLI_AUTH environment variable
-# on the systemd unit (preferred, keeps it out of this file) or, as a
-# fallback, an inline `password = "..."` key here.
+# Provide the Redis password in the REDISCLI_AUTH environment variable
+# (preferred, keeps it out of this file). On a homelab host that arrives
+# from /etc/khomelab/secrets.env through the klams-monitor drop-in that
+# install-systemd.sh adds when the file is present; elsewhere, supply it
+# with a drop-in of your own, or fall back to an inline `password = "..."`
+# key here.

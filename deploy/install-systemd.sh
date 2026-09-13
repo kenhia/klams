@@ -37,6 +37,15 @@ GROUP_NAME=klams
 
 BIN_LIST="klams-service klams-scanner klams-monitor"
 UNIT_LIST="klams-service.service klams-scanner.service klams-scanner.timer klams-monitor.service"
+
+# Sprint 051 — the per-host secrets file is k-homelab's; klams neither creates
+# nor requires it. The drop-in that reads it is installed only where the file
+# already exists (step 4a), so a host without k-homelab keeps a unit that
+# starts.
+KHOMELAB_SECRETS=/etc/khomelab/secrets.env
+DROPIN_NAME=10-khomelab-secrets.conf
+DROPIN_SRC="$SCRIPT_DIR/klams-monitor.service.d/$DROPIN_NAME"
+DROPIN_DST_DIR="$SYSTEMD_DIR/klams-monitor.service.d"
 ENABLE_LIST="klams-service.service klams-scanner.timer klams-monitor.service"
 
 say() {
@@ -79,6 +88,10 @@ for unit in $UNIT_LIST; do
     fi
 done
 
+if [ ! -f "$DROPIN_SRC" ]; then
+    fail "missing drop-in $DROPIN_SRC"
+fi
+
 # --- 1. User + group ------------------------------------------------------
 
 if getent passwd "$USER_NAME" >/dev/null 2>&1; then
@@ -115,6 +128,24 @@ run "rm -rf $STAGE_DIR"
 for unit in $UNIT_LIST; do
     run "install -m 0644 $SCRIPT_DIR/$unit $SYSTEMD_DIR/$unit"
 done
+
+# --- 4a. Per-host secrets drop-in (sprint 051) ---------------------------
+#
+# klams-monitor's kpidash reporter needs REDISCLI_AUTH. On a homelab host that
+# comes from the file k-homelab renders; everywhere else the unit must still
+# start, so the drop-in goes in only when the file is already there. The
+# drop-in has no `-` on its EnvironmentFile, so once installed a missing
+# secrets file is a failed unit rather than a monitor publishing nothing.
+
+if [ -f "$KHOMELAB_SECRETS" ]; then
+    say "found $KHOMELAB_SECRETS - installing $DROPIN_NAME"
+    run "install -d -m 0755 $DROPIN_DST_DIR"
+    run "install -m 0644 $DROPIN_SRC $DROPIN_DST_DIR/$DROPIN_NAME"
+else
+    printf 'note: %s absent; skipping %s.\n' "$KHOMELAB_SECRETS" "$DROPIN_NAME"
+    printf '      klams-monitor will start without REDISCLI_AUTH. Set\n'
+    printf '      [kpidash].password in monitor.toml if you want dashboard reporting.\n'
+fi
 
 # --- 5. daemon-reload + enable ------------------------------------------
 

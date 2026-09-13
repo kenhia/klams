@@ -14,12 +14,18 @@ Environment=KLAMS_CONFIG=/etc/klams/monitor.toml
 # fallback for the $HOSTNAME env path. systemd does not export $HOSTNAME on its
 # own, so %H (the system hostname) keeps that fallback correct too.
 Environment=HOSTNAME=%H
-# kpidash dashboard reporting (optional, sprint 010 / T024): uncomment and
-# supply the Redis password so the [kpidash] section in monitor.toml can
-# publish status cards. Prefer an EnvironmentFile (root:klams 0640) over an
-# inline value so the secret never lands in the unit text.
-# EnvironmentFile=/etc/klams/monitor.env
-# Environment=REDISCLI_AUTH=changeme-redis-password
+# kpidash dashboard reporting (optional, sprint 010 / T024) needs a Redis
+# password in REDISCLI_AUTH before the [kpidash] section in monitor.toml can
+# publish status cards. This unit supplies none on purpose: the shipped
+# default has to start on a host that has no such file.
+#
+# On a homelab host the password arrives from the per-host secrets file
+# through the drop-in klams-monitor.service.d/10-khomelab-secrets.conf, which
+# install-systemd.sh installs when that file is present (sprint 051).
+# Anywhere else, set [kpidash].password in monitor.toml or add your own
+# drop-in naming an EnvironmentFile of your choosing. Never an inline
+# Environment= value: that puts the secret in the unit text, which
+# `systemctl cat` and `systemctl show` will print for any user who asks.
 Restart=on-failure
 RestartSec=5
 StateDirectory=klams
