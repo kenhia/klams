@@ -101,13 +101,17 @@ klams_bin_dir := env_var_or_default('KLAMS_BIN_DIR', '/usr/local/bin')
 install-klams-token:
     cargo build --release -p klams-token
     sudo install -m 0755 target/release/klams-token {{klams_bin_dir}}/klams-token
-    @echo "installed {{klams_bin_dir}}/klams-token — try: sudo klams-token list --verify"
+    @echo "installed {{klams_bin_dir}}/klams-token — try: sudo klams-token identity list"
 
-# Sprint 045 — which grants does the running service still accept?
-# Exits 2 if any returns 401 (see docs/usage.md, sprint 045).
-tokens-verify:
+# Sprint 045 — the auth roster the service would boot on.
+#
+# Sprint 052 note: this used to be `tokens-verify`, which probed every
+# grant against the running service because a token could sit dead at
+# 401 with nothing able to notice. An identity has no value to go stale,
+# so there is nothing to probe with; this reads the roster instead.
+identities:
     KLAMS_CONFIG={{klams_config}} \
-        cargo run --quiet -p klams-token -- list --verify
+        cargo run --quiet -p klams-token -- identity list
 
 # Workspace-wide tests (excludes #[ignore]'d cases).
 test:

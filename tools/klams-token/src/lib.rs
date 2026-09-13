@@ -1,5 +1,5 @@
-//! `klams-token` — structural editor for the `[[auth.tokens]]` grants
-//! in `klams.toml` (sprint 045, korg #265).
+//! `klams-token` — structural editor for the `[[auth.identities]]`
+//! rows in `klams.toml` (sprint 045, korg #265).
 //!
 //! korg #264 was a live incident: a hand-edit of `/etc/klams/klams.toml`
 //! clobbered an existing grant, because nothing understood the file's
@@ -9,16 +9,21 @@
 //! Two properties answer that, and they are the reason this crate
 //! exists rather than a shell script:
 //!
-//! 1. **Structural editing** ([`doc`]) — grants are addressed as TOML
+//! 1. **Structural editing** ([`doc`]) — rows are addressed as TOML
 //!    tables, so a write cannot silently overwrite a sibling. Editing is
 //!    format-preserving: the live file is heavily commented and those
 //!    comments are the operator documentation.
 //! 2. **Fingerprint-and-refuse** ([`fingerprint`]) — every write states
-//!    the change it intends, and the grant set is fingerprinted before
-//!    and after. Anything else moving aborts the write. This is what
+//!    the change it intends, and the identity set is fingerprinted
+//!    before and after. Anything else moving aborts the write. This is what
 //!    makes a clobber *impossible* rather than merely unlikely, and it
 //!    is lifted from the ~40-line version k-homelab sprint 016 (S4)
 //!    wrote for a one-off grant removal.
+//!
+//! Sprint 052 retired the `[[auth.tokens]]` grants this was built for.
+//! The names (`GrantsDoc`, `GrantFingerprint`) survive the table: the
+//! guard is table-agnostic, and renaming it would be churn across the
+//! writer for no behaviour.
 //!
 //! The schema comes from [`klams_types::AuthConfig`] — the same type
 //! `klams-service` boots from. A config editor whose understanding of
@@ -28,8 +33,7 @@
 pub mod doc;
 pub mod fingerprint;
 pub mod paths;
-pub mod verify;
 pub mod writer;
 
-pub use doc::{GrantView, GrantsDoc, IdentityView};
+pub use doc::{GrantsDoc, IdentityView};
 pub use fingerprint::{verify_delta, Change, GrantFingerprint};

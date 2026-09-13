@@ -1,13 +1,17 @@
-//! Sprint 018 (WI #62) — write tools fall back to the bearer-bound author.
+//! Sprint 018 (WI #62) — write tools fall back to the caller's author.
 //!
-//! An authenticated caller whose token is bound to an `agent_name` can
-//! call `memory_add` without `author_id` and have the write attributed
-//! to that author — no prior `register_author` needed. An explicit
-//! `author_id` always wins, so identities other than the token binding
-//! remain reachable (`register_author` flow unchanged).
+//! An authenticated caller declaring an `agent_name` can call
+//! `memory_add` without `author_id` and have the write attributed to
+//! that identity's author — no prior `register_author` needed. An
+//! explicit `author_id` always wins, so other identities remain
+//! reachable (`register_author` flow unchanged).
+//!
+//! Sprint 052: the binding used to come from a bearer token; it now
+//! comes from the declared name. The fallback behaviour is unchanged,
+//! which is why this suite survived the deletion.
 //!
 //! Marked `#[ignore]` like the rest of the integration suite — run via
-//!   `cargo test -p klams-service --test mcp_bearer_author -- --ignored`
+//!   `cargo test -p klams-service --test mcp_identity_author -- --ignored`
 //! after `docker compose -f tests/docker-compose.test.yml up -d`.
 
 mod common;
@@ -16,9 +20,9 @@ use common::{McpSession, TestServer};
 
 #[ignore = "requires docker compose test stack"]
 #[tokio::test]
-async fn memory_add_without_author_id_attributes_to_bearer_author() {
+async fn memory_add_without_author_id_attributes_to_the_callers_author() {
     let server = TestServer::spawn().await;
-    let session = McpSession::handshake(server.addr, &server.author_token).await;
+    let session = McpSession::handshake(server.addr, &server.author_agent).await;
     let out = session
         .call_tool(
             "memory_add",
@@ -32,15 +36,15 @@ async fn memory_add_without_author_id_attributes_to_bearer_author() {
     assert_eq!(
         out["author"]["agent_name"].as_str(),
         Some(server.author_agent_name.as_str()),
-        "write must be attributed to the bearer-bound author: {out}"
+        "write must be attributed to the caller's bound author: {out}"
     );
 }
 
 #[ignore = "requires docker compose test stack"]
 #[tokio::test]
-async fn explicit_author_id_still_wins_over_bearer_binding() {
+async fn explicit_author_id_still_wins_over_the_callers_binding() {
     let server = TestServer::spawn().await;
-    let session = McpSession::handshake(server.addr, &server.author_token).await;
+    let session = McpSession::handshake(server.addr, &server.author_agent).await;
     let out = session
         .call_tool(
             "memory_add",
@@ -61,9 +65,9 @@ async fn explicit_author_id_still_wins_over_bearer_binding() {
 
 #[ignore = "requires docker compose test stack"]
 #[tokio::test]
-async fn append_event_without_author_id_attributes_to_bearer_author() {
+async fn append_event_without_author_id_attributes_to_the_callers_author() {
     let server = TestServer::spawn().await;
-    let session = McpSession::handshake(server.addr, &server.author_token).await;
+    let session = McpSession::handshake(server.addr, &server.author_agent).await;
     let out = session
         .call_tool(
             "memory_append_event",
@@ -76,6 +80,6 @@ async fn append_event_without_author_id_attributes_to_bearer_author() {
     assert_eq!(
         out["author"]["agent_name"].as_str(),
         Some(server.author_agent_name.as_str()),
-        "event must be attributed to the bearer-bound author: {out}"
+        "event must be attributed to the caller's bound author: {out}"
     );
 }

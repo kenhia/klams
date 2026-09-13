@@ -28,7 +28,7 @@ fn same_uuid(a: &str, b: &str) -> bool {
 #[tokio::test]
 async fn supersede_replaces_hides_and_links() {
     let server = TestServer::spawn_isolated().await;
-    let owner = McpSession::handshake(server.addr, &server.author_token).await;
+    let owner = McpSession::handshake(server.addr, &server.author_agent).await;
 
     let old_id = owner
         .seed_knowledge(
@@ -94,7 +94,7 @@ async fn supersede_replaces_hides_and_links() {
 
     // The link is inspectable on the admin surface: the old record is
     // listed among deleted with `superseded_by` pointing forward.
-    let admin = McpSession::handshake(server.addr, &server.bearer_token).await;
+    let admin = McpSession::handshake(server.addr, &server.full_agent).await;
     let deleted = admin
         .call_tool(
             "memory_admin_list_deleted",
@@ -122,9 +122,9 @@ async fn supersede_replaces_hides_and_links() {
 #[tokio::test]
 async fn cross_author_supersede_requires_manage() {
     let server = TestServer::spawn_isolated().await;
-    let owner = McpSession::handshake(server.addr, &server.author_token).await;
-    let intruder = McpSession::handshake(server.addr, &server.other_write_token).await;
-    let curator = McpSession::handshake(server.addr, &server.manage_token).await;
+    let owner = McpSession::handshake(server.addr, &server.author_agent).await;
+    let intruder = McpSession::handshake(server.addr, &server.other_write_agent).await;
+    let curator = McpSession::handshake(server.addr, &server.manage_agent).await;
 
     let id = owner
         .seed_knowledge("s029 cross-author supersede target", &["s029", "lifecycle"])
@@ -163,7 +163,7 @@ async fn cross_author_supersede_requires_manage() {
 #[tokio::test]
 async fn superseding_an_already_superseded_memory_is_refused() {
     let server = TestServer::spawn_isolated().await;
-    let owner = McpSession::handshake(server.addr, &server.author_token).await;
+    let owner = McpSession::handshake(server.addr, &server.author_agent).await;
 
     let id = owner
         .seed_knowledge("s029 double-supersede target", &["s029", "lifecycle"])
@@ -197,7 +197,7 @@ async fn superseding_an_already_superseded_memory_is_refused() {
 #[tokio::test]
 async fn update_edits_in_place_with_a_stable_id() {
     let server = TestServer::spawn_isolated().await;
-    let owner = McpSession::handshake(server.addr, &server.author_token).await;
+    let owner = McpSession::handshake(server.addr, &server.author_agent).await;
 
     let id = owner
         .seed_knowledge(
@@ -281,8 +281,8 @@ async fn update_edits_in_place_with_a_stable_id() {
 #[tokio::test]
 async fn update_authorization_and_empty_change_validation() {
     let server = TestServer::spawn_isolated().await;
-    let owner = McpSession::handshake(server.addr, &server.author_token).await;
-    let intruder = McpSession::handshake(server.addr, &server.other_write_token).await;
+    let owner = McpSession::handshake(server.addr, &server.author_agent).await;
+    let intruder = McpSession::handshake(server.addr, &server.other_write_agent).await;
 
     let id = owner
         .seed_knowledge("s029 update authz target", &["s029", "lifecycle"])
@@ -318,7 +318,7 @@ async fn update_authorization_and_empty_change_validation() {
 #[tokio::test]
 async fn scanner_chunks_cannot_be_superseded_or_updated() {
     let server = TestServer::spawn_isolated().await;
-    let owner = McpSession::handshake(server.addr, &server.author_token).await;
+    let owner = McpSession::handshake(server.addr, &server.author_agent).await;
 
     // Seed a Task-source point directly against the store, as the
     // scanner does.
@@ -383,7 +383,7 @@ async fn scanner_chunks_cannot_be_superseded_or_updated() {
 #[tokio::test]
 async fn memory_add_nudges_on_a_near_duplicate() {
     let server = TestServer::spawn_isolated().await;
-    let owner = McpSession::handshake(server.addr, &server.author_token).await;
+    let owner = McpSession::handshake(server.addr, &server.author_agent).await;
 
     let text = "s029 similar-on-write: the klams backup path is /gratch/klams-backup";
     let first_id = owner.seed_knowledge(text, &["s029", "lifecycle"]).await;

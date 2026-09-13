@@ -95,7 +95,7 @@ service) — see §2.4.
 | `klams-client` | Typed HTTP client. Used by `klams-scanner`, `klams-monitor` and `tools/bench`, and by `klams-service`'s integration tests, so every Rust caller shares one API contract. |
 | `klams-scanner` | Non-agentic filesystem writer: walks configured roots, chunks, publishes to `/memory/knowledge/index` (sprint 003; §2.4). |
 | `klams-monitor` | Non-agentic systemd-state writer: posts `Service` events on unit-state edges; optional kpidash `/healthz` reporter (sprint 003/010; §2.4). |
-| `tools/klams-token` | Operator CLI over the `[[auth.identities]]` rows and `[[auth.tokens]]` grants in `klams.toml` (sprint 045, #265; identities added in sprint 049, where every write is additionally guarded against disturbing the *other* table). Not part of the service: it never runs in-process, and it edits config the service only reads. It shares the schema, though — grants are read and validated through `klams_types::AuthConfig`, the same type the service boots from, which is why it lives here rather than in k-homelab. Writes are structural (`toml_edit`), guarded by a before/after fingerprint of the grant set, and rolled back from a timestamped backup if the result would not start the service. `--verify` probes each grant against the running service, since a dead credential is invisible in the file. |
+| `tools/klams-token` | Operator CLI over the `[[auth.identities]]` rows in `klams.toml` (sprint 045, #265; identities added in sprint 049, and the token subcommands deleted with the table in sprint 052). Not part of the service: it never runs in-process, and it edits config the service only reads. It shares the schema, though — rows are read and validated through `klams_types::AuthConfig`, the same type the service boots from, which is why it lives here rather than in k-homelab. Writes are structural (`toml_edit`), guarded by a before/after fingerprint of the identity set, and rolled back from a timestamped backup if the result would not start the service. |
 
 ### 1.2 The human surface (`klams-view`, out of tree)
 
@@ -704,10 +704,9 @@ All in-process in `klams-service`; no external scheduler.
   (`klams-service.service.d/backup.conf` — recipe in
   [setup.md](setup.md)).
 * **Oversize-log prune** — daily timer, §2.2.
-* **Auth reload** — SIGHUP re-reads `[[auth.identities]]` *and*
-  `[[auth.tokens]]` and atomically swaps **both** tables together (WI
-  #61; sprint 049); adding an identity or rotating a token needs no
-  restart. `[auth.whois]` is deliberately excluded — its resolver owns a
+* **Auth reload** — SIGHUP re-reads `[[auth.identities]]` and
+  atomically swaps the table (WI #61); adding or removing an identity
+  needs no restart. `[auth.whois]` is deliberately excluded — its resolver owns a
   cache and its `enforce` flag can refuse requests, so changing either
   is restart-shaped.
 
@@ -830,21 +829,30 @@ tailnet node is resolved by `tailscale whois` and recorded beside the
 name, record-only, with an enforcement toggle that ships off
 (`[auth.whois]`). Details and the threat-model argument: [auth.md](auth.md).
 
-**Tokens — none left (sprint 050).** `[[auth.tokens]]` grants were the
+**Tokens — gone (sprints 050, 052).** `[[auth.tokens]]` grants were the
 legacy source, live for a transition window that was open exactly while
 that table had rows, with no separate flag, because deleting the rows is
 what closes it. Sprint 050 deleted all fifteen after moving every client
-to the header, so the table is empty and at least one
-`[[auth.identities]]` row is what the service now requires to start. The
-matching code still parses and compares the table so a pre-050 config
-starts rather than refusing; it goes with WI 2489, once the closure has
-been observed from a restarted session on every host.
+to the header; **sprint 052 deleted the code** — `resolve_bearer`, its
+constant-time loop and the table itself — once the closure had been
+observed from a restarted session on every host rather than merely
+believed. At least one `[[auth.identities]]` row is what the service now
+requires to start.
 
-The even older single `bearer_token` is retired (sprint 034, #703): it
-materialized as an all-scope grant bound to `system`, and a config
-that still sets it refuses to load — at startup, `--validate-config`,
-and SIGHUP alike (migration note in [auth.md](auth.md)). Both tables
-hot-reload on SIGHUP (§2.8).
+Both retired forms — `[[auth.tokens]]` and the older single
+`bearer_token` (sprint 034, #703) — are **refused at load**, not
+ignored: `Config::from_path` scans the raw text before serde sees it and
+names the field, the sprint and the fix. That guard exists because this
+config model tolerates unknown fields, so a surviving row would
+otherwise be dropped in silence while the operator believed a credential
+was live. It strips comments first, so documentation about the cutover
+is not itself a refusal. (Shape borrowed from kaed 024 D-1.)
+
+`Authorization` is still read and authenticates nothing: a request
+carrying a bearer and no `X-Homelab-Agent` gets a `bearer_retired` 401
+naming both headers, because "sent a retired credential" and "sent
+nothing" are different facts and only the first is actionable
+(WI 2490).
 
 **Attribution** (sprints 007/009/018). The `authors` table attributes
 every memory to the agent that wrote it; `facts.author_id` /

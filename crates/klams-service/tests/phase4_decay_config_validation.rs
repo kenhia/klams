@@ -54,7 +54,9 @@ listen_addr = "127.0.0.1"
 port = {port}
 
 [auth]
-bearer_token = "test-token-do-not-use-in-prod"
+[[auth.identities]]
+agent_name = "test-agent"
+scopes     = ["read", "write"]
 
 [postgres]
 url = "{pg}"

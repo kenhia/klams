@@ -25,7 +25,7 @@ async fn session_termination_delete_returns_204() {
         .post(&base)
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
-        .header("Authorization", format!("Bearer {}", server.bearer_token))
+        .header("X-Homelab-Agent", &server.full_agent)
         .body(INIT_BODY)
         .send()
         .await
@@ -43,7 +43,7 @@ async fn session_termination_delete_returns_204() {
     let del = client
         .delete(&base)
         .header("mcp-session-id", &session_id)
-        .header("Authorization", format!("Bearer {}", server.bearer_token))
+        .header("X-Homelab-Agent", &server.full_agent)
         .send()
         .await
         .expect("DELETE /mcp");
@@ -62,7 +62,7 @@ async fn session_delete_without_session_id_stays_400() {
     let server = TestServer::spawn().await;
     let del = reqwest::Client::new()
         .delete(format!("http://{}/mcp", server.addr))
-        .header("Authorization", format!("Bearer {}", server.bearer_token))
+        .header("X-Homelab-Agent", &server.full_agent)
         .send()
         .await
         .expect("DELETE /mcp");

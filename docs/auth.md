@@ -6,8 +6,10 @@ identity in `klams.toml`.
 
 Scopes became load-bearing on both surfaces in sprint 025. Sprint 049
 changed what a caller presents: a declared name instead of a secret.
+Sprint 052 deleted the bearer path, so a name is now the *only* thing a
+caller can present.
 
-## Identity is not a secret (sprint 049)
+## Identity is not a secret
 
 A klams bearer token was a **name tag, not a lock**. Under the homelab
 threat model — one human, his agents, one tailnet, agents already
@@ -22,7 +24,7 @@ X-Homelab-Agent: claude
 ```
 
 and klams looks the name up in `[[auth.identities]]`. An unknown name is
-a `401`, exactly as an unknown token is. There is nothing to rotate,
+a `401`, exactly as an unknown token was. There is nothing to rotate,
 nothing to leak, and nothing to register in a secret store.
 
 **What this costs, stated plainly.** Anyone on the tailnet can write as
@@ -41,43 +43,54 @@ and `register_author` under the new token resolved to the pre-existing
 author. Moving a consumer from a token to a header orphans nothing it
 ever wrote.
 
-### The transition window — CLOSED, 2026-09-12 (sprint 050)
+### The transition window — CLOSED (sprint 050), and the code deleted (sprint 052)
 
 The window was open exactly while `[[auth.tokens]]` had rows: there was
 never a separate flag, because deleting the rows is what closes it.
-**Sprint 050 deleted all fifteen.** klams holds no bearer tokens, and
-every client declares a name.
+**Sprint 050 deleted all fifteen.** While it was open both credentials
+authenticated side by side, which is what let the consumers be cut over
+one at a time with nothing breaking in between: sprint 049 opened it;
+the four client repos (kmon, kyac, klams-view, klams-mind) each shipped
+their half; 050 moved the clients klams itself owns — the scanner, the
+monitor, the bench harness — plus the host MCP config files, and then
+emptied the table.
 
-While it was open both credentials authenticated side by side, which is
-what let the consumers be cut over one at a time with nothing breaking
-in between. Sprint 049 opened it; the four client repos (kmon, kyac,
-klams-view, klams-mind) each shipped their half; 050 moved the clients
-klams itself owns — the scanner, the monitor, the bench harness — plus
-the host MCP config files, and then emptied the table.
+**Sprint 052 deleted the code**, once the closure had been *observed*
+from a restarted session on every host rather than merely believed (a
+session already running keeps the config it loaded at start). There is
+one check on every request:
 
-Order of checks, on every request. The second is now unreachable in
-practice, and the code goes with WI 2489 once the closure has been
-observed from a restarted session on every host:
+1. `X-Homelab-Agent` against `[[auth.identities]]`. Present and unknown
+   is a `401`; absent is a `401`.
 
-1. `X-Homelab-Agent` against `[[auth.identities]]`, when the header is
-   present.
-2. Otherwise `Authorization: Bearer` against `[[auth.tokens]]` — which
-   is empty, so this is a `401`.
+A header that is present but **unknown** is a `401` and nothing falls
+through — there is nothing left to fall through to. The caller said who
+it was and was wrong; authenticating it as something else would
+attribute its writes to an agent it never claimed to be.
 
-A header that is present but **unknown** is a `401` and does *not* fall
-through to the bearer. The caller said who it was and was wrong;
-authenticating it as something else would attribute its writes to an
-agent it never claimed to be.
+**`Authorization` is still read, and authenticates nothing.** A request
+carrying a bearer and no `X-Homelab-Agent` gets a `401` whose body names
+the header to send and the one to drop:
+
+```json
+{"code": "bearer_retired",
+ "message": "bearer tokens are retired (sprint 052): send `X-Homelab-Agent: <agent_name>` and drop the `Authorization` header"}
+```
+
+That distinction earns its keep. Three clients sat sending a retired
+credential and getting a bare `401` for a full day (WI 2490) because,
+from outside, "sent a retired credential" and "sent nothing" looked
+identical. Sending nothing at all still gets the plain `unauthorized`.
 
 ## The one rule people get wrong
 
-**Scopes are flat, not hierarchical.** A token holding `write` does
-*not* implicitly hold `read`. `admin` does not imply `write`. Every
-grant must list every scope it needs:
+**Scopes are flat, not hierarchical.** An identity holding `write` does
+*not* implicitly hold `read`. `admin` does not imply `write`. Every row
+must list every scope it needs:
 
 ```toml
 scopes = ["read", "write"]      # correct
-scopes = ["write"]              # this token cannot search
+scopes = ["write"]              # this identity cannot search
 ```
 
 `Scope::satisfies` is exact equality
@@ -107,10 +120,11 @@ sudo klams-token identity remove krot
 There is no `identity rotate` and no `--reveal`, and that absence is the
 feature: an identity has no secret to rotate or print.
 
-The legacy subcommands (`list`, `add`, `remove`, `scopes`, `rotate`) act
-on `[[auth.tokens]]` and keep working for as long as the window is open.
-Every write — to either table — is guarded against disturbing the other:
-an identity edit that dropped a token grant is refused, and the reverse.
+`identity` is the only subcommand group. The legacy token subcommands
+(`list`, `add`, `remove`, `scopes`, `rotate`) and `--reveal` were
+deleted in sprint 052 and now fail as unrecognised rather than doing
+something unexpected. Every write is still fingerprint-guarded: an edit
+must produce exactly the change it declared and nothing else.
 
 The shape:
 
@@ -238,12 +252,35 @@ pattern written for token rows missed the `postgres://user:pass@host`
 form on 2026-09-12 and printed the password into an agent transcript
 (krot WI 2466).
 
-### The legacy `[[auth.tokens]]` shape — RETIRED (sprint 050)
+### `[[auth.tokens]]` and `bearer_token` — RETIRED, and REFUSED at startup
 
-The table is empty and nothing should add to it. The parser still
-accepts it so a config written before 050 starts rather than refusing;
-WI 2489 removes the code once the closure has been observed from a
-restarted session on every host.
+Both are gone from the code (sprint 052; `bearer_token` had been refused
+since sprint 034). A config that still names either **will not start**,
+and `--validate-config` reports the same refusal:
+
+```
+/etc/klams/klams.toml: config names `[[auth.tokens]]`, retired in sprint 052:
+delete the row and add an `[[auth.identities]]` row with the same `agent_name`
+and `scopes` (`sudo klams-token identity add`); callers send
+`X-Homelab-Agent: <agent_name>` instead of `Authorization: Bearer`
+```
+
+**Why a refusal rather than a silent ignore.** klams's config model
+tolerates unknown fields, so deleting the struct fields alone would make
+a surviving `[[auth.tokens]]` row vanish during parsing — and the
+operator would go on believing a credential was live when it
+authenticated nothing. klams therefore scans the raw file *before*
+parsing it. Two properties of that scan are load-bearing:
+
+- **Comments are stripped first.** The shipped example config documents
+  both retired forms in prose, and so do several live configs. A guard
+  that refused to start over a comment would fail exactly the operators
+  it exists to protect.
+- **Longest match first, and each match is consumed**, so the report
+  describes the file rather than the pattern list.
+
+(Both borrowed from kaed 024's D-1, which solved the same problem one
+repo over.)
 
 Migrating a row you find in an old config: drop `token`, keep
 `agent_name`, `scopes` and `label`, rename the table to
@@ -259,10 +296,9 @@ there is no secret. Everything else about the row is the same; see
 
 ### Hot reload
 
-Edit `[[auth.identities]]` or `[[auth.tokens]]` and send `SIGHUP`; **both
-tables swap atomically together** with no restart and no dropped
-in-flight requests. Adding or revoking an identity takes effect on the
-next request.
+Edit `[[auth.identities]]` and send `SIGHUP`; **the table swaps
+atomically** with no restart and no dropped in-flight requests. Adding
+or revoking an identity takes effect on the next request.
 
 `[auth.whois]` is deliberately **not** hot-reloaded. The resolver owns a
 cache and `enforce` decides whether a request can be refused; swapping
@@ -275,34 +311,6 @@ sudo systemctl reload klams-service
 `klams-token` prints this reminder after every write, and deliberately
 does not run it: a config edit and a service action bundled together is
 a bigger blast radius than that tool should take on.
-
-### The legacy `auth.bearer_token` — RETIRED (sprint 034)
-
-The single pre-sprint-007 `bearer_token` is **retired**. It
-materialized one grant carrying all four scopes with no `agent_name` —
-an unattributable privileged credential, which is exactly what the
-sprint-034 rule above forbids. Its history, for the record: sprint 032
-(#670) stopped provisioning one by default and migrated kubs0 to
-scoped grants only; sprint 034 (#703) closed the path entirely.
-
-**Migration note.** A config that still sets `bearer_token` refuses to
-start (and refuses `--validate-config`, and a SIGHUP reload keeps the
-previous table) with an error pointing here. This is deliberate: the
-key is still *parsed* precisely so it can be refused loudly — silently
-ignoring a credential the operator believes is live would surface as
-unexplained 401s instead. To migrate, express the same capability as an
-attributed grant:
-
-```toml
-[[auth.tokens]]
-token      = "<your old bearer_token value>"
-scopes     = ["read", "write", "manage", "admin"]
-label      = "break-glass"
-agent_name = "operator"
-```
-
-Same power, but every action through it lands in the audit trail under
-`operator` instead of vanishing into `system`.
 
 ## What each scope authorizes
 

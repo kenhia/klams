@@ -6,7 +6,7 @@
 
 use async_trait::async_trait;
 use axum::body::{to_bytes, Body};
-use axum::http::{header, Method, Request, StatusCode};
+use axum::http::{Method, Request, StatusCode};
 use klams_api::{build_router, ApiState};
 use klams_core::{MemoryQueue, PolicyTable};
 use klams_store::{EventQuery, FactQuery, Store, StoreResult, TextHit};
@@ -86,7 +86,7 @@ fn router() -> axum::Router {
 async fn get_policy(app: axum::Router, with_auth: bool) -> (StatusCode, serde_json::Value) {
     let mut builder = Request::builder().method(Method::GET).uri("/memory/policy");
     if with_auth {
-        builder = builder.header(header::AUTHORIZATION, "Bearer test-bearer");
+        builder = builder.header("x-homelab-agent", "test-bearer");
     }
     let req = builder.body(Body::empty()).unwrap();
     let resp = app.oneshot(req).await.unwrap();

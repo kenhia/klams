@@ -176,7 +176,7 @@ async fn request(
     let req = Request::builder()
         .method(method)
         .uri(uri)
-        .header(header::AUTHORIZATION, "Bearer test-bearer")
+        .header("x-homelab-agent", "test-bearer")
         .header(header::CONTENT_TYPE, "application/json");
     let body = match body {
         Some(b) => Body::from(serde_json::to_vec(&b).unwrap()),

@@ -32,7 +32,9 @@ listen_addr = "127.0.0.1"
 port = 7777
 
 [auth]
-bearer_token = "test-token"
+[[auth.identities]]
+agent_name = "test-agent"
+scopes     = ["read", "write"]
 
 [postgres]
 url = "postgres://klams:klams@127.0.0.1:5432/klams"

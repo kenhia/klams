@@ -24,8 +24,8 @@ use common::{McpSession, TestServer};
 #[tokio::test]
 async fn write_scoped_caller_cannot_delete_another_authors_memory() {
     let server = TestServer::spawn_isolated().await;
-    let owner = McpSession::handshake(server.addr, &server.author_token).await;
-    let intruder = McpSession::handshake(server.addr, &server.other_write_token).await;
+    let owner = McpSession::handshake(server.addr, &server.author_agent).await;
+    let intruder = McpSession::handshake(server.addr, &server.other_write_agent).await;
 
     let id = owner.seed_fact("S025_CROSS_AUTHOR", "sprint025").await;
     let out = intruder
@@ -46,8 +46,8 @@ async fn write_scoped_caller_cannot_delete_another_authors_memory() {
 #[tokio::test]
 async fn register_author_backdoor_is_closed() {
     let server = TestServer::spawn_isolated().await;
-    let owner = McpSession::handshake(server.addr, &server.author_token).await;
-    let intruder = McpSession::handshake(server.addr, &server.other_write_token).await;
+    let owner = McpSession::handshake(server.addr, &server.author_agent).await;
+    let intruder = McpSession::handshake(server.addr, &server.other_write_agent).await;
 
     let id = owner.seed_fact("S025_BACKDOOR", "sprint025").await;
 
@@ -82,7 +82,7 @@ async fn register_author_backdoor_is_closed() {
 #[tokio::test]
 async fn author_may_delete_its_own_memory_without_author_id() {
     let server = TestServer::spawn_isolated().await;
-    let owner = McpSession::handshake(server.addr, &server.author_token).await;
+    let owner = McpSession::handshake(server.addr, &server.author_agent).await;
 
     let id = owner.seed_fact("S025_SELF_MANAGE", "sprint025").await;
     let out = owner
@@ -108,8 +108,8 @@ async fn author_may_delete_its_own_memory_without_author_id() {
 #[tokio::test]
 async fn manage_scoped_caller_may_curate_across_authors() {
     let server = TestServer::spawn_isolated().await;
-    let owner = McpSession::handshake(server.addr, &server.author_token).await;
-    let curator = McpSession::handshake(server.addr, &server.manage_token).await;
+    let owner = McpSession::handshake(server.addr, &server.author_agent).await;
+    let curator = McpSession::handshake(server.addr, &server.manage_agent).await;
 
     let id = owner.seed_fact("S025_CURATE", "sprint025").await;
     let out = curator
@@ -131,8 +131,8 @@ async fn manage_scoped_caller_may_curate_across_authors() {
 #[tokio::test]
 async fn manage_scoped_caller_still_cannot_impersonate() {
     let server = TestServer::spawn_isolated().await;
-    let owner = McpSession::handshake(server.addr, &server.author_token).await;
-    let curator = McpSession::handshake(server.addr, &server.manage_token).await;
+    let owner = McpSession::handshake(server.addr, &server.author_agent).await;
+    let curator = McpSession::handshake(server.addr, &server.manage_agent).await;
 
     let id = owner.seed_fact("S025_NO_IMPERSONATION", "sprint025").await;
     let out = curator
@@ -155,7 +155,7 @@ async fn manage_scoped_caller_still_cannot_impersonate() {
 #[tokio::test]
 async fn read_only_token_cannot_register_authors() {
     let server = TestServer::spawn_isolated().await;
-    let viewer = McpSession::handshake(server.addr, &server.read_token).await;
+    let viewer = McpSession::handshake(server.addr, &server.read_agent).await;
 
     let names = viewer.list_tool_names().await;
     assert!(
@@ -184,7 +184,7 @@ async fn read_only_token_cannot_register_authors() {
 #[tokio::test]
 async fn register_author_dedupes_on_agent_name() {
     let server = TestServer::spawn_isolated().await;
-    let session = McpSession::handshake(server.addr, &server.author_token).await;
+    let session = McpSession::handshake(server.addr, &server.author_agent).await;
 
     let first = session
         .call_tool(
@@ -206,13 +206,13 @@ async fn register_author_dedupes_on_agent_name() {
     server.cleanup().await;
 }
 
-/// An `agent_name` no `[[auth.tokens]]` grant could ever bind to is
+/// An `agent_name` no `[[auth.identities]]` row could ever bind to is
 /// refused, with a usable suggestion in the message.
 #[ignore = "requires docker compose test stack"]
 #[tokio::test]
 async fn register_author_rejects_unbindable_agent_names() {
     let server = TestServer::spawn_isolated().await;
-    let session = McpSession::handshake(server.addr, &server.author_token).await;
+    let session = McpSession::handshake(server.addr, &server.author_agent).await;
 
     let out = session
         .call_tool(

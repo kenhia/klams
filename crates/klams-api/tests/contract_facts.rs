@@ -116,7 +116,7 @@ async fn post_facts_returns_persisted_fact_shape() {
             Request::builder()
                 .method(Method::POST)
                 .uri("/memory/facts")
-                .header(header::AUTHORIZATION, "Bearer test-bearer")
+                .header("x-homelab-agent", "test-bearer")
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(serde_json::to_vec(&body).unwrap()))
                 .unwrap(),
@@ -181,7 +181,7 @@ async fn get_facts_returns_fact_page_shape() {
             Request::builder()
                 .method(Method::GET)
                 .uri("/memory/facts")
-                .header(header::AUTHORIZATION, "Bearer test-bearer")
+                .header("x-homelab-agent", "test-bearer")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -201,7 +201,7 @@ async fn malformed_json_is_validation_error() {
             Request::builder()
                 .method(Method::POST)
                 .uri("/memory/facts")
-                .header(header::AUTHORIZATION, "Bearer test-bearer")
+                .header("x-homelab-agent", "test-bearer")
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(r#"{"type": "UserFact"}"#))
                 .unwrap(),
@@ -225,7 +225,7 @@ async fn post_facts_v(body: serde_json::Value) -> (StatusCode, serde_json::Value
             Request::builder()
                 .method(Method::POST)
                 .uri("/memory/facts")
-                .header(header::AUTHORIZATION, "Bearer test-bearer")
+                .header("x-homelab-agent", "test-bearer")
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(serde_json::to_vec(&body).unwrap()))
                 .unwrap(),

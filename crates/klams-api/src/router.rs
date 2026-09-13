@@ -4,7 +4,7 @@
 //! handler tasks (T037+) land. The router does enforce auth (T030)
 //! and exposes `/healthz` + `/metrics` publicly.
 
-use crate::auth::AuthState;
+use crate::auth::{AuthState, Identity};
 use crate::handlers;
 use axum::{
     middleware,
@@ -100,23 +100,33 @@ impl<S: Store> std::fmt::Debug for ApiState<S> {
 /// global metrics recorder (axum-prometheus uses a process-global,
 /// which would break parallel tests). Use [`with_metrics`] in the
 /// binary to add `/metrics` and the prometheus layer.
-pub fn build_router<S: Store>(state: ApiState<S>, bearer_token: impl Into<String>) -> Router {
-    build_router_with_auth(state, AuthState::new(bearer_token))
+/// `agent_name` is materialized as a single identity carrying **all**
+/// scopes. Convenience for tests and one-identity embeddings; the
+/// service builds its [`AuthState`] from `[[auth.identities]]` and
+/// calls [`build_router_with_auth`].
+pub fn build_router<S: Store>(state: ApiState<S>, agent_name: impl Into<String>) -> Router {
+    let identity = Identity {
+        agent_name: Arc::new(agent_name.into()),
+        scopes: Arc::new(vec![Scope::Read, Scope::Write, Scope::Manage, Scope::Admin]),
+        label: Some("all-scopes".into()),
+        author_id: klams_types::SYSTEM_AUTHOR_ID,
+        nodes: Arc::new(Vec::new()),
+    };
+    build_router_with_auth(state, AuthState::with_identities(vec![identity]))
 }
 
-/// Sprint 007 — multi-token variant. Same shape as [`build_router`]
-/// but accepts a pre-built [`AuthState`] so callers can supply scoped
-/// `[[auth.tokens]]` grants on top of (or instead of) the legacy
-/// single-token form, and so a *shared* `AuthState` can also gate the
-/// nested `/mcp` router via the same `require_bearer` layer (see
+/// Same shape as [`build_router`] but accepts a pre-built
+/// [`AuthState`], so the service can supply the whole
+/// `[[auth.identities]]` table with its scopes and whois resolver, and
+/// so a *shared* `AuthState` can also gate the nested `/mcp` router via
+/// the same `require_bearer` layer (see
 /// [`klams-mcp` mount in `main.rs`](../../../klams-service/src/main.rs)).
 pub fn build_router_with_auth<S: Store>(state: ApiState<S>, auth_state: AuthState) -> Router {
     // Sprint 025 (#637): every protected route declares the scope it
     // needs. Before this sprint `require_scope` was layered on exactly
-    // one route (`/v1/memories`), which made the `scopes` list in
-    // `[[auth.tokens]]` decorative on the REST surface — a read-only
-    // token could index knowledge, bulk-delete it, and resolve
-    // dissents. `route_layer` (not `layer`) so a method mismatch still
+    // one route (`/v1/memories`), which made the `scopes` list
+    // decorative on the REST surface — a read-only caller could index
+    // knowledge, bulk-delete it, and resolve dissents. `route_layer` (not `layer`) so a method mismatch still
     // returns 405 rather than being masked by a 403.
     let protected = Router::new()
         .route(

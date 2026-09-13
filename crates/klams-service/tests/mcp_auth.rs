@@ -22,7 +22,7 @@ async fn post_mcp(addr: std::net::SocketAddr, auth: Option<&str>) -> reqwest::Re
         .header("Accept", "application/json, text/event-stream")
         .body(INIT_BODY);
     if let Some(token) = auth {
-        req = req.header("Authorization", format!("Bearer {token}"));
+        req = req.header("X-Homelab-Agent", token);
     }
     req.send().await.expect("POST /mcp")
 }
@@ -36,7 +36,7 @@ async fn list_tools_with(addr: std::net::SocketAddr, token: &str) -> Vec<String>
         .post(format!("http://{addr}/mcp"))
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
-        .header("Authorization", format!("Bearer {token}"))
+        .header("X-Homelab-Agent", token)
         .body(INIT_BODY)
         .send()
         .await
@@ -56,7 +56,7 @@ async fn list_tools_with(addr: std::net::SocketAddr, token: &str) -> Vec<String>
         .post(format!("http://{addr}/mcp"))
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
-        .header("Authorization", format!("Bearer {token}"))
+        .header("X-Homelab-Agent", token)
         .header("mcp-session-id", &session_id)
         .body(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
         .send()
@@ -68,7 +68,7 @@ async fn list_tools_with(addr: std::net::SocketAddr, token: &str) -> Vec<String>
         .post(format!("http://{addr}/mcp"))
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
-        .header("Authorization", format!("Bearer {token}"))
+        .header("X-Homelab-Agent", token)
         .header("mcp-session-id", &session_id)
         .body(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#)
         .send()
@@ -110,7 +110,7 @@ async fn mcp_initialize_with_wrong_bearer_returns_401() {
 #[tokio::test]
 async fn mcp_initialize_with_valid_bearer_succeeds() {
     let server = TestServer::spawn().await;
-    let token = server.bearer_token.clone();
+    let token = server.full_agent.clone();
     let res = post_mcp(server.addr, Some(&token)).await;
     assert_eq!(res.status(), reqwest::StatusCode::OK);
 }
@@ -121,7 +121,7 @@ async fn mcp_initialize_with_valid_bearer_succeeds() {
 #[tokio::test]
 async fn tools_list_admin_sees_everything() {
     let server = TestServer::spawn().await;
-    let tools = list_tools_with(server.addr, &server.bearer_token).await;
+    let tools = list_tools_with(server.addr, &server.full_agent).await;
     let expected = [
         "register_author",
         "memory_add",
@@ -161,7 +161,7 @@ async fn tools_list_admin_sees_everything() {
 #[tokio::test]
 async fn tools_list_read_only_sees_only_read_tools() {
     let server = TestServer::spawn().await;
-    let tools = list_tools_with(server.addr, &server.read_token).await;
+    let tools = list_tools_with(server.addr, &server.read_agent).await;
     let mut sorted = tools.clone();
     sorted.sort();
     // Sprint 025 (#633): `register_author` left this list. Minting an
@@ -183,7 +183,7 @@ async fn tools_list_read_only_sees_only_read_tools() {
 #[tokio::test]
 async fn tools_list_write_sees_read_and_write_no_admin() {
     let server = TestServer::spawn().await;
-    let tools = list_tools_with(server.addr, &server.write_token).await;
+    let tools = list_tools_with(server.addr, &server.write_agent).await;
     let mut sorted = tools.clone();
     sorted.sort();
     assert_eq!(

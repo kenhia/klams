@@ -1,14 +1,29 @@
-//! Bearer-token auth model with per-token scopes (sprint 007).
+//! Identity auth model with per-identity scopes.
 //!
-//! [`Scope`] enumerates the three permission levels exposed by both the
-//! legacy REST surface and the new MCP server. [`TokenGrantConfig`] is the
-//! TOML-side shape (see `data-model.md` §5); [`TokenGrant`] is the
-//! materialized runtime form with the token bytes wrapped for constant-time
-//! comparison upstream.
+//! [`Scope`] enumerates the four permission levels exposed by both the
+//! REST surface and the MCP server. [`IdentityConfig`] is the TOML-side
+//! shape of an `[[auth.identities]]` row; `klams_api::Identity` is the
+//! materialized runtime form.
+//!
+//! # Sprint 052 — the bearer path is gone
+//!
+//! Sprint 049 made a declared `X-Homelab-Agent` name the credential and
+//! left `[[auth.tokens]]` parsing for the transition window. Sprint 050
+//! deleted every row, which is what closed that window (049 D-1: the
+//! rows *were* the flag). This sprint deletes the code: there is no
+//! `TokenGrantConfig`, no `bearer_token`, and no token table.
+//!
+//! Because [`AuthConfig`] is not `deny_unknown_fields`, simply removing
+//! the fields would make a surviving `[[auth.tokens]]` row **silently
+//! ignored** — an operator would believe a credential is live when it
+//! authenticates nothing. [`retired_fields`] scans the raw config text
+//! before it is parsed and names what it found, so a stale config
+//! refuses to start rather than starting wrong (sprint 052 D-1,
+//! borrowed from kaed 024 D-1).
 
 use serde::{Deserialize, Serialize};
 
-/// Permission tier attached to a bearer token.
+/// Permission tier attached to an identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Scope {
@@ -57,28 +72,11 @@ impl std::fmt::Display for Scope {
     }
 }
 
-/// TOML-facing token grant entry (`[[auth.tokens]]`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TokenGrantConfig {
-    pub token: String,
-    pub scopes: Vec<Scope>,
-    #[serde(default)]
-    pub label: Option<String>,
-    /// Sprint 009: agent identity bound to this token. Resolved to
-    /// an `Author` at service startup; every REST write
-    /// authenticated by this token is attributed to that author
-    /// instead of `system`. `None` falls back to the seeded
-    /// `system` author (back-compat for tokens issued before
-    /// sprint 009).
-    #[serde(default)]
-    pub agent_name: Option<String>,
-}
-
 /// TOML-facing identity entry (`[[auth.identities]]`, sprint 049).
 ///
-/// The successor to [`TokenGrantConfig`]: same scope set, same author
-/// binding, no secret. The caller declares its name in the
-/// `X-Homelab-Agent` header and klams looks the row up by that name.
+/// The successor to the retired `[[auth.tokens]]` grant: same scope
+/// set, same author binding, no secret. The caller declares its name in
+/// the `X-Homelab-Agent` header and klams looks the row up by that name.
 ///
 /// Under the homelab threat model — single user, his agents, one
 /// tailnet, agents already holding sudo everywhere — a bearer token's
@@ -86,8 +84,7 @@ pub struct TokenGrantConfig {
 /// a secret, so there is nothing to rotate and nothing to leak.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IdentityConfig {
-    /// The declared name. Unlike [`TokenGrantConfig::agent_name`] this
-    /// is the row's **key**, so it is mandatory rather than optional —
+    /// The declared name. It is the row's **key**, so it is mandatory:
     /// there is nothing else to look the row up by.
     pub agent_name: String,
     pub scopes: Vec<Scope>,
@@ -144,35 +141,17 @@ impl Default for WhoisConfig {
     }
 }
 
-/// Validation errors for a bearer-token configuration.
+/// Validation errors for an identity configuration.
 #[derive(Debug, thiserror::Error)]
 pub enum AuthConfigError {
-    /// Sprint 049: an `[[auth.identities]]` row satisfies this too —
-    /// the transition window means either table may carry the grants.
-    #[error("auth: at least one `[[auth.identities]]` or `[[auth.tokens]]` entry must be set")]
-    NoTokens,
-    #[error("auth: token must be at least 16 characters")]
-    TokenTooShort,
-    #[error("auth: token grant must declare at least one scope")]
+    /// Sprint 052: `[[auth.identities]]` is the only table, so this is
+    /// simply "no grants at all".
+    #[error("auth: at least one `[[auth.identities]]` entry must be set")]
+    NoIdentities,
+    #[error("auth: identity must declare at least one scope")]
     EmptyScopes,
-    #[error("auth: token grant `agent_name` is invalid ({reason})")]
+    #[error("auth: identity `agent_name` is invalid ({reason})")]
     InvalidAgentName { reason: AgentNameInvalidReason },
-    /// Sprint 034 (#703): every privileged action must be attributable
-    /// — the property sprint 025 was built around, closed here.
-    #[error(
-        "auth: a grant holding `manage` or `admin` must declare `agent_name` \
-         so privileged actions are attributable"
-    )]
-    PrivilegedGrantNeedsAgentName,
-    /// Sprint 034 (#703): the legacy single-token form is retired — it
-    /// materialized a full-scope grant that could not declare an
-    /// `agent_name`, which the rule above now forbids.
-    #[error(
-        "auth: `bearer_token` is retired (sprint 034); replace it with a \
-         `[[auth.tokens]]` grant carrying `agent_name` — see docs/auth.md \
-         for the migration note"
-    )]
-    LegacyBearerTokenRetired,
     /// Sprint 049: `agent_name` is the identities table's key, so two
     /// rows claiming the same one make the lookup ambiguous. Refusing
     /// is the only honest answer — silently picking the first would
@@ -227,55 +206,14 @@ pub fn validate_agent_name(name: &str) -> Result<(), AgentNameInvalidReason> {
     Ok(())
 }
 
-impl TokenGrantConfig {
-    /// Apply per-grant validation (length + non-empty scope set,
-    /// `agent_name` charset/length when present, and — sprint 034
-    /// #703 — `agent_name` *required* on grants holding `manage` or
-    /// `admin`, so every privileged action is attributable).
-    ///
-    /// # Errors
-    /// Returns [`AuthConfigError::TokenTooShort`] if the token is under
-    /// 16 characters, [`AuthConfigError::EmptyScopes`] if `scopes` is
-    /// empty, [`AuthConfigError::InvalidAgentName`] if a non-None
-    /// `agent_name` fails the rules in
-    /// `sprints/009-stability-attribution/contracts/token-grant-config.md`,
-    /// or [`AuthConfigError::PrivilegedGrantNeedsAgentName`] if a
-    /// `manage`/`admin` grant declares none.
-    pub fn validate(&self) -> Result<(), AuthConfigError> {
-        if self.token.len() < 16 {
-            return Err(AuthConfigError::TokenTooShort);
-        }
-        if self.scopes.is_empty() {
-            return Err(AuthConfigError::EmptyScopes);
-        }
-        match &self.agent_name {
-            Some(name) => {
-                if let Err(reason) = validate_agent_name(name) {
-                    return Err(AuthConfigError::InvalidAgentName { reason });
-                }
-            }
-            None => {
-                if self
-                    .scopes
-                    .iter()
-                    .any(|s| matches!(s, Scope::Manage | Scope::Admin))
-                {
-                    return Err(AuthConfigError::PrivilegedGrantNeedsAgentName);
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
 impl IdentityConfig {
     /// Apply per-identity validation: `agent_name` present and legal,
     /// and a non-empty scope set.
     ///
-    /// There is no [`AuthConfigError::PrivilegedGrantNeedsAgentName`]
-    /// case here — sprint 034 added that rule so every privileged
-    /// action would be attributable, and an identity row cannot be
-    /// unattributable: the name *is* the credential.
+    /// An identity row cannot be unattributable — the name *is* the
+    /// credential — so sprint 034's "a privileged grant must declare an
+    /// `agent_name`" rule has nothing to check here. It retired with
+    /// the token table in sprint 052.
     ///
     /// # Errors
     /// [`AuthConfigError::InvalidAgentName`] if `agent_name` fails the
@@ -302,28 +240,6 @@ impl IdentityConfig {
 /// `klams_service::config::AuthConfig` is now a re-export of this type.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AuthConfig {
-    /// RETIRED legacy single-token form (sprint 034, #703). It
-    /// materialized a full-scope grant that could not declare an
-    /// `agent_name`, which privileged grants now require. The field
-    /// still parses — deliberately: a config that carries one refuses
-    /// to start with the migration note instead of silently ignoring a
-    /// credential the operator believes is live.
-    #[serde(default)]
-    pub bearer_token: String,
-
-    /// Token grants (`[[auth.tokens]]`). Each entry carries its own
-    /// scope set; grants holding `manage`/`admin` must declare an
-    /// `agent_name` (#703).
-    ///
-    /// Sprint 049: superseded by [`Self::identities`], and kept for the
-    /// transition window. **The window is open exactly while this table
-    /// is non-empty** — there is no separate flag, because deleting the
-    /// rows is what closes it and a second mechanism for one fact is a
-    /// second thing to get wrong (sprint 049 D-1; korg:2450 does the
-    /// deletion).
-    #[serde(default)]
-    pub tokens: Vec<TokenGrantConfig>,
-
     /// Declared identities (`[[auth.identities]]`, sprint 049). Keyed
     /// on `agent_name`, presented by the caller in `X-Homelab-Agent`.
     #[serde(default)]
@@ -347,25 +263,8 @@ impl AuthConfig {
     #[must_use]
     pub fn errors(&self) -> Vec<String> {
         let mut errors = Vec::new();
-        if !self.bearer_token.is_empty() {
-            errors.push(format!(
-                "[auth]: {}",
-                AuthConfigError::LegacyBearerTokenRetired
-            ));
-        }
-        // Sprint 049: either table may carry the grants while the
-        // transition window is open, so "no grants at all" is the
-        // failure — not "no tokens".
-        if self.tokens.is_empty() && self.identities.is_empty() {
-            errors.push(format!("[auth]: {}", AuthConfigError::NoTokens));
-        }
-        for (i, g) in self.tokens.iter().enumerate() {
-            if let Err(e) = g.validate() {
-                errors.push(format!(
-                    "[auth.tokens[{i}]] ({label}): {e}",
-                    label = g.label.as_deref().unwrap_or("<no label>")
-                ));
-            }
+        if self.identities.is_empty() {
+            errors.push(format!("[auth]: {}", AuthConfigError::NoIdentities));
         }
         let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
         for (i, id) in self.identities.iter().enumerate() {
@@ -387,20 +286,14 @@ impl AuthConfig {
         errors
     }
 
-    /// Non-fatal observations about this `[auth]` block. A grant with
-    /// no `label` still boots, but its log and metric attribution is
-    /// empty, which is worth saying out loud.
+    /// Non-fatal observations about this `[auth]` block.
+    ///
+    /// An identity needs no `label` warning: unlike a token grant, its
+    /// `agent_name` is already the attribution, so there is never an
+    /// empty one to warn about.
     #[must_use]
     pub fn warnings(&self) -> Vec<String> {
-        let mut warnings: Vec<String> = self
-            .tokens
-            .iter()
-            .enumerate()
-            .filter(|(_, g)| g.label.is_none())
-            .map(|(i, _)| {
-                format!("[auth.tokens[{i}]]: no `label` set; log/metric attribution will be empty")
-            })
-            .collect();
+        let mut warnings: Vec<String> = Vec::new();
         // Sprint 049: enforcement is per-identity opt-in, so turning the
         // toggle on with no `nodes` anywhere enforces nothing. That is a
         // config that looks locked down and is not — worth saying out
@@ -453,37 +346,6 @@ pub struct AuthenticatedAuthor {
     pub agent_name: std::sync::Arc<String>,
 }
 
-/// How the caller proved who they are (sprint 049). Recorded beside the
-/// resolved author so the transition window's progress is readable off
-/// the logs: while any caller is still `Bearer`, the window cannot
-/// close.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AuthMethod {
-    /// `X-Homelab-Agent: <agent_name>` matched an `[[auth.identities]]`
-    /// row.
-    Identity,
-    /// `Authorization: Bearer <token>` matched an `[[auth.tokens]]`
-    /// grant — the legacy path, live only while the window is open.
-    Bearer,
-}
-
-impl AuthMethod {
-    /// The log/wire spelling.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Identity => "identity",
-            Self::Bearer => "bearer",
-        }
-    }
-}
-
-impl std::fmt::Display for AuthMethod {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
 /// The caller's tailnet origin, as resolved by `tailscale whois`
 /// (sprint 049, WI 2389). Stamped on every authenticated request.
 ///
@@ -496,7 +358,6 @@ pub struct AuthenticatedPeer {
     pub addr: Option<std::net::IpAddr>,
     /// Short tailnet node name, e.g. `kai`.
     pub node: Option<String>,
-    pub method: AuthMethod,
 }
 
 impl AuthenticatedPeer {
@@ -507,6 +368,111 @@ impl AuthenticatedPeer {
     pub fn node_or_unknown(&self) -> &str {
         self.node.as_deref().unwrap_or("unknown")
     }
+}
+
+/// A config key or table this build no longer honours, with everything
+/// an operator needs to fix it in one line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetiredField {
+    /// The spelling as it appears in the file, e.g. `[[auth.tokens]]`.
+    pub spelling: &'static str,
+    /// The sprint that retired it.
+    pub sprint: &'static str,
+    /// What to do instead.
+    pub fix: &'static str,
+}
+
+impl std::fmt::Display for RetiredField {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "config names `{}`, retired in sprint {}: {}",
+            self.spelling, self.sprint, self.fix
+        )
+    }
+}
+
+/// Every retired spelling, longest first. Order is load-bearing — see
+/// [`retired_fields`].
+const RETIRED: &[RetiredField] = &[
+    RetiredField {
+        spelling: "[[auth.tokens]]",
+        sprint: "052",
+        fix: "delete the row and add an `[[auth.identities]]` row with the same \
+              `agent_name` and `scopes` (`sudo klams-token identity add`); callers \
+              send `X-Homelab-Agent: <agent_name>` instead of `Authorization: Bearer`",
+    },
+    RetiredField {
+        spelling: "bearer_token",
+        sprint: "034",
+        fix: "delete the line and add an `[[auth.identities]]` row \
+              (`sudo klams-token identity add`)",
+    },
+];
+
+/// Strip TOML comments, respecting quoted strings.
+///
+/// Load-bearing for [`retired_fields`]: this repo's own
+/// `klams.example.toml` documents the retired forms in prose, and a
+/// guard that refused to start over a comment would fail exactly the
+/// operators it exists to protect. Quote-awareness matters in the other
+/// direction — a `#` inside a Postgres URL is not a comment, and
+/// truncating there would hide a retired key that followed it on the
+/// same line.
+#[must_use]
+pub fn strip_toml_comments(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for line in raw.lines() {
+        let mut quote: Option<char> = None;
+        let mut end = line.len();
+        for (i, c) in line.char_indices() {
+            match (quote, c) {
+                (None, '"' | '\'') => quote = Some(c),
+                (Some(q), c) if c == q => quote = None,
+                (None, '#') => {
+                    end = i;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        out.push_str(&line[..end]);
+        out.push('\n');
+    }
+    out
+}
+
+/// Scan raw config text for spellings this build no longer honours.
+///
+/// [`AuthConfig`] is not `deny_unknown_fields`, so a surviving
+/// `[[auth.tokens]]` row would otherwise be *silently ignored* — the
+/// operator believes a credential is live and it authenticates nothing.
+/// Refusing to start, naming the field and the fix, is the honest
+/// outcome (sprint 052 D-1).
+///
+/// Two properties are load-bearing, both learned from kaed 024 D-1:
+///
+/// 1. **Comments are stripped first** ([`strip_toml_comments`]), so
+///    prose *about* the cutover — which the shipped example config
+///    carries — is not a refusal.
+/// 2. **Longest match first, and the match is consumed.** `bearer_token`
+///    is a substring of nothing here today, but `[[auth.tokens]]`
+///    contains `tokens`, and the naive scan reports fields the file
+///    never named. Consuming each match makes the report describe the
+///    file rather than the pattern list.
+#[must_use]
+pub fn retired_fields(raw: &str) -> Vec<RetiredField> {
+    let mut haystack = strip_toml_comments(raw);
+    let mut found = Vec::new();
+    // RETIRED is ordered longest-spelling first; consume every
+    // occurrence of each before considering a shorter one.
+    for spec in RETIRED {
+        if haystack.contains(spec.spelling) {
+            found.push(*spec);
+            haystack = haystack.replace(spec.spelling, "");
+        }
+    }
+    found
 }
 
 #[cfg(test)]
@@ -534,95 +500,16 @@ mod tests {
 
     #[test]
     fn manage_scope_round_trips_through_toml_lowercase() {
-        let grant: TokenGrantConfig = toml::from_str(
+        let id: IdentityConfig = toml::from_str(
             r#"
-            token      = "abcdefghijklmnop"
             scopes     = ["read", "write", "manage"]
             label      = "claude"
             agent_name = "claude"
             "#,
         )
-        .expect("manage must parse as a scope in [[auth.tokens]]");
-        assert_eq!(grant.scopes, vec![Scope::Read, Scope::Write, Scope::Manage]);
-        grant.validate().unwrap();
-    }
-
-    /// Sprint 034 (#703): a grant holding `manage` or `admin` without
-    /// an `agent_name` is a config error — privileged actions must be
-    /// attributable (the property sprint 025 built and #670 Q4 asked
-    /// to close).
-    #[test]
-    fn privileged_grant_without_agent_name_is_rejected() {
-        for privileged in [Scope::Manage, Scope::Admin] {
-            let g = TokenGrantConfig {
-                token: "abcdefghijklmnop".into(),
-                scopes: vec![Scope::Read, Scope::Write, privileged],
-                label: Some("unattributed".into()),
-                agent_name: None,
-            };
-            assert!(
-                matches!(
-                    g.validate(),
-                    Err(AuthConfigError::PrivilegedGrantNeedsAgentName)
-                ),
-                "{privileged} without agent_name must be rejected"
-            );
-        }
-    }
-
-    /// The counterpart boundaries: read/write-only grants stay valid
-    /// without an `agent_name` (back-compat for tokens issued before
-    /// sprint 009), and a privileged grant WITH one is accepted.
-    #[test]
-    fn privileged_grant_rule_boundaries() {
-        let unprivileged = TokenGrantConfig {
-            token: "abcdefghijklmnop".into(),
-            scopes: vec![Scope::Read, Scope::Write],
-            label: None,
-            agent_name: None,
-        };
-        unprivileged.validate().unwrap();
-
-        let attributed = TokenGrantConfig {
-            token: "abcdefghijklmnop".into(),
-            scopes: vec![Scope::Read, Scope::Write, Scope::Manage, Scope::Admin],
-            label: Some("ken-admin".into()),
-            agent_name: Some("ken_admin".into()),
-        };
-        attributed.validate().unwrap();
-    }
-
-    #[test]
-    fn token_grant_validates_length() {
-        let g = TokenGrantConfig {
-            token: "short".into(),
-            scopes: vec![Scope::Read],
-            label: None,
-            agent_name: None,
-        };
-        assert!(matches!(g.validate(), Err(AuthConfigError::TokenTooShort)));
-    }
-
-    #[test]
-    fn token_grant_requires_scopes() {
-        let g = TokenGrantConfig {
-            token: "abcdefghijklmnop".into(),
-            scopes: vec![],
-            label: None,
-            agent_name: None,
-        };
-        assert!(matches!(g.validate(), Err(AuthConfigError::EmptyScopes)));
-    }
-
-    #[test]
-    fn token_grant_accepts_valid() {
-        let g = TokenGrantConfig {
-            token: "abcdefghijklmnop".into(),
-            scopes: vec![Scope::Read, Scope::Write],
-            label: Some("ghcp".into()),
-            agent_name: Some("alice".into()),
-        };
-        g.validate().unwrap();
+        .expect("manage must parse as a scope in [[auth.identities]]");
+        assert_eq!(id.scopes, vec![Scope::Read, Scope::Write, Scope::Manage]);
+        id.validate().unwrap();
     }
 
     // -----------------------------------------------------------------
@@ -704,12 +591,10 @@ mod tests {
         ));
     }
 
-    /// The transition window: a config carrying ONLY identities is
-    /// startable (that is what korg:2450 leaves behind), a config
-    /// carrying only tokens still is (that is today), and one carrying
-    /// neither is not.
+    /// Sprint 052: there is one table now. Identities boot; nothing
+    /// does not.
     #[test]
-    fn either_table_satisfies_the_grant_requirement() {
+    fn identities_are_the_only_grant_table() {
         let identities_only = AuthConfig {
             identities: vec![IdentityConfig {
                 agent_name: "claude".into(),
@@ -724,17 +609,6 @@ mod tests {
             "identities alone must boot: {:?}",
             identities_only.errors()
         );
-
-        let tokens_only = AuthConfig {
-            tokens: vec![TokenGrantConfig {
-                token: "abcdefghijklmnop".into(),
-                scopes: vec![Scope::Read],
-                label: None,
-                agent_name: None,
-            }],
-            ..AuthConfig::default()
-        };
-        assert!(tokens_only.errors().is_empty());
 
         let neither = AuthConfig::default();
         assert_eq!(neither.errors().len(), 1);
@@ -766,29 +640,6 @@ mod tests {
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert!(errors[0].contains("duplicate"), "{errors:?}");
         assert!(errors[0].contains("claude"), "{errors:?}");
-    }
-
-    /// An `agent_name` shared between a token grant and an identity is
-    /// NOT a duplicate — it is the expected state for the whole
-    /// transition window, and both resolve to the same author.
-    #[test]
-    fn same_name_in_both_tables_is_the_transition_window_not_an_error() {
-        let cfg = AuthConfig {
-            tokens: vec![TokenGrantConfig {
-                token: "abcdefghijklmnop".into(),
-                scopes: vec![Scope::Read, Scope::Write],
-                label: Some("claude".into()),
-                agent_name: Some("claude".into()),
-            }],
-            identities: vec![IdentityConfig {
-                agent_name: "claude".into(),
-                scopes: vec![Scope::Read, Scope::Write],
-                label: Some("claude".into()),
-                nodes: vec![],
-            }],
-            ..AuthConfig::default()
-        };
-        assert!(cfg.errors().is_empty(), "{:?}", cfg.errors());
     }
 
     /// The whois block defaults to resolve-and-record: enforcement is
@@ -837,7 +688,6 @@ mod tests {
                 enforce: true,
                 ..WhoisConfig::default()
             },
-            ..AuthConfig::default()
         };
         assert!(cfg.errors().is_empty());
         let warnings = cfg.warnings();
@@ -866,18 +716,14 @@ mod tests {
         let peer = AuthenticatedPeer {
             addr: None,
             node: None,
-            method: AuthMethod::Identity,
         };
         assert_eq!(peer.node_or_unknown(), "unknown");
-        assert_eq!(peer.method.as_str(), "identity");
 
         let resolved = AuthenticatedPeer {
             addr: Some("100.97.109.60".parse().unwrap()),
             node: Some("kai".into()),
-            method: AuthMethod::Bearer,
         };
         assert_eq!(resolved.node_or_unknown(), "kai");
-        assert_eq!(resolved.method.as_str(), "bearer");
     }
 
     #[test]
@@ -924,12 +770,12 @@ mod tests {
     }
 
     #[test]
-    fn token_grant_rejects_invalid_agent_name() {
-        let g = TokenGrantConfig {
-            token: "abcdefghijklmnop".into(),
+    fn identity_rejects_invalid_agent_name() {
+        let g = IdentityConfig {
+            agent_name: "Alice".into(),
             scopes: vec![Scope::Read],
             label: None,
-            agent_name: Some("Alice".into()),
+            nodes: vec![],
         };
         let err = g.validate().unwrap_err();
         match err {
@@ -938,5 +784,110 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Sprint 052 — the retired-field guard (D-1).
+    // -----------------------------------------------------------------
+
+    /// The whole point: a config that still carries a token row must
+    /// refuse to start, naming the field and the fix. Without this the
+    /// row is silently ignored (`AuthConfig` is not
+    /// `deny_unknown_fields`) and the operator believes a credential is
+    /// live when it authenticates nothing.
+    #[test]
+    fn retired_token_table_is_reported() {
+        let raw = r#"
+[auth]
+[[auth.tokens]]
+token      = "abcdefghijklmnop"
+agent_name = "claude"
+scopes     = ["read", "write"]
+"#;
+        let found = retired_fields(raw);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].spelling, "[[auth.tokens]]");
+        let msg = found[0].to_string();
+        assert!(msg.contains("[[auth.tokens]]"), "{msg}");
+        assert!(msg.contains("052"), "{msg}");
+        assert!(msg.contains("auth.identities"), "{msg}");
+    }
+
+    /// Sprint 034's form is retired too, and says so under its own
+    /// sprint number rather than this one's.
+    #[test]
+    fn retired_bearer_token_key_is_reported_under_sprint_034() {
+        let found = retired_fields("[auth]\nbearer_token = \"abcdefghijklmnop\"\n");
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].spelling, "bearer_token");
+        assert_eq!(found[0].sprint, "034");
+    }
+
+    /// The property that makes the guard usable rather than a
+    /// fleet-wide outage: this repo ships an example config documenting
+    /// the retired forms in prose. A guard that refused to start over a
+    /// comment would fail exactly the operators it protects (kaed 024
+    /// D-1).
+    #[test]
+    fn prose_about_the_cutover_is_not_a_refusal() {
+        let raw = r#"
+# [[auth.tokens]] — RETIRED (sprint 052). Do not add rows here.
+# The old `bearer_token` form went in sprint 034.
+[auth]
+[[auth.identities]]
+agent_name = "claude"
+scopes     = ["read", "write"]
+"#;
+        assert!(retired_fields(raw).is_empty(), "{:?}", retired_fields(raw));
+    }
+
+    /// A `#` inside a quoted value is not a comment. Truncating there
+    /// would hide a retired key that followed it on the same line —
+    /// the guard failing open, which is the one way it must not fail.
+    #[test]
+    fn a_hash_inside_a_quoted_value_does_not_start_a_comment() {
+        let raw = "[postgres]\nurl = \"postgres://u:p#ass@localhost/db\" # real comment\n";
+        assert_eq!(
+            strip_toml_comments(raw).trim_end(),
+            "[postgres]\nurl = \"postgres://u:p#ass@localhost/db\""
+        );
+        // And the guard still sees a retired key sharing that line.
+        let sneaky = "url = \"p#ass\"\nbearer_token = \"x\"\n";
+        assert_eq!(retired_fields(sneaky).len(), 1);
+    }
+
+    /// Longest-first, and the match is consumed: `[[auth.tokens]]` must
+    /// report once, as itself, not also as some shorter pattern it
+    /// contains. Pinned because the naive scan reports fields the file
+    /// never named (kaed 024 D-1's second property).
+    #[test]
+    fn retired_spellings_are_ordered_longest_first() {
+        let lengths: Vec<usize> = RETIRED.iter().map(|r| r.spelling.len()).collect();
+        let mut sorted = lengths.clone();
+        sorted.sort_unstable_by(|a, b| b.cmp(a));
+        assert_eq!(lengths, sorted, "RETIRED must stay ordered longest-first");
+    }
+
+    /// Both forms in one file are both reported — an operator fixing a
+    /// config wants the whole list in one pass, the same rule
+    /// [`AuthConfig::errors`] follows.
+    #[test]
+    fn every_retired_form_present_is_reported() {
+        let raw = "bearer_token = \"x\"\n[[auth.tokens]]\ntoken = \"y\"\n";
+        let found = retired_fields(raw);
+        assert_eq!(found.len(), 2, "{found:?}");
+    }
+
+    /// A clean identities-only config — what sprint 050 left on kubs0 —
+    /// passes the guard. This is the live precondition for the deploy.
+    #[test]
+    fn an_identities_only_config_passes_the_guard() {
+        let raw = r#"
+[auth]
+[[auth.identities]]
+agent_name = "claude"
+scopes     = ["read", "write", "manage"]
+"#;
+        assert!(retired_fields(raw).is_empty());
     }
 }

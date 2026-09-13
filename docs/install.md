@@ -79,12 +79,13 @@ KLAMS_ROOT=/ai/klams ./scripts/provision-storage-root.sh
 The script creates the storage root and renders four files under
 `$KLAMS_ROOT/config/`, generating secrets as it goes:
 
-- `klams.toml` — service config, with three `[[auth.tokens]]` grants:
-  **operator** (read+write+manage — yours; the script prints it once),
-  **scanner**, and **monitor**.
+- `klams.toml` — service config, with three `[[auth.identities]]` rows:
+  **operator** (read+write+manage — yours), **scanner**, and
+  **monitor**. Nothing secret is generated for these: an identity is a
+  declared name.
 - `compose.env` — image tags + the generated Postgres password.
-- `scanner.toml` / `monitor.toml` — daemon configs with url + token
-  already filled. The scanner's `roots` is a placeholder you'll edit
+- `scanner.toml` / `monitor.toml` — daemon configs with url + declared
+  identity already filled. The scanner's `roots` is a placeholder you'll edit
   in §7.
 
 It's idempotent: existing config is never overwritten. Save the
@@ -210,9 +211,9 @@ Give each agent its own identity: add an `[[auth.identities]]` row to
 read,write` (a distinct `agent_name` — see [auth.md](auth.md)), then
 `sudo systemctl reload klams-service` (or restart `just run`). The
 agent declares that name in an `X-Homelab-Agent` header; there is no
-secret to hand it. Bearer tokens still work — the sprint-049
-transition window is open while `[[auth.tokens]]` has rows — so an
-existing agent keeps working until you move it.
+secret to hand it. Bearer tokens no longer work at all (sprint 052): an
+agent still sending `Authorization` gets a 401 whose body says which
+header to send instead.
 
 ### The networking truth
 

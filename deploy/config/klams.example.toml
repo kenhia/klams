@@ -11,7 +11,7 @@ port = 7777
 
 [auth]
 # ---------------------------------------------------------------------
-# Sprint 049 — IDENTITIES are the current form; token grants are legacy.
+# IDENTITIES are the only form of authentication. There are no tokens.
 # ---------------------------------------------------------------------
 #
 # A klams bearer token was a name tag, not a lock: its only job was to
@@ -20,7 +20,7 @@ port = 7777
 #
 #     X-Homelab-Agent: <agent_name>
 #
-# An unknown name is a 401, exactly as an unknown token is. Scopes are
+# An unknown name is a 401, exactly as an unknown token was. Scopes are
 # looked up by name, and authorship is unchanged — klams has keyed
 # attribution on `agent_name` rather than on token bytes since sprint
 # 009, so moving a consumer from a token to a header does not orphan
@@ -34,8 +34,8 @@ port = 7777
 #   sudo klams-token identity nodes <name> --set kubs0,kai
 #   sudo klams-token identity remove <name>
 #
-# Then `sudo systemctl reload klams-service` (SIGHUP hot-reloads both
-# tables).
+# Then `sudo systemctl reload klams-service` (SIGHUP hot-reloads the
+# identity table).
 #
 # At least one `[[auth.identities]]` entry must be set or the service
 # refuses to start; `scopes` must be non-empty.
@@ -100,16 +100,20 @@ port = 7777
 # cache_ttl_secs = 300
 
 # ---------------------------------------------------------------------
-# [[auth.tokens]] — RETIRED (sprint 050). Do not add rows here.
+# `[[auth.tokens]]` and `bearer_token` — RETIRED. THE SERVICE WILL NOT
+# START if your config still names either one.
 # ---------------------------------------------------------------------
 #
-# The transition window closed on 2026-09-12: klams holds no bearer
-# tokens and this example ships no token rows. The parser still accepts
-# the table so a config written before 050 starts rather than refusing,
-# but a row here buys nothing an `[[auth.identities]]` row above does
-# not, and it reintroduces a secret into a file that otherwise holds
-# none. The parsing code goes with klams WI 2489, once the window is
-# observed closed from a restarted session on every host.
+# Sprint 050 deleted every token row from the live config; sprint 052
+# deleted the code that parsed them. No bearer authenticates anything.
+#
+# The refusal is deliberate rather than a silent ignore. This config
+# model tolerates unknown fields, so a surviving `[[auth.tokens]]` row
+# would otherwise be dropped without a word — and an operator would go
+# on believing a credential was live when it authenticated nothing.
+# klams scans the raw file before parsing it and refuses, naming the
+# field and the fix. COMMENTS ARE STRIPPED FIRST, which is why the
+# prose in this very block is not itself a refusal.
 #
 # Migrating a row: drop `token`, keep `agent_name`, `scopes` and
 # `label`, and rename the table.
@@ -120,13 +124,16 @@ port = 7777
 #   label      = "klams-view"          label      = "klams-view"
 #   agent_name = "klams-view"
 #
+# Or, equivalently: `sudo klams-token identity add klams-view --scopes read`.
+#
 # Consumers then send `X-Homelab-Agent: klams-view` and no credential.
 # Nothing about attribution moves: klams has keyed authorship on
 # `agent_name` since sprint 009, so a consumer that changes how it
 # authenticates keeps everything it ever wrote.
 #
-# Sprint 034 (#703) — the even older `bearer_token` form is refused at
-# startup with a migration note, and stays refused.
+# A client that still sends `Authorization` gets a 401 whose body names
+# the header to send and the one to drop — `Authorization` is read for
+# that diagnostic only, and authenticates nothing.
 
 [postgres]
 url = "postgres://klams:changeme@127.0.0.1:5432/klams"

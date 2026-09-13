@@ -147,7 +147,7 @@ async fn post(
             Request::builder()
                 .method(Method::POST)
                 .uri(uri)
-                .header(header::AUTHORIZATION, "Bearer test-bearer")
+                .header("x-homelab-agent", "test-bearer")
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(serde_json::to_vec(&body).unwrap()))
                 .unwrap(),
@@ -171,7 +171,7 @@ async fn get(app: &axum::Router, uri: &str) -> (StatusCode, serde_json::Value) {
             Request::builder()
                 .method(Method::GET)
                 .uri(uri)
-                .header(header::AUTHORIZATION, "Bearer test-bearer")
+                .header("x-homelab-agent", "test-bearer")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -417,7 +417,7 @@ async fn knowledge_delete_removes_matching_chunks() {
             Request::builder()
                 .method(Method::POST)
                 .uri("/memory/knowledge/delete?source_file=%2Fabs%2Fpath%2Fnote.md&machine=kubs0")
-                .header(header::AUTHORIZATION, "Bearer test-bearer")
+                .header("x-homelab-agent", "test-bearer")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -440,7 +440,7 @@ async fn knowledge_delete_missing_source_file_returns_zero() {
             Request::builder()
                 .method(Method::POST)
                 .uri("/memory/knowledge/delete?source_file=%2Fno%2Fsuch%2Fpath&machine=kubs0")
-                .header(header::AUTHORIZATION, "Bearer test-bearer")
+                .header("x-homelab-agent", "test-bearer")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -465,7 +465,7 @@ async fn knowledge_delete_without_machine_is_rejected() {
             Request::builder()
                 .method(Method::POST)
                 .uri("/memory/knowledge/delete?source_file=%2Fabs%2Fpath%2Fnote.md")
-                .header(header::AUTHORIZATION, "Bearer test-bearer")
+                .header("x-homelab-agent", "test-bearer")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -488,7 +488,7 @@ async fn knowledge_delete_with_blank_machine_is_rejected() {
             Request::builder()
                 .method(Method::POST)
                 .uri("/memory/knowledge/delete?source_file=%2Fa%2Fb.md&machine=%20%20")
-                .header(header::AUTHORIZATION, "Bearer test-bearer")
+                .header("x-homelab-agent", "test-bearer")
                 .body(Body::empty())
                 .unwrap(),
         )

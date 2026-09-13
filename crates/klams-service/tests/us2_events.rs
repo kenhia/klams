@@ -89,7 +89,7 @@ async fn scenario_2_no_update_or_delete_endpoint() {
     ] {
         let resp = http
             .request(method.clone(), &url)
-            .bearer_auth(&server.bearer_token)
+            .header("X-Homelab-Agent", &server.full_agent)
             .send()
             .await
             .expect("send");

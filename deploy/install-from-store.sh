@@ -193,7 +193,7 @@ for bin in "${BINS[@]}"; do
             # nothing to restart, and saying "restart it by hand" would send
             # the reader looking for a service that does not exist.
             printf '  klams-token    nothing to restart (operator CLI);\n'
-            printf '                 confirm with: sudo klams-token list --verify\n' ;;
+            printf '                 confirm with: sudo klams-token identity list\n' ;;
         *)             printf '  %s  (unknown unit — restart it by hand)\n' "$bin" ;;
     esac
 done

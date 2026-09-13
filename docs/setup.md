@@ -15,7 +15,7 @@ for the rationale.
 ```text
 $KLAMS_ROOT/                  (default /ai/klams)
 ├── config/
-│   ├── klams.toml            # service config (incl. [[auth.tokens]] grants)
+│   ├── klams.toml            # service config (incl. [[auth.identities]] rows)
 │   └── compose.env           # KLAMS_DATA_ROOT, image tags, secrets
 ├── data/                     # bind-mounted into containers
 │   ├── postgres/
@@ -417,14 +417,17 @@ owner and mode yourself.
 
 ### Managing grants after provisioning
 
-Adding, rescoping or retiring an `[[auth.identities]]` row — or
-rotating a legacy `[[auth.tokens]]` grant — is
+Adding, rescoping or retiring an `[[auth.identities]]` row is
 `klams-token`'s job, not an editor's — see
 [usage.md](usage.md#sprint-045--klams-token-auth-grant-cli).
 
 ```sh
-sudo klams-token list --verify
+sudo klams-token identity list
 ```
+
+This is also the **only** supported way to read the roster: never `cat`
+or `grep` `/etc/klams/klams.toml`, which still carries the Postgres
+password under `[postgres]` (krot WI 2466).
 
 `klams-token` arrives with the ordinary deploy — `just publish` and
 `just deploy-from-store` carry it alongside the three services (sprint
@@ -528,10 +531,10 @@ target Postgres is left in its pre-call state.
 ## Sprint 007 — MCP server registration
 
 Sprint 007 mounts a Model Context Protocol surface on
-`klams-service`. Once tokens are configured (see
-[usage.md](usage.md#sprint-007--mcp-server) for the `[[auth.tokens]]`
-shape) and the service is running, register klams with each MCP
-client you want to wire in.
+`klams-service`. Once identities are configured (see
+[usage.md](usage.md#sprint-007--mcp-server) for the
+`[[auth.identities]]` shape) and the service is running, register klams
+with each MCP client you want to wire in.
 
 Step-by-step walkthrough lives at
 [sprints/007-mcp-server/quickstart.md](../sprints/007-mcp-server/quickstart.md).
@@ -759,35 +762,32 @@ Each `[[auth.identities]]` entry in `klams.toml` is keyed by its
 `agent_name` — it is the row's identity, not an optional binding. (The
 retired `[[auth.tokens]]` form treated it as optional for
 `read`/`write`-only grants and mandatory for `manage`/`admin` — sprint
-034, #703.) The agent name is resolved to an `author_id` at
+034, #703; the whole table went in sprint 052.) The agent name is
+resolved to an `author_id` at
 service startup (the row is created in the `authors` table if it
-doesn't already exist) and again on each [auth reload](#hot-reloading-authtokens).
-Every REST write under that bearer is then attributed to the
+doesn't already exist) and again on each [auth reload](#hot-reloading-the-auth-tables).
+Every REST write under that identity is then attributed to the
 resolved author, and MCP write tools (`memory_add`,
 `memory_append_event`, `dissent_propose`) fall back to it when the
 caller omits `author_id` (sprint 018, WI #62).
 
 Since sprint 025 the binding is also an **authorization** input, not
 just an attribution one: `memory_delete` acts as the bound author and
-refuses to delete another author's memory unless the token carries the
-`manage` scope. A token with no `agent_name` cannot delete at all. See
-[auth.md](auth.md) for the full model.
+refuses to delete another author's memory unless the caller carries the
+`manage` scope. See [auth.md](auth.md) for the full model.
 
 ```toml
-[[auth.tokens]]
-token = "ghcp-write-XXXXXXXXXXXXXXXX"
+[[auth.identities]]
+agent_name = "ghcp"            # lowercase, digits, '-' or '_'
 scopes = ["read", "write"]
-agent_name = "ghcp"            # ← NEW; lowercase, digits, '-' or '_'
 
-[[auth.tokens]]
-token = "klams-view-XXXXXXXXXXXXXXXX"
-scopes = ["read"]                      # the dashboard only reads
+[[auth.identities]]
 agent_name = "klams-view"
+scopes = ["read"]                      # the dashboard only reads
 
-[[auth.tokens]]
-token = "bench-XXXXXXXXXXXXXXXX"
-scopes = ["read", "write"]
+[[auth.identities]]
 agent_name = "klams-bench"      # required for author-based bench-clean
+scopes = ["read", "write"]
 ```
 
 Rules (enforced at startup; the service refuses to start on
@@ -804,22 +804,23 @@ violation):
   — but only for unprivileged grants: since sprint 034 (#703) a grant
   holding `manage` or `admin` must declare `agent_name`, so privileged
   actions are attributable.
-- The legacy single `[auth].bearer_token` field is **retired**
-  (sprint 034, #703). It used to materialize as a `system`-bound
-  all-scope grant — exactly the unattributable privileged credential
-  the previous rule forbids. The key still parses so it can be
-  refused loudly: a config that sets it fails startup,
-  `--validate-config`, and SIGHUP reload alike. Migration note:
-  [auth.md](auth.md). Since sprint 050 the `[[auth.tokens]]` table is
-  empty, so at least one `[[auth.identities]]` row is what a startable
-  config needs.
+- Both `[[auth.tokens]]` and the older `[auth].bearer_token` are
+  **retired and refused** (sprint 034 #703 for the latter; sprint 052
+  deleted both code paths). A config naming either fails startup,
+  `--validate-config`, and SIGHUP reload alike, with a message naming
+  the field and the fix — deliberately loud, because this config model
+  tolerates unknown fields and would otherwise drop the row in silence.
+  Comments mentioning them are stripped before the scan, so
+  documentation about the cutover is not a refusal. At least one
+  `[[auth.identities]]` row is what a startable config needs. Migration
+  note: [auth.md](auth.md).
 
 ### Hot-reloading the auth tables
 
-Sprint 018 (WI #61): adding, removing, or rotating bearer tokens no
-longer needs a service restart. Send SIGHUP and the service re-reads
-`klams.toml`, re-resolves token→author bindings, and atomically swaps
-the in-memory token table shared by the REST and `/mcp` surfaces:
+Sprint 018 (WI #61): adding or removing an identity no longer needs a
+service restart. Send SIGHUP and the service re-reads `klams.toml`,
+re-resolves identity→author bindings, and atomically swaps the
+in-memory auth table shared by the REST and `/mcp` surfaces:
 
 ```bash
 sudo systemctl reload klams-service      # unit ships ExecReload=kill -HUP
@@ -829,21 +830,19 @@ kill -HUP "$(pidof klams-service)"
 
 Semantics:
 
-Sprint 049 added `[[auth.identities]]`; SIGHUP swaps **both** tables
-atomically together, so everything below applies to identities too.
 `[auth.whois]` is the exception and needs a restart — its resolver owns a
 cache and its `enforce` flag can refuse requests.
 
-- New `[[auth.identities]]` / `[[auth.tokens]]` entries authenticate immediately after the
+- New `[[auth.identities]]` entries authenticate immediately after the
   reload; removed entries stop authenticating. In-flight requests are
   not dropped — a request already past its auth check completes
   normally.
 - Only the `[auth]` block is applied. Changes to any other section
   (postgres, qdrant, embeddings, backup, …) still require a restart.
-- A reload that fails (unparseable TOML, no entries in *either* auth table,
-  a still-set retired `bearer_token`, invalid or missing
-  `agent_name`) is logged as an error and the **previous token table
-  stays active** — a broken edit can't lock every caller out. Check
+- A reload that fails (unparseable TOML, no `[[auth.identities]]`
+  entries, a retired `[[auth.tokens]]`/`bearer_token`, invalid or
+  missing `agent_name`) is logged as an error and the **previous auth
+  table stays active** — a broken edit can't lock every caller out. Check
   `journalctl -u klams-service -g SIGHUP` for the outcome; run
   `klams-service --validate-config` before reloading to catch errors
   up front.
@@ -895,11 +894,10 @@ the host for a fully-qualified `(host, source_path)`.
 
 ### Deploying a scanner on a second host (e.g. kai)
 
-1. **Token:** add a dedicated `[[auth.tokens]]` to `/etc/klams/klams.toml`
-   on kubs0 (write scope, `agent_name = "kai-scanner"`), then
-   `sudo systemctl reload klams-service` (hot-reload, no restart — sprint
-   018). Keep it distinct from kubs0's own scanner token so writes stay
-   attributable per host.
+1. **Identity:** `sudo klams-token identity add kai-scanner --scopes
+   read,write` on kubs0, then `sudo systemctl reload klams-service`
+   (hot-reload, no restart — sprint 018). Keep it distinct from kubs0's
+   own scanner identity so writes stay attributable per host.
 2. **Binary:** install the same-version `klams-scanner` on the second
    host (it's the same Linux release binary; version must match the
    service it writes to). Since sprint 042 this is a store fetch and

@@ -31,6 +31,20 @@ pub enum ApiError {
     TrustRequired { message: String },
     #[error("unauthorized")]
     Unauthorized,
+    /// Sprint 052 (D-2) — the caller sent `Authorization` and no
+    /// `X-Homelab-Agent`. Still a 401: the bearer authenticates
+    /// nothing and is never looked up. What this variant buys is a body
+    /// that names the header to send and the one to drop.
+    ///
+    /// WI 2490 is why it exists: three clients sat sending a retired
+    /// credential and getting a bare 401 for a full day, because from
+    /// outside "sent a retired credential" and "sent nothing" were
+    /// indistinguishable.
+    #[error(
+        "bearer tokens are retired (sprint 052): send `X-Homelab-Agent: <agent_name>` \
+         and drop the `Authorization` header"
+    )]
+    BearerRetired,
     #[error("insufficient scope: {needed:?} required")]
     ScopeInsufficient { needed: klams_types::Scope },
     /// Sprint 049 (WI 2389) — whois enforcement refused a caller whose
@@ -108,7 +122,7 @@ impl ApiError {
             ApiError::TrustRequired { .. }
             | ApiError::ScopeInsufficient { .. }
             | ApiError::NodeNotAllowed { .. } => StatusCode::FORBIDDEN,
-            ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
+            ApiError::Unauthorized | ApiError::BearerRetired => StatusCode::UNAUTHORIZED,
             ApiError::TooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
             ApiError::QueueFull { .. } | ApiError::AllSourcesUnavailable { .. } => {
                 StatusCode::SERVICE_UNAVAILABLE
@@ -165,7 +179,23 @@ impl ApiError {
             },
             ApiError::Unauthorized => WireApiError {
                 code: "unauthorized".into(),
-                message: "missing or invalid bearer token".into(),
+                // Sprint 052: names the header, because there is now
+                // exactly one way to authenticate and a caller reading
+                // this has got it wrong.
+                message: "missing or unknown `X-Homelab-Agent` identity".into(),
+                field: None,
+                request_id: None,
+                details: None,
+                current_version: None,
+                window_max_days: None,
+            },
+            ApiError::BearerRetired => WireApiError {
+                code: "bearer_retired".into(),
+                // The Display impl names both headers — the one to send
+                // and the one to drop. That is the whole point of the
+                // variant (D-2); a bare "unauthorized" here would put
+                // the caller back where WI 2490 left them.
+                message: self.to_string(),
                 field: None,
                 request_id: None,
                 details: None,

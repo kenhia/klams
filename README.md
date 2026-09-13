@@ -55,11 +55,10 @@ Then, going deeper:
   granted. Since sprint 049 a caller declares its name in an
   `X-Homelab-Agent` header rather than presenting a secret — a klams
   bearer token was a name tag, not a lock, so the secret went and the
-  name stayed. Sprint 050 closed the transition window: there are no
-  bearer tokens left, and an unknown name is a 401.
-  Grants are managed with `klams-token`, which edits them
-  structurally and can tell you which ones the service still accepts
-  (`klams-token list --verify`).
+  name stayed. Sprint 050 closed the transition window and sprint 052
+  deleted the bearer code: an unknown name is a 401, and so is a bearer.
+  Identities are managed with `sudo klams-token identity …`, which edits
+  them structurally so a write cannot clobber a sibling row.
 - [docs/klams-mcp-for-agents.md](docs/klams-mcp-for-agents.md) — hand
   this to an AI agent to wire it up, including the routing-policy
   blurb that makes agents actually use the store.
