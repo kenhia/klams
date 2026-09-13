@@ -330,3 +330,52 @@ Fixed forward rather than by rewriting pushed history: this commit carries no
 marker, so it re-triggers the workflow on the PR. The squash body is composed by
 hand and deliberately does not quote the marker either, which is the guard
 sprint-ship Step 5.1 already carries.
+
+## Deployed
+
+**klams 0.1.50** — published to the package store and installed on kubs0
+(`klams-service`, `klams-scanner`, `klams-monitor`, `klams-token`) and on
+kai (`klams-scanner`), during the sprint rather than after the merge,
+because the cutover needed the new binaries before the daemon configs
+could stop carrying tokens.
+
+`/healthz` reports `0.1.50 Ok`; all four kubs0 binaries and kai's scanner
+report `0.1.50`.
+
+**No redeploy at ship time, and that is verified rather than assumed**
+(overseer ruling on korg:2450). The only file changed between the publish
+commit `af89a46` and the squash merge `c842e62` is
+`sprints/050-close-transition-window/sprint.md` — `git diff --stat` over
+`crates/ tools/ Cargo.toml Cargo.lock migrations/ deploy/ scripts/ justfile`
+is empty, so the running binaries are built from `main`'s code exactly and
+a rebuild would produce the same artefact under a new stamp.
+
+### Post-merge: the `klams-bench` identity restored
+
+The overseer reversed this sprint's reading of WI 2390 on one row, and the
+reversal ran in the ship turn:
+
+```
+sudo klams-token identity add klams-bench --scopes read,write
+sudo systemctl reload klams-service
+```
+
+Twelve identities now. `alice`, `ken_admin`, `token-master` and
+`multea-viae` stay deleted — the "no identity row" instruction was Ken's
+2026-09-11 call about *admin tokens*, made before identity rows existed,
+and its rationale does not reach a perf harness this repo ships and this
+sprint converted to declare that very name.
+
+Proved, not asserted: `klams-bench` → `200`, an unknown name → `401`, no
+credential → `401`; and the harness itself was run —
+`KLAMS_AGENT=klams-bench ./target/release/run --repeats 1` — which reported
+**10 samples, 0 errors** through `klams_client` on the header.
+
+### The ship turn is itself an observation for WI 2489
+
+This turn is the first karc leg on kubs0 to start under the cut-over
+toolbox, and its klams MCP client **came up on the header**: a real
+`memory_search` returned rows through a `karc-legs.mcp.json` carrying
+`X-Homelab-Agent: claude` and no credential. kaed's entry on the same file
+— repaired in passing during the sprint — also came up, which is why the
+kaed tools are in this turn's toolbox at all.
