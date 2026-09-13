@@ -117,3 +117,20 @@ Recorded in `cutover.md` alongside this file.
   turn. Verified token-free with `klams-token --config <bak> list` (zero grant
   rows, names only, no value read), so it is not secret-bearing and is not
   this sprint's file. Recorded so nobody re-audits it.
+
+## Deployed
+
+**Nothing published or installed by this ship — a deliberate no-op**, ruled by
+the program overseer (korg:2528 ruling 4) and carried in the ship clearance.
+
+- **0.1.51 changes no binary.** The diff is a systemd unit, a new drop-in, the
+  installer, an example config and docs. Redeploying to move a version string
+  is churn with restart risk and no information in it.
+- **The behaviour this sprint delivers is already live on kubs0**, installed
+  during implementation and verified there: `klams-monitor` reads
+  `/etc/khomelab/secrets.env` and nothing else, and `/etc/klams/monitor.env`
+  is gone. See `cutover.md`.
+- **The kpidash card keeps reading `v0.1.50`**, which is true of the binary
+  that is running. If AGENTS.md's version convention is to be read as "the
+  card must name the latest merged sprint", that is a klams convention to
+  revisit on its own, not something for this ship to force.
