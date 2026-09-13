@@ -25,12 +25,13 @@ config; an unknown name is a `401`, exactly as an unknown token is. Full
 model — including why a name tag was never a lock — in
 [auth.md](auth.md).
 
-Bearer tokens still work while the transition window is open (that is,
-while `[[auth.tokens]]` has rows), loaded from the service config and
-compared in constant time:
+Bearer tokens are gone. The transition window closed in sprint 050 when
+the last `[[auth.tokens]]` row was deleted; klams carries no credential
+of any kind, and a caller that sends only an `Authorization` header gets
+a `401`.
 
 ```text
-Authorization: Bearer <token>
+X-Homelab-Agent: <agent_name>
 ```
 
 The legacy single `auth.bearer_token` field (and its
@@ -183,8 +184,8 @@ or detail view.
 
 | Endpoint | Auth role | Effect |
 |----------|-----------|--------|
-| `GET  /memory/dissents` | any bearer | Paginated list; filterable by `status`, `source`, `fact_id`, `created_after`, `caller_source`. |
-| `GET  /memory/dissents/{id}` | any bearer | Single dissent (proposed payload, source, timestamps, dedupe count). |
+| `GET  /memory/dissents` | any identity | Paginated list; filterable by `status`, `source`, `fact_id`, `created_after`, `caller_source`. |
+| `GET  /memory/dissents/{id}` | any identity | Single dissent (proposed payload, source, timestamps, dedupe count). |
 | `POST /memory/dissents/{id}/promote` | `User` or `Controller` | Replaces canonical fact, bumps `version`, sets `source` to promoter. Requires `expected_version`. 409 on stale version, 410 if dissent was already resolved, 403 if request `source` is below promote threshold. |
 | `POST /memory/dissents/{id}/discard` | `User` or `Controller` | Marks dissent `discarded`. Fact untouched. Same 403/410 rules. |
 
@@ -228,18 +229,21 @@ The three store recipes are documented in full in
 [setup.md](setup.md#sprint-042--deploying-from-the-package-store),
 including the copy-paste bootstrap for a host you cannot ssh to from
 here. `KLAMS_STORE_URL` and `KLAMS_STORE_HOST` have **no defaults**, for
-the same reason `KLAMS_TOKEN` does not — and because AGENTS.md forbids
+the same reason `KLAMS_AGENT` does not — and because AGENTS.md forbids
 shipping one homelab's hostname as another's default.
 
-`KLAMS_URL` and `KLAMS_TOKEN` are read from the environment — or from
+`KLAMS_URL` and `KLAMS_AGENT` are read from the environment — or from
 a gitignored `.env` at the repo root (`set dotenv-load`, sprint 035) —
 so the same `just health` and `just verify` work against a local stack
 or a remote service.
 
-**`KLAMS_TOKEN` has no default** (sprint 031). It used to fall back to
-`dev-token`, so forgetting to export it produced a `401` that read like
-an auth regression rather than a missing variable. Unset, the recipes
-now stop with `FATAL: KLAMS_TOKEN must be set`.
+**`KLAMS_AGENT` has no default** (sprint 031, carried over from
+`KLAMS_TOKEN` in 050). A default produced a `401` that read like an auth
+regression rather than a missing variable. Unset, the recipes now stop
+with `FATAL: KLAMS_AGENT must be set`. It names an `[[auth.identities]]`
+row — `sudo klams-token identity list` shows the ones this service
+knows — and is not a secret, so it is safe in a shell history or a CI
+log.
 
 ### `gate` vs CI (sprint 031)
 
@@ -299,7 +303,7 @@ Returns the runtime `MemoryPolicy` (dedupe rules, decay λ per
 behaviour without parsing the TOML:
 
 ```sh
-curl -sS -H "Authorization: Bearer $KLAMS_TOKEN" \
+curl -sS -H "X-Homelab-Agent: $KLAMS_AGENT" \
     "$KLAMS_URL/memory/policy" | jq .
 ```
 
@@ -344,7 +348,7 @@ defined in
 
 ```sh
 curl -fsS https://kubs0:7777/memory/context \
-  -H "authorization: bearer $KLAMS_TOKEN" \
+  -H "x-homelab-agent: $KLAMS_AGENT" \
   -H 'content-type: application/json' \
   -d '{
         "query": "how is GPU driver state tracked on kai?",
@@ -662,7 +666,7 @@ klams memories through a uniform tool interface. The MCP server is
 
 | Tool | Scope | Purpose |
 |------|-------|---------|
-| `register_author` | `read` | Issue / refresh the caller's author id. Optional since sprint 018: write tools default to the bearer token's bound author; call this only to write as a separate per-session identity. `repo` accepts an absolute path or a bare repo name. |
+| `register_author` | `read` | Issue / refresh the caller's author id. Optional since sprint 018: write tools default to the declared identity's bound author; call this only to write as a separate per-session identity. `repo` accepts an absolute path or a bare repo name. |
 | `memory_search` | `read` | Hybrid retrieval over facts + knowledge + events. `tags` narrows the search to a tagged subset (AND across tags) — since sprint 041 (#799) that is a Qdrant-side filter, so the ANN ranks within the subset instead of pruning a page chosen from the whole corpus. |
 | `event_search` | `read` | Filter `events` by category / task / time window / payload substring. Pure SQL — never hits the embedder (FR-004). |
 | `memory_related` | `read` | Neighborhood expansion around a known memory id. |
@@ -676,7 +680,7 @@ klams memories through a uniform tool interface. The MCP server is
 | `memory_admin_hard_delete` | `admin` | Permanently remove a soft-deleted row. |
 | `memory_admin_list_deleted` | `admin` | Page through soft-deleted rows for triage. |
 
-The advertised tool list is filtered per-request by the bearer
+The advertised tool list is filtered per-request by the declared
 token's grant; an `admin`-less token never sees the `memory_admin_*`
 tools (FR-020). (Token-budgeted context bundles remain REST-only at
 `/memory/context` — the `memory_context` tool sketched in 007 was
@@ -684,7 +688,7 @@ never mounted.)
 
 Since sprint 018 the write tools' `author_id` argument is optional:
 when omitted, the write is attributed to the author bound to the
-caller's bearer token (`agent_name` in `[[auth.tokens]]`, or the
+caller's declared identity (`agent_name` in `[[auth.identities]]`, or the
 seeded `system` author for unbound/legacy tokens). Passing an
 explicit `author_id` still works and always wins.
 

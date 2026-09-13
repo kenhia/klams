@@ -7,7 +7,7 @@ recall. It assumes you have never read a sprint doc and never will.
 
 What you end up with: the **klams-service** HTTP + MCP API on
 `127.0.0.1:7777`, backed by Postgres, Qdrant, and a text-embeddings
-server in Docker; an operator bearer token; an agent wired to the MCP
+server in Docker; an operator identity; an agent wired to the MCP
 surface; and a **scanner** keeping a knowledge corpus in sync with
 your files.
 
@@ -230,13 +230,13 @@ tailscale serve --bg --https 7777 http://127.0.0.1:7777
 ```
 
 Do not bind the service itself to a public interface; put a
-TLS-terminating proxy in front and keep bearer tokens off the wire in
+TLS-terminating proxy in front and keep the Postgres DSN off the wire in
 the clear.
 
 ## 9. Prove it — the first-run smoke
 
 ```sh
-KLAMS_TOKEN=<your operator token> just smoke
+KLAMS_AGENT=operator just smoke
 ```
 
 This drives the whole loop against your running service — health,

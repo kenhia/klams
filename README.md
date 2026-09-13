@@ -23,8 +23,8 @@ Retrieval is hybrid: dense vectors (Qdrant + a text-embeddings
 server), Postgres full-text, a curated stratum, and a lexical list
 (exact-token matches over the knowledge text), fused with reciprocal
 rank fusion and re-ranked by a cross-encoder. Agents talk
-to it over MCP (Streamable HTTP) with scoped, attributed bearer
-tokens; writes carry their author.
+to it over MCP (Streamable HTTP) under a scoped, attributed declared
+identity; writes carry their author.
 
 Alongside the service run two companions:
 
@@ -55,7 +55,8 @@ Then, going deeper:
   granted. Since sprint 049 a caller declares its name in an
   `X-Homelab-Agent` header rather than presenting a secret — a klams
   bearer token was a name tag, not a lock, so the secret went and the
-  name stayed. Bearer tokens still work during the transition window.
+  name stayed. Sprint 050 closed the transition window: there are no
+  bearer tokens left, and an unknown name is a 401.
   Grants are managed with `klams-token`, which edits them
   structurally and can tell you which ones the service still accepts
   (`klams-token list --verify`).

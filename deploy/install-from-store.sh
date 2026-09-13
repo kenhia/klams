@@ -21,7 +21,7 @@
 #                       to "fix" that. Shipping units would overwrite it
 #                       on every deploy. Units come from install-systemd.sh
 #                       on hosts that have a checkout.
-#   * config          — /etc/klams/*.toml carries bearer tokens.
+#   * config          — /etc/klams/klams.toml carries the Postgres DSN.
 #   * restart/reload  — installing and activating are separate steps, so
 #                       the caller decides when a service takes the new
 #                       binary. The follow-up commands are printed.

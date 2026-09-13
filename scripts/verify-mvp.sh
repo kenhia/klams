@@ -4,7 +4,7 @@
 #
 # Configuration via env:
 #   KLAMS_URL     base URL of the running service   (default http://127.0.0.1:7777)
-#   KLAMS_TOKEN   bearer token                       (required)
+#   KLAMS_AGENT   identity to declare                (required)
 #
 # Flags:
 #   --light      Run only /healthz + a single fact write/read round-trip
@@ -50,11 +50,13 @@ if (( LIGHT && FIRST_RUN )); then
 fi
 
 URL="${KLAMS_URL:-http://127.0.0.1:7777}"
-TOKEN="${KLAMS_TOKEN:-}"
+AGENT="${KLAMS_AGENT:-}"
 
-if [[ -z "$TOKEN" ]]; then
-  echo "FATAL: KLAMS_TOKEN must be set — every check past /healthz is authenticated." >&2
-  echo "  e.g. KLAMS_TOKEN=<token> just health" >&2
+if [[ -z "$AGENT" ]]; then
+  echo "FATAL: KLAMS_AGENT must be set — every check past /healthz is authenticated." >&2
+  echo "  It is an [[auth.identities]] name, not a secret; \`sudo klams-token" >&2
+  echo "  identity list\` shows the ones this service knows." >&2
+  echo "  e.g. KLAMS_AGENT=operator just health" >&2
   exit 2
 fi
 
@@ -94,13 +96,13 @@ curl_api() {
   if [[ -n "$body" ]]; then
     curl -sS -o /tmp/verify-mvp.body -w '%{http_code}' \
       -X "$method" "$URL$path" \
-      -H "Authorization: Bearer $TOKEN" \
+      -H "X-Homelab-Agent: $AGENT" \
       -H 'Content-Type: application/json' \
       --data "$body"
   else
     curl -sS -o /tmp/verify-mvp.body -w '%{http_code}' \
       -X "$method" "$URL$path" \
-      -H "Authorization: Bearer $TOKEN"
+      -H "X-Homelab-Agent: $AGENT"
   fi
   echo
   cat /tmp/verify-mvp.body 2>/dev/null || true
@@ -175,7 +177,7 @@ else
   # partly because "status=422" says nothing about *which* field the
   # service rejected — and the service does return that detail.
   record SC-001 fail "fact write failed (status=$code): $(echo "$status_body" | tail -n +2 | head -c 300)" \
-    "401/403 → wrong KLAMS_TOKEN (grants are [[auth.tokens]] in klams.toml); 5xx → service logs"
+    "401 → KLAMS_AGENT names no [[auth.identities]] row in klams.toml; 403 → that row lacks the scope; 5xx → service logs"
 fi
 
 # ---------------------------------------------------------------------- SC-002
@@ -234,7 +236,7 @@ if [[ "$kcode" =~ ^2 ]]; then
   fi
 else
   record SC-002 fail "knowledge index failed (status=$kcode): $(echo "$kresp" | tail -n +2 | head -c 300)" \
-    "is the embedder container healthy? (docker compose ps — tei should be 'healthy'); 401 → wrong KLAMS_TOKEN"
+    "is the embedder container healthy? (docker compose ps — tei should be 'healthy'); 401 → KLAMS_AGENT names no identity row"
 fi
 
 # ---------------------------------------------------------------------- SC-003

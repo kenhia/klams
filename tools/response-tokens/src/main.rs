@@ -13,7 +13,7 @@
 //! shapes using the SAME snippet code the MCP tool ships.
 //!
 //! ```text
-//! KLAMS_TOKEN=<read-scope token> cargo run -p klams-response-tokens
+//! KLAMS_AGENT=<read-scope identity> cargo run -p klams-response-tokens
 //! ```
 //!
 //! `KLAMS_URL` defaults to the loopback service, `KHOUND_EVAL_SUITE` to
@@ -154,8 +154,10 @@ fn satisfies(hit: &Hit, body: &str, answers: &[Answer]) -> bool {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let token = std::env::var("KLAMS_TOKEN")
-        .context("KLAMS_TOKEN is not set — a read-scope klams token is required")?;
+    let agent = std::env::var("KLAMS_AGENT").context(
+        "KLAMS_AGENT is not set — name a read-scope [[auth.identities]] row \
+         (`sudo klams-token identity list`). It is a name, not a secret.",
+    )?;
     let base = std::env::var("KLAMS_URL").unwrap_or_else(|_| "http://127.0.0.1:7777".into());
     let suite_path = std::env::var("KHOUND_EVAL_SUITE").unwrap_or_else(|_| {
         format!(
@@ -182,7 +184,7 @@ async fn main() -> Result<()> {
     for q in &suite.queries {
         let resp = client
             .post(format!("{base}/memory/search"))
-            .bearer_auth(&token)
+            .header("X-Homelab-Agent", &agent)
             .json(&serde_json::json!({ "query": q.text, "top_k": TOP_K }))
             .send()
             .await;

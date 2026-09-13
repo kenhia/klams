@@ -1,7 +1,19 @@
 //! Typed HTTP client for the klams service.
 //!
-//! Wraps `reqwest::Client` with bearer-token injection and typed
+//! Wraps `reqwest::Client` with declared-identity injection and typed
 //! request/response handling for every documented endpoint.
+//!
+//! # Sprint 050 — the caller declares a name
+//!
+//! Every request carries `X-Homelab-Agent: <agent_name>` and no
+//! credential. A klams identity is a name tag, not a lock (sprint 049),
+//! so there is nothing here to keep secret, nothing to rotate, and
+//! deliberately no bearer fallback: the program's client convention is
+//! that an identity and a token together is an error, not a fallback,
+//! and the setting that held the token no longer exists.
+//!
+//! The name must match an `[[auth.identities]]` row exactly — an unknown
+//! name is a 401 and does not fall through to anything.
 
 // `ClientError::Api` carries the full `WireError` (extended with
 // `details` + `current_version` in sprint 002) so callers can render
@@ -19,7 +31,7 @@ use klams_types::{
     ListDissentsParams, ListEventsParams, ListFactsParams, ListMemoriesParams, MemoriesPage,
     PublicAuthor, SearchRequest, SearchResults, SearchType, Source, UpsertFactRequest,
 };
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::CONTENT_TYPE;
 use reqwest::StatusCode;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -40,21 +52,40 @@ pub enum ClientError {
 
 pub type ClientResult<T> = Result<T, ClientError>;
 
+/// The header a caller declares its identity in (sprint 049).
+///
+/// Kept here rather than imported from `klams-api` so the client does
+/// not depend on the server crate; the two are pinned together by
+/// `identity_header_matches_the_service` in `klams-api`'s auth tests.
+pub const AGENT_HEADER: &str = "X-Homelab-Agent";
+
 #[derive(Debug, Clone)]
 pub struct Client {
     base: Url,
     http: reqwest::Client,
-    bearer: String,
+    agent: String,
 }
 
 impl Client {
-    pub fn new(base_url: &str, bearer_token: impl Into<String>) -> ClientResult<Self> {
+    /// Build a client that declares `agent_name` on every request.
+    ///
+    /// `agent_name` is an `[[auth.identities]]` row's name — public, not
+    /// a credential. Passing a name klams does not know yields 401 on
+    /// the first call rather than an error here: the server owns that
+    /// roster, and a client that guessed locally would have to guess
+    /// again after every config change.
+    pub fn new(base_url: &str, agent_name: impl Into<String>) -> ClientResult<Self> {
         let base = Url::parse(base_url).map_err(|e| ClientError::InvalidUrl(e.to_string()))?;
         Ok(Self {
             base,
             http: reqwest::Client::new(),
-            bearer: bearer_token.into(),
+            agent: agent_name.into(),
         })
+    }
+
+    /// The identity this client declares.
+    pub fn agent(&self) -> &str {
+        &self.agent
     }
 
     fn url(&self, path: &str) -> ClientResult<Url> {
@@ -72,7 +103,7 @@ impl Client {
         let resp = self
             .http
             .post(url)
-            .header(AUTHORIZATION, format!("Bearer {}", self.bearer))
+            .header(AGENT_HEADER, &self.agent)
             .header(CONTENT_TYPE, "application/json")
             .json(body)
             .send()
@@ -85,7 +116,7 @@ impl Client {
         let resp = self
             .http
             .get(url)
-            .header(AUTHORIZATION, format!("Bearer {}", self.bearer))
+            .header(AGENT_HEADER, &self.agent)
             .send()
             .await?;
         Self::decode(resp).await
@@ -101,7 +132,7 @@ impl Client {
             .http
             .get(url)
             .query(query)
-            .header(AUTHORIZATION, format!("Bearer {}", self.bearer))
+            .header(AGENT_HEADER, &self.agent)
             .send()
             .await?;
         Self::decode(resp).await
@@ -162,7 +193,7 @@ impl Client {
         let resp = self
             .http
             .post(url)
-            .header(AUTHORIZATION, format!("Bearer {}", self.bearer))
+            .header(AGENT_HEADER, &self.agent)
             .header(CONTENT_TYPE, "application/json")
             .json(req)
             .send()
@@ -341,7 +372,7 @@ impl Client {
             .http
             .post(url)
             .query(&query)
-            .header(AUTHORIZATION, format!("Bearer {}", self.bearer))
+            .header(AGENT_HEADER, &self.agent)
             .send()
             .await?;
         Self::decode(resp).await
@@ -358,7 +389,7 @@ impl Client {
         let resp = self
             .http
             .delete(url)
-            .header(AUTHORIZATION, format!("Bearer {}", self.bearer))
+            .header(AGENT_HEADER, &self.agent)
             .send()
             .await?;
         let status = resp.status();
@@ -405,11 +436,11 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[tokio::test]
-    async fn bearer_token_is_attached() {
+    async fn declared_identity_is_attached() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/memory/facts"))
-            .and(header("authorization", "Bearer s3cret"))
+            .and(header("x-homelab-agent", "klams-scanner"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "items": [],
                 "next_cursor": null
@@ -417,7 +448,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let c = Client::new(&server.uri(), "s3cret").unwrap();
+        let c = Client::new(&server.uri(), "klams-scanner").unwrap();
         let page = c.list_facts().await.unwrap();
         assert!(page.items.is_empty());
     }
@@ -429,12 +460,12 @@ mod tests {
             .and(path("/memory/facts"))
             .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
                 "code": "unauthorized",
-                "message": "missing bearer token"
+                "message": "unknown declared identity"
             })))
             .mount(&server)
             .await;
 
-        let c = Client::new(&server.uri(), "anything").unwrap();
+        let c = Client::new(&server.uri(), "nobody-knows-this-name").unwrap();
         let err = c.list_facts().await.unwrap_err();
         match err {
             ClientError::Api { status, body } => {
@@ -452,7 +483,7 @@ mod tests {
         let now = "2026-05-16T12:00:00Z";
         Mock::given(method("POST"))
             .and(path("/memory/facts"))
-            .and(header("authorization", "Bearer tok"))
+            .and(header("x-homelab-agent", "klams-monitor"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "id": id,
                 "type": "UserFact",
@@ -469,7 +500,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let c = Client::new(&server.uri(), "tok").unwrap();
+        let c = Client::new(&server.uri(), "klams-monitor").unwrap();
         let req = klams_types::UpsertFactRequest {
             fact_type: klams_types::FactType::UserFact,
             payload: serde_json::json!({"key": "value"}),
@@ -487,20 +518,48 @@ mod tests {
         }
     }
 
+    /// The whole point of sprint 050: a klams client carries a name and
+    /// nothing else. A regression that reintroduced a bearer would still
+    /// pass every other test here, because the server accepts both while
+    /// the legacy path exists.
+    #[tokio::test]
+    async fn no_authorization_header_is_ever_sent() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/memory/facts"))
+            .and(wiremock::matchers::header_exists("x-homelab-agent"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [],
+                "next_cursor": null
+            })))
+            .mount(&server)
+            .await;
+
+        let c = Client::new(&server.uri(), "klams-scanner").unwrap();
+        c.list_facts().await.unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(
+            requests[0].headers.get("authorization").is_none(),
+            "klams-client must send no credential at all"
+        );
+    }
+
     #[tokio::test]
     async fn policy_returns_default_table() {
         let server = MockServer::start().await;
         let expected = PolicyTable::default();
         Mock::given(method("GET"))
             .and(path("/memory/policy"))
-            .and(header("authorization", "Bearer tok"))
+            .and(header("x-homelab-agent", "klams-monitor"))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(serde_json::to_value(&expected).unwrap()),
             )
             .mount(&server)
             .await;
 
-        let c = Client::new(&server.uri(), "tok").unwrap();
+        let c = Client::new(&server.uri(), "klams-monitor").unwrap();
         let got = c.policy().await.unwrap();
         assert_eq!(got, expected);
     }

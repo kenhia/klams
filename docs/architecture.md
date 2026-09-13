@@ -30,8 +30,8 @@ behaviour is the rest of this document.
                        ┌─────────────────────────────┐
                        │  klams-view (separate repo) │
                        │  axum binary + SvelteKit    │
-                       │  SPA; holds a read-scoped   │
-                       │  bearer server-side         │
+                       │  SPA; declares a read-scoped│
+                       │  identity server-side       │
                        └──────────────┬──────────────┘
                                       │ REST over the tailnet
                                       ▼
@@ -41,7 +41,7 @@ behaviour is the rest of this document.
 │   ┌──────────────────────────────────────────────────────────────┐  │
 │   │ klams-service (systemd, native binary, 127.0.0.1:7777)       │  │
 │   │   ┌───────────────────────────────────────────────────────┐  │  │
-│   │   │ klams-api     axum router, bearer auth + scopes,      │  │  │
+│   │   │ klams-api     axum router, identity auth + scopes,    │  │  │
 │   │   │               validation, /healthz, /metrics          │  │  │
 │   │   ├───────────────────────────────────────────────────────┤  │  │
 │   │   │ klams-mcp     MCP tool surface at /mcp (rmcp),        │  │  │
@@ -89,7 +89,7 @@ service) — see §2.4.
 | `klams-types` | Shared serde DTOs (`Fact`, `Event`, `KnowledgeItem`, `MemoryWrite`, `PublicMemory`, `ScoredMemory`, `HealthSnapshot`), plus shared policy types: `EmbedLimit` token estimation (`src/embed_limit.rs`), `DecayConfig` validation, auth config shapes. No I/O. |
 | `klams-core` | The async heart: bounded mpsc queue + worker pool, `MemoryWrite` dispatch, **the shared retrieval pipeline** (`src/retrieval.rs`, sprint 036 #730 — both surfaces' search + related), the `PublicMemory` projection (`src/projection.rs`, moved from klams-mcp in 036), hybrid retrieval + RRF fusion (`src/hybrid.rs`), provenance weighting (`src/provenance.rs`), query-time duplicate collapse (`src/dedupe.rs`), context bundling, summarization, decay worker, metrics registry. |
 | `klams-store` | Storage adapters: `PostgresStore` (sqlx, compile-time checked), `QdrantStore` (gRPC), `TeiEmbedder` behind the `Embedder` trait (`src/embeddings.rs`; an `OpenAiCompatEmbedder` alternative is selected via `[embeddings] api`, sprint 014), `TeiReranker` (`src/rerank.rs`, sprint 030 #685). `CompositeStore` implements the one `Store` trait everything upstream consumes. |
-| `klams-api` | `axum` router, bearer auth + per-route scope middleware, request validation, error → JSON mapping, REST handlers, `/healthz`, `/metrics`. |
+| `klams-api` | `axum` router, declared-identity auth + per-route scope middleware, request validation, error → JSON mapping, REST handlers, `/healthz`, `/metrics`. |
 | `klams-mcp` | The MCP tool surface (rmcp `StreamableHttpService` mounted at `/mcp`), scope gating, tool metrics; the `PublicMemory` projection is re-exported from `klams_core::projection` (moved in 036, #730). Generic over `Store` (`McpState<S: Store>`) since sprint 031 (#645) so MCP and REST share one write layer — enforced by `crates/klams-mcp/tests/no_concrete_store_reachthrough.rs`. Since 036 the read side is shared too: `memory_search`/`memory_related` are shells over `klams_core::retrieval`. |
 | `klams-service` | The binary. Loads `klams.toml`, wires queue + workers + HTTP server + background tasks, owns the tokio runtime. |
 | `klams-client` | Typed HTTP client. Used by `klams-scanner`, `klams-monitor` and `tools/bench`, and by `klams-service`'s integration tests, so every Rust caller shares one API contract. |
@@ -102,8 +102,8 @@ service) — see §2.4.
 klams ships no UI. The human-facing view is
 [**klams-view**](https://github.com/kenhia/klams-view), a separate
 project: one axum binary that serves a SvelteKit SPA and an `/api/*`
-aggregation layer, calling klams' REST API server-side with a
-**read**-scoped bearer the browser never sees. It computes what the
+aggregation layer, calling klams' REST API server-side under a
+**read**-scoped identity the browser never sees. It computes what the
 klams API doesn't expose directly — activity and metrics history,
 per-author corpus share — and it is reachable from any browser that
 can reach its port, which is also the whole of its security model
@@ -184,9 +184,9 @@ agent  ──MCP memory_add──────▶ klams-mcp ─┤        same va
   before the write reaches the queue (sprint 002); MCP fact writes run
   the same registry (previously the v1 path had none — sprint 031).
   Rejections increment `klams_validation_rejections_total{rule}`.
-* **Attribution** — the bearer token's `agent_name` resolves to an
+* **Attribution** — the caller's declared `agent_name` resolves to an
   `authors` row and stamps `author_id` on every write (sprint 009;
-  §3.2). Tokens without `agent_name` fall back to `system`.
+  §3.2).
 * **Optimistic concurrency** — every fact carries a monotonically
   increasing `version`; writers supply `expected_version` and stale
   writes return HTTP 409 with the current version so retries can be
@@ -583,7 +583,7 @@ knowledge, `ts_rank` for facts/events).
 | `top_k` outside 1..=50 | `INVALID_TOP_K` error | clamped |
 | Wire shape | `ScoredMemory` envelopes | flattened `SearchHit`s (`preview` + adapter-era `payload` keys, plus additive `raw_score` / `source_rank` / payload `author` / `created_at`) |
 | Filters | none (tags argument only) | full `RetrievalFilters` |
-| Caller attribution | tool argument | bearer token's bound `agent_name` |
+| Caller attribution | tool argument | the declared identity's `agent_name` |
 
 The pre-036 history: REST search ran a divergent `StoreHybridAdapter`
 path — no curated stratum, no rerank, author-blind two-tier weights
@@ -800,7 +800,7 @@ only for `GET /v1/memories` bulk reads and `/healthz`).
 ### 3.2 Scopes, tokens, attribution
 
 Every MCP tool and every protected REST route is gated by a `Scope`
-checked from the bearer token's grant. Four tiers — `Read`, `Write`,
+checked from the caller's identity row. Four tiers — `Read`, `Write`,
 `Admin`, `Manage` — and **scopes are flat, not hierarchical**:
 `Scope::satisfies` is exact equality, so `Write` does not imply `Read`;
 every grant lists what it needs. Full model: [auth.md](auth.md).
@@ -815,7 +815,7 @@ every grant lists what it needs. Full model: [auth.md](auth.md).
 `Manage` gates *behaviour* rather than whole tools: self-management
 needs only `Write` (`authorize_curation` — own it, or hold `Manage`).
 Sprint 025 (#637) layered `require_scope` onto every protected REST
-route (previously exactly one route checked, so any valid bearer could
+route (previously exactly one route checked, so any valid caller could
 bulk-delete knowledge) — see the route table in
 [`crates/klams-api/src/router.rs`](../crates/klams-api/src/router.rs).
 
@@ -830,19 +830,21 @@ tailnet node is resolved by `tailscale whois` and recorded beside the
 name, record-only, with an enforcement toggle that ships off
 (`[auth.whois]`). Details and the threat-model argument: [auth.md](auth.md).
 
-**Tokens.** `[[auth.tokens]]` grants are the legacy source, live for the
-transition window — which is open exactly while that table has rows, with
-no separate flag, because deleting the rows is what closes it. At least
-one entry across *either* table must be set. Each issues a per-purpose bearer token with a
-scope list and an `agent_name` (strict charset, validated at startup;
-optional only for grants without `manage`/`admin` — a privileged grant
-must declare one so its actions are attributable, sprint 034 #703).
-The legacy single `bearer_token` is retired (sprint 034, #703): it
+**Tokens — none left (sprint 050).** `[[auth.tokens]]` grants were the
+legacy source, live for a transition window that was open exactly while
+that table had rows, with no separate flag, because deleting the rows is
+what closes it. Sprint 050 deleted all fifteen after moving every client
+to the header, so the table is empty and at least one
+`[[auth.identities]]` row is what the service now requires to start. The
+matching code still parses and compares the table so a pre-050 config
+starts rather than refusing; it goes with WI 2489, once the closure has
+been observed from a restarted session on every host.
+
+The even older single `bearer_token` is retired (sprint 034, #703): it
 materialized as an all-scope grant bound to `system`, and a config
-that still sets it now refuses to load — at startup,
-`--validate-config`, and SIGHUP alike (migration note in
-[auth.md](auth.md)). Tokens hot-reload on SIGHUP (§2.8). Multiple
-tokens may share an `agent_name` and resolve to the same author.
+that still sets it refuses to load — at startup, `--validate-config`,
+and SIGHUP alike (migration note in [auth.md](auth.md)). Both tables
+hot-reload on SIGHUP (§2.8).
 
 **Attribution** (sprints 007/009/018). The `authors` table attributes
 every memory to the agent that wrote it; `facts.author_id` /

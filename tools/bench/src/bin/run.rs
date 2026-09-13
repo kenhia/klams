@@ -23,7 +23,7 @@ use time::OffsetDateTime;
 
 struct Args {
     klams_url: String,
-    klams_token: String,
+    klams_agent: String,
     queries_path: PathBuf,
     repeats: usize,
     output: PathBuf,
@@ -35,7 +35,7 @@ struct Args {
 fn parse_args() -> Result<Args> {
     let mut args = Args {
         klams_url: env::var("KLAMS_URL").unwrap_or_else(|_| "http://127.0.0.1:7777".to_string()),
-        klams_token: env::var("KLAMS_TOKEN").unwrap_or_default(),
+        klams_agent: env::var("KLAMS_AGENT").unwrap_or_default(),
         queries_path: PathBuf::from("tools/bench/queries.txt"),
         repeats: 10,
         output: PathBuf::from("sprints/008-activity-observability/perf-baseline.md"),
@@ -47,7 +47,7 @@ fn parse_args() -> Result<Args> {
     while let Some(a) = it.next() {
         match a.as_str() {
             "--klams-url" => args.klams_url = it.next().context("--klams-url value")?,
-            "--klams-token" => args.klams_token = it.next().context("--klams-token value")?,
+            "--klams-agent" => args.klams_agent = it.next().context("--klams-agent value")?,
             "--queries" => args.queries_path = PathBuf::from(it.next().context("--queries value")?),
             "--repeats" => args.repeats = it.next().context("--repeats value")?.parse()?,
             "--output" => args.output = PathBuf::from(it.next().context("--output value")?),
@@ -86,10 +86,10 @@ async fn run() -> Result<()> {
         anyhow::bail!("no queries found in {}", args.queries_path.display());
     }
 
-    if args.klams_token.is_empty() {
-        anyhow::bail!("--klams-token (or KLAMS_TOKEN env var) required");
+    if args.klams_agent.is_empty() {
+        anyhow::bail!("--klams-agent (or KLAMS_AGENT env var) required");
     }
-    let client = Client::new(&args.klams_url, args.klams_token.clone())?;
+    let client = Client::new(&args.klams_url, args.klams_agent.clone())?;
 
     let mut hist: Histogram<u64> = Histogram::new_with_bounds(1, 60_000_000, 3)?;
     let total_samples = queries.len() * args.repeats;

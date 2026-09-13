@@ -6,7 +6,7 @@ use crate::metrics;
 use anyhow::{Context, Result};
 use klams_client::{Client, ClientError};
 use klams_types::{IndexKnowledgeRequest, Source};
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::CONTENT_TYPE;
 use std::time::Duration;
 
 /// Aggressive, drain-oriented backoff for the service's `503 queue_full`
@@ -107,10 +107,10 @@ pub async fn publish_chunk(
 /// scope (sprint 023 #408) keeps one host's delete from dropping another
 /// host's chunk for the same path. Uses raw `reqwest` because
 /// `klams-client` doesn't yet expose a dedicated helper; piggybacks on
-/// the client's base URL + bearer.
+/// the client's base URL + declared identity.
 pub async fn publish_delete(
     base_url: &str,
-    bearer: &str,
+    agent: &str,
     host: &str,
     source_file: &str,
 ) -> Result<u64> {
@@ -121,7 +121,7 @@ pub async fn publish_delete(
             base_url.trim_end_matches('/')
         ))
         .query(&[("source_file", source_file), ("machine", host)])
-        .header(AUTHORIZATION, format!("Bearer {bearer}"))
+        .header(klams_client::AGENT_HEADER, agent)
         .header(CONTENT_TYPE, "application/json")
         .send()
         .await

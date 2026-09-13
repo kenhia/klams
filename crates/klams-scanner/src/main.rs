@@ -38,15 +38,19 @@ struct Args {
     /// klams URL (overrides config).
     #[arg(long, env = "KLAMS_URL")]
     url: Option<String>,
-    /// klams bearer token (overrides config).
-    #[arg(long, env = "KLAMS_TOKEN")]
-    token: Option<String>,
+    /// klams identity to declare — an `[[auth.identities]]` name
+    /// (overrides config). Not a credential: see docs/auth.md.
+    #[arg(long, env = "KLAMS_AGENT")]
+    agent: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct Config {
     url: String,
-    token: String,
+    /// The `[[auth.identities]]` name this scanner declares (sprint 050).
+    /// A stale `token = ` left behind by an old config is ignored, not
+    /// refused — the setting no longer exists.
+    agent: String,
     /// Sprint 035 (#776): no default. A machine-specific default here
     /// ("~/src") silently scanned nothing everywhere else; roots must be
     /// configured explicitly and are validated at startup.
@@ -104,7 +108,7 @@ async fn main() -> Result<()> {
     }
 
     let host = cfg.host.clone().unwrap_or_else(klams_scanner::default_host);
-    let client = Client::new(&cfg.url, cfg.token.clone()).context("build klams client")?;
+    let client = Client::new(&cfg.url, cfg.agent.clone()).context("build klams client")?;
     let roots: Vec<PathBuf> = if args.root.is_empty() {
         cfg.roots
             .iter()
@@ -132,16 +136,8 @@ async fn main() -> Result<()> {
 
     loop {
         for root in &roots {
-            if let Err(e) = scan_root(
-                &client,
-                &cfg.url,
-                &cfg.token,
-                &host,
-                &cursor_path,
-                root,
-                embed_limit,
-            )
-            .await
+            if let Err(e) =
+                scan_root(&client, &cfg.url, &host, &cursor_path, root, embed_limit).await
             {
                 tracing::warn!(root = %root.display(), error = %e, "scan failed");
             }
@@ -162,10 +158,10 @@ fn load_config(args: &Args) -> Result<Config> {
         return toml::from_str(&body).context("parse config TOML");
     }
     let url = args.url.clone().context("--url or --config required")?;
-    let token = args.token.clone().context("--token or --config required")?;
+    let agent = args.agent.clone().context("--agent or --config required")?;
     Ok(Config {
         url,
-        token,
+        agent,
         roots: Vec::new(),
         interval_secs: default_interval(),
         state_dir: default_state_dir(),

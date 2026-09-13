@@ -1,6 +1,6 @@
 # klams-monitor configuration.
 #
-# The provision script renders a working copy of this file (url + token
+# The provision script renders a working copy of this file (url + agent
 # filled) into $KLAMS_ROOT/config/monitor.toml; for the systemd unit,
 # deploy it as /etc/klams/monitor.toml and point the unit's
 # Environment=KLAMS_CONFIG at it.
@@ -8,10 +8,11 @@
 # klams service base URL (loopback).
 url = "http://127.0.0.1:7777"
 
-# Scoped monitor bearer ([[auth.tokens]] grant with scopes
-# ["read", "write"] and agent_name = "klams-monitor", so the emitted
-# Service events are attributable). Placeholder only.
-token = "CHANGE-ME-monitor-bearer"
+# The identity this monitor declares in `X-Homelab-Agent` (sprint 050).
+# It must match an `[[auth.identities]]` row with scopes
+# ["read", "write"], so the emitted Service events are attributable.
+# A name, not a secret.
+agent = "klams-monitor"
 
 # Watched systemd units. klams-service.service is the one every install
 # has; add whatever other units you want lifecycle events for (each

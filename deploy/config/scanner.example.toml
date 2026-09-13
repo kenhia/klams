@@ -1,6 +1,6 @@
 # klams-scanner configuration.
 #
-# The provision script renders a working copy of this file (url + token
+# The provision script renders a working copy of this file (url + agent
 # filled) into $KLAMS_ROOT/config/scanner.toml; for the systemd unit,
 # deploy it as /etc/klams/scanner.toml and point the unit's
 # Environment=KLAMS_CONFIG at it.
@@ -18,11 +18,15 @@
 #   url = "http://your-klams-host:7777"
 url = "http://127.0.0.1:7777"
 
-# Scoped scanner bearer ([[auth.tokens]] grant with scopes
-# ["read", "write"] and agent_name = "klams-scanner", so the scanner's
-# knowledge writes are attributable). Treat as a secret — this example
-# carries a placeholder only.
-token = "CHANGE-ME-scanner-bearer"
+# The identity this scanner declares in `X-Homelab-Agent` (sprint 050).
+# It must match an `[[auth.identities]]` row in the service's klams.toml
+# with scopes ["read", "write"], so the scanner's knowledge writes are
+# attributable. This is a NAME, not a secret — nothing here needs
+# protecting, and there is no bearer fallback: an unknown name is 401.
+#
+# Scanning several hosts into one service? Give each host its own row
+# and its own name here, so the journal can say which machine wrote.
+agent = "klams-scanner"
 
 # Absolute paths to walk — your code and notes, e.g. "/home/you/src".
 # NOT "~/src" (see the systemd note above). The placeholder below does

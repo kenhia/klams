@@ -25,7 +25,6 @@
 //! the schema can drift from the service's is precisely the bug this
 //! tool exists to prevent.
 
-pub mod backup;
 pub mod doc;
 pub mod fingerprint;
 pub mod paths;

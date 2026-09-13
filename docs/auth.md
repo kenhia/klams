@@ -41,20 +41,28 @@ and `register_author` under the new token resolved to the pre-existing
 author. Moving a consumer from a token to a header orphans nothing it
 ever wrote.
 
-### The transition window
+### The transition window — CLOSED, 2026-09-12 (sprint 050)
 
-`[[auth.tokens]]` grants **still authenticate**. The window is open
-exactly while that table has rows — there is no separate flag, because
-deleting the rows is what closes it. Both credentials work side by side,
-so consumers can be cut over one at a time with nothing breaking in
-between.
+The window was open exactly while `[[auth.tokens]]` had rows: there was
+never a separate flag, because deleting the rows is what closes it.
+**Sprint 050 deleted all fifteen.** klams holds no bearer tokens, and
+every client declares a name.
 
-Order of checks, on every request:
+While it was open both credentials authenticated side by side, which is
+what let the consumers be cut over one at a time with nothing breaking
+in between. Sprint 049 opened it; the four client repos (kmon, kyac,
+klams-view, klams-mind) each shipped their half; 050 moved the clients
+klams itself owns — the scanner, the monitor, the bench harness — plus
+the host MCP config files, and then emptied the table.
+
+Order of checks, on every request. The second is now unreachable in
+practice, and the code goes with WI 2489 once the closure has been
+observed from a restarted session on every host:
 
 1. `X-Homelab-Agent` against `[[auth.identities]]`, when the header is
    present.
-2. Otherwise `Authorization: Bearer` against `[[auth.tokens]]`,
-   unchanged and still constant-time.
+2. Otherwise `Authorization: Bearer` against `[[auth.tokens]]` — which
+   is empty, so this is a `401`.
 
 A header that is present but **unknown** is a `401` and does *not* fall
 through to the bearer. The caller said who it was and was wrong;
@@ -193,96 +201,61 @@ node it actually arrived from, and what was allowed. A tailnet node name
 is not a secret from a caller already on that tailnet, and an operator
 debugging this needs all three.
 
-### Backups of this file are secret-bearing too — while the window is open
+### Backups of this file are not secret-bearing (sprint 050)
 
-**This section stops being true when the token rows are deleted**
-(korg:2450), and not before. Sprint 049's acceptance asked for it to go
-with the rest of the "treat as a secret" framing; it stays for now
-because the live config still carries fifteen working tokens, and a
-config full of live credentials whose docs say backups are harmless is a
-worse outcome than a stale warning. An identities-only `klams.toml` holds
-no secret, and at that point this whole section — and the `age`
-machinery below it — is what the slice that deletes the rows should
-retire.
+`/etc/klams/klams.toml` holds no secret. Its `[auth]` tables are a list
+of names and scopes, so a backup of it is a list of names and scopes —
+there is nothing in it to encrypt, and `klams-token` no longer tries.
+Durable backups are plain timestamped copies beside the config, with the
+same `0640 root:klams` mode as the config itself.
 
-**A backup of a secret-bearing file is itself a secret-bearing surface:
-encrypted at rest, or registered and retained deliberately.** krot's
-grant inventory (klams #1377) found seven `klams.toml.bak-*` files in
-`/etc/klams` in three ad-hoc naming conventions, several still holding
-the **current** live token for most of the 14 grants — the same
-`0640 root:klams` exposure as the config itself, with none of the
-attention. Every rotation minted another one.
+**This is a change of fact, not of posture.** Until 050 the file carried
+fifteen live bearer tokens and every rotation minted another `.bak`
+holding them; krot's grant inventory (klams #1377) found seven of them
+in three naming conventions, several still carrying the *current* token
+for most grants. Sprint 046 (#1384) answered that by encrypting durable
+backups with `age` to a recipient kept off the homelab, with a plaintext
+`{agent_name: sha256(token)[:12]}` manifest beside each so an audit
+could ask "does this hold a live token?" without decrypting anything.
 
-Since sprint 046 (#1384) `klams-token` encrypts its durable backups with
-`age`, to a recipient whose private half is passphrase-protected and
-kept **off the homelab filesystem**:
+Sprint 050 removed all of it — the `age` encryption, the
+`backup.age-recipient` file, `$KLAMS_TOKEN_AGE_RECIPIENT`, the manifests
+and `klams-token restore --identity`. Encrypting a list of names, and
+keeping a passphrase off-site to read it back, is machinery guarding
+nothing. The pre-050 encrypted backups on kubs0 were deleted with the
+token rows; they were only ever undo history for a table that no longer
+exists.
 
-```bash
-# Ken, off-homelab, once:
-age-keygen | age -p > ken-klams-backup.age   # keep this OFF kubs0
-# the PUBLIC half goes on the host:
-sudo tee /etc/klams/backup.age-recipient <<<'age1…'
-```
+Same-run rollback is unchanged and still needs nobody: a failed
+validation restores from the in-memory copy `klams-token` already holds,
+so a bad edit at 2am self-heals. What went is the off-site key.
 
-`klams-token` finds that file beside the config on its own. (A
-`--age-recipient` flag and `$KLAMS_TOKEN_AGE_RECIPIENT` override it; the
-file is the primary route because these commands run under `sudo`, which
-drops the environment.) **With no recipient configured, backups stay
-plaintext and every write says so loudly** — refusing to edit the config
-because backups cannot be encrypted would turn a hardening feature into
-an outage.
+The one thing the config still holds that *is* secret is the Postgres
+URL under `[postgres]`, which carries the database password. That is why
+`/etc/klams/` is `root`-only and why the rule for reading it is
+`sudo klams-token identity list`, never `cat` or `grep` — a redaction
+pattern written for token rows missed the `postgres://user:pass@host`
+form on 2026-09-12 and printed the password into an agent transcript
+(krot WI 2466).
 
-Two things make this affordable:
+### The legacy `[[auth.tokens]]` shape — RETIRED (sprint 050)
 
-- **Auto-restore still works without Ken.** The same-run rollback — the
-  restore-on-failed-validate the write pipeline has always done — uses
-  the in-memory copy the tool already holds. No plaintext outlives the
-  operation, and a failed validate at 2am self-heals with nobody awake.
-  Only the durable `.bak` on disk is encrypted.
-- **A plaintext manifest sits beside each backup**, carrying
-  `{agent_name: sha256(token)[:12]}` and nothing else, so krot and any
-  audit can still answer "does this backup hold a live token?" without
-  decrypting anything or learning a value.
+The table is empty and nothing should add to it. The parser still
+accepts it so a config written before 050 starts rather than refusing;
+WI 2489 removes the code once the closure has been observed from a
+restarted session on every host.
 
-Reading one back:
+Migrating a row you find in an old config: drop `token`, keep
+`agent_name`, `scopes` and `label`, rename the table to
+`[[auth.identities]]`, and point the consumer at `X-Homelab-Agent`.
+`agent_name` was always the part that mattered — it is what made a token
+an identity, what `memory_delete` decides ownership by, and what
+authorship has been keyed on since sprint 009. Dropping the token bytes
+therefore orphans nothing.
 
-```bash
-sudo klams-token restore /etc/klams/klams.toml.bak-20260827T120000Z.age --identity -   # prints it
-sudo klams-token restore <backup> --identity - --apply                                  # makes it live
-```
-
-`--identity -` reads the age identity from stdin, so it never lands on
-this filesystem. `--apply` goes through the same validated write pipeline
-as any other mutation, so putting an old config back cannot itself break
-the service.
-
-**Losing the passphrase loses only undo history.** The live config and
-the k-homelab secret store are the primaries.
-
-### The legacy `[[auth.tokens]]` shape
-
-Kept verbatim for the transition window. Nothing below changed in sprint
-049; it is documented here because these grants are still live.
-
-```toml
-[[auth.tokens]]
-token      = "claude-XXXXXXXXXXXXXXXXXXXX"   # ≥16 chars, treat as a secret
-scopes     = ["read", "write", "manage"]     # non-empty
-label      = "claude"                        # for logs; optional
-agent_name = "claude"                        # binds an identity; optional
-```
-
-| Field | Required | Notes |
-|---|---|---|
-| `token` | yes | Minimum 16 characters. Compared in constant time. |
-| `scopes` | yes | Non-empty. See the table below. |
-| `label` | no | Appears in startup logs; not security-relevant. |
-| `agent_name` | see notes | 2–64 chars of `[a-z0-9_-]`. Resolved to an author row at startup. **Required when `scopes` includes `manage` or `admin`** (sprint 034, #703) — privileged actions must be attributable. Optional otherwise; unset ⇒ writes attribute to the seeded `system` author. |
-
-`agent_name` is what makes a token an *identity*, not just a key. It is
-resolved to an `author_id` at startup and on every reload; every write
-through that bearer is attributed to it, and — since sprint 025 —
-`memory_delete` decides ownership by it.
+An identity row has no `token` field and no minimum length, because
+there is no secret. Everything else about the row is the same; see
+[Granting](#granting-authidentities) above.
 
 ### Hot reload
 

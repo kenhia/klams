@@ -37,6 +37,21 @@ port = 7777
 # Then `sudo systemctl reload klams-service` (SIGHUP hot-reloads both
 # tables).
 #
+# At least one `[[auth.identities]]` entry must be set or the service
+# refuses to start; `scopes` must be non-empty.
+#
+# SCOPES ARE FLAT, NOT HIERARCHICAL: "write" does not imply "read",
+# and "admin" does not imply "write". List every scope an identity
+# needs.
+#
+#   read    queries and every GET
+#   write   creating memories, and managing the ones THIS identity wrote
+#   manage  curating ANOTHER author's memories (cross-author delete,
+#           resolving dissents) — sprint 025
+#   admin   restore / hard-delete / list-deleted / author lifecycle
+#
+# Full model: docs/auth.md.
+#
 # [[auth.identities]]
 # agent_name = "claude"
 # scopes     = ["read", "write", "manage"]
@@ -85,101 +100,33 @@ port = 7777
 # cache_ttl_secs = 300
 
 # ---------------------------------------------------------------------
-# [[auth.tokens]] — the legacy form, kept for the transition window.
+# [[auth.tokens]] — RETIRED (sprint 050). Do not add rows here.
 # ---------------------------------------------------------------------
 #
-# The window is open exactly while this table has rows: there is no
-# separate flag, because deleting the rows is what closes it. Until
-# then both credentials authenticate, so no consumer breaks mid-cutover.
+# The transition window closed on 2026-09-12: klams holds no bearer
+# tokens and this example ships no token rows. The parser still accepts
+# the table so a config written before 050 starts rather than refusing,
+# but a row here buys nothing an `[[auth.identities]]` row above does
+# not, and it reintroduces a secret into a file that otherwise holds
+# none. The parsing code goes with klams WI 2489, once the window is
+# observed closed from a restarted session on every host.
 #
-# Sprint 034 (#703) — the legacy `bearer_token` form is RETIRED. It
-# materialized one grant carrying every scope with no `agent_name`, so
-# every action through it was unattributable — and privileged scopes
-# (`manage`/`admin`) now require attribution. A config that still sets
-# `bearer_token` refuses to start with a migration note (deliberately:
-# a credential silently ignored is worse than a loud refusal). To
-# migrate, express it as a scoped grant instead — same capability,
-# attributed:
+# Migrating a row: drop `token`, keep `agent_name`, `scopes` and
+# `label`, and rename the table.
 #
-#   [[auth.tokens]]
-#   token      = "<your old bearer_token value>"
-#   scopes     = ["read", "write", "manage", "admin"]
-#   label      = "break-glass"
-#   agent_name = "operator"
+#   [[auth.tokens]]                    [[auth.identities]]
+#   token      = "…"          ->       agent_name = "klams-view"
+#   scopes     = ["read"]              scopes     = ["read"]
+#   label      = "klams-view"          label      = "klams-view"
+#   agent_name = "klams-view"
 #
-# (Sprint 032 (#670) had already stopped provisioning one by default;
-# this closes the path entirely.)
-
-# Sprint 007 — scoped MCP tokens. At least one `[[auth.identities]]` or
-# `[[auth.tokens]]` entry must be set or the service refuses to start
-# (either table satisfies it — sprint 049). Every token MUST be
-# ≥ 16 characters; `scopes` MUST be non-empty; grants holding `manage`
-# or `admin` MUST declare `agent_name` (sprint 034, #703).
+# Consumers then send `X-Homelab-Agent: klams-view` and no credential.
+# Nothing about attribution moves: klams has keyed authorship on
+# `agent_name` since sprint 009, so a consumer that changes how it
+# authenticates keeps everything it ever wrote.
 #
-# EDIT THESE WITH `klams-token`, NOT AN EDITOR (sprint 045, #265). It
-# edits the blocks structurally, so a write cannot clobber a sibling
-# grant, and it validates the result before anything reaches disk.
-# These subcommands act on the LEGACY table; their `identity`
-# counterparts above act on the current one:
-#
-#   sudo klams-token list [--verify]
-#   sudo klams-token add <name> --scopes read,write --reveal
-#   sudo klams-token rotate <name> --reveal
-#   sudo klams-token scopes <name> --add manage
-#   sudo klams-token remove <name>
-#
-# Then `sudo systemctl reload klams-service`. See docs/usage.md.
-#
-# SCOPES ARE FLAT, NOT HIERARCHICAL: "write" does not imply "read",
-# and "admin" does not imply "write". List every scope a token needs.
-#
-#   read    queries and every GET
-#   write   creating memories, and managing the ones THIS identity wrote
-#   manage  curating ANOTHER author's memories (cross-author delete,
-#           resolving dissents) — sprint 025
-#   admin   restore / hard-delete / list-deleted / author lifecycle
-#
-# Full model: docs/auth.md.
-#
-# A dashboard only reads. klams-view (github.com/kenhia/klams-view)
-# holds this token server-side and never exposes it to the browser.
-# [[auth.tokens]]
-# token      = "klams-view-XXXXXXXXXXXXXXXXXXXX"
-# scopes     = ["read"]
-# label      = "klams-view"
-# agent_name = "klams-view"
-#
-# Agents that curate the corpus get `manage`; daemons that only write
-# their own records (scanner, kmon) deliberately do not — they can
-# still retract their OWN chunks with `write` alone.
-# [[auth.tokens]]
-# token      = "ghcp-write-XXXXXXXXXXXXXXXX"
-# scopes     = ["read", "write", "manage"]
-# label      = "ghcp"
-# agent_name = "ghcp"
-#
-# `agent_name` is what makes a token an identity: memory_delete
-# decides ownership by it, so a token without one cannot delete.
-# [[auth.tokens]]
-# token      = "scanner-XXXXXXXXXXXXXXXXXXXX"
-# scopes     = ["read", "write"]
-# label      = "scanner"
-# agent_name = "klams-scanner"
-#
-# [[auth.tokens]]
-# token      = "ken-admin-XXXXXXXXXXXXXXXXXX"
-# scopes     = ["read", "write", "manage", "admin"]
-# label      = "ken-admin"
-# agent_name = "ken_admin"
-#
-# Sprint 015 — the klams-mind companion gets its own read+write grant.
-# `agent_name` binds REST writes to the klams-mind author (sprint 009);
-# MCP writes attribute via its register_author identity.
-# [[auth.tokens]]
-# token      = "klams-mind-XXXXXXXXXXXXXXXX"
-# scopes     = ["read", "write"]
-# label      = "klams-mind"
-# agent_name = "klams-mind"
+# Sprint 034 (#703) — the even older `bearer_token` form is refused at
+# startup with a migration note, and stays refused.
 
 [postgres]
 url = "postgres://klams:changeme@127.0.0.1:5432/klams"

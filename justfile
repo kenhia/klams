@@ -6,7 +6,7 @@
 
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 set positional-arguments
-# Machine-local values (KLAMS_TOKEN, KLAMS_MIND_DIR, …) can live in a
+# Machine-local values (KLAMS_AGENT, KLAMS_MIND_DIR, …) can live in a
 # gitignored `.env` at the repo root instead of the shell environment
 # (sprint 035, #776).
 set dotenv-load := true
@@ -15,14 +15,16 @@ set dotenv-load := true
 default:
     @just --list
 
-# Service URL + bearer token used by `verify` and `health`. Override
-# in the environment when pointing at a non-local stack.
+# Service URL + declared identity used by `verify` and `health`.
+# Override in the environment when pointing at a non-local stack.
 #
-# KLAMS_TOKEN has no default on purpose (sprint 031, #682). It used to
-# fall back to `dev-token`, so forgetting to set it produced a 401 that
-# read like an auth regression instead of "you didn't set the variable".
+# KLAMS_AGENT has no default on purpose (sprint 031, #682, carried over
+# from KLAMS_TOKEN). A default would produce a 401 that reads like an
+# auth regression instead of "you didn't set the variable". Sprint 050:
+# it is an [[auth.identities]] name, not a secret — `sudo klams-token
+# identity list` shows the ones the service knows.
 klams_url     := env_var_or_default('KLAMS_URL',   'http://127.0.0.1:7777')
-klams_token   := env_var_or_default('KLAMS_TOKEN', '')
+klams_agent   := env_var_or_default('KLAMS_AGENT', '')
 compose_file  := 'deploy/docker-compose.yml'
 
 # Sprint 042 (#1012) — the homelab package store klams releases go to
@@ -159,11 +161,12 @@ test-integration *ARGS:
 
 # Quick liveness probe + light verification round-trip.
 #
-# The `@` on token-carrying recipes is not cosmetic: without it `just`
-# echoes the expanded command line, printing the bearer token to the
-# terminal (and to any CI log) on every run.
+# The `@` is now only about noise. It used to be load-bearing — without
+# it `just` echoes the expanded command line, which printed the bearer
+# token to the terminal and to any CI log. Since sprint 050 there is no
+# token to print; the identity is a name and echoing it leaks nothing.
 health:
-    @KLAMS_URL={{klams_url}} KLAMS_TOKEN={{klams_token}} \
+    @KLAMS_URL={{klams_url}} KLAMS_AGENT={{klams_agent}} \
         bash scripts/verify-mvp.sh --light
 
 # sprint 007 — apply pending SQL migrations against the configured
@@ -191,9 +194,12 @@ db-psql *ARGS:
 # Not folded into `gate`: it needs a live klams with the real corpus, so
 # it is a pre-deploy check rather than a per-commit one. Run it before
 # and after a deploy that touches retrieval.
+# klams-mind resolves its own klams identity (KLAMS_AGENT_NAME, default
+# `klams-mind-eval` for eval runs), so this passes only the URL. It used
+# to pass KLAMS_TOKEN, which klams-mind stopped reading in its sprint 010.
 eval:
     @if [ -z '{{klams_mind}}' ]; then echo 'eval: set KLAMS_MIND_DIR to your klams-mind checkout (owns the eval suite + runner)' >&2; exit 1; fi
-    @KLAMS_TOKEN={{klams_token}} KLAMS_URL={{klams_url}} \
+    @KLAMS_URL={{klams_url}} \
         uv run --project {{klams_mind}} klams-mind eval run \
         {{klams_mind}}/evals/suites/homelab-retrieval.toml
 
@@ -201,22 +207,22 @@ eval:
 # capture a before/after around a retrieval change or the corpus reset.
 eval-report OUT:
     @if [ -z '{{klams_mind}}' ]; then echo 'eval-report: set KLAMS_MIND_DIR to your klams-mind checkout (owns the eval suite + runner)' >&2; exit 1; fi
-    @KLAMS_TOKEN={{klams_token}} KLAMS_URL={{klams_url}} \
+    @KLAMS_URL={{klams_url}} \
         uv run --project {{klams_mind}} klams-mind eval run \
         {{klams_mind}}/evals/suites/homelab-retrieval.toml --out {{OUT}}
 
 # Full SC-001..SC-009 functional smoke (slower than `health`).
 verify:
-    @KLAMS_URL={{klams_url}} KLAMS_TOKEN={{klams_token}} \
+    @KLAMS_URL={{klams_url}} KLAMS_AGENT={{klams_agent}} \
         bash scripts/verify-mvp.sh
 
 # Sprint 035 (#779) — the first-run smoke docs/install.md ends with:
 # proves an empty install end-to-end (health → fact round-trip →
 # knowledge write/embed/search → error handling → metrics) and closes
 # with a plain-language verdict. Valid on a completely empty store.
-#   KLAMS_TOKEN=<operator token> just smoke
+#   KLAMS_AGENT=operator just smoke
 smoke:
-    @KLAMS_URL={{klams_url}} KLAMS_TOKEN={{klams_token}} \
+    @KLAMS_URL={{klams_url}} KLAMS_AGENT={{klams_agent}} \
         bash scripts/verify-mvp.sh --first-run
 
 # sprint-003 T046 — systemd lifecycle helpers.
@@ -360,11 +366,11 @@ deploy-remote host *BINS:
         sudo KLAMS_STORE_URL='{{klams_store}}' bash install-from-store.sh --version \"\$v\" $bins"
 
 scanner-once:
-    @KLAMS_URL={{klams_url}} KLAMS_TOKEN={{klams_token}} \
+    @KLAMS_URL={{klams_url}} KLAMS_AGENT={{klams_agent}} \
         cargo run --release --bin klams-scanner -- --once
 
 monitor-once:
-    @KLAMS_URL={{klams_url}} KLAMS_TOKEN={{klams_token}} \
+    @KLAMS_URL={{klams_url}} KLAMS_AGENT={{klams_agent}} \
         cargo run --release --bin klams-monitor -- --once
 
 # sprint 006 — maintenance + backup operator surface.
@@ -484,16 +490,16 @@ rollback:
 # Invoke an MCP tool over Streamable HTTP. Performs the full rmcp
 # stateful handshake (initialize -> notifications/initialized ->
 # tools/call) and prints the tool's text result. Arguments are passed
-# as a raw JSON object. Override KLAMS_URL / KLAMS_TOKEN for a
+# as a raw JSON object. Override KLAMS_URL / KLAMS_AGENT for a
 # non-local stack.
 #
 # Example:
-#   KLAMS_TOKEN=$tok just mcp-call memory_search '{"query":"build"}'
+#   KLAMS_AGENT=operator just mcp-call memory_search '{"query":"build"}'
 mcp-call tool args='{}':
     #!/usr/bin/env bash
     set -euo pipefail
     url='{{klams_url}}/mcp'
-    auth='Authorization: Bearer {{klams_token}}'
+    auth='X-Homelab-Agent: {{klams_agent}}'
     accept='Accept: application/json, text/event-stream'
     ctype='Content-Type: application/json'
     headers=$(mktemp); trap 'rm -f "$headers"' EXIT

@@ -3,7 +3,8 @@
 #
 # Env (with defaults):
 #   KLAMS_URL    - base URL of the klams service. Default: http://127.0.0.1:7777
-#   KLAMS_TOKEN  - bearer token. Default: dev-token (matches docker test stack)
+#   KLAMS_AGENT  - declared identity. Default: declared-test-agent
+#                  (matches the docker test stack). Not a secret.
 #
 # Deps:
 #   curl   - required
@@ -17,7 +18,7 @@
 set -eu
 
 URL=${KLAMS_URL:-http://127.0.0.1:7777}
-TOKEN=${KLAMS_TOKEN:-dev-token}
+AGENT=${KLAMS_AGENT:-declared-test-agent}
 
 if ! command -v curl >/dev/null 2>&1; then
     echo "curl is required" >&2
@@ -31,7 +32,7 @@ trap 'rm -f "$tmp"' EXIT
 
 http_code=$(
     curl -sS -o "$tmp" -w '%{http_code}' \
-        -H "Authorization: Bearer $TOKEN" \
+        -H "X-Homelab-Agent: $AGENT" \
         -H 'Content-Type: application/json' \
         -X POST \
         --data "$payload" \
