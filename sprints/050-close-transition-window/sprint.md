@@ -226,3 +226,82 @@ What survives on purpose: every `Authorization: Bearer` in
 exercise the legacy server path against the in-process router, and that
 path is deliberately still alive until WI 2489. No **client** in this
 repo sends a credential.
+
+### The daemons and kyac
+
+`0.1.50` published to the store and installed on kubs0 (service,
+scanner, monitor, `klams-token`) and kai (scanner). **Binaries before
+configs, deliberately** — the new scanner requires `agent` and kai's
+timer was 30 minutes out, so repointing its config first would have
+broken the next tick.
+
+- kubs0 `/etc/klams/scanner.toml`, `monitor.toml` → `agent = `. Edited
+  with a script that prints line counts and key names only; no value
+  from `/etc/klams` was ever read into the transcript (krot WI 2466).
+- Both scanners forced a run: `Result=success`, and the journal shows
+  `cleared stale chunks before reindex` — which is `publish_delete`
+  authenticating on the header, the exact path that failed in the test.
+- **kyac, Branch A.** Its precondition had drifted as the overseer
+  predicted: `eae5a8f` was checked out on kai but `kyac-server.service`
+  entered active at 11:31:58 PDT against a 14:07:22 PDT commit, so the
+  *running* server still sent a bearer. Ran kyac's documented
+  `just deploy` (pull → `uv sync` → `web-build` → `server-restart`) on
+  kai, then `just check-live` from kai: 4 passed.
+
+### Deleting the rows
+
+Fifteen `[[auth.tokens]]` rows, then five `[[auth.identities]]` rows
+(`alice`, `klams-bench`, `ken_admin`, `token-master`, `multea-viae`).
+`klams-token remove` refuses a non-interactive removal without `--yes`,
+which is the right shape and worth knowing.
+
+```
+OK: [auth] identities=11, legacy_grants=0 (transition window closed)
+transition window closed: no legacy `[[auth.tokens]]` grants remain
+SIGHUP: auth tables reloaded  grants=0  identities=11
+```
+
+**`/etc/klams/` now holds no secret but the Postgres DSN.** The five
+sprint-046 `.age` backups and their manifests were swept by `prune`
+itself — the suffix recognition kept for exactly this. The plaintext
+backups the removals created were deleted immediately afterwards along
+with `backup.age-recipient`.
+
+One thing worth saying plainly rather than letting it pass: because 050
+retired the encryption, each of the fifteen removals wrote a *plaintext*
+backup holding the tokens not yet deleted. That is the hazard klams
+#1377 found seven instances of. The window was a few minutes, in a
+`root`-only directory on a single-user host, and every one of those
+files was deleted before the sprint ended — but it is a real
+consequence of doing the retirement and the deletion in one sprint, and
+the honest order for anyone repeating this is: delete the rows first,
+retire the encryption second.
+
+## Verification
+
+Every probe named the host it ran from.
+
+| check | result |
+|---|---|
+| 11 surviving identities, `GET /memory/policy` from kubs0 | all `200` |
+| 5 deleted identities | all `401` |
+| a bearer, any value | `401` |
+| no credential | `401` |
+| `klams-view` (read scope) `POST /memory/knowledge/index` | `403` — scopes still enforced |
+| `claude` from **kai**, `POST /memory/knowledge/index` | `200`; audit line `agent_name=claude tailnet_node=kai auth=identity` |
+| header / unknown name / none, from **kai** | `200` / `401` / `401` |
+| header / unknown name / none, from **cleo** | `200` / `401` / `401` |
+| `just health`, `just verify` | 7 passed, 0 failed, 3 skipped — same as 049 |
+| `klams-service` errors since reload | none |
+| klams-view `GET /` and `/api/authors` | `200`, live data |
+
+**Attribution provably did not move.** The identity→author bindings were
+captured from the journal before the cutover and after the reload:
+exactly the five deleted names disappeared, and **not one surviving
+identity's `author_id` changed** — the set difference in the other
+direction is empty. That is the claim the whole design rests on, and it
+is measured rather than argued.
+
+Fleet sweep, counts only: zero `Authorization` headers for klams in any
+of the seven host files, and zero `token =` lines in either daemon
+config.
