@@ -71,7 +71,7 @@ Postgres / Qdrant / TEI as Docker containers underneath (hence
 | Path | What |
 |---|---|
 | `/usr/local/bin/klams-{service,scanner,monitor,token}` | deployed binaries (`.prev` = one-step rollback) |
-| `/etc/klams/klams.toml` | config — **not** in this repo; holds bearer tokens |
+| `/etc/klams/klams.toml` | config — **not** in this repo; secret-bearing (the Postgres password) |
 | `/var/lib/klams` | state |
 | `/gratch/klams-backup` | nightly `postgres-<date>.dump` + `qdrant-<date>.snapshot` |
 | `$KLAMS_STORE_URL/artifacts/klams-*/` | published releases (the deep rollback) |
@@ -310,11 +310,17 @@ mid-measure. `deploy-from-store` has no such hazard: it touches no units.
 ## Config changes are a separate, manual step
 
 `/etc/klams/klams.toml` is **not** in this repo and is not touched by this
-skill. It holds the bearer tokens. If the sprint changes the config contract —
-a new `[[auth.tokens]]` scope, a new section — say so explicitly and let Ken
-edit it; never write tokens into the repo or paste them into a transcript.
+skill. Sprint 052 deleted the `[[auth.tokens]]` table, so its `[auth]` block is
+now a list of names and scopes — but the file is **still secret-bearing**: the
+`[postgres]` URL carries the database password. Never `cat` or `grep` it; read
+the auth roster with `sudo klams-token identity list` (krot WI 2466, where a
+redaction pattern written for token rows missed the `postgres://user:pass@host`
+form and printed the password into a transcript).
 
-`[[auth.tokens]]` hot-reloads without a restart:
+If the sprint changes the config contract — a new `[[auth.identities]]` scope, a
+new section — say so explicitly and let Ken edit it.
+
+`[[auth.identities]]` hot-reloads without a restart:
 
 ```bash
 sudo systemctl reload klams-service     # ExecReload=/bin/kill -HUP $MAINPID

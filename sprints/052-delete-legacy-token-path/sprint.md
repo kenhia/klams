@@ -208,3 +208,83 @@ Ken's/the overseer's call rather than this leg's.
 
 Nothing here has a time-gated acceptance criterion. Every clause was
 verified in-session, with controls.
+
+## Deployed 2026-09-12
+
+- Version `0.1.52` live on kubs0 (`/healthz` confirms; was `0.1.50`).
+  All four binaries checked, not just the one `/healthz` speaks for:
+  `klams-token 0.1.52`, `klams-scanner 0.1.52`, `klams-monitor 0.1.52`.
+- Published to the store as `artifacts/klams-{service,scanner,monitor,token}/0.1.52/`.
+- **The jump is 0.1.50 → 0.1.52, not 0.1.51 → 0.1.52.** Sprint 051 merged
+  but was never published or deployed — store `latest` and the running
+  service were both still `0.1.50`. So this deploy also puts 051's
+  klams-monitor change (per-host secrets file) into production for the
+  first time. Its precondition was checked first:
+  `/etc/khomelab/secrets.env` exists (`root:khomelab 0640`, carrying
+  `REDISCLI_AUTH`), 051's drop-in
+  `/etc/systemd/system/klams-monitor.service.d/10-khomelab-secrets.conf`
+  was already installed by 051's own cutover, and `/etc/klams/monitor.env`
+  is gone. klams-monitor is `active` after the restart.
+- **Unit files: `install-systemd` not run, and that was checked rather
+  than assumed.** `git diff c842e62..HEAD -- deploy/` lists 051's
+  `klams-monitor.service` + drop-in, and both are already installed and
+  **byte-identical** to the repo (`diff -q` clean, likewise
+  `klams-service.service`). The other `deploy/` deltas are the example
+  configs and `install-from-store.sh`, none of which is a unit. Skipping
+  it also avoided its `enable --now klams-scanner.timer` side effect.
+- **kai's `klams-scanner`: left at 0.1.50, deliberately.** The clearance
+  scoped this deploy to kubs0, kai's scanner was cut to the header in
+  050 and is unaffected by this sprint, and k-homelab's own drift alarm
+  agrees — `bin/audit kai` reports `klams-scanner: ok`, so the version
+  floor is satisfied. Verified live **from kai** against 0.1.52:
+  `X-Homelab-Agent: kai-scanner` → 200, bearer → 401, unknown name → 401.
+  (First probe of this went to `http://kubs0:7777` and returned **400
+  "Client sent an HTTP request to an HTTPS server"** — a transport error
+  that is not an auth answer at all. The real endpoint is
+  `https://kubs0.encke-wahoo.ts.net:7777`, which the scanner's own config
+  names. Taken at face value that 400 would have been reported as a
+  broken scanner.)
+- Rollback target: `0.1.50` via `just rollback` (`.prev` in place for all
+  four); any published version via `just deploy-from-store --version`.
+- Migrations applied: none — this sprint added no `migrations/` entry, so
+  a binary rollback is sufficient and needs no restore.
+- Config changes required: **none.** That was the deploy's chief risk and
+  it was checked immediately before the restart, with the newly installed
+  binary: `sudo KLAMS_CONFIG=/etc/klams/klams.toml /usr/local/bin/klams-service
+  --validate-config` → `OK: [auth] identities=12`, rc 0. The file was never
+  read directly (krot WI 2466).
+
+### Verified live, beyond `/healthz`
+
+`just health` 2 passed / 0 failed, `just verify` **7 passed, 0 failed, 3
+skipped** — matching the 049 and 050 baselines. Then the thing this sprint
+actually changed, against the deployed service on `/memory/policy`:
+
+| request | result |
+|---|---|
+| `X-Homelab-Agent: claude` | **200** |
+| `Authorization: Bearer <anything>`, no name | **401 `bearer_retired`**, body naming the header to send and the one to drop |
+| no credential at all | **401 `unauthorized`** — the plain form, still distinct |
+| unknown name | **401 `unauthorized`** |
+| unknown name **and** a bearer | **401 `unauthorized`** — no fall-through |
+| `klams-view` (read scope) POSTing | **403 `scope_insufficient`** — scopes still enforced |
+
+That table is D-2 proven in production: the retired-credential case and
+the sent-nothing case give different answers, which is the whole reason
+the variant exists.
+
+Units settled: `klams-service` and `klams-monitor` both `active`, **zero**
+`klams-service` error-level journal lines since the restart, and exactly
+one `klams-monitor` `publish failed … POST /memory/events` at the restart
+race — the documented expected shape, not a regression.
+
+### Repaired in passing (post-merge, on `main`)
+
+`.claude/skills/deploy-kubs0/SKILL.md` still said `/etc/klams/klams.toml`
+"holds the bearer tokens" and documented `[[auth.tokens]]` hot-reload.
+This sprint made the first claim false — and it is the stated *reason* the
+file is handled as secret, so leaving it would have been misleading in the
+direction that matters. The file **is** still secret-bearing, via the
+`[postgres]` password; corrected to say that, to point at
+`sudo klams-token identity list` as the read path (krot WI 2466), and to
+name `[[auth.identities]]` as what hot-reloads.
