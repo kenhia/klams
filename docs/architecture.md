@@ -943,7 +943,11 @@ kubs0
 │   ├── klams-service.service               (Type=simple, After=docker.service)
 │   ├── klams-scanner.service               (Type=oneshot, `klams-scanner --once`)
 │   ├── klams-scanner.timer                 (OnBootSec=5min, OnUnitActiveSec=1h)
-│   └── klams-monitor.service               (Type=simple, Restart=on-failure)
+│   ├── klams-monitor.service               (Type=simple, Restart=on-failure)
+│   └── klams-monitor.service.d/
+│       └── 10-khomelab-secrets.conf        (REDISCLI_AUTH from the per-host
+│                                            secrets file; installed only where
+│                                            that file exists — sprint 051)
 │
 └── docker (compose project: klams)
     └── network: klams-net (bridge)

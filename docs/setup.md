@@ -241,7 +241,23 @@ The script is **idempotent** and:
 4. Installs `klams-service.service`, `klams-scanner.service`,
    `klams-scanner.timer`, and `klams-monitor.service` into
    `/etc/systemd/system/`.
-5. `systemctl daemon-reload` then `enable --now` the service, timer,
+5. Installs the `klams-monitor` drop-in
+   `10-khomelab-secrets.conf` — **only if `/etc/khomelab/secrets.env`
+   already exists** (sprint 051). That file is k-homelab's per-host
+   secrets file; where it is present the drop-in points
+   `klams-monitor` at it for `REDISCLI_AUTH`, so the kpidash reporter
+   needs no private copy of the password. Where it is absent the
+   script says so and skips it, and the monitor starts without the
+   variable — set `[kpidash].password` in `monitor.toml`, or add your
+   own drop-in, if you want dashboard reporting on such a host.
+
+   The drop-in's `EnvironmentFile=` carries **no** leading `-`, so on a
+   host that has it, `klams-monitor` fails to start if the secrets file
+   later goes missing. That is deliberate: without the password the
+   reporter falls back to an unauthenticated connection and the
+   dashboard card goes quietly stale, which is indistinguishable from
+   healthy.
+6. `systemctl daemon-reload` then `enable --now` the service, timer,
    and monitor units.
 
 ### Enabling `[backup]` needs a `ReadWritePaths=` drop-in (sprint 034, #774)
