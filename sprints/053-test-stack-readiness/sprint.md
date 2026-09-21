@@ -118,6 +118,23 @@ captured to a file rather than piped:
   `reset-test-stack` visible in the log doing its sweep. This is the path
   the changed script sits directly on.
 
+After the #3001 ruling landed the recipes, the sequence was re-verified in
+the form the docs now prescribe, from a cold stack, each exit code read
+individually:
+
+```
+just test-stack-up      exit 0 after 16s (returns ready, all four healthy)
+just test-integration   exit 0 — 142 passed / 0 failed
+just test-stack-down    exit 0 — stack gone
+```
+
+Note `reset-test-stack` printed **no** waiting line in that run, which is
+the correct outcome rather than a missing one: `test-stack-up` returns
+ready, so the script's wait had nothing to wait for. Case 1 above is what
+proves the wait still works when something else brought the stack up.
+
+`just gate` re-run after the recipe changes: exit 0.
+
 Stack torn down at the end.
 
 ### A verification note worth keeping
@@ -131,24 +148,57 @@ Re-run without the pipe, the counts above appeared. The trap is one layer
 away from anyone verifying a fix to this script, so: capture to a file,
 read the status directly, and check the counts rather than the exit code.
 
-## Found in passing, filed (needs a decision) — #3001
+## Repaired in passing — #3001, on the overseer's ruling
 
-`just compose-up-test` is an alias for `compose-up`, which brings up
-`deploy/docker-compose.yml` — the **production** stack, not the test one.
-And there is no recipe at all for `tests/docker-compose.test.yml`: every
-doc tells you to type the raw `docker compose -f …` command. So in a repo
-whose whole interface is `just`, the recipe whose name ends in `-test`
-starts a second production-shaped stack, which is exactly the resource
-problem sprint 032 (#647) had to clean up.
+Found while fixing #2283 and **filed** first, because the fix changes the
+operator-facing recipe surface and that is a decision. The overseer took
+the call (close, not Ken-sized, recorded in the program report) and chose
+**option 1**, so it was folded into this sprint rather than left for a
+later one.
 
-Not repaired here: the fix is a choice about the operator-facing recipe
-surface — add `test-stack-up`/`down` and rename or retire
-`compose-up-test`, or leave the raw command and only fix the name. Both
-change what operators type, and a fix that changes an interface someone
-else depends on is a decision, not a repair. #3001 names that decision.
+What was wrong: `just compose-up-test` was a bare alias for `compose-up`,
+which brings up `deploy/docker-compose.yml` — the **production** stack. So
+the recipe whose name ends in `-test` started a second production-shaped
+postgres/qdrant/TEI beside the real ones on kubs0, which is the resource
+problem sprint 032 (#647) already had to clean up once. Meanwhile there
+was no recipe for `tests/docker-compose.test.yml` at all, so every doc
+told you to type the raw `docker compose -f …` command. Two sprint-era
+quickstarts (007, 008) already called `compose-up-test` "a running test
+compose", so the name had misled a reader.
 
-Nothing else was repaired in passing; the gate reported no warnings to
-adopt.
+What landed:
+
+- **`test-stack-up`** — `docker compose -f {{test_compose_file}} up -d
+  --wait`, and **`test-stack-down`** — the matching `down`. A
+  `test_compose_file` variable mirrors the existing `compose_file`.
+- **`compose-up-test` retired.** Nothing live called it (checked across
+  the whole repo, not just docs: only its own definition, the two
+  historical quickstarts, and this sprint record). A tombstone sits in
+  `compose-up`'s comment, which is where a reader who typed the old name
+  will look.
+- **Docs name the recipes**: `AGENTS.md`, `docs/usage.md` (two new table
+  rows plus the `test-integration` row), the test compose file's own
+  header, `tests/fixtures/backup/README.md`. The raw docker command
+  survives once in `AGENTS.md` as prose, for anyone without `just` — and
+  once more in the compose file's own header, as explanation of what the
+  recipe runs against the healthchecks defined right below it.
+- **The two historical quickstarts were left alone** (AGENTS.md's
+  historical note; the ruling said so explicitly).
+
+Two self-inflicted problems caught during this, worth recording because
+`just`'s doc-comment rule is easy to get wrong: `just --list` shows the
+**last** comment line above a recipe, so (a) prepending rationale to
+`compose-up`'s comment turned its listed description into the word
+"instructions.", and (b) inserting the new recipes directly above
+`test-integration` orphaned *its* doc block onto `test-stack-up`. Both
+fixed by putting rationale first and the one-line summary last; all four
+recipes now read correctly in `just --list`, and `test-integration` gained
+a summary line it never had.
+
+This is a pre-existing pattern in the justfile — `gate`, `check`,
+`health`, `identities`, `db-psql` and others still list as mid-sentence
+fragments. Not touched: it is unrelated to this sprint's scope, and
+rewriting a dozen recipe comments is not a repair.
 
 ## Notes for the record
 

@@ -92,20 +92,32 @@ every branch. Before pushing anything that touches the store, the MCP
 tools, or the write paths, also run:
 
 ```bash
-docker compose -f tests/docker-compose.test.yml up -d --wait   # once
+just test-stack-up        # once
 just test-integration
-docker compose -f tests/docker-compose.test.yml down           # when you are done
+just test-stack-down      # when you are done
 ```
 
-**`--wait` is not decoration** (#2283). Plain `up -d` returns when the
-containers are *started*, not when their healthchecks pass — measured on
-kubs0, 1s versus 16s, the reranker being the laggard. Without it the
-second command used to fail immediately, reporting the stack as
-unreachable and advising you to bring it up, which is what you had just
-done. `just test-integration` now waits for readiness itself (up to 60s,
-`TEST_STACK_WAIT_SECS`), so the sequence works either way; `--wait` is
-still the better form because it covers TEI and the reranker too, which
-the sweep does not use but the tests do.
+Those two stack recipes are sprint 053 (#3001). Before them there was no
+recipe for this stack at all, so this block told you to type
+`docker compose -f tests/docker-compose.test.yml up -d --wait` and
+`… down` by hand — still exactly what the recipes run, if you would rather
+type it or have no `just`. What made that a trap rather than a papercut is
+that `compose-up-test` *looked* like the recipe for this stack and
+actually brought up `deploy/docker-compose.yml`; on kubs0 that started a
+second production-shaped postgres/qdrant/TEI beside the real ones. It is
+retired — the test stack is `test-stack-up`, and the long-lived one is
+`compose-up`.
+
+**The `--wait` inside `test-stack-up` is not decoration** (#2283). Plain
+`up -d` returns when the containers are *started*, not when their
+healthchecks pass — measured on kubs0, 1s versus 16s, the reranker being
+the laggard. Without it the second command used to fail immediately,
+reporting the stack as unreachable and advising you to bring it up, which
+is what you had just done. `just test-integration` now waits for readiness
+itself too (up to 60s, `TEST_STACK_WAIT_SECS`), so the sequence works even
+against a stack someone brought up another way; `test-stack-up` is still
+the better route because it also waits for TEI and the reranker, which the
+sweep does not use but the tests do.
 
 **Tear the test stack down when you finish.** Sprint 032 (#647) found
 it had been up on kubs0 for two weeks alongside the production
