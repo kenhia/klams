@@ -27,6 +27,10 @@ klams_url     := env_var_or_default('KLAMS_URL',   'http://127.0.0.1:7777')
 klams_agent   := env_var_or_default('KLAMS_AGENT', '')
 compose_file  := 'deploy/docker-compose.yml'
 
+# The integration test stack — a different stack from {{compose_file}}
+# and deliberately named so (sprint 053, #3001).
+test_compose_file := 'tests/docker-compose.test.yml'
+
 # Sprint 042 (#1012) — the homelab package store klams releases go to
 # and come from (k-homelab docs/deploying.md).
 #
@@ -55,13 +59,19 @@ klams_config  := env_var_or_default('KLAMS_CONFIG', if path_exists('/ai/klams/co
 # `eval` recipes check and say what to set.
 klams_mind    := env_var_or_default('KLAMS_MIND_DIR', '')
 
+# This is the LONG-LIVED stack ({{compose_file}}). For the integration
+# test stack, use `test-stack-up`.
+#
+# `compose-up-test` was retired in sprint 053 (#3001): it was a bare
+# alias for this recipe, so a name ending in `-test` brought up the
+# production compose — on kubs0 that meant a second production-shaped
+# postgres/qdrant/TEI beside the real ones. Two sprint-era quickstarts
+# (007, 008) still name it; they are historical records, not
+# instructions.
+#
 # Bring the Postgres+Qdrant+TEI+reranker stack up in the background.
 compose-up:
     docker compose -f {{compose_file}} up -d
-
-# Alias for `compose-up` — kept so quickstart-style operator docs can
-# distinguish a throwaway test stack from a long-lived one.
-compose-up-test: compose-up
 
 # Stop and remove the stack (keeps volumes).
 compose-down:
@@ -124,12 +134,13 @@ test:
 soak *ARGS:
     cargo run --release -p klams-soak -- {{ARGS}}
 
-# Constitution pre-commit gate — fail-fast on fmt, clippy, or tests.
 # Mirrors CI's `service` job exactly. Since sprint 039 the workspace is
 # the whole repo (the viewport, a second Cargo workspace, was retired in
 # favour of kenhia/klams-view), so this is the gate — no `gate-all`.
 # Note: excludes `--all-features` which gates off `scale-fixture` (an intentionally
 # heavy fixture for multi-minute loads); that feature is checked only in targeted tests.
+#
+# Constitution pre-commit gate — fail-fast on fmt, clippy, or tests.
 gate:
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets -- -D warnings
@@ -139,7 +150,31 @@ gate:
 # managed block tells every agent so. klams called it `gate` first and
 # CI invokes `just gate` by name, so `check` is an alias rather than a
 # second definition: two names, one gate, nothing to drift.
+#
+# Alias for `gate` — the name the kprojects harness uses.
 check: gate
+
+# Sprint 053 (#3001) — until 053 there was no recipe for this stack at
+# all, so every doc told you to type the raw docker command, while
+# `compose-up-test` looked like the recipe for it and actually brought up
+# the production compose.
+#
+# `--wait` is the whole point: plain `up -d` returns when the containers
+# are *started*, not when their healthchecks pass — 1s versus 16s measured
+# on kubs0 (#2283) — and it covers TEI and the reranker, which the sweep
+# in `test-integration` does not use but the tests do.
+#
+# Bring the integration test stack up, waiting until it is ready.
+test-stack-up:
+    docker compose -f {{test_compose_file}} up -d --wait
+
+# Do this when you finish: a long-lived test stack shadows the production
+# containers and its qdrant accumulates seeds until the ranking
+# assertions starve (#647).
+#
+# Tear the integration test stack down (keeps volumes).
+test-stack-down:
+    docker compose -f {{test_compose_file}} down
 
 # Sprint 031 (#679/#687/#646) — the docker-gated integration suite,
 # which `gate` deliberately excludes. Until 031 there was no recipe for
@@ -152,7 +187,13 @@ check: gate
 # need is gone with the shared-table race (#679); if you find yourself
 # reaching for it again, something regressed — fix that instead.
 #
-# Requires `docker compose -f tests/docker-compose.test.yml up -d`.
+# Requires the test stack: `just test-stack-up`. The sweep waits for
+# qdrant and postgres to be ready itself (#2283, up to
+# TEST_STACK_WAIT_SECS=60), so a stack brought up without `--wait` works
+# too — but `test-stack-up` waits for TEI and the reranker as well, which
+# the tests use and the sweep does not.
+#
+# Run the docker-gated integration suite (needs `just test-stack-up`).
 test-integration *ARGS:
     ./scripts/reset-test-stack.sh
     TEST_DATABASE_URL=postgres://klams:klams_test@127.0.0.1:55432/klams \
@@ -163,12 +204,12 @@ test-integration *ARGS:
     TEST_RERANKER_URL=http://127.0.0.1:57071 \
         cargo test --workspace -- --ignored {{ARGS}}
 
-# Quick liveness probe + light verification round-trip.
-#
 # The `@` is now only about noise. It used to be load-bearing — without
 # it `just` echoes the expanded command line, which printed the bearer
 # token to the terminal and to any CI log. Since sprint 050 there is no
 # token to print; the identity is a name and echoing it leaks nothing.
+#
+# Quick liveness probe + light verification round-trip.
 health:
     @KLAMS_URL={{klams_url}} KLAMS_AGENT={{klams_agent}} \
         bash scripts/verify-mvp.sh --light

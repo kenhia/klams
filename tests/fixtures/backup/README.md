@@ -8,7 +8,7 @@ The loader is gated behind the `scale-fixture` Cargo feature so it
 does not run with `cargo test --workspace`:
 
 ```bash
-docker compose -f tests/docker-compose.test.yml up -d
+just test-stack-up
 cargo test -p klams-service --features scale-fixture \
     --test scale_loader -- --ignored --nocapture
 ```
