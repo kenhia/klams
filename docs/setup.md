@@ -493,12 +493,14 @@ psql "$DATABASE_URL" -c "SELECT COUNT(*) FROM events;" -t > /tmp/pre-counts-even
 # 2. Tear down the live stack (loses all in-memory state)
 docker compose -f tests/docker-compose.test.yml down -v
 
-# 3. Bring up a fresh stack
-docker compose -f tests/docker-compose.test.yml up -d
-# `just wait-for-stack` was cited here until sprint 032 (#648); no such
-# recipe has ever existed. Poll the containers instead:
-until [ "$(docker compose -f tests/docker-compose.test.yml ps \
-        --format '{{.Health}}' | sort -u)" = "healthy" ]; do sleep 2; done
+# 3. Bring up a fresh stack, waiting until it is actually ready
+#
+# Sprint 053 (#3001) gave this stack a recipe, and it waits. A
+# `just wait-for-stack` was cited here until sprint 032 (#648) and had
+# never existed, so this step used to bring the stack up and then poll
+# `docker compose ps` for `healthy` by hand; that loop is what
+# `test-stack-up` now does with `up -d --wait`.
+just test-stack-up
 
 # 4. Restore from yesterday's snapshot
 just restore-from $(date -u -d 'yesterday' +%F)

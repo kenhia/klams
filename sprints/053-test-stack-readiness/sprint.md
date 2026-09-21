@@ -91,8 +91,10 @@ header, and `tests/fixtures/backup/README.md`.
   container healthcheck timeout wants to span. It is not the defect, and
   rewriting the gate that fronts every PR is a behaviour change, not a
   repair.
-- **`docs/setup.md`'s restore-drill loop** — it polls for healthy already
-  and carries its own sprint-032 note. Working prose, no defect behind it.
+- **`docs/setup.md`'s restore-drill loop** — polls for healthy already,
+  carries its own sprint-032 note, works. *Superseded at ship time*: once
+  #3001 added `test-stack-up`, that loop's premise ("no such recipe has
+  ever existed") became false — see "Repaired in passing" below.
 - **Sprint records** mentioning bare `up -d` — history, not instructions
   (AGENTS.md's historical note).
 
@@ -194,6 +196,24 @@ Two self-inflicted problems caught during this, worth recording because
 fixed by putting rationale first and the one-line summary last; all four
 recipes now read correctly in `just --list`, and `test-integration` gained
 a summary line it never had.
+
+### `docs/setup.md`'s restore drill (found at ship time)
+
+Phase 2 of the ship caught staleness **this sprint's own change created**.
+The restore drill's step 3 brought the stack up and then polled
+`docker compose ps` for `healthy` by hand, under a note reading *"`just
+wait-for-stack` was cited here until sprint 032 (#648); no such recipe has
+ever existed"*. After #3001 one does, and it waits — so the note was
+false and the loop redundant. Step 3 is now `just test-stack-up`, with the
+history kept as a comment.
+
+Step 2 deliberately still uses raw `docker compose … down -v`: the drill
+wants the volumes destroyed, and `test-stack-down` keeps them. Not a
+recipe call to make symmetrical.
+
+Earlier in the sprint this file was listed under "deliberately not
+touched" on the grounds that its poll loop worked. That was right when the
+recipes did not exist and stopped being right the moment they did.
 
 ### `just --list` descriptions for `gate` / `check` / `health`
 
