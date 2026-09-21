@@ -243,3 +243,50 @@ the acceptance criterion in #2283 is a two-command sequence against a
 live docker stack. Standing one up to assert on it would be a new dev
 dependency for an XS fix — YAGNI. The six cases above were run live and
 are recorded here instead; case 1 is the before/after.
+
+## Deployed 2026-09-21 — deliberate no-op, nothing was deployed
+
+`.sprint-deploy` names `deploy-kubs0`, so Phase 7 had a declared step. It
+was **not run**, on the overseer's ruling in the clearance comment:
+*"Nothing on the serve path changed — if the ship's deploy step would
+restart the live klams for a justfile/docs/script-only change, record the
+no-op instead."*
+
+Both halves of that condition were checked rather than assumed:
+
+- **Nothing on the serve path changed.**
+  `git diff --name-only origin/main..HEAD` touches no `crates/`, no
+  `migrations/`, no `deploy/`, no `tools/`. The whole diff is `AGENTS.md`,
+  `docs/usage.md`, `docs/setup.md`, `justfile`,
+  `scripts/reset-test-stack.sh`, `tests/docker-compose.test.yml`,
+  `tests/fixtures/backup/README.md`, this record, and `Cargo.toml` /
+  `Cargo.lock` — where the only change is `version = "0.1.52"` →
+  `"0.1.53"`.
+- **`deploy-kubs0` has no self-skipping predicate.** It publishes,
+  installs and then restarts, and its own text is explicit that the
+  restart "is not optional". So there is no version of running it that
+  does not restart `klams-service` and `klams-monitor` — for a release
+  whose binaries differ from the running ones only in the version string.
+
+Running it would therefore have taken a healthy service with ~8.8 days of
+uptime down and back up to ship no behaviour change at all.
+
+### What this leaves pending, deliberately
+
+**The live fleet stays on `0.1.52` while `main` says `0.1.53`.** Verified
+at ship time: `/healthz` reports `0.1.52`, and all four binaries on disk
+are `0.1.52` (`service`, `scanner`, `monitor`, `token`).
+
+That gap is the convention working, not breaking: AGENTS.md makes the
+version the at-a-glance check for "is the latest sprint deployed", and the
+honest answer for 053 is no. The next ordinary klams deploy carries
+`0.1.53` and this sprint's version bump with it.
+
+**Whoever runs that deploy should know 053 is in it.** Sprint 052's own
+record documents exactly this shape going unnoticed: 051 merged and was
+never published or deployed, so store `latest` and the running service
+were both still `0.1.50`, and 052's deploy silently carried 051's
+klams-monitor change into production for the first time. The difference
+here is that this no-op is deliberate and written down — so the next
+deploy is a `0.1.52 → 0.1.53` step carrying only dev-tooling and docs, with
+no serve-path change to precondition-check.
