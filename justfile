@@ -134,12 +134,13 @@ test:
 soak *ARGS:
     cargo run --release -p klams-soak -- {{ARGS}}
 
-# Constitution pre-commit gate — fail-fast on fmt, clippy, or tests.
 # Mirrors CI's `service` job exactly. Since sprint 039 the workspace is
 # the whole repo (the viewport, a second Cargo workspace, was retired in
 # favour of kenhia/klams-view), so this is the gate — no `gate-all`.
 # Note: excludes `--all-features` which gates off `scale-fixture` (an intentionally
 # heavy fixture for multi-minute loads); that feature is checked only in targeted tests.
+#
+# Constitution pre-commit gate — fail-fast on fmt, clippy, or tests.
 gate:
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets -- -D warnings
@@ -149,6 +150,8 @@ gate:
 # managed block tells every agent so. klams called it `gate` first and
 # CI invokes `just gate` by name, so `check` is an alias rather than a
 # second definition: two names, one gate, nothing to drift.
+#
+# Alias for `gate` — the name the kprojects harness uses.
 check: gate
 
 # Sprint 053 (#3001) — until 053 there was no recipe for this stack at
@@ -201,12 +204,12 @@ test-integration *ARGS:
     TEST_RERANKER_URL=http://127.0.0.1:57071 \
         cargo test --workspace -- --ignored {{ARGS}}
 
-# Quick liveness probe + light verification round-trip.
-#
 # The `@` is now only about noise. It used to be load-bearing — without
 # it `just` echoes the expanded command line, which printed the bearer
 # token to the terminal and to any CI log. Since sprint 050 there is no
 # token to print; the identity is a name and echoing it leaks nothing.
+#
+# Quick liveness probe + light verification round-trip.
 health:
     @KLAMS_URL={{klams_url}} KLAMS_AGENT={{klams_agent}} \
         bash scripts/verify-mvp.sh --light

@@ -195,10 +195,25 @@ fixed by putting rationale first and the one-line summary last; all four
 recipes now read correctly in `just --list`, and `test-integration` gained
 a summary line it never had.
 
-This is a pre-existing pattern in the justfile — `gate`, `check`,
-`health`, `identities`, `db-psql` and others still list as mid-sentence
-fragments. Not touched: it is unrelated to this sprint's scope, and
-rewriting a dozen recipe comments is not a repair.
+### `just --list` descriptions for `gate` / `check` / `health`
+
+The same pattern was pre-existing across the justfile, so it was raised
+rather than fixed. The overseer ruled it a repair — named, and needing no
+decision — so these three are fixed in this branch: `gate` and `health`
+had their summary line moved to the **end** of their comment blocks, and
+`check` (which explained the alias but never summarised it) gained one.
+They now read:
+
+```
+check    # Alias for `gate` — the name the kprojects harness uses.
+gate     # Constitution pre-commit gate — fail-fast on fmt, clippy, or tests.
+health   # Quick liveness probe + light verification round-trip.
+```
+
+Scoped to the three named. `identities`, `db-psql`, `backup-size`,
+`bench-run`, `eval` and others still list as fragments — same cosmetic
+pattern, not named, and widening the sweep would be scope creep rather
+than a repair. `just gate` exit 0 afterwards.
 
 ## Notes for the record
 
