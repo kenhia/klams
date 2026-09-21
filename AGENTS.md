@@ -92,10 +92,20 @@ every branch. Before pushing anything that touches the store, the MCP
 tools, or the write paths, also run:
 
 ```bash
-docker compose -f tests/docker-compose.test.yml up -d   # once
+docker compose -f tests/docker-compose.test.yml up -d --wait   # once
 just test-integration
-docker compose -f tests/docker-compose.test.yml down     # when you are done
+docker compose -f tests/docker-compose.test.yml down           # when you are done
 ```
+
+**`--wait` is not decoration** (#2283). Plain `up -d` returns when the
+containers are *started*, not when their healthchecks pass — measured on
+kubs0, 1s versus 16s, the reranker being the laggard. Without it the
+second command used to fail immediately, reporting the stack as
+unreachable and advising you to bring it up, which is what you had just
+done. `just test-integration` now waits for readiness itself (up to 60s,
+`TEST_STACK_WAIT_SECS`), so the sequence works either way; `--wait` is
+still the better form because it covers TEI and the reranker too, which
+the sweep does not use but the tests do.
 
 **Tear the test stack down when you finish.** Sprint 032 (#647) found
 it had been up on kubs0 for two weeks alongside the production

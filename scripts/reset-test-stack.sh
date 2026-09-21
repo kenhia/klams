@@ -28,23 +28,87 @@
 # Both are dropped and recreated on next use, so this is safe to run
 # before any suite — but NOT while one is running.
 #
+# It WAITS for the stack to be ready before sweeping (#2283). `docker
+# compose up -d` returns when containers are *started*, not when their
+# healthchecks pass — measured on kubs0: `up -d` returns after 1s, and
+# `up -d --wait` after 16s. AGENTS.md pairs `up -d` with
+# `just test-integration` as consecutive commands, so the one-shot probe
+# this used to do failed that documented sequence every time, and said
+# "bring the stack up" — the command the operator had just run.
+#
 # It deliberately does NOT touch the loaded scale fixture in the
 # service's own collections, the Postgres `public` schema, or the
 # stack's volumes: `just backup-size` depends on that fixture and
 # reloading it takes minutes.
 #
 # Usage: scripts/reset-test-stack.sh
-# Env:   TEST_QDRANT_HTTP_URL (default http://127.0.0.1:56333)
-#        TEST_PG_CONTAINER    (default klams-test-postgres-1)
+# Env:   TEST_QDRANT_HTTP_URL  (default http://127.0.0.1:56333)
+#        TEST_QDRANT_CONTAINER (default klams-test-qdrant-1) — used only
+#                              to tell "stack is down" from "wedged"
+#        TEST_PG_CONTAINER     (default klams-test-postgres-1)
+#        TEST_STACK_WAIT_SECS  (default 60) — readiness budget; 0 waits
+#                              not at all, restoring the old behaviour
 set -euo pipefail
 
 qdrant="${TEST_QDRANT_HTTP_URL:-http://127.0.0.1:56333}"
+qdrant_container="${TEST_QDRANT_CONTAINER:-klams-test-qdrant-1}"
 pg_container="${TEST_PG_CONTAINER:-klams-test-postgres-1}"
+wait_secs="${TEST_STACK_WAIT_SECS:-60}"
 
-if ! curl -fsS "$qdrant/readyz" >/dev/null 2>&1; then
-    echo "reset-test-stack: qdrant unreachable at $qdrant" >&2
-    echo "  bring the stack up: docker compose -f tests/docker-compose.test.yml up -d" >&2
-    exit 1
+# --- Wait for ready, not merely started ------------------------------
+container_running() {
+    docker ps --format '{{.Names}}' | grep -qx "$1"
+}
+
+qdrant_ready() {
+    curl -fsS --max-time 2 "$qdrant/readyz" >/dev/null 2>&1
+}
+
+# Postgres is checked only when its container is actually running: the
+# sweep below already tolerates its absence (someone pointing
+# TEST_QDRANT_HTTP_URL at a standalone qdrant has no postgres to wait
+# for), and waiting 60s to then print "skipping postgres sweep" would
+# turn that supported case into a stall.
+pg_ready() {
+    container_running "$pg_container" || return 0
+    docker exec "$pg_container" pg_isready -U klams >/dev/null 2>&1
+}
+
+stack_ready() {
+    qdrant_ready && pg_ready
+}
+
+start=$(date +%s)
+deadline=$((start + wait_secs))
+announced=0
+until stack_ready; do
+    if (($(date +%s) >= deadline)); then
+        if ! qdrant_ready; then
+            echo "reset-test-stack: qdrant at $qdrant was not ready within ${wait_secs}s" >&2
+            if container_running "$qdrant_container"; then
+                echo "  container $qdrant_container IS running, so it is wedged rather than absent:" >&2
+                echo "    docker compose -f tests/docker-compose.test.yml logs qdrant" >&2
+            else
+                echo "  no container named $qdrant_container is running — the stack is down:" >&2
+                echo "    docker compose -f tests/docker-compose.test.yml up -d --wait" >&2
+                echo "  (or TEST_QDRANT_HTTP_URL points somewhere there is no qdrant)" >&2
+            fi
+        else
+            echo "reset-test-stack: postgres in $pg_container was not accepting" \
+                "connections within ${wait_secs}s" >&2
+            echo "    docker compose -f tests/docker-compose.test.yml logs postgres" >&2
+        fi
+        exit 1
+    fi
+    if ((announced == 0)); then
+        echo "reset-test-stack: stack not ready yet, waiting up to ${wait_secs}s" >&2
+        announced=1
+    fi
+    sleep 1
+done
+waited=$(($(date +%s) - start))
+if ((waited > 0)); then
+    echo "reset-test-stack: stack ready after ${waited}s" >&2
 fi
 
 # --- Qdrant: the shared collection, then the orphans -----------------

@@ -1,5 +1,7 @@
 # Ephemeral test stack for integration tests.
-# Brought up by tests via `docker compose -f tests/docker-compose.test.yml up -d`.
+# Brought up by tests via `docker compose -f tests/docker-compose.test.yml
+# up -d --wait`. Prefer `--wait`: plain `up -d` returns when the
+# containers are started, not when the healthchecks below pass.
 # Uses a dedicated user-defined bridge network so containers can address
 # each other by service name (postgres, qdrant, tei) inside the network,
 # while the host accesses them on the published ports below.

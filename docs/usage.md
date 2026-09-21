@@ -219,7 +219,7 @@ common task is a one-liner that matches what CI runs.
 | `run`             | `cargo run -p klams-service`, logs to stderr. |
 | `test`            | `cargo test --workspace`. |
 | `gate`            | Constitution pre-commit gate: fmt + clippy + the hermetic tests. |
-| `test-integration`| The docker-gated suite `gate` excludes. Sweeps the test stack (`scripts/reset-test-stack.sh`), then runs `cargo test --workspace -- --ignored` at default parallelism. Needs `docker compose -f tests/docker-compose.test.yml up -d`; run `... down` when finished — a long-lived test stack shadows the production containers and accumulates seeds (#647). |
+| `test-integration`| The docker-gated suite `gate` excludes. Sweeps the test stack (`scripts/reset-test-stack.sh`), then runs `cargo test --workspace -- --ignored` at default parallelism. Needs `docker compose -f tests/docker-compose.test.yml up -d --wait`; run `... down` when finished. The sweep waits up to `TEST_STACK_WAIT_SECS` (default 60) for qdrant and postgres to be *ready* rather than merely started (#2283), so a bare `up -d` works too — `--wait` additionally covers TEI and the reranker — a long-lived test stack shadows the production containers and accumulates seeds (#647). |
 | `health`          | `/healthz` curl + `scripts/verify-mvp.sh --light`. |
 | `verify`          | Full `scripts/verify-mvp.sh` (SC-001..SC-009). |
 | `smoke`           | The first-run smoke `docs/install.md` ends with (sprint 035, #779): full `verify-mvp.sh` with `--first-run` — failure hints on every check and a plain-language verdict. Valid on an empty store. |

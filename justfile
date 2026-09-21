@@ -152,7 +152,11 @@ check: gate
 # need is gone with the shared-table race (#679); if you find yourself
 # reaching for it again, something regressed — fix that instead.
 #
-# Requires `docker compose -f tests/docker-compose.test.yml up -d`.
+# Requires the test stack: `docker compose -f
+# tests/docker-compose.test.yml up -d --wait`. The sweep waits for
+# qdrant and postgres to be ready itself (#2283, up to
+# TEST_STACK_WAIT_SECS=60), so a bare `up -d` works too — but `--wait`
+# also covers TEI and the reranker, which the tests use.
 test-integration *ARGS:
     ./scripts/reset-test-stack.sh
     TEST_DATABASE_URL=postgres://klams:klams_test@127.0.0.1:55432/klams \
