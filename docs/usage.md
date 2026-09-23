@@ -220,7 +220,8 @@ common task is a one-liner that matches what CI runs.
 | `build`           | `cargo build -p klams-service --release`. |
 | `run`             | `cargo run -p klams-service`, logs to stderr. |
 | `test`            | `cargo test --workspace`. |
-| `gate`            | Constitution pre-commit gate: fmt + clippy + the hermetic tests. |
+| `gate`            | Constitution pre-commit gate: fmt + clippy + the hermetic tests + `check-compose`. |
+| `check-compose`   | Sprint 054 (#2711): renders `deploy/docker-compose.yml` offline with each required variable blanked in turn and fails unless its `${VAR:?}` guard refuses it. Needs the docker compose plugin, not a daemon. |
 | `test-integration`| The docker-gated suite `gate` excludes. Sweeps the test stack (`scripts/reset-test-stack.sh`), then runs `cargo test --workspace -- --ignored` at default parallelism. Needs `just test-stack-up`; `just test-stack-down` when finished. The sweep waits up to `TEST_STACK_WAIT_SECS` (default 60) for qdrant and postgres to be *ready* rather than merely started (#2283), so a stack brought up without `--wait` works too — `test-stack-up` additionally waits for TEI and the reranker — a long-lived test stack shadows the production containers and accumulates seeds (#647). |
 | `health`          | `/healthz` curl + `scripts/verify-mvp.sh --light`. |
 | `verify`          | Full `scripts/verify-mvp.sh` (SC-001..SC-009). |

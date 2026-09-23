@@ -69,6 +69,12 @@ klams_mind    := env_var_or_default('KLAMS_MIND_DIR', '')
 # (007, 008) still name it; they are historical records, not
 # instructions.
 #
+# Sprint 054 (#2711): the compose file refuses to render without its
+# environment: export compose.env's variables before running these, or
+# they stop at the first `${VAR:?}` guard, which is the point. On a host
+# running klams-stack.service, do not use them at all —
+# `systemctl start|stop|restart klams-stack` owns the stack there.
+#
 # Bring the Postgres+Qdrant+TEI+reranker stack up in the background.
 compose-up:
     docker compose -f {{compose_file}} up -d
@@ -145,6 +151,16 @@ gate:
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets -- -D warnings
     cargo test --workspace
+    just check-compose
+
+# Sprint 054 (#2711) — prove every `${VAR:?}` guard in {{compose_file}}
+# holds: renders offline (`docker compose config`, no daemon), blanks each
+# required variable in turn, and fails unless the render is refused by
+# that variable's own guard. Part of the gate because a removed guard is
+# the silent kind of regression — the stack still comes up, onto empty
+# data directories.
+check-compose:
+    scripts/check-compose-guards.sh
 
 # Sprint 044 — the kprojects harness calls this gate `check`, and its
 # managed block tells every agent so. klams called it `gate` first and

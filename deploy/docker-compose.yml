@@ -5,8 +5,18 @@
 # sprints/001-initial-mvp/research.md §13.
 #
 # All persistent data is bind-mounted under ${KLAMS_DATA_ROOT}
-# (default /ai/klams/data; provisioned by scripts/provision-storage-root.sh).
-# Image tags are pinned via compose.env so updates are an env-file change.
+# (provisioned by scripts/provision-storage-root.sh). Image tags and
+# model ids are pinned via compose.env so updates are an env-file change.
+#
+# Sprint 054 (#2711): every variable below is REQUIRED — `${VAR:?}`, no
+# defaults. An unloaded environment used to interpolate to the empty
+# string, and an empty KLAMS_DATA_ROOT binds /postgres and /qdrant —
+# fresh, empty directories — in place of the memory store. Now any
+# invocation without the env file refuses to render. On a host running
+# klams-stack.service the env is /etc/klams/compose.env and the stack is
+# driven with `systemctl`; elsewhere pass
+# `--env-file $KLAMS_ROOT/config/compose.env`. `just check-compose` (part
+# of the gate) proves every guard holds.
 #
 # klams-service itself runs under systemd; a commented-out service
 # block is provided below for developers who prefer a Compose-only loop.
@@ -18,7 +28,7 @@ networks:
 
 services:
   postgres:
-    image: postgres:${POSTGRES_IMAGE_TAG}
+    image: postgres:${POSTGRES_IMAGE_TAG:?compose env not loaded - see deploy/compose.env.example}
     container_name: klams-postgres
     restart: unless-stopped
     networks:
@@ -27,11 +37,11 @@ services:
     environment:
       POSTGRES_DB: klams
       POSTGRES_USER: klams
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?compose env not loaded - see deploy/compose.env.example}
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
-      - ${KLAMS_DATA_ROOT}/postgres:/var/lib/postgresql/data
+      - ${KLAMS_DATA_ROOT:?compose env not loaded - see deploy/compose.env.example}/postgres:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U klams -d klams"]
       interval: 10s
@@ -39,7 +49,7 @@ services:
       retries: 5
 
   qdrant:
-    image: qdrant/qdrant:${QDRANT_IMAGE_TAG}
+    image: qdrant/qdrant:${QDRANT_IMAGE_TAG:?compose env not loaded - see deploy/compose.env.example}
     container_name: klams-qdrant
     restart: unless-stopped
     networks:
@@ -49,7 +59,7 @@ services:
       - "127.0.0.1:6333:6333"
       - "127.0.0.1:6334:6334"
     volumes:
-      - ${KLAMS_DATA_ROOT}/qdrant:/qdrant/storage
+      - ${KLAMS_DATA_ROOT:?compose env not loaded - see deploy/compose.env.example}/qdrant:/qdrant/storage
     healthcheck:
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/6333"]
       interval: 10s
@@ -57,7 +67,7 @@ services:
       retries: 5
 
   tei:
-    image: ghcr.io/huggingface/text-embeddings-inference:${TEI_IMAGE_TAG}
+    image: ghcr.io/huggingface/text-embeddings-inference:${TEI_IMAGE_TAG:?compose env not loaded - see deploy/compose.env.example}
     container_name: klams-tei
     restart: unless-stopped
     networks:
@@ -75,7 +85,7 @@ services:
     # 32768 matches Qwen3-Embedding's context.
     command:
       [
-        "--model-id", "${TEI_MODEL_ID}",
+        "--model-id", "${TEI_MODEL_ID:?compose env not loaded - see deploy/compose.env.example}",
         "--port", "80",
         "--auto-truncate", "false",
         "--max-batch-tokens", "32768",
@@ -84,7 +94,7 @@ services:
     ports:
       - "127.0.0.1:7070:80"
     volumes:
-      - ${KLAMS_DATA_ROOT}/tei:/data
+      - ${KLAMS_DATA_ROOT:?compose env not loaded - see deploy/compose.env.example}/tei:/data
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1/health"]
       interval: 15s
@@ -92,7 +102,7 @@ services:
       retries: 5
 
   reranker:
-    image: ghcr.io/huggingface/text-embeddings-inference:${TEI_IMAGE_TAG}
+    image: ghcr.io/huggingface/text-embeddings-inference:${TEI_IMAGE_TAG:?compose env not loaded - see deploy/compose.env.example}
     container_name: klams-reranker
     restart: unless-stopped
     networks:
@@ -109,7 +119,7 @@ services:
     # (default 50) — TEI 422s a larger batch outright.
     command:
       [
-        "--model-id", "${RERANKER_MODEL_ID}",
+        "--model-id", "${RERANKER_MODEL_ID:?compose env not loaded - see deploy/compose.env.example}",
         "--port", "80",
         "--auto-truncate",
         "--max-client-batch-size", "64",
@@ -117,7 +127,7 @@ services:
     ports:
       - "127.0.0.1:7071:80"
     volumes:
-      - ${KLAMS_DATA_ROOT}/tei:/data
+      - ${KLAMS_DATA_ROOT:?compose env not loaded - see deploy/compose.env.example}/tei:/data
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1/health"]
       interval: 15s
@@ -158,7 +168,7 @@ services:
       - "127.0.0.1:9090:9090"
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ${KLAMS_DATA_ROOT}/prometheus:/prometheus
+      - ${KLAMS_DATA_ROOT:?compose env not loaded - see deploy/compose.env.example}/prometheus:/prometheus
 
   grafana:
     profiles: ["observability"]
@@ -174,7 +184,7 @@ services:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
     volumes:
-      - ${KLAMS_DATA_ROOT}/grafana:/var/lib/grafana
+      - ${KLAMS_DATA_ROOT:?compose env not loaded - see deploy/compose.env.example}/grafana:/var/lib/grafana
       - ./grafana/klams.json:/var/lib/grafana/dashboards/klams.json:ro
     depends_on:
       prometheus:

@@ -10,6 +10,7 @@
 #      `/usr/local/bin/<bin>` to `<bin>.prev`, mv-into-place atomically.
 #   4. Install unit + timer files into /etc/systemd/system.
 #   5. systemctl daemon-reload + enable --now the units.
+#   5a. enable --now klams-stack.service, if /etc/klams/compose.env exists.
 #
 # Required deps: `docker.service` must exist on the host. Postgres, Qdrant,
 # and the embeddings backend run as Docker containers (see compose files),
@@ -36,7 +37,7 @@ USER_NAME=klams
 GROUP_NAME=klams
 
 BIN_LIST="klams-service klams-scanner klams-monitor"
-UNIT_LIST="klams-service.service klams-scanner.service klams-scanner.timer klams-monitor.service"
+UNIT_LIST="klams-service.service klams-scanner.service klams-scanner.timer klams-monitor.service klams-stack.service"
 
 # Sprint 051 — the per-host secrets file is k-homelab's; klams neither creates
 # nor requires it. The drop-in that reads it is installed only where the file
@@ -47,6 +48,12 @@ DROPIN_NAME=10-khomelab-secrets.conf
 DROPIN_SRC="$SCRIPT_DIR/klams-monitor.service.d/$DROPIN_NAME"
 DROPIN_DST_DIR="$SYSTEMD_DIR/klams-monitor.service.d"
 ENABLE_LIST="klams-service.service klams-scanner.timer klams-monitor.service"
+
+# Sprint 054 (#2711) — the compose stack's unit. Its environment is the
+# operator's to write (it carries the Postgres password), so the unit is
+# always installed but enabled only once that file exists (step 5a).
+STACK_UNIT=klams-stack.service
+STACK_ENV=$CONFIG_DIR/compose.env
 
 say() {
     if [ "$DRY_RUN" -eq 1 ]; then
@@ -153,5 +160,22 @@ run "systemctl daemon-reload"
 for unit in $ENABLE_LIST; do
     run "systemctl enable --now $unit"
 done
+
+# --- 5a. The compose stack (sprint 054) ----------------------------------
+#
+# Enabled only when its env file exists: without it the unit fails on
+# start by design, and set -e would abort the install on a host that
+# simply has not moved compose.env into /etc/klams yet. `enable --now`
+# on a stack that is already up runs `docker compose up -d`, which
+# recreates nothing when compose.env matches the running containers —
+# check that first with the dry run in docs/setup.md.
+
+if [ -f "$STACK_ENV" ]; then
+    run "systemctl enable --now $STACK_UNIT"
+else
+    printf 'note: %s absent; %s installed but not enabled.\n' "$STACK_ENV" "$STACK_UNIT"
+    printf '      Create it (root 0600, see deploy/compose.env.example), then\n'
+    printf '      systemctl enable --now %s\n' "$STACK_UNIT"
+fi
 
 printf 'done.\n'

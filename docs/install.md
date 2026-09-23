@@ -171,7 +171,13 @@ installs binaries to `/usr/local/bin` and units to
 `/etc/systemd/system`, and expects configs at `/etc/klams/`
 (`klams.toml`, `scanner.toml`, `monitor.toml` — copy your rendered
 files there, or edit the units' `Environment=KLAMS_CONFIG=` lines to
-point at `$KLAMS_ROOT/config/`). Token edits take effect with
+point at `$KLAMS_ROOT/config/`). To have systemd own the compose stack
+as well, move `compose.env` to `/etc/klams/compose.env` (root `0600`,
+plus a `COMPOSE_FILE=` line) and the installer enables
+`klams-stack.service`. The procedure, including the dry run proving the
+file matches a running stack, is in
+[setup.md](setup.md#sprint-054--the-compose-stack-under-systemd-klams-stackservice).
+Token edits take effect with
 `sudo systemctl reload klams-service` — no restart.
 
 ## 7. Point the scanner at your files

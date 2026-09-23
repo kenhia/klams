@@ -130,7 +130,13 @@ deterministic DNS aliases. The default `bridge` network is intentionally
 not used — rationale in
 [research.md §13](../sprints/001-initial-mvp/research.md#13-docker-network).
 Image tags and model ids are pinned in `compose.env` (template:
-[`deploy/compose.env.example`](../deploy/compose.env.example)).
+[`deploy/compose.env.example`](../deploy/compose.env.example)). Every
+variable the compose file interpolates is `${VAR:?}`-guarded, so a run
+without that environment refuses to render instead of binding empty
+paths (sprint 054, #2711; `just check-compose` in the gate). Where
+`klams-stack.service` is installed, it owns the stack's lifecycle and
+its `EnvironmentFile=/etc/klams/compose.env` is the one environment
+([setup.md](setup.md#sprint-054--the-compose-stack-under-systemd-klams-stackservice)).
 
 | Service | Container | Bind | Volume | Notes |
 |---------|-----------|------|--------|-------|
@@ -976,7 +982,7 @@ The split between **systemd-managed klams binaries** and
   published loopback ports, so it needs no place on `klams-net`.
 * Postgres, Qdrant and the two TEI containers have non-trivial
   image/version management that Compose handles via `compose.env` pins.
-* All three units share a hardening profile (`NoNewPrivileges`,
+* The three binary units share a hardening profile (`NoNewPrivileges`,
   `ProtectSystem=strict`, `ProtectHome`); they declare
   `After=/Wants=docker.service` because the stateful dependencies live
   in Docker. `install-systemd.sh` is idempotent, supports `--dry-run`,
@@ -1034,8 +1040,11 @@ Rationale in
 
 * Bearer tokens: in `klams.toml` (file mode `0600`), constant-time
   compared on every request.
-* Postgres password: in `compose.env` (mode `0600`) and inlined into
-  the service's `postgres.url`.
+* Postgres password: in `compose.env` (mode `0600`; under systemd,
+  `/etc/klams/compose.env`, root-owned, beside `klams.toml`) and inlined
+  into the service's `postgres.url`. On an initialised data directory
+  the container env value is inert: the `postgres` entrypoint only
+  reads it at initdb, so a rotation is `ALTER ROLE` plus both files.
 * TLS is terminated by `tailscale serve`; the service itself speaks
   plain HTTP on loopback.
 

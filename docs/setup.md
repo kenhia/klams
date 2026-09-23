@@ -259,6 +259,10 @@ The script is **idempotent** and:
    healthy.
 6. `systemctl daemon-reload` then `enable --now` the service, timer,
    and monitor units.
+7. Installs `klams-stack.service` (sprint 054) and enables it **only if
+   `/etc/klams/compose.env` already exists** — the move-in below. The
+   unit is always installed; without its env file it would fail on
+   start by design, so the script says so and leaves it disabled.
 
 ### Enabling `[backup]` needs a `ReadWritePaths=` drop-in (sprint 034, #774)
 
@@ -472,6 +476,93 @@ long-running units. No-op when no `.prev` exists.
 replaced. To go back further, or to reach a build this host never ran,
 fetch it from the package store by version:
 `just deploy-from-store --version 0.1.41`.
+
+## Sprint 054 — the compose stack under systemd (`klams-stack.service`)
+
+Before sprint 054 (#2711) the four backing containers were brought up by
+a `docker compose` typed in `deploy/`, and the environment that created
+them lived in `$KLAMS_ROOT/config/compose.env` — reproduced only if the
+next operator remembered `--env-file`. A bare `docker compose up -d`
+interpolated every variable to the empty string, and an empty
+`KLAMS_DATA_ROOT` binds `/postgres` and `/qdrant` — fresh, empty
+directories — in place of the memory store.
+
+Two changes close that:
+
+- **`${VAR:?}` guards** on all seven variables in
+  `deploy/docker-compose.yml` (`KLAMS_DATA_ROOT`, `POSTGRES_IMAGE_TAG`,
+  `POSTGRES_PASSWORD`, `QDRANT_IMAGE_TAG`, `TEI_IMAGE_TAG`,
+  `TEI_MODEL_ID`, `RERANKER_MODEL_ID`). Any compose run without its
+  environment now refuses to render, and `just check-compose` — part of
+  `just gate` — proves each guard refuses, and refuses by name.
+- **`klams-stack.service`**, a system unit whose
+  `EnvironmentFile=/etc/klams/compose.env` (root `0600`, beside
+  `klams.toml`, which holds the same Postgres password as its
+  connection URL) is the stack's one environment. `ExecStart` is
+  `docker compose up -d`, `ExecStop` is `docker compose down`, and the
+  unit names no host path: the file's `COMPOSE_FILE` says which compose
+  file(s) to run.
+
+Drive the stack with `systemctl`, not `docker compose`:
+
+```sh
+sudo systemctl restart klams-stack   # down + up: applies a changed compose.env
+sudo systemctl status klams-stack
+journalctl -u klams-stack            # compose's own per-container report
+```
+
+`restart` removes and recreates the containers, which is correct for an
+env change. Data lives on the bind mounts under `KLAMS_DATA_ROOT`. On an
+already-initialised Postgres data directory, the `postgres` image's
+entrypoint skips initdb and ignores `POSTGRES_PASSWORD`: the role's
+password lives in the cluster, so changing the env value does **not**
+change the database password (`ALTER ROLE` does). It only matters for a
+fresh initdb, where the entrypoint refuses an empty value.
+
+### Moving a running stack in
+
+This is the procedure kubs0 took. The stack keeps running throughout.
+Nothing below prints a value.
+
+```sh
+# 1. The env file, copied root-side from the one that created the stack
+#    (its path is on every container's compose labels:
+#    com.docker.compose.project.environment_file).
+sudo install -m 0600 -o root -g root "$KLAMS_ROOT/config/compose.env" /etc/klams/compose.env
+
+# 2. Which compose files — exactly the set the containers were created
+#    from (label com.docker.compose.project.config_files; on a GPU host
+#    that includes docker-compose.gpu.yml).
+printf 'COMPOSE_FILE=%s\n' "$PWD/deploy/docker-compose.yml:$PWD/deploy/docker-compose.gpu.yml" \
+  | sudo tee -a /etc/klams/compose.env >/dev/null
+
+# 3. The proof the file is right: under the unit's own environment, a
+#    dry run must report every container "Running" and recreate NONE.
+#    Any "Recreate" means the file differs from what created the stack
+#    — fix it before step 4, which would otherwise recreate for real.
+sudo systemd-run --quiet --pipe --wait --collect \
+  -p EnvironmentFile=/etc/klams/compose.env \
+  /usr/bin/docker compose --dry-run up -d
+
+# 4. Install and enable (just install-systemd, or by hand):
+sudo install -m 0644 deploy/klams-stack.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now klams-stack
+```
+
+Step 3's result means something only if a dry run can report a
+recreate. On kubs0 it could: overriding `RERANKER_MODEL_ID`, or dropping
+the GPU file from `COMPOSE_FILE`, each reported `Recreate` for the
+affected containers.
+
+Afterwards the old `$KLAMS_ROOT/config/compose.env` is a second copy of
+the password that nothing reads. Remove it once the unit is proven, so
+a rotation has one file to change and not two.
+
+A compose project is keyed by name, and the default name is the first
+compose file's directory (`deploy`). If the stack was first brought up
+under another name, set `COMPOSE_PROJECT_NAME` in the file to match,
+or `up` will collide with the running containers' fixed names.
 
 ## Sprint 006 — Restore from snapshot
 
