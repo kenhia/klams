@@ -1,0 +1,45 @@
+[Unit]
+# Sprint 054 (#2711) — the backing-services stack (postgres, qdrant, tei,
+# reranker) comes up from a unit, not from a `docker compose` someone
+# types in a working tree.
+#
+# Everything host-specific lives in /etc/klams/compose.env, root 0600:
+# the seven variables deploy/docker-compose.yml interpolates (each one
+# `${VAR:?}`-guarded, so a missing value refuses to render rather than
+# interpolating empty) plus COMPOSE_FILE, which names the compose file(s)
+# by absolute path — with the GPU override appended on a GPU host. The
+# project name defaults to the first file's directory (`deploy`); set
+# COMPOSE_PROJECT_NAME there only if your stack was first brought up
+# under another one. See deploy/compose.env.example.
+#
+# A system unit on purpose: PID 1 reads EnvironmentFile= as root, which
+# is the only way a root 0600 file reaches docker compose.
+Description=klams backing services (docker compose)
+Documentation=https://github.com/kenhia/klams
+# Wants=, not Requires=: a docker upgrade restarts docker.service, and
+# Requires= would propagate that restart here — down + up, recreating
+# every container — where restart: unless-stopped already brings them
+# back on its own.
+After=docker.service network-online.target
+Wants=docker.service network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# No leading `-`: a missing env file is a failed unit, not a compose run
+# against an empty environment (which the guards would refuse anyway, but
+# with a less direct message).
+EnvironmentFile=/etc/klams/compose.env
+# Idempotent: against an already-running stack whose config matches,
+# `up -d` recreates nothing. That is also the proof a freshly written
+# compose.env is right — see docs/setup.md.
+ExecStart=/usr/bin/docker compose up -d
+# `systemctl stop` / `restart` removes the containers (data is on bind
+# mounts under KLAMS_DATA_ROOT); `restart` is therefore the way to make
+# a changed compose.env take effect.
+ExecStop=/usr/bin/docker compose down
+# Covers an image pull on first start.
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

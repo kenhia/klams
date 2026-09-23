@@ -307,6 +307,16 @@ measurement (sprint 041) — comes back mid-deploy and scans. If a measurement
 depends on a frozen corpus, re-stop it *after* this step, or do not deploy
 mid-measure. `deploy-from-store` has no such hazard: it touches no units.
 
+**`klams-stack.service` (sprint 054) is installed by the same script, and a
+deploy never restarts it.** It owns the compose stack (postgres, qdrant,
+tei, reranker) with `EnvironmentFile=/etc/klams/compose.env`. The script's
+`enable --now` on an already-active oneshot does nothing. That is what you
+want: `systemctl restart klams-stack` is `docker compose down` + `up`, which
+recreates all four containers, and a binary deploy has no reason to. Restart
+it only for a deliberate `compose.env` or compose-file change. Never bring the
+stack up with a bare `docker compose` on kubs0: the `${VAR:?}` guards refuse
+it anyway.
+
 ## Config changes are a separate, manual step
 
 `/etc/klams/klams.toml` is **not** in this repo and is not touched by this
