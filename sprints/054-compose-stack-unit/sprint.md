@@ -162,3 +162,37 @@ store. Its `--dry-run` shows the new step 5a rendering as intended.
   `memory_search`) still says "RECREATE TRAP … NOT yet fixed … no
   compose.env". That belongs to krot and to slice 2, which edits that row
   anyway.
+
+## Deployed 2026-09-23
+
+- Version `0.1.54` live on kubs0: `/healthz` reports `Ok` with all four
+  backends `Ok` (it was `0.1.52`). `klams-token`, `klams-scanner` and
+  `klams-monitor --version` all report `0.1.54`.
+- Published to the store as `artifacts/klams-*/0.1.54/`, via `just publish`
+  run in the foreground. A first background attempt was killed with the
+  ship turn's unit (signal 15) before it published anything; the store
+  still read `0.1.52` for all four.
+- Installed with `just deploy-from-store`, then `just restart`
+  (klams-service, klams-monitor).
+- Unit files: `klams-stack.service` was already installed during the
+  sprint, byte-identical to the repo (`cmp`), so `install-systemd` was not
+  run. **`klams-stack` was not restarted**, and container IDs are
+  unchanged across the deploy (`d169019061b7 f98f9ec14bd6 2ec5bcc06033
+  2e2c4e4ba7bf`). `systemctl is-active klams-stack klams-service
+  klams-monitor` reports all three `active`.
+- Backup timing: the overseer asked to wait for "tonight's 01:01 UTC" pair.
+  The scheduler's window is actually **08:01 UTC** (01:01 PDT; the backup
+  listing shows local time). The 2026-09-22 pair was that night's run,
+  logged `backup run complete ok` at 08:01:15 UTC, about 17 hours before
+  the deploy. The next window is 2026-09-23 08:01 UTC, so the restart could
+  not collide with a backup, and the deploy went ahead.
+- kai's `klams-scanner`: left at `0.1.52`. Nothing in this sprint touches
+  the scanner.
+- Rollback target: `0.1.52` via `just rollback` (the `.prev` binaries are
+  in place), or `just deploy-from-store --version 0.1.52`.
+- Migrations applied: none.
+- Verified live: `KLAMS_AGENT=claude just health` passed 2, failed 0. An
+  earlier run as `operator` got a 401, because kubs0 has no such identity.
+  `memory_search` answered. No ERROR/WARN in klams-service's journal after
+  the restart.
+- Config changes required: none.
