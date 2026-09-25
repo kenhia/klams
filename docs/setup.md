@@ -44,10 +44,10 @@ The repo ships `scripts/provision-storage-root.sh` which:
 3. Renders `$KLAMS_ROOT/config/klams.toml` and `compose.env` from the
    `deploy/` examples *only if absent* (idempotent).
 4. Generates a fresh Postgres password (injected into both rendered
-   files) and a 32-byte hex operator token, appended to the rendered
-   `klams.toml` as an `[[auth.identities]]` row —
+   files) and appends an `[[auth.identities]]` row to the rendered
+   `klams.toml` —
    `agent_name = "operator"`, `scopes = ["read", "write", "manage"]`.
-   Nothing is generated and nothing is printed as a secret, because a
+   No token is generated and nothing is printed as a secret, because a
    klams identity is a name (sprint 050). The printed next steps close
    with a `curl -H "X-Homelab-Agent: operator" /memory/policy`
    round-trip, so a fresh provision is verified working rather than
@@ -69,9 +69,16 @@ KLAMS_ROOT=$HOME/.local/share/klams ./scripts/provision-storage-root.sh
 
 After running, `$KLAMS_ROOT/config/klams.toml` and
 `$KLAMS_ROOT/config/compose.env` are both `0600`; the Postgres
-password lands in both, the operator token only in `klams.toml` (and
-once on stdout). Adjust them with your editor before bringing up
-services.
+password lands in both. Adjust them with your editor before bringing
+up services.
+
+**It is for a fresh host only** (sprint 055, #3128). If `/etc/klams/`
+holds `klams.toml` or `compose.env` — the hardened layout below — the
+script refuses and exits 1, naming what it found, rather than render a
+second config with a password nothing reads. `/etc/klams/` is `0750
+klams:klams`, so when the invoking user cannot search it the script
+cannot rule live config out and refuses on that too. Edit the live
+files in `/etc/klams/` instead.
 
 ## Overriding the root
 

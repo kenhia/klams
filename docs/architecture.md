@@ -656,7 +656,10 @@ does the endpoint return `503 + Retry-After`.
   metadata.
 * **`GET /v1/authors*`** — author list/detail plus
   `GET /v1/authors/{id}/memories` for per-author drilldown (added in
-  sprint 007 for the viewport; klams-view is the consumer today).
+  sprint 007 for the viewport). Since sprint 055 (#3079) the drilldown
+  is `Store::list_memories`' merge with `authors = [id]` and an
+  all-time window — one newest-first timeline, one `ns:uuid` cursor;
+  the old sectioned `section:ns:uuid` cursor is refused with a 400.
 * **Admin tools (MCP)** — `memory_admin_list_deleted`,
   `memory_admin_restore`, `memory_admin_hard_delete`, and the author
   registry verbs (§3.2), all `Admin` scope.

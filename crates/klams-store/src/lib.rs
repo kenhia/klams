@@ -23,7 +23,7 @@ pub mod qdrant;
 pub mod repair;
 pub mod rerank;
 
-pub use composite::CompositeStore;
+pub use composite::{is_timeline_cursor, CompositeStore};
 pub use embeddings::{Embedder, OpenAiCompatEmbedder, TeiEmbedder};
 pub use postgres::PostgresStore;
 pub use qdrant::QdrantStore;

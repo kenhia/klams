@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Provision the klams storage root and render runtime config.
 #
-# Idempotent: safe to re-run. Existing config files are left alone.
+# Idempotent: safe to re-run. Existing config files are left alone, and
+# a host whose live config is already in /etc/klams/ is refused outright.
 #
 # Usage:
 #   KLAMS_ROOT=/ai/klams ./scripts/provision-storage-root.sh
@@ -24,6 +25,34 @@ fi
 if [[ ! -f "$EXAMPLE_SCANNER" || ! -f "$EXAMPLE_MONITOR" ]]; then
     echo "error: expected $EXAMPLE_SCANNER and $EXAMPLE_MONITOR to exist" >&2
     exit 1
+fi
+
+# Sprint 055 (#3128): a host provisioned the hardened way keeps its live
+# config in /etc/klams/ (sprint 054's klams-stack unit reads compose.env
+# there), and $KLAMS_ROOT/config/ is empty on purpose. Without this check
+# a re-run would render a second klams.toml + compose.env under
+# $KLAMS_ROOT/config/ with a fresh Postgres password nothing reads — a
+# value that looks live and isn't. Refuse rather than render anywhere.
+#
+# /etc/klams/ is 0750 klams:klams, so for most operators a plain `-f`
+# on the files is false even when they exist (measured on kubs0). A
+# directory we cannot search cannot be ruled out, so it refuses too.
+LIVE_CONFIG_DIR=/etc/klams
+if [[ -d "$LIVE_CONFIG_DIR" ]]; then
+    live=""
+    if [[ ! -x "$LIVE_CONFIG_DIR" ]]; then
+        live="$LIVE_CONFIG_DIR/ (not searchable by $USER; assumed to hold live config)"
+    else
+        for f in "$LIVE_CONFIG_DIR/klams.toml" "$LIVE_CONFIG_DIR/compose.env"; do
+            [[ -f "$f" ]] && live="$f" && break
+        done
+    fi
+    if [[ -n "$live" ]]; then
+        echo "error: this host is already provisioned — live config is in $LIVE_CONFIG_DIR/" >&2
+        echo "       found: $live" >&2
+        echo "       Edit it there (sudo); this script only provisions a fresh storage root." >&2
+        exit 1
+    fi
 fi
 
 echo "==> Provisioning klams storage root at: $KLAMS_ROOT"

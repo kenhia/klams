@@ -825,6 +825,16 @@ Sprint 007 added the endpoints this runs on, and they are unchanged:
    (`live` | `soft-deleted` | `hard-deleted`), kind, summary and
    updated-at (FR-025). Filter by kinds and state; cursor-paginated.
 
+> **Sprint 055 (#3079) — contract change.** `GET /v1/authors/{id}/memories`
+> is now one newest-first timeline across all three kinds, all-time
+> (no window cap) — the same merge `/v1/memories` has used since #54.
+> It used to return whole kind sections in a fixed order (facts,
+> events, then knowledge **oldest**-first), so an author's recent
+> activity came back as their oldest chunks. The cursor changed with
+> it: a cursor minted before 0.1.55 gets a **400** (`field: cursor`) —
+> restart from the first page. klams-view stopped calling this route
+> in its sprint 005 and is unaffected.
+
 > **Sprint 010 (US4):** `counts.knowledge` is a distinct measure from
 > `counts.writes` (facts) and the two are never summed — an author that
 > has only indexed knowledge (e.g. `klams-scanner`, `writes=0`) has a
