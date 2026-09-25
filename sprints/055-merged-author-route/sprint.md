@@ -159,6 +159,45 @@ contiguous block, and assert the mappings in `test-stack-up`.
     `reranker UNMAPPED (got 'nothing')`.
   - Full `just test-integration`: **144 passed, 0 failed**.
 
+## Round 3 — CI runs the same port check
+
+Overseer rulings on handoff korg:3277:
+- #3128's extra refusal (an unsearchable `/etc/klams/`) is **approved**.
+- CI starts the stack through `.github/actions/test-stack/action.yml`,
+  which never ran the round-2 check. GitHub's Linux runners have the
+  same 32768–60999 ephemeral range, so the check had to be one
+  implementation with two callers.
+
+What changed:
+- The check moved into `scripts/check-test-stack-ports.sh`. It holds
+  the table of five mappings, takes an optional compose-file argument,
+  prints `mapped:` per service, and on failure exits 1 with the service
+  named.
+- `just test-stack-up` is back to a plain two-line recipe: `up -d
+  --wait`, then the script.
+- The action gains a step, **Check test stack port mappings**, which
+  runs the script right after `up -d` and before the wait loop.
+- The action still does not use `--wait`, deliberately: TEI's model
+  load outlasts any healthcheck timeout, which is why the action probes
+  from the host. A mapping is fixed when the container starts, so the
+  check is valid immediately, and a missing mapping fails in seconds
+  instead of after 120 s as "tei unreachable".
+
+Proof, locally on kubs0:
+- `actionlint` is not installed, and it lints workflows rather than
+  composite actions anyway. The action parses as YAML with four bash
+  steps in the intended order, and I read it through.
+- The script passes `bash -n`.
+- CI-shaped run (`up -d`, then the script at once): rc 0, all five
+  mapped.
+- Negative, with the reranker stopped: rc 1, naming `reranker` and
+  port 61404.
+- `just test-stack-up`: rc 0.
+- `just test-integration`: 144 passed, 0 failed.
+- `just gate` passes.
+
+CI runs the new step for real at ship.
+
 ## Follow-ups
 
 None.

@@ -30,6 +30,15 @@ runs:
       shell: bash
       run: docker compose -f tests/docker-compose.test.yml up -d
 
+    - name: Check test stack port mappings
+      shell: bash
+      # Sprint 055 (#3267): compose can start a container without its host
+      # mapping when the port is taken, and the wait loop below would then
+      # spend two minutes failing as "tei unreachable". A mapping is fixed
+      # at container start, so check it now, by the same script
+      # `just test-stack-up` runs, and name the unmapped service.
+      run: ./scripts/check-test-stack-ports.sh tests/docker-compose.test.yml
+
     - name: Wait for test stack
       shell: bash
       # Probe published ports from the host rather than reading

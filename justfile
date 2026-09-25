@@ -183,25 +183,13 @@ check: gate
 # `--wait` is not enough on its own (#3267): when a host port is taken,
 # compose can start the container without the mapping and still report it
 # healthy. So every expected mapping is asserted afterwards, naming the
-# service that came up unmapped.
+# service that came up unmapped — by the same script CI's test-stack
+# action runs.
 #
 # Bring the integration test stack up, waiting until it is ready.
 test-stack-up:
-    #!/usr/bin/env bash
-    set -euo pipefail
     docker compose -f {{test_compose_file}} up -d --wait
-    fail=0
-    for spec in postgres:5432:61400 qdrant:6333:61401 qdrant:6334:61402 tei:80:61403 reranker:80:61404; do
-        IFS=: read -r svc inner want <<<"$spec"
-        got="$(docker compose -f {{test_compose_file}} port "$svc" "$inner" 2>/dev/null || true)"
-        if [[ "$got" != "127.0.0.1:$want" ]]; then
-            echo "error: test stack service '$svc' has no host port $want published for :$inner (got '${got:-nothing}')" >&2
-            echo "       is 127.0.0.1:$want taken? check: ss -tanp | grep :$want" >&2
-            echo "       then: docker compose -f {{test_compose_file}} up -d --wait --force-recreate $svc" >&2
-            fail=1
-        fi
-    done
-    exit "$fail"
+    ./scripts/check-test-stack-ports.sh {{test_compose_file}}
 
 # Do this when you finish: a long-lived test stack shadows the production
 # containers and its qdrant accumulates seeds until the ranking
