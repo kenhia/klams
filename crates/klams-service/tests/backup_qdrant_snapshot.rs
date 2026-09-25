@@ -1,5 +1,5 @@
 //! Sprint 006 T017 (US1) — Qdrant snapshot integration. Requires
-//! `docker-compose.test.yml` (REST API on :56333).
+//! `docker-compose.test.yml` (REST API on :61401).
 
 mod common;
 

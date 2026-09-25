@@ -635,210 +635,75 @@ fn decode_memory_cursor(raw: &str) -> Option<(String, i128, Uuid)> {
     Some((section, ts, id))
 }
 
-#[allow(clippy::too_many_lines)]
+/// `GET /v1/authors/{id}/memories` (#3079, sprint 055): the author's whole
+/// timeline, newest first across all three kinds. It used to emit kind
+/// sections in a fixed order (facts, events, then knowledge oldest-first) —
+/// the bug `list_memories_impl` fixed for `/v1/memories` in #54 — so it now
+/// *is* that merge with `authors = [id]` and an all-time window. The cursor is
+/// the merged `ns:uuid` keyset; the handler refuses the old sectioned form
+/// (see [`is_timeline_cursor`]) before this is reached.
 async fn list_author_memories_impl(
     composite: &CompositeStore,
     q: crate::AuthorMemoriesQuery,
 ) -> StoreResult<(Vec<crate::AuthorMemoryRow>, Option<String>)> {
-    use crate::{AuthorMemoryKind, AuthorMemoryStateOut, AuthorMemoryStateQuery};
-    use klams_types::{PublicAuthorRef, PublicMemory, PublicMemoryContent};
+    use crate::{
+        AuthorMemoryKind, AuthorMemoryStateOut, AuthorMemoryStateQuery, MemoryKindFilter,
+        MemoryStateFilter, MemoryStateOut,
+    };
 
-    // Resolve the author's own PublicAuthorRef (used on every row).
-    let author = composite
+    // 404 for an unknown author rather than an empty timeline.
+    composite
         .postgres
         .get_author_by_id(q.author_id)
         .await?
         .ok_or_else(|| StoreError::Other(format!("author {} not found", q.author_id)))?;
-    let author_ref = PublicAuthorRef::from_record(&author);
 
-    let limit = if q.limit == 0 { 50 } else { q.limit };
-    let pg_state = match q.state {
-        AuthorMemoryStateQuery::Live => crate::postgres::AuthorMemoryState::Live,
-        AuthorMemoryStateQuery::Deleted => crate::postgres::AuthorMemoryState::Deleted,
-        AuthorMemoryStateQuery::All => crate::postgres::AuthorMemoryState::All,
+    let merged = crate::ListMemoriesQuery {
+        // All-time: an author timeline wants the whole timeline, and the
+        // per-kind pages stay cheap because each is `created_at DESC` from
+        // the keyset (knowledge via the datetime-index `order_by`).
+        since: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+        until: chrono::Utc::now() + chrono::Duration::days(1),
+        kinds: q
+            .kinds
+            .iter()
+            .map(|k| match k {
+                AuthorMemoryKind::Fact => MemoryKindFilter::Fact,
+                AuthorMemoryKind::Knowledge => MemoryKindFilter::Knowledge,
+                AuthorMemoryKind::Event => MemoryKindFilter::Event,
+            })
+            .collect(),
+        state: match q.state {
+            AuthorMemoryStateQuery::Live => MemoryStateFilter::Live,
+            AuthorMemoryStateQuery::Deleted => MemoryStateFilter::Deleted,
+            AuthorMemoryStateQuery::All => MemoryStateFilter::All,
+        },
+        authors: vec![q.author_id],
+        limit: q.limit,
+        cursor: q.cursor,
     };
-    let qd_state = match q.state {
-        AuthorMemoryStateQuery::Live => crate::qdrant::AuthorMemoryStateFilter::Live,
-        AuthorMemoryStateQuery::Deleted => crate::qdrant::AuthorMemoryStateFilter::Deleted,
-        AuthorMemoryStateQuery::All => crate::qdrant::AuthorMemoryStateFilter::All,
-    };
-
-    let cursor = q.cursor.as_deref().and_then(decode_memory_cursor);
-    let section = cursor
-        .as_ref()
-        .map_or_else(|| "f".to_string(), |c| c.0.clone());
-
-    let want_facts = q.kinds.is_empty() || q.kinds.contains(&AuthorMemoryKind::Fact);
-    let want_events = q.kinds.is_empty() || q.kinds.contains(&AuthorMemoryKind::Event);
-    let want_knowledge = q.kinds.is_empty() || q.kinds.contains(&AuthorMemoryKind::Knowledge);
-
-    // -- facts page --
-    if section == "f" && want_facts {
-        let pg_cursor = cursor.as_ref().and_then(|(s, ns, id)| {
-            if s == "f" {
-                Some((
-                    time::OffsetDateTime::from_unix_timestamp_nanos(*ns).ok()?,
-                    *id,
-                ))
-            } else {
-                None
+    let (rows, next_cursor) = list_memories_impl(composite, merged).await?;
+    let out = rows
+        .into_iter()
+        .map(|row| {
+            let mut memory = row.memory;
+            // This route reports deletion beside the memory, not inside it:
+            // the wire flattens `memory` next to its own `deleted_at`, so
+            // leaving these set would emit the key twice.
+            memory.deleted_at = None;
+            memory.deleted_by_author_id = None;
+            crate::AuthorMemoryRow {
+                memory,
+                state: match row.state {
+                    MemoryStateOut::Live => AuthorMemoryStateOut::Live,
+                    MemoryStateOut::Deleted => AuthorMemoryStateOut::Deleted,
+                },
+                deleted_at: row.deleted_at,
+                deleted_by: row.deleted_by,
             }
-        });
-        let (rows, next) = composite
-            .postgres
-            .list_facts_by_author(q.author_id, pg_state, limit, pg_cursor)
-            .await?;
-        let len = rows.len();
-        let mut deleter_ids = Vec::new();
-        for (_, _, d) in &rows {
-            if let Some(d) = d {
-                deleter_ids.push(*d);
-            }
-        }
-        let deleters = bulk_fetch_authors(composite, &deleter_ids).await;
-        let out: Vec<_> = rows
-            .into_iter()
-            .map(|(f, deleted_at, deleter)| {
-                let state = if deleted_at.is_some() {
-                    AuthorMemoryStateOut::Deleted
-                } else {
-                    AuthorMemoryStateOut::Live
-                };
-                let mem = PublicMemory {
-                    id: f.id,
-                    content: PublicMemoryContent::Fact {
-                        fact_type: f.fact_type.as_str().to_string(),
-                        payload: f.payload.clone(),
-                    },
-                    tags: Vec::new(),
-                    author: author_ref.clone(),
-                    created_at: offset_to_chrono(f.created_at),
-                    updated_at: offset_to_chrono(f.updated_at),
-                    deleted_at: None,
-                    deleted_by_author_id: None,
-                };
-                crate::AuthorMemoryRow {
-                    memory: mem,
-                    state,
-                    deleted_at: deleted_at.map(offset_to_chrono),
-                    deleted_by: deleter.and_then(|d| deleters.get(&d).cloned()),
-                }
-            })
-            .collect();
-        let next_cursor = if let Some((ts, id)) = next {
-            Some(encode_memory_cursor("f", ts.unix_timestamp_nanos(), id))
-        } else if want_events {
-            Some(encode_memory_cursor("e", 0, Uuid::nil()))
-        } else if want_knowledge {
-            Some(encode_memory_cursor("k", 0, Uuid::nil()))
-        } else {
-            None
-        };
-        // If the page is empty but we have more sections to try, fall through.
-        if !out.is_empty() || len > 0 {
-            return Ok((out, next_cursor));
-        }
-    }
-
-    if (section == "f" || section == "e") && want_events {
-        let pg_cursor = cursor.as_ref().and_then(|(s, ns, id)| {
-            // Section-handoff sentinel: (ns=0, id=nil) means "start of
-            // events section", not "after epoch-0/nil" — skip the cursor.
-            if s == "e" && !(*ns == 0 && *id == Uuid::nil()) {
-                Some((
-                    time::OffsetDateTime::from_unix_timestamp_nanos(*ns).ok()?,
-                    *id,
-                ))
-            } else {
-                None
-            }
-        });
-        let (rows, next) = composite
-            .postgres
-            .list_events_by_author(q.author_id, limit, pg_cursor)
-            .await?;
-        let out: Vec<_> = rows
-            .into_iter()
-            .map(|e| {
-                let mem = PublicMemory {
-                    id: e.id,
-                    content: PublicMemoryContent::Event {
-                        category: e.category.clone(),
-                        payload: e.payload.clone(),
-                        task_id: e.task_id,
-                    },
-                    tags: Vec::new(),
-                    author: author_ref.clone(),
-                    created_at: offset_to_chrono(e.created_at),
-                    updated_at: offset_to_chrono(e.created_at),
-                    deleted_at: None,
-                    deleted_by_author_id: None,
-                };
-                crate::AuthorMemoryRow {
-                    memory: mem,
-                    state: AuthorMemoryStateOut::Live,
-                    deleted_at: None,
-                    deleted_by: None,
-                }
-            })
-            .collect();
-        let next_cursor = if let Some((ts, id)) = next {
-            Some(encode_memory_cursor("e", ts.unix_timestamp_nanos(), id))
-        } else if want_knowledge {
-            Some(encode_memory_cursor("k", 0, Uuid::nil()))
-        } else {
-            None
-        };
-        if !out.is_empty() {
-            return Ok((out, next_cursor));
-        }
-    }
-
-    if want_knowledge {
-        let qd_cursor = cursor.as_ref().and_then(|(s, _, id)| {
-            if s == "k" && *id != Uuid::nil() {
-                Some(*id)
-            } else {
-                None
-            }
-        });
-        let (rows, next) = composite
-            .qdrant
-            .list_knowledge_by_author(q.author_id, qd_state, limit, qd_cursor)
-            .await?;
-        let out: Vec<_> = rows
-            .into_iter()
-            .map(|(item, deleted_at, _deleter)| {
-                let state = if deleted_at.is_some() {
-                    AuthorMemoryStateOut::Deleted
-                } else {
-                    AuthorMemoryStateOut::Live
-                };
-                let mem = PublicMemory {
-                    id: item.id,
-                    content: PublicMemoryContent::knowledge_from(&item),
-                    tags: item.tags.clone(),
-                    author: author_ref.clone(),
-                    created_at: offset_to_chrono(item.created_at),
-                    updated_at: offset_to_chrono(item.updated_at),
-                    deleted_at: None,
-                    deleted_by_author_id: None,
-                };
-                crate::AuthorMemoryRow {
-                    memory: mem,
-                    state,
-                    deleted_at: deleted_at.map(offset_to_chrono),
-                    // Knowledge deleter resolution requires another author lookup;
-                    // skipped in v1 to keep the scroll cheap.
-                    deleted_by: None,
-                }
-            })
-            .collect();
-        let next_cursor = next.map(|id| encode_memory_cursor("k", 0, id));
-        return Ok((out, next_cursor));
-    }
-
-    Ok((Vec::new(), None))
+        })
+        .collect();
+    Ok((out, next_cursor))
 }
 
 async fn bulk_fetch_authors(
@@ -942,6 +807,25 @@ fn decode_merged_cursor(raw: &str) -> Option<(i128, Uuid)> {
         _ => return None,
     };
     Some((ns.parse().ok()?, Uuid::parse_str(id).ok()?))
+}
+
+/// Whether `raw` is a current merged `ns:uuid` cursor — strictly, without the
+/// legacy `section:ns:uuid` tolerance [`decode_merged_cursor`] keeps for
+/// `/v1/memories`. The author route (#3079) uses this to answer an old
+/// sectioned cursor with a 400: read as a keyset, `k:0:<uuid>` would ask for
+/// rows older than 1970 and silently end the walk.
+#[must_use]
+pub fn is_timeline_cursor(raw: &str) -> bool {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine as _;
+    let Ok(bytes) = URL_SAFE_NO_PAD.decode(raw) else {
+        return false;
+    };
+    let Ok(s) = std::str::from_utf8(&bytes) else {
+        return false;
+    };
+    s.split_once(':')
+        .is_some_and(|(ns, id)| ns.parse::<i128>().is_ok() && Uuid::parse_str(id).is_ok())
 }
 
 /// Merge already-per-source newest-first rows into one global newest-first page.
@@ -1246,7 +1130,7 @@ mod cursor_tests {
 
 #[cfg(test)]
 mod merge_tests {
-    use super::{decode_merged_cursor, encode_merged_cursor, take_merged_page};
+    use super::{decode_merged_cursor, encode_merged_cursor, is_timeline_cursor, take_merged_page};
     use uuid::Uuid;
 
     fn id(n: u128) -> Uuid {
@@ -1270,6 +1154,23 @@ mod merge_tests {
         let legacy = URL_SAFE_NO_PAD.encode(format!("k:123:{}", id(9)));
         assert_eq!(decode_merged_cursor(&legacy), Some((123, id(9))));
         assert!(decode_merged_cursor("!!!").is_none());
+    }
+
+    /// #3079 — the author route accepts only the current `ns:uuid` form; the
+    /// legacy sectioned cursor `decode_merged_cursor` tolerates is refused.
+    #[test]
+    fn timeline_cursor_is_strict() {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine as _;
+
+        assert!(is_timeline_cursor(&encode_merged_cursor(123, id(7))));
+        let legacy = URL_SAFE_NO_PAD.encode(format!("k:0:{}", id(9)));
+        assert!(!is_timeline_cursor(&legacy));
+        assert!(!is_timeline_cursor("!!!"));
+        assert!(!is_timeline_cursor(""));
+        assert!(!is_timeline_cursor(
+            &URL_SAFE_NO_PAD.encode("abc:not-a-uuid")
+        ));
     }
 
     /// The merge interleaves the three per-source (already DESC) inputs into one

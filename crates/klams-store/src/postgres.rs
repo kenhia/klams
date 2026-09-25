@@ -1399,102 +1399,6 @@ impl PostgresStore {
         }))
     }
 
-    /// List facts authored by `author_id` ordered by `(created_at DESC, id DESC)`.
-    /// `state` selects live (default), deleted, or all. Pagination via
-    /// `cursor = (created_at, id)`.
-    pub async fn list_facts_by_author(
-        &self,
-        author_id: Uuid,
-        state: AuthorMemoryState,
-        limit: u32,
-        cursor: Option<(time::OffsetDateTime, Uuid)>,
-    ) -> StoreResult<(
-        Vec<(Fact, Option<time::OffsetDateTime>, Option<Uuid>)>,
-        Option<(time::OffsetDateTime, Uuid)>,
-    )> {
-        let limit = i64::from(limit.clamp(1, 500));
-        let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
-            r"SELECT id, type, payload, version, source,
-                     confidence, decay_weight, use_count,
-                     last_used_at, created_at, updated_at,
-                     deleted_at, deleted_by_author_id
-              FROM facts WHERE author_id = ",
-        );
-        qb.push_bind(author_id);
-        match state {
-            AuthorMemoryState::Live => qb.push(" AND deleted_at IS NULL"),
-            AuthorMemoryState::Deleted => qb.push(" AND deleted_at IS NOT NULL"),
-            AuthorMemoryState::All => qb.push(""),
-        };
-        if let Some((ts, id)) = cursor {
-            qb.push(" AND (created_at, id) < (")
-                .push_bind(ts)
-                .push(", ")
-                .push_bind(id)
-                .push(")");
-        }
-        qb.push(" ORDER BY created_at DESC, id DESC LIMIT ")
-            .push_bind(limit);
-        let rows = qb
-            .build()
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| StoreError::from_sqlx("list_facts_by_author", &e))?;
-        let mut out = Vec::with_capacity(rows.len());
-        for r in &rows {
-            let fact = row_to_fact(r)?;
-            let deleted_at: Option<time::OffsetDateTime> =
-                r.try_get("deleted_at").map_err(map_decode)?;
-            let deleted_by: Option<Uuid> = r.try_get("deleted_by_author_id").map_err(map_decode)?;
-            out.push((fact, deleted_at, deleted_by));
-        }
-        let next = if i64::try_from(out.len()).is_ok_and(|n| n == limit) {
-            out.last().map(|(f, _, _)| (f.created_at, f.id))
-        } else {
-            None
-        };
-        Ok((out, next))
-    }
-
-    /// List events authored by `author_id` ordered by `(created_at DESC, id DESC)`.
-    pub async fn list_events_by_author(
-        &self,
-        author_id: Uuid,
-        limit: u32,
-        cursor: Option<(time::OffsetDateTime, Uuid)>,
-    ) -> StoreResult<(Vec<Event>, Option<(time::OffsetDateTime, Uuid)>)> {
-        let limit = i64::from(limit.clamp(1, 500));
-        let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
-            r"SELECT id, task_id, category, payload, source, created_at
-              FROM events WHERE author_id = ",
-        );
-        qb.push_bind(author_id);
-        if let Some((ts, id)) = cursor {
-            qb.push(" AND (created_at, id) < (")
-                .push_bind(ts)
-                .push(", ")
-                .push_bind(id)
-                .push(")");
-        }
-        qb.push(" ORDER BY created_at DESC, id DESC LIMIT ")
-            .push_bind(limit);
-        let rows = qb
-            .build()
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| StoreError::from_sqlx("list_events_by_author", &e))?;
-        let mut out = Vec::with_capacity(rows.len());
-        for r in &rows {
-            out.push(row_to_event(r)?);
-        }
-        let next = if i64::try_from(out.len()).is_ok_and(|n| n == limit) {
-            out.last().map(|e| (e.created_at, e.id))
-        } else {
-            None
-        };
-        Ok((out, next))
-    }
-
     // Sprint 008 — cross-author paging for `GET /v1/memories` and
     // `event_search`. Authors empty ⇒ no author filter; window is
     // inclusive-exclusive on `created_at` (UTC).
@@ -1704,7 +1608,7 @@ impl PostgresStore {
     }
 }
 
-/// Filter for `list_facts_by_author` / `list_knowledge_by_author`.
+/// Live/deleted filter for the `list_memories_*_page` helpers.
 #[derive(Debug, Clone, Copy)]
 pub enum AuthorMemoryState {
     Live,

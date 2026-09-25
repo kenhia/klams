@@ -7,6 +7,13 @@
 # Uses a dedicated user-defined bridge network so containers can address
 # each other by service name (postgres, qdrant, tei) inside the network,
 # while the host accesses them on the published ports below.
+#
+# Host ports are 61400-61404 (sprint 055, #3267): postgres 61400, qdrant
+# REST 61401 / gRPC 61402, tei 61403, reranker 61404. They used to be
+# 55432/56333/56334/57070/57071, inside the kernel's ephemeral range
+# (32768-60999), where an outgoing connection could hold one as its
+# source port and TEI came up "healthy" with nothing published.
+# `just test-stack-up` asserts every mapping after `--wait`.
 name: klams-test
 
 networks:
@@ -28,7 +35,7 @@ services:
       POSTGRES_PASSWORD: klams_test
       POSTGRES_DB: klams
     ports:
-      - "127.0.0.1:55432:5432"
+      - "127.0.0.1:61400:5432"
     volumes:
       - klams-test-pg:/var/lib/postgresql/data
     healthcheck:
@@ -41,8 +48,8 @@ services:
     image: qdrant/qdrant:v1.18.0
     networks: [klams-test-net]
     ports:
-      - "127.0.0.1:56333:6333"
-      - "127.0.0.1:56334:6334"
+      - "127.0.0.1:61401:6333"
+      - "127.0.0.1:61402:6334"
     volumes:
       - klams-test-qdrant:/qdrant/storage
     # The qdrant image ships no HTTP client (no curl/wget/nc/python3), so
@@ -71,7 +78,7 @@ services:
     # klams-service (config.rs example-toml test).
     command: ["--model-id", "BAAI/bge-small-en-v1.5"]
     ports:
-      - "127.0.0.1:57070:80"
+      - "127.0.0.1:61403:80"
     volumes:
       - klams-test-tei:/data
     healthcheck:
@@ -100,7 +107,7 @@ services:
         "--max-client-batch-size", "64",
       ]
     ports:
-      - "127.0.0.1:57071:80"
+      - "127.0.0.1:61404:80"
     volumes:
       - klams-test-reranker:/data
     healthcheck:

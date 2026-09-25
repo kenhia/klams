@@ -152,6 +152,18 @@ pub async fn memories<S: Store>(
     let limit = params.limit.unwrap_or(50).clamp(1, 200);
     let kinds = parse_kinds(params.kinds.as_deref())?;
     let mstate = parse_state(params.state.as_deref())?;
+    // Sprint 055 (#3079): the route is one merged timeline now, and a cursor
+    // from the old sectioned form would read as a wrong keyset — refuse it.
+    if let Some(c) = params.cursor.as_deref() {
+        if !klams_store::is_timeline_cursor(c) {
+            return Err(ApiError::Validation {
+                field: "cursor".into(),
+                message: "unrecognised cursor; restart from the first page \
+                          (cursors from before klams 0.1.55 are no longer accepted)"
+                    .into(),
+            });
+        }
+    }
     let q = AuthorMemoriesQuery {
         author_id: id,
         kinds,

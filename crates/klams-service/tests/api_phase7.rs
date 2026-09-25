@@ -179,3 +179,105 @@ async fn authors_memories_bad_state_returns_400() {
     .await;
     assert_eq!(status, 400);
 }
+
+/// Sprint 055 (#3079): the author route is one newest-first timeline
+/// across kinds, not three kind sections in a fixed order. Written
+/// event → fact → knowledge, so the old sectioned route led with the
+/// fact and put the knowledge (the newest row) last.
+#[ignore = "requires docker compose stack"]
+#[tokio::test]
+async fn authors_memories_is_newest_first_across_kinds() {
+    let server = TestServer::spawn().await;
+    let state = mcp_state_from(&server);
+    let author = make_author(&state, "ghcp-055-timeline").await;
+    let uniq = Uuid::now_v7();
+
+    let event = append_event(
+        &state,
+        MemoryAppendEventArgs {
+            author_id: author,
+            category: "test.055.timeline".into(),
+            payload: serde_json::json!({"step": 1}),
+            task_id: None,
+        },
+    )
+    .await
+    .expect("event");
+    let fact = memory_add(
+        &state,
+        MemoryAddArgs::fact(
+            author,
+            FactTypeArg::EnvFact,
+            serde_json::json!({"key": env_key("S055_TIMELINE", uniq), "value": "z"}),
+        ),
+    )
+    .await
+    .expect("fact");
+    let knowledge = memory_add(
+        &state,
+        MemoryAddArgs::knowledge(author, format!("sprint 055 author timeline probe {uniq}")),
+    )
+    .await
+    .expect("knowledge");
+
+    // limit=2 walks the cursor across the kind boundary too.
+    let mut ids: Vec<String> = Vec::new();
+    let mut path = format!("/v1/authors/{author}/memories?limit=2");
+    loop {
+        let (status, body) = http_get(&server, &path).await;
+        assert_eq!(status, 200, "{body}");
+        for m in body["memories"].as_array().expect("memories") {
+            ids.push(m["id"].as_str().expect("id").to_string());
+        }
+        let Some(cursor) = body["next_cursor"].as_str() else {
+            break;
+        };
+        path = format!("/v1/authors/{author}/memories?limit=2&cursor={cursor}");
+    }
+    // `make_author` is idempotent on the agent name, so a long-lived stack
+    // can hold this author's rows from an earlier run — all older than
+    // these three, so they can only trail.
+    assert_eq!(
+        ids.get(..3),
+        Some(
+            &[
+                knowledge.id.to_string(),
+                fact.id.to_string(),
+                event.id.to_string()
+            ][..]
+        ),
+        "one newest-first timeline across kinds: {ids:?}"
+    );
+    let unique: std::collections::HashSet<_> = ids.iter().collect();
+    assert_eq!(
+        unique.len(),
+        ids.len(),
+        "no row twice across pages: {ids:?}"
+    );
+}
+
+/// Sprint 055 (#3079): a cursor from the old sectioned route
+/// (`base64("f:<ns>:<uuid>")`) is refused, not quietly re-read as a
+/// merged keyset that would return the wrong page.
+#[ignore = "requires docker compose stack"]
+#[tokio::test]
+async fn authors_memories_old_cursor_returns_400() {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine as _;
+    let server = TestServer::spawn().await;
+    let state = mcp_state_from(&server);
+    let author = make_author(&state, "ghcp-055-oldcursor").await;
+    let old = URL_SAFE_NO_PAD.encode(format!("k:0:{}", Uuid::now_v7()));
+    let (status, body) = http_get(
+        &server,
+        &format!("/v1/authors/{author}/memories?cursor={old}"),
+    )
+    .await;
+    assert_eq!(status, 400, "{body}");
+    let (status, _) = http_get(
+        &server,
+        &format!("/v1/authors/{author}/memories?cursor=not-base64!"),
+    )
+    .await;
+    assert_eq!(status, 400);
+}

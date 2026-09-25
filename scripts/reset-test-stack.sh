@@ -42,7 +42,7 @@
 # reloading it takes minutes.
 #
 # Usage: scripts/reset-test-stack.sh
-# Env:   TEST_QDRANT_HTTP_URL  (default http://127.0.0.1:56333)
+# Env:   TEST_QDRANT_HTTP_URL  (default http://127.0.0.1:61401)
 #        TEST_QDRANT_CONTAINER (default klams-test-qdrant-1) — used only
 #                              to tell "stack is down" from "wedged"
 #        TEST_PG_CONTAINER     (default klams-test-postgres-1)
@@ -50,7 +50,7 @@
 #                              not at all, restoring the old behaviour
 set -euo pipefail
 
-qdrant="${TEST_QDRANT_HTTP_URL:-http://127.0.0.1:56333}"
+qdrant="${TEST_QDRANT_HTTP_URL:-http://127.0.0.1:61401}"
 qdrant_container="${TEST_QDRANT_CONTAINER:-klams-test-qdrant-1}"
 pg_container="${TEST_PG_CONTAINER:-klams-test-postgres-1}"
 wait_secs="${TEST_STACK_WAIT_SECS:-60}"

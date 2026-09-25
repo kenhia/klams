@@ -6,9 +6,9 @@
 //!
 //! Activate by running `docker compose -f tests/docker-compose.test.yml up -d`
 //! and setting environment variables:
-//!   `TEST_DATABASE_URL`  (default: <postgres://klams:klams_test@127.0.0.1:55432/klams>)
-//!   `TEST_QDRANT_URL`    (default: <http://127.0.0.1:56334>)
-//!   `TEST_TEI_URL`       (default: <http://127.0.0.1:57070>)
+//!   `TEST_DATABASE_URL`  (default: <postgres://klams:klams_test@127.0.0.1:61400/klams>)
+//!   `TEST_QDRANT_URL`    (default: <http://127.0.0.1:61402>)
+//!   `TEST_TEI_URL`       (default: <http://127.0.0.1:61403>)
 //!
 //! Tests that depend on this harness should be marked `#[ignore]`
 //! by default and run explicitly via `cargo test -- --ignored`.
@@ -69,19 +69,19 @@ pub const TEST_EMBED_DIM: usize = 384;
 
 pub fn test_pg_url() -> String {
     std::env::var("TEST_DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://klams:klams_test@127.0.0.1:55432/klams".into())
+        .unwrap_or_else(|_| "postgres://klams:klams_test@127.0.0.1:61400/klams".into())
 }
 
 pub fn test_qdrant_grpc_url() -> String {
-    std::env::var("TEST_QDRANT_URL").unwrap_or_else(|_| "http://127.0.0.1:56334".into())
+    std::env::var("TEST_QDRANT_URL").unwrap_or_else(|_| "http://127.0.0.1:61402".into())
 }
 
 pub fn test_qdrant_rest_url() -> String {
-    std::env::var("TEST_QDRANT_REST_URL").unwrap_or_else(|_| "http://127.0.0.1:56333".into())
+    std::env::var("TEST_QDRANT_REST_URL").unwrap_or_else(|_| "http://127.0.0.1:61401".into())
 }
 
 pub fn test_tei_url() -> String {
-    std::env::var("TEST_TEI_URL").unwrap_or_else(|_| "http://127.0.0.1:57070".into())
+    std::env::var("TEST_TEI_URL").unwrap_or_else(|_| "http://127.0.0.1:61403".into())
 }
 
 /// Optional pg-16 client tools directory (host `pg_dump` 18 emits

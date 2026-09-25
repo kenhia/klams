@@ -180,9 +180,16 @@ check: gate
 # on kubs0 (#2283) — and it covers TEI and the reranker, which the sweep
 # in `test-integration` does not use but the tests do.
 #
+# `--wait` is not enough on its own (#3267): when a host port is taken,
+# compose can start the container without the mapping and still report it
+# healthy. So every expected mapping is asserted afterwards, naming the
+# service that came up unmapped — by the same script CI's test-stack
+# action runs.
+#
 # Bring the integration test stack up, waiting until it is ready.
 test-stack-up:
     docker compose -f {{test_compose_file}} up -d --wait
+    ./scripts/check-test-stack-ports.sh {{test_compose_file}}
 
 # Do this when you finish: a long-lived test stack shadows the production
 # containers and its qdrant accumulates seeds until the ranking
@@ -212,12 +219,12 @@ test-stack-down:
 # Run the docker-gated integration suite (needs `just test-stack-up`).
 test-integration *ARGS:
     ./scripts/reset-test-stack.sh
-    TEST_DATABASE_URL=postgres://klams:klams_test@127.0.0.1:55432/klams \
-    TEST_QDRANT_URL=http://127.0.0.1:56334 \
-    TEST_TEI_URL=http://127.0.0.1:57070 \
-    TEST_OPENAI_EMBED_URL=http://127.0.0.1:57070/v1 \
+    TEST_DATABASE_URL=postgres://klams:klams_test@127.0.0.1:61400/klams \
+    TEST_QDRANT_URL=http://127.0.0.1:61402 \
+    TEST_TEI_URL=http://127.0.0.1:61403 \
+    TEST_OPENAI_EMBED_URL=http://127.0.0.1:61403/v1 \
     TEST_OPENAI_EMBED_MODEL=BAAI/bge-small-en-v1.5 \
-    TEST_RERANKER_URL=http://127.0.0.1:57071 \
+    TEST_RERANKER_URL=http://127.0.0.1:61404 \
         cargo test --workspace -- --ignored {{ARGS}}
 
 # The `@` is now only about noise. It used to be load-bearing — without

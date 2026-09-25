@@ -123,7 +123,7 @@ async fn hybrid_p95_within_budget_and_uses_indexes() {
     // for this single transaction to verify the GIN index is built and
     // *usable* for the query shape we ship from `search_text`.
     let pg_url = std::env::var("TEST_DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://klams:klams_test@127.0.0.1:55432/klams".into());
+        .unwrap_or_else(|_| "postgres://klams:klams_test@127.0.0.1:61400/klams".into());
     let pool = sqlx::PgPool::connect(&pg_url).await.expect("pg connect");
     let mut tx = pool.begin().await.expect("begin tx");
     sqlx::query("SET LOCAL enable_seqscan = off")
