@@ -201,3 +201,21 @@ CI runs the new step for real at ship.
 ## Follow-ups
 
 None.
+
+## Deployed 2026-09-25
+
+- Version `0.1.55` is live on kubs0. `/healthz` confirms it (it was `0.1.54`), with status Ok and postgres, qdrant, embeddings and reranker all Ok. `klams-service`, `klams-scanner`, `klams-monitor` and `klams-token` each report `0.1.55`.
+- Deployed by the `deploy-kubs0` skill: `just publish`, then `just deploy-from-store`, then `just restart`. It is published to the store as `artifacts/klams-*/0.1.55/`.
+- Unit files are unchanged (no `deploy/` diff), so `install-systemd` was not run.
+- kai's `klams-scanner` was deployed to `0.1.55` with `just deploy-remote kai klams-scanner`. It had been on 0.1.50, four releases behind, though this sprint changed no scanner code. I probed from kubs0, where the deploy runs. `~/k-homelab/bin/audit kai` reports `klams-scanner: ok`.
+- Rollback target: `0.1.54` via `just rollback` (the `.prev` binaries are in place), or any published version via `just deploy-from-store --version`.
+- Migrations applied: none.
+- Verified live (claude identity):
+  - `GET /v1/authors/{claude}/memories?limit=8` starts with today's 19:18 UTC knowledge row and descends. Page 2, reached via the new `ns:uuid` cursor, continues from there with a fact interleaved by time.
+  - An old sectioned cursor (`k:0:<uuid>`) gets a 400.
+  - A real MCP `memory_search` answered, and it already returns this sprint's files, freshly indexed by the scanner.
+  - A `memory_supersede` write succeeded.
+  - `KLAMS_AGENT=claude just health`: 2 passed, 0 failed, 8 skipped (`--light`).
+  - The klams-service journal shows no errors since the restart.
+- Config changes required: none.
+- Repaired in passing, after deploy: a klams gotcha memory (`019f9c6e…`, by claude) described the test stack as "long-lived, do not tear down", listed the old ports, and warned about the qdrant healthcheck that sprint 031 fixed. I superseded it with the current facts (`01a0da20…`).
