@@ -137,7 +137,7 @@ surfaces (REST `/memory/search` runs the same core pipeline as MCP
 `memory_search`, #730) and is visible on `/healthz` as a non-fatal
 `reranker` subsystem (#731). The **test stack**
 (`tests/docker-compose.test.yml`) carries its own CPU reranker
-(`BAAI/bge-reranker-base`, port `127.0.0.1:57071`) so the live-rerank
+(`BAAI/bge-reranker-base`, port `127.0.0.1:61404`) so the live-rerank
 integration tests run under `just test-integration` — smaller than
 production for the same reason the test embedder is bge-small, and
 wired via `TEST_RERANKER_URL` by the recipe.

@@ -9,7 +9,7 @@
 //!    duplicates.
 //!
 //! Runs under `just test-integration` (sprint 036, #731): the test
-//! stack now includes a CPU reranker service on 127.0.0.1:57071 and the
+//! stack now includes a CPU reranker service on 127.0.0.1:61404 and the
 //! recipe wires `TEST_RERANKER_URL` to it — the live halves self-skip
 //! only when that env var is absent (e.g. a hand-run without the
 //! recipe).

@@ -43,21 +43,21 @@ runs:
         set -e
         echo -n "postgres: "
         for _ in $(seq 1 60); do
-          if pg_isready -h 127.0.0.1 -p 55432 -U klams >/dev/null 2>&1; then
+          if pg_isready -h 127.0.0.1 -p 61400 -U klams >/dev/null 2>&1; then
             echo "ok"; break
           fi
           sleep 1
         done
         echo -n "qdrant:   "
         for _ in $(seq 1 60); do
-          if curl -fsS http://127.0.0.1:56333/readyz >/dev/null 2>&1; then
+          if curl -fsS http://127.0.0.1:61401/readyz >/dev/null 2>&1; then
             echo "ok"; break
           fi
           sleep 1
         done
         echo -n "tei:      "
         for _ in $(seq 1 120); do
-          if curl -fsS http://127.0.0.1:57070/health >/dev/null 2>&1; then
+          if curl -fsS http://127.0.0.1:61403/health >/dev/null 2>&1; then
             echo "ok"; break
           fi
           sleep 1
@@ -65,10 +65,10 @@ runs:
         # Verify rather than trust the loops: a loop that exhausts its
         # attempts falls through silently, so assert each one and dump
         # container state on failure.
-        pg_isready -h 127.0.0.1 -p 55432 -U klams >/dev/null \
+        pg_isready -h 127.0.0.1 -p 61400 -U klams >/dev/null \
           || { echo "postgres unreachable"; docker compose -f tests/docker-compose.test.yml ps; exit 1; }
-        curl -fsS http://127.0.0.1:56333/readyz >/dev/null \
+        curl -fsS http://127.0.0.1:61401/readyz >/dev/null \
           || { echo "qdrant unreachable"; docker compose -f tests/docker-compose.test.yml ps; exit 1; }
-        curl -fsS http://127.0.0.1:57070/health >/dev/null \
+        curl -fsS http://127.0.0.1:61403/health >/dev/null \
           || { echo "tei unreachable"; docker compose -f tests/docker-compose.test.yml ps; exit 1; }
         echo "stack ready"

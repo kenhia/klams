@@ -15,7 +15,7 @@ use time::{Duration as TDuration, OffsetDateTime};
 async fn connect() -> PostgresStore {
     let url = std::env::var("KLAMS_POSTGRES_URL")
         .or_else(|_| std::env::var("TEST_DATABASE_URL"))
-        .unwrap_or_else(|_| "postgres://klams:klams_test@127.0.0.1:55432/klams".to_string());
+        .unwrap_or_else(|_| "postgres://klams:klams_test@127.0.0.1:61400/klams".to_string());
     PostgresStore::connect(&url, 4)
         .await
         .expect("connect to test postgres")

@@ -180,9 +180,28 @@ check: gate
 # on kubs0 (#2283) — and it covers TEI and the reranker, which the sweep
 # in `test-integration` does not use but the tests do.
 #
+# `--wait` is not enough on its own (#3267): when a host port is taken,
+# compose can start the container without the mapping and still report it
+# healthy. So every expected mapping is asserted afterwards, naming the
+# service that came up unmapped.
+#
 # Bring the integration test stack up, waiting until it is ready.
 test-stack-up:
+    #!/usr/bin/env bash
+    set -euo pipefail
     docker compose -f {{test_compose_file}} up -d --wait
+    fail=0
+    for spec in postgres:5432:61400 qdrant:6333:61401 qdrant:6334:61402 tei:80:61403 reranker:80:61404; do
+        IFS=: read -r svc inner want <<<"$spec"
+        got="$(docker compose -f {{test_compose_file}} port "$svc" "$inner" 2>/dev/null || true)"
+        if [[ "$got" != "127.0.0.1:$want" ]]; then
+            echo "error: test stack service '$svc' has no host port $want published for :$inner (got '${got:-nothing}')" >&2
+            echo "       is 127.0.0.1:$want taken? check: ss -tanp | grep :$want" >&2
+            echo "       then: docker compose -f {{test_compose_file}} up -d --wait --force-recreate $svc" >&2
+            fail=1
+        fi
+    done
+    exit "$fail"
 
 # Do this when you finish: a long-lived test stack shadows the production
 # containers and its qdrant accumulates seeds until the ranking
@@ -212,12 +231,12 @@ test-stack-down:
 # Run the docker-gated integration suite (needs `just test-stack-up`).
 test-integration *ARGS:
     ./scripts/reset-test-stack.sh
-    TEST_DATABASE_URL=postgres://klams:klams_test@127.0.0.1:55432/klams \
-    TEST_QDRANT_URL=http://127.0.0.1:56334 \
-    TEST_TEI_URL=http://127.0.0.1:57070 \
-    TEST_OPENAI_EMBED_URL=http://127.0.0.1:57070/v1 \
+    TEST_DATABASE_URL=postgres://klams:klams_test@127.0.0.1:61400/klams \
+    TEST_QDRANT_URL=http://127.0.0.1:61402 \
+    TEST_TEI_URL=http://127.0.0.1:61403 \
+    TEST_OPENAI_EMBED_URL=http://127.0.0.1:61403/v1 \
     TEST_OPENAI_EMBED_MODEL=BAAI/bge-small-en-v1.5 \
-    TEST_RERANKER_URL=http://127.0.0.1:57071 \
+    TEST_RERANKER_URL=http://127.0.0.1:61404 \
         cargo test --workspace -- --ignored {{ARGS}}
 
 # The `@` is now only about noise. It used to be load-bearing — without

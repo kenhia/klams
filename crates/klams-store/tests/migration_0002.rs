@@ -21,7 +21,7 @@ use uuid::Uuid;
 
 fn test_db_url() -> String {
     std::env::var("TEST_DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://klams:klams_test@127.0.0.1:55432/klams".into())
+        .unwrap_or_else(|_| "postgres://klams:klams_test@127.0.0.1:61400/klams".into())
 }
 
 #[tokio::test]

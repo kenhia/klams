@@ -8,7 +8,7 @@ use tempfile::tempdir;
 
 fn pg_url() -> String {
     std::env::var("TEST_DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://klams:klams_test@127.0.0.1:55432/klams".into())
+        .unwrap_or_else(|_| "postgres://klams:klams_test@127.0.0.1:61400/klams".into())
 }
 
 /// Optional pg-16 client tools directory, when present on the host
@@ -42,7 +42,7 @@ async fn dump_writes_atomic_artifact_and_no_partial_on_success() {
 #[ignore = "requires docker-compose.test.yml"]
 async fn dump_failure_leaves_no_committed_file() {
     let dir = tempdir().unwrap();
-    let bad_url = "postgres://klams:wrong-password@127.0.0.1:55432/klams";
+    let bad_url = "postgres://klams:wrong-password@127.0.0.1:61400/klams";
     let err = postgres::dump(
         dir.path(),
         bad_url,

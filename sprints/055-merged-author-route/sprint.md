@@ -2,7 +2,8 @@
 
 Proposal korg:3232, **slice 3 of program korg:3245** (*Low-hanging fruit —
 run 3*). Run as an overseen karc leg (`klams-7f42b9`) on kubs0. It covers
-two work items, **#3079** and **#3128**. Version `0.1.55`.
+two work items, **#3079** and **#3128**, plus **#3267**, which the
+overseer folded in during round 2. Version `0.1.55`.
 
 ## Goal
 
@@ -111,9 +112,10 @@ two work items, **#3079** and **#3128**. Version `0.1.55`.
   source port. The retry reported TEI `Healthy`, but the container ran
   *with no port published*, and the new knowledge-writing test failed
   `EMBEDDING_UNAVAILABLE`. `--force-recreate tei` fixed it for this
-  run. Filed as **#3267**, because the fix is a choice between
+  run. I filed it as **#3267**, because the fix was a choice between
   renumbering five ports across CI and the tests, or reserving them
-  host-side (a k-homelab sysctl).
+  host-side (a k-homelab sysctl). The overseer ruled for renumbering
+  and folded the item into this sprint. See round 2.
 - `make_author` is idempotent on agent name. Rows from the failed run
   therefore trailed under the same author on the next run, and the
   timeline test asserts a three-row prefix plus no duplicates rather
@@ -127,7 +129,36 @@ two work items, **#3079** and **#3128**. Version `0.1.55`.
   this is docs, but the text now matches what `provision-storage-root.sh`
   prints.
 
+## Round 2 — #3267, the test stack leaves the ephemeral range
+
+The overseer ruled on 3232: option (a), renumber into 61000–65535 as a
+contiguous block, and assert the mappings in `test-stack-up`.
+
+- `ss -ltnu` on kubs0 found one listener in 61000–65535, on
+  127.0.0.1:61354. I chose **61400–61404**: postgres 61400, qdrant
+  REST 61401, qdrant gRPC 61402, tei 61403, reranker 61404.
+- Renumbered in:
+  - `tests/docker-compose.test.yml`, whose header now records why
+  - `justfile`
+  - `.github/workflows/ci.yml` and `.github/actions/test-stack/action.yml`
+  - `scripts/reset-test-stack.sh`
+  - `crates/klams-service/tests/common/mod.rs` and the eight other test
+    defaults
+  - `docs/setup.md`
+- `git grep` for all five old numbers outside the historical sprint
+  records now finds nothing.
+- **`test-stack-up` asserts every mapping** after `--wait`. It runs
+  `docker compose port <svc> <inner>` for each of the five and must
+  get `127.0.0.1:<port>`. Otherwise it exits 1, naming the service,
+  the port, what it got, and the `ss`/`--force-recreate` commands to
+  run.
+- Proof:
+  - Positive: `test-stack-down` then `test-stack-up` gave rc 0, with
+    all five published.
+  - Negative: with reranker stopped, the same check reports
+    `reranker UNMAPPED (got 'nothing')`.
+  - Full `just test-integration`: **144 passed, 0 failed**.
+
 ## Follow-ups
 
-- **#3267**: test stack ports vs the ephemeral range (renumber or
-  reserve).
+None.
