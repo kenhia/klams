@@ -66,3 +66,17 @@ version bump will appear on `/healthz` only after the next deploy.
 - Test fixture strings in `mcp_lifecycle_verbs.rs` and
   `hermetic_rogue_agent_drill.rs`. They are arbitrary memory text, not
   config.
+
+## Deployed
+
+Not deployed, by design. `.sprint-deploy` names `deploy-kubs0`, but this
+sprint changes only docs, unit and config *comments*, diagrams and the
+repo-local `deploy-kubs0` skill. The binaries would be byte-identical
+apart from the version string. The overseer ruled on korg:4153 (comment
+4134): no deploy. The bump to `0.1.56` stands, and `/healthz` reading
+`0.1.55` until the next real deploy is the honest state for a docs-only
+change. A version-drift reader should expect that gap and not chase it.
+
+The updated `deploy-kubs0` skill reached kubs0, the only host it runs
+on, when this checkout pulled `main` (`f194ca9`, PR #60). It is not
+fleet-delivered.
