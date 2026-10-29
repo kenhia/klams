@@ -5,10 +5,12 @@ After=docker.service network-online.target
 Wants=network-online.target docker.service
 
 # Cap crash-looping: if start fails 10x within 5min (e.g. [backup]
-# backup_dir on an unmounted NAS), stop retrying instead of flooding
-# the journal. If backup_dir is a network mount, also add a drop-in:
-#   RequiresMountsFor=/path/to/backup_dir
-# so the service waits for the mount (use x-systemd.automount in fstab).
+# backup_dir missing), stop retrying instead of flooding the journal.
+# Keep backup_dir on a LOCAL disk and copy the artifacts off-host with
+# a separate job. Do NOT add RequiresMountsFor= for a network mount:
+# it makes the NAS a start dependency of the memory service, and on
+# 2026-10-16 a NAS that was down across a reboot kept klams down
+# fleet-wide (korg WI 3899).
 StartLimitIntervalSec=300
 StartLimitBurst=10
 
@@ -48,8 +50,8 @@ ProtectSystem=strict
 #   ReadWritePaths=/path/to/backup_dir
 #
 # Sprint 020 context: without this grant every nightly run dies on the
-# lockfile with EROFS. If backup_dir is a network mount, add
-# RequiresMountsFor=/path/to/backup_dir in the same drop-in.
+# lockfile with EROFS. Point it at a local disk (see the [Unit] note
+# above on why not a network mount).
 ProtectHome=true
 ProtectKernelTunables=true
 ProtectKernelModules=true

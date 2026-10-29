@@ -58,7 +58,7 @@
 
   <rect x="962" y="72" width="254" height="96" rx="8" class="nas"/>
   <text x="978" y="96" class="t">gratch (Unraid NAS)</text>
-  <text x="978" y="114" class="s">/gratch/klams-backup mount</text>
+  <text x="978" y="114" class="s">copy of /backup/klams (push job)</text>
   <text x="978" y="132" class="s">nightly: postgres dump +</text>
   <text x="978" y="150" class="s">qdrant snapshot (retention-capped)</text>
 
@@ -81,7 +81,7 @@
   <rect x="268" y="350" width="196" height="54" rx="4" class="bin"/>
   <text x="278" y="370" class="t" font-size="12.5">klams-store</text>
   <text x="278" y="386" class="s">Postgres · Qdrant · TEI clients</text>
-  <text x="60" y="428" class="s">/healthz · /metrics · nightly backup task → gratch</text>
+  <text x="60" y="428" class="s">/healthz · /metrics · nightly backup task → /backup/klams</text>
   <text x="60" y="446" class="s">config: /etc/klams/klams.toml ([[auth.tokens]] hot-reload)</text>
   <text x="60" y="464" class="s">version = sprint number (0.1.33) on /healthz + server_info</text>
 
