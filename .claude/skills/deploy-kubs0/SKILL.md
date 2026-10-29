@@ -73,7 +73,7 @@ Postgres / Qdrant / TEI as Docker containers underneath (hence
 | `/usr/local/bin/klams-{service,scanner,monitor,token}` | deployed binaries (`.prev` = one-step rollback) |
 | `/etc/klams/klams.toml` | config — **not** in this repo; secret-bearing (the Postgres password) |
 | `/var/lib/klams` | state |
-| `/gratch/klams-backup` | nightly `postgres-<date>.dump` + `qdrant-<date>.snapshot` |
+| `/backup/klams` | nightly `postgres-<date>.dump` + `qdrant-<date>.snapshot` (local; `klams-backup-push.timer` copies them to kai and gratch) |
 | `$KLAMS_STORE_URL/artifacts/klams-*/` | published releases (the deep rollback) |
 
 **This skill must run on kubs0.** Confirm with `hostname` before anything else.
@@ -103,7 +103,7 @@ build.
    automatically (see below), and last night's pair is what makes a bad one
    survivable.
    ```bash
-   sudo ls -la /gratch/klams-backup/ | tail -4
+   sudo ls -la /backup/klams/ | tail -4
    ```
    Expect a `postgres-<UTC-date>.dump` and `qdrant-<UTC-date>.snapshot` from
    last night. **Check the dates, not the sizes.** If either is stale, say so

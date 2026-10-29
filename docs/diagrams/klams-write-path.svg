@@ -135,7 +135,7 @@
   <text x="316" y="910" class="s">events (append-only) · authors · dissents</text>
   <text x="316" y="926" class="s">search_miss · search_sample · oversize_write</text>
   <text x="316" y="942" class="s">summaries</text>
-  <text x="316" y="960" class="s">nightly dump → /gratch/klams-backup</text>
+  <text x="316" y="960" class="s">nightly dump → /backup/klams</text>
 
   <rect x="640" y="852" width="330" height="120" rx="8" class="store"/>
   <text x="656" y="876" class="t">Qdrant — knowledge_items_v2</text>
@@ -143,7 +143,7 @@
   <text x="656" y="910" class="s">paths' text; documents get no instruct prefix)</text>
   <text x="656" y="926" class="s">payload: source, author_id, machines[], copies[],</text>
   <text x="656" y="942" class="s">content_hash, heading_path, volatility, deleted_at…</text>
-  <text x="656" y="960" class="s">nightly snapshot → /gratch/klams-backup</text>
+  <text x="656" y="960" class="s">nightly snapshot → /backup/klams</text>
 
   <path class="fl" d="M520 654 C580 720 580 800 460 852"/>
   <text x="588" y="742" class="s">facts · events</text>

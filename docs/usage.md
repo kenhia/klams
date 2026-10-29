@@ -143,6 +143,10 @@ Hosts that enable `[backup]` grant the backup dir back via a drop-in
 ReadWritePaths=/path/to/backup_dir
 ```
 
+Keep that dir on a local disk and copy it off-host with a separate
+job; never `RequiresMountsFor=` a network `backup_dir` — the
+[setup.md](setup.md) drop-in section says why (korg WI 3899).
+
 Operate with:
 
 ```bash
@@ -508,7 +512,7 @@ Disabled by default — set `enabled = true` to opt in:
 ```toml
 [backup]
 enabled              = true
-backup_dir           = "/gratch/klams-backup"         # written atomically: .partial -> rename
+backup_dir           = "/backup/klams"                # written atomically: .partial -> rename
 window_start_utc     = "07:00"                     # HH:MM UTC; no DST drift
 daily_count          = 14                          # newest N distinct dates per kind
 weekly_count         = 4                           # newest N Sundays per kind
@@ -525,7 +529,7 @@ Validate the config without starting the service:
 
 ```bash
 just backup-validate-config
-# OK: [backup] enabled=true backup_dir=/gratch/klams-backup window_start_utc=07:00 ...
+# OK: [backup] enabled=true backup_dir=/backup/klams window_start_utc=07:00 ...
 ```
 
 ### `just` recipe additions
@@ -602,8 +606,8 @@ identifiers exposed via environment variables (`KLAMS_BACKUP_RUN_ID`,
   "ended_at":   "2026-05-22T07:08:00Z",
   "duration_ms": 480000,
   "artifacts": [
-    {"kind": "postgres", "path": "/gratch/klams-backup/postgres-2026-05-22.dump",     "bytes": 12345678},
-    {"kind": "qdrant",   "path": "/gratch/klams-backup/qdrant-2026-05-22.snapshot",   "bytes": 9876543}
+    {"kind": "postgres", "path": "/backup/klams/postgres-2026-05-22.dump",     "bytes": 12345678},
+    {"kind": "qdrant",   "path": "/backup/klams/qdrant-2026-05-22.snapshot",   "bytes": 9876543}
   ],
   "ok": true,
   "error": null
@@ -634,9 +638,9 @@ against the most recent (or explicitly-dated) pair in
 ```bash
 just backup-verify              # today UTC
 just backup-verify 2026-05-24   # explicit date
-# ==> postgres: /gratch/klams-backup/postgres-2026-05-24.dump
+# ==> postgres: /backup/klams/postgres-2026-05-24.dump
 #   bytes=21168 toc_entries=43 OK
-# ==> qdrant:   /gratch/klams-backup/qdrant-2026-05-24.snapshot
+# ==> qdrant:   /backup/klams/qdrant-2026-05-24.snapshot
 #   bytes=712192 tar_members=18 OK
 # ==> backup-verify: OK
 ```

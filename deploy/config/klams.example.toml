@@ -300,13 +300,17 @@ task_interval_seconds  = 3600
 # ---------------------------------------------------------------------------
 #
 # Disabled by default. To enable nightly backups: uncomment, set
-# `enabled = true`, point `backup_dir` at a writable filesystem path
-# (typically a NAS mount), and pick a UTC `window_start_utc`.
+# `enabled = true`, point `backup_dir` at a writable path on a LOCAL
+# disk, and pick a UTC `window_start_utc`. Get the artifacts off-host
+# with a separate copy job (rsync on a timer) that runs after the
+# window and may fail on its own without touching the service.
 #
 # NOTE: when enabled, the service REFUSES to start if backup_dir is
-# missing. If it lives on a network mount, use x-systemd.automount in
-# fstab and add RequiresMountsFor=<backup_dir> to the unit so it self-
-# heals when the NAS comes up after the host.
+# missing, so a backup_dir on a network mount makes the NAS a start
+# dependency of klams. Do not paper over that with
+# RequiresMountsFor=<backup_dir>: on 2026-10-16 exactly that drop-in
+# kept klams down fleet-wide when the NAS was down across a host
+# reboot (korg WI 3899).
 #
 # [backup]
 # enabled              = false                  # master switch; default off

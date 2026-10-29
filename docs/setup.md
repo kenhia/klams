@@ -280,8 +280,8 @@ carries **none**. It used to hardcode `ReadWritePaths=/gratch/klams-backup`,
 and systemd refuses to start a unit whose `ReadWritePaths` target is
 missing on the host, so the shipped unit only started on kubs0. Hosts
 that enable `[backup]` add the grant back as a drop-in instead of
-editing the unit (kubs0 already carries this drop-in, pointing at
-`/gratch/klams-backup`):
+editing the unit (kubs0 carries this drop-in, managed by k-homelab,
+pointing at the local `/backup/klams`):
 
 ```ini
 # /etc/systemd/system/klams-service.service.d/backup.conf
@@ -289,11 +289,21 @@ editing the unit (kubs0 already carries this drop-in, pointing at
 ReadWritePaths=/path/to/backup_dir
 ```
 
-Then `systemctl daemon-reload && systemctl restart klams-service`. If
-`backup_dir` is a network mount, add
-`RequiresMountsFor=/path/to/backup_dir` in the same drop-in. Without
-the grant, every nightly backup dies on the lockfile with `EROFS` —
-the sprint 020 failure mode.
+Then `systemctl daemon-reload && systemctl restart klams-service`.
+Without the grant, every nightly backup dies on the lockfile with
+`EROFS` — the sprint 020 failure mode.
+
+**Keep `backup_dir` on a local disk, and copy off-host separately.**
+The service refuses to start when `backup_dir` is missing, so a
+`backup_dir` on a network mount makes the NAS a start dependency of
+the memory service. Do not add `RequiresMountsFor=` to fix the
+ordering: on 2026-10-16 exactly that drop-in kept klams down
+fleet-wide while the NAS was down across a kubs0 reboot (korg WI
+3899). Point `backup_dir` at local storage and run a separate copy
+job (an rsync on a timer, scheduled after the backup window) that
+can fail on its own without touching klams. kubs0 does this:
+`/backup/klams` locally, and k-homelab's `klams-backup-push.timer`
+pushes each night's pair to kai and gratch.
 
 ### Upgrading an already-running install: `just restart` is required
 
