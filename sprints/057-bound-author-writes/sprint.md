@@ -141,6 +141,45 @@ nothing.
   pass, then turned the old "explicit wins" integration test, which
   would have failed, into the refusal test.
 
-## Deploy and live proof
+## Deployed 2026-11-02 (PST; 2026-11-03 05:17 UTC)
 
-These happen at ship (`deploy-kubs0`). Results are recorded below once run.
+- Merged as PR #61 (`268954a`). CI on the PR was green; CI on the merge
+  commit was in progress at deploy time.
+- Version `0.1.57` is live on kubs0. `/healthz` reports `0.1.57` with
+  `Ok` on every backend; the previous version was `0.1.55`, since 056
+  did not deploy. `klams-token`, `klams-scanner` and `klams-monitor`
+  each report `--version` 0.1.57.
+- Published to the store as `artifacts/klams-*/0.1.57/` via
+  `just publish`, then `just deploy-from-store` and `just restart`.
+- Unit files: since 0.1.55, `deploy/klams-service.service` changed only
+  in comments (056). The installed unit's directives match, so
+  `install-systemd` was not run.
+- kai's `klams-scanner` was left at 0.1.55 (probed from kubs0). 057
+  touches only MCP dispatch, which the scanner does not use (it writes
+  over REST).
+- Rollback target: `0.1.55` via `just rollback` (the `.prev` binaries
+  are in place), or `just deploy-from-store --version 0.1.55`.
+- Migrations applied: none.
+- Config changes required: none.
+- `just health` as `claude`: 2 passed, 0 failed (light). Both units are
+  active, and the journal shows no WARN/ERROR since the restart.
+
+### Live proof (from kubs0, `X-Homelab-Agent: claude`, via `just mcp-call`)
+
+| call | `author_id` | result |
+|---|---|---|
+| `memory_add` | kai-scanner's (`019f5903…`) | `INSUFFICIENT_SCOPE`, "memory_add writes as your own identity…" |
+| `memory_append_event` | kai-scanner's | `INSUFFICIENT_SCOPE` |
+| `dissent_propose` | kai-scanner's | `INSUFFICIENT_SCOPE` |
+| `memory_add` | claude's own (`019f4986…`) | stored as `01a19fd7-a9e8-7613-91f9-40b355f9939b`, author `claude` |
+| `memory_delete` | (omitted) | soft-deleted; Qdrant payload carries `deleted_at` and `deleted_by_author_id` = claude |
+
+Postgres shows no stray proof rows: 0 events and 0 dissents carry the
+proof markers.
+
+**Found during the proof:** `memory_get` on the soft-deleted id still
+returned the record. Its documented contract is `NOT_FOUND` for a
+deleted id. The cause is `get_knowledge`, which does not check
+`deleted_at`; this predates 057. I filed it as **WI 4331**. The decision
+it needs is whether REST `GET /memory/knowledge/{id}`, which shares the
+store call, should also hide deleted items.
