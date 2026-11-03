@@ -98,6 +98,11 @@ nothing.
   ruling assumed REST took an author. It does not, so I put this to the
   overseer on the proposal rather than landing it quietly.
 
+  **WI drift, ruled (overseer, korg:4325 comment 4298): no change.**
+  FR-010 already meets the clause's intent, which is that REST cannot
+  misattribute. Swapping a silent drop for a 403 would break a
+  documented contract for no gain.
+
 ## What shipped
 
 - `pin_bound_author` (`klams-mcp/src/tools/mod.rs`) replaces WI #62's
