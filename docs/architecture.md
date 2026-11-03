@@ -872,7 +872,10 @@ the MCP surface the token-bound identity is authoritative for
 `memory_add`, `memory_append_event`, and `dissent_propose`
 (`BEARER_AUTHOR_TOOLS` in
 [`crates/klams-mcp/src/tools/mod.rs`](../crates/klams-mcp/src/tools/mod.rs)),
-so `register_author` is rarely needed. `register_author` dedupes on
+so `register_author` is rarely needed. Since sprint 057 it is the only
+author those tools accept: `pin_bound_author` refuses an explicit
+`author_id` naming anyone else (`INSUFFICIENT_SCOPE`), so attribution
+cannot be claimed, only inherited. `register_author` dedupes on
 `agent_name` (sprint 025, #636 — it previously minted a fresh UUIDv7
 per call), and the `memory_admin_{list,remove,merge}_author*` verbs
 cover inspection, block-if-owned removal, and transactional merge.

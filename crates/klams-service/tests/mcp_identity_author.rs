@@ -2,9 +2,12 @@
 //!
 //! An authenticated caller declaring an `agent_name` can call
 //! `memory_add` without `author_id` and have the write attributed to
-//! that identity's author — no prior `register_author` needed. An
-//! explicit `author_id` always wins, so other identities remain
-//! reachable (`register_author` flow unchanged).
+//! that identity's author — no prior `register_author` needed.
+//!
+//! Sprint 057 (WI 4323): an explicit `author_id` used to win, which let
+//! any `write` identity publish as another agent. It may now only
+//! confirm the caller's own author; a foreign one is refused on all
+//! three create tools.
 //!
 //! Sprint 052: the binding used to come from a bearer token; it now
 //! comes from the declared name. The fallback behaviour is unchanged,
@@ -42,24 +45,68 @@ async fn memory_add_without_author_id_attributes_to_the_callers_author() {
 
 #[ignore = "requires docker compose test stack"]
 #[tokio::test]
-async fn explicit_author_id_still_wins_over_the_callers_binding() {
+async fn foreign_author_id_is_refused_on_every_create_tool() {
+    let server = TestServer::spawn().await;
+    let session = McpSession::handshake(server.addr, &server.author_agent).await;
+    let foreign = server.other_author_id.to_string();
+    let calls = [
+        (
+            "memory_add",
+            serde_json::json!({
+                "author_id": foreign,
+                "kind": "fact",
+                "fact_type": "EnvFact",
+                "payload": {"key": "WI4323_FOREIGN_AUTHOR", "value": "no"},
+            }),
+        ),
+        (
+            "memory_append_event",
+            serde_json::json!({
+                "author_id": foreign,
+                "category": "test",
+                "payload": {"kind": "wi4323-foreign"},
+            }),
+        ),
+        (
+            "dissent_propose",
+            serde_json::json!({
+                "author_id": foreign,
+                "fact_id": uuid::Uuid::now_v7().to_string(),
+                "proposed_payload": {"k": "v"},
+                "reason": "wi4323",
+            }),
+        ),
+    ];
+    for (tool, args) in calls {
+        let out = session.call_tool(tool, args).await;
+        assert_eq!(
+            McpSession::error_code(&out),
+            Some("INSUFFICIENT_SCOPE"),
+            "{tool} must refuse a foreign author_id: {out}"
+        );
+    }
+}
+
+#[ignore = "requires docker compose test stack"]
+#[tokio::test]
+async fn own_author_id_is_accepted() {
     let server = TestServer::spawn().await;
     let session = McpSession::handshake(server.addr, &server.author_agent).await;
     let out = session
         .call_tool(
             "memory_add",
             serde_json::json!({
-                "author_id": klams_types::SYSTEM_AUTHOR_ID,
+                "author_id": server.bound_author_id.to_string(),
                 "kind": "fact",
                 "fact_type": "EnvFact",
-                "payload": {"key": "WI62_EXPLICIT_AUTHOR", "value": "ok"},
+                "payload": {"key": "WI4323_OWN_AUTHOR", "value": "ok"},
             }),
         )
         .await;
     assert_eq!(
         out["author"]["agent_name"].as_str(),
-        Some("system"),
-        "explicit author_id must not be overridden: {out}"
+        Some(server.author_agent_name.as_str()),
+        "own author_id must be accepted: {out}"
     );
 }
 

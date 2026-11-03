@@ -462,6 +462,33 @@ memory edits *their* record, it does not adopt it.
 > are reading older docs or agent instructions that describe passing an
 > `author_id` to delete, they describe the hole, not the contract.
 
+## Attribution on `memory_add` / `memory_append_event` / `dissent_propose`
+
+The create tools follow the same identity rule as the curation verbs
+(sprint 057, WI 4323 — fleet-wide by Ken's ruling, 2026-11-02):
+
+- **Omit `author_id`.** The write is attributed to the author bound to
+  your token.
+- If supplied — your own id, `null` or the nil UUID — it proceeds as
+  you. **Any other author's id is refused with `INSUFFICIENT_SCOPE`,
+  with any scope.** Ownership tiers exist for curating somebody else's
+  record; nothing lets you *write as* them.
+- A caller with no bound author is refused with `MISSING_AUTHOR_ID`.
+
+The pin runs at MCP dispatch (`pin_bound_author`), before the tool sees
+its arguments. The REST write routes (`POST /memory/facts`,
+`/memory/events`, `/memory/knowledge/index`) never had the hole: their
+bodies have no `author_id` field, so a client-supplied one is dropped
+and the bound author stamped (sprint 009, FR-010). There is no REST
+route that creates a dissent.
+
+> Before sprint 057 an explicit `author_id` always won on these three
+> tools, so any `write` identity could store a memory, an irreversible
+> event or a dissent attributed to another agent — `register_author`
+> any name, pass the id it returns. Agent instructions that describe
+> passing an `author_id` to write "as a different registered author"
+> describe the hole, not the contract.
+
 ## Identities
 
 `register_author` needs `write` (it mints identities; it was `read`

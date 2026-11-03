@@ -20,8 +20,9 @@ const CATEGORY_MAX_LEN: usize = 64;
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MemoryAppendEventArgs {
     /// Optional: defaults to the author bound to the caller's bearer
-    /// token (WI #62). Pass explicitly to write as a different
-    /// registered author.
+    /// token (WI #62). If supplied it must equal that author — a
+    /// different author's id is refused with `INSUFFICIENT_SCOPE`
+    /// (sprint 057, WI 4323). Omit it.
     #[serde(default)]
     #[schemars(with = "Option<String>")]
     pub author_id: Uuid,
