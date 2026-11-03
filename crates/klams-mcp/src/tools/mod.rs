@@ -137,8 +137,69 @@ where
 }
 
 /// Write tools whose `author_id` argument may be omitted and filled
-/// from the bearer token's bound author (WI #62).
+/// from the bearer token's bound author (WI #62), and — sprint 057
+/// (WI 4323) — may only ever name that author.
 const BEARER_AUTHOR_TOOLS: [&str; 3] = ["memory_add", "memory_append_event", "dissent_propose"];
+
+/// Pin a create tool's `author_id` to the caller's bound author.
+///
+/// Sprint 057 (WI 4323): until this sprint an explicit `author_id`
+/// always won over the binding (WI #62's fill only covered the omitted
+/// case), so any `write` identity could store a memory, an
+/// irreversible event or a dissent attributed to another agent. The
+/// curation tools already refused that (`memory_delete`'s
+/// `acting_author`, sprint 025); this is the same rule for the three
+/// create tools, fleet-wide (Ken's ruling, 2026-11-02).
+///
+/// Omitted, `null`, nil, or equal to the bound author → the argument is
+/// set to the bound author. Any other UUID → `INSUFFICIENT_SCOPE`, even
+/// with `manage`: there is no tier that writes as somebody else. A value
+/// that is not a UUID is left alone for the tool's own deserialization
+/// to report. With no bound author at all there is nobody to attribute
+/// the write to, so it is refused with `MISSING_AUTHOR_ID`.
+fn pin_bound_author(
+    tool: &str,
+    caller: Option<uuid::Uuid>,
+    arguments: &mut Option<serde_json::Map<String, serde_json::Value>>,
+) -> Result<(), crate::errors::ErrorEnvelope> {
+    use crate::errors::{envelope, INSUFFICIENT_SCOPE, MISSING_AUTHOR_ID};
+    let Some(bound) = caller else {
+        return Err(envelope(
+            MISSING_AUTHOR_ID,
+            "no author is bound to this caller; add `agent_name` to its \
+             [[auth.identities]] entry",
+        ));
+    };
+    let requested = arguments.as_ref().and_then(|a| a.get("author_id"));
+    let pin = match requested {
+        None | Some(serde_json::Value::Null) => true,
+        Some(serde_json::Value::String(s)) => match uuid::Uuid::parse_str(s) {
+            Ok(id) if id.is_nil() || id == bound => true,
+            Ok(_) => {
+                return Err(envelope(
+                    INSUFFICIENT_SCOPE,
+                    format!(
+                        "author_id must match the author bound to your bearer token; \
+                         {tool} writes as your own identity and cannot be performed on \
+                         behalf of another author. Omit author_id."
+                    ),
+                ))
+            }
+            Err(_) => false,
+        },
+        Some(_) => false,
+    };
+    if pin {
+        if requested.is_none() {
+            tracing::debug!(tool, "author_id omitted; using bearer-bound author");
+        }
+        arguments.get_or_insert_with(serde_json::Map::new).insert(
+            "author_id".to_string(),
+            serde_json::Value::String(bound.to_string()),
+        );
+    }
+    Ok(())
+}
 
 /// Shared state injected into every tool handler.
 ///
@@ -406,23 +467,13 @@ impl<S: Store> ToolRegistry<S> {
         let mut arguments = request.arguments;
         // WI #62: an authenticated caller may omit author_id on the
         // write tools; attribute the write to the author its bearer
-        // token is bound to. An explicit author_id always wins.
+        // token is bound to. Sprint 057 (WI 4323): an explicit one may
+        // only confirm that author — see `pin_bound_author`.
         if BEARER_AUTHOR_TOOLS.contains(&name) {
-            let missing = arguments
-                .as_ref()
-                .is_none_or(|a| !a.contains_key("author_id"));
-            if missing {
-                if let Some(author) = &caller {
-                    tracing::debug!(
-                        tool = name,
-                        agent_name = %author.agent_name,
-                        "author_id omitted; using bearer-bound author"
-                    );
-                    arguments.get_or_insert_with(serde_json::Map::new).insert(
-                        "author_id".to_string(),
-                        serde_json::Value::String(author.author_id.to_string()),
-                    );
-                }
+            if let Err(env) =
+                pin_bound_author(name, caller.as_ref().map(|a| a.author_id), &mut arguments)
+            {
+                return Ok(envelope_result(&env));
             }
         }
         let args_value = arguments.map_or(serde_json::Value::Null, serde_json::Value::Object);
@@ -708,7 +759,7 @@ pub fn all_tool_descriptors() -> Vec<Tool> {
         ),
         tool_descriptor::<memory_add::MemoryAddArgs>(
             "memory_add",
-            "Persist a fact or knowledge memory. Set kind=\"fact\" with fact_type + payload, or kind=\"knowledge\" with text (+ optional tags/source_path/repo). author_id defaults to the bearer token's bound author.",
+            "Persist a fact or knowledge memory. Set kind=\"fact\" with fact_type + payload, or kind=\"knowledge\" with text (+ optional tags/source_path/repo). Omit author_id — the write is attributed to the author bound to your bearer token; another author's id is refused.",
         ),
         tool_descriptor::<memory_search::MemorySearchArgs>(
             "memory_search",
@@ -724,7 +775,7 @@ pub fn all_tool_descriptors() -> Vec<Tool> {
         ),
         tool_descriptor::<memory_append_event::MemoryAppendEventArgs>(
             "memory_append_event",
-            "Append an immutable event (deployment, run, signal). author_id defaults to the bearer token's bound author.",
+            "Append an immutable event (deployment, run, signal). Omit author_id — the write is attributed to the author bound to your bearer token; another author's id is refused.",
         ),
         tool_descriptor::<event_search::EventSearchArgs>(
             "event_search",
@@ -744,7 +795,7 @@ pub fn all_tool_descriptors() -> Vec<Tool> {
         ),
         tool_descriptor::<dissent_propose::DissentProposeArgs>(
             "dissent_propose",
-            "File a dissent against a live canonical fact (proposed correction + reason). Lands as a pending AgentProposal a human promotes or discards over the dissents endpoints.",
+            "File a dissent against a live canonical fact (proposed correction + reason). Lands as a pending AgentProposal a human promotes or discards over the dissents endpoints. Omit author_id — the dissent is attributed to the author bound to your bearer token; another author's id is refused.",
         ),
         tool_descriptor::<memory_admin_restore::MemoryAdminRestoreArgs>(
             "memory_admin_restore",
@@ -794,4 +845,106 @@ fn envelope_result(env: &crate::errors::ErrorEnvelope) -> CallToolResult {
     out.is_error = Some(true);
     out.structured_content = Some(structured);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{json, Map, Value};
+
+    const BOUND: uuid::Uuid = uuid::Uuid::from_u128(1);
+    const OTHER: uuid::Uuid = uuid::Uuid::from_u128(2);
+
+    fn args(v: Value) -> Option<Map<String, Value>> {
+        match v {
+            Value::Object(m) => Some(m),
+            _ => None,
+        }
+    }
+
+    fn pinned(a: Option<&Map<String, Value>>) -> Option<&str> {
+        a?.get("author_id")?.as_str()
+    }
+
+    #[test]
+    fn every_create_tool_is_pinned() {
+        assert_eq!(
+            BEARER_AUTHOR_TOOLS,
+            ["memory_add", "memory_append_event", "dissent_propose"]
+        );
+    }
+
+    #[test]
+    fn omitted_author_id_is_filled_with_the_bound_author() {
+        for tool in BEARER_AUTHOR_TOOLS {
+            let mut a = args(json!({"kind": "knowledge", "text": "t"}));
+            pin_bound_author(tool, Some(BOUND), &mut a).expect("omitted is the ordinary path");
+            assert_eq!(pinned(a.as_ref()), Some(BOUND.to_string().as_str()));
+        }
+    }
+
+    #[test]
+    fn absent_arguments_object_is_created_and_filled() {
+        let mut a = None;
+        pin_bound_author("memory_append_event", Some(BOUND), &mut a).unwrap();
+        assert_eq!(pinned(a.as_ref()), Some(BOUND.to_string().as_str()));
+    }
+
+    #[test]
+    fn own_null_or_nil_author_id_proceeds_as_the_bound_author() {
+        for v in [
+            json!(BOUND.to_string()),
+            Value::Null,
+            json!(uuid::Uuid::nil().to_string()),
+        ] {
+            let mut a = args(json!({ "author_id": v }));
+            pin_bound_author("memory_add", Some(BOUND), &mut a).expect("own id is a confirmation");
+            assert_eq!(pinned(a.as_ref()), Some(BOUND.to_string().as_str()));
+        }
+    }
+
+    /// The sprint's headline invariant: before 057 this call stored a
+    /// memory attributed to `OTHER`.
+    #[test]
+    fn foreign_author_id_is_refused_on_every_create_tool() {
+        for tool in BEARER_AUTHOR_TOOLS {
+            let mut a = args(json!({ "author_id": OTHER.to_string() }));
+            let err = pin_bound_author(tool, Some(BOUND), &mut a).expect_err("must be refused");
+            assert_eq!(err.meta.error_code, crate::errors::INSUFFICIENT_SCOPE);
+            assert!(
+                err.content[0].text.contains(tool),
+                "names the tool: {}",
+                err.content[0].text
+            );
+            assert_eq!(
+                pinned(a.as_ref()),
+                Some(OTHER.to_string().as_str()),
+                "args untouched"
+            );
+        }
+    }
+
+    /// Hyphenless and braced spellings parse to the same UUID; the
+    /// comparison is on the value, not the string.
+    #[test]
+    fn foreign_author_id_in_another_spelling_is_still_refused() {
+        let mut a = args(json!({ "author_id": OTHER.simple().to_string() }));
+        assert!(pin_bound_author("memory_add", Some(BOUND), &mut a).is_err());
+        let mut own = args(json!({ "author_id": BOUND.simple().to_string() }));
+        pin_bound_author("memory_add", Some(BOUND), &mut own).expect("own id, other spelling");
+    }
+
+    #[test]
+    fn non_uuid_author_id_is_left_for_schema_validation() {
+        let mut a = args(json!({ "author_id": "not-a-uuid" }));
+        pin_bound_author("memory_add", Some(BOUND), &mut a).unwrap();
+        assert_eq!(pinned(a.as_ref()), Some("not-a-uuid"));
+    }
+
+    #[test]
+    fn no_bound_author_is_refused_even_with_an_explicit_id() {
+        let mut a = args(json!({ "author_id": OTHER.to_string() }));
+        let err = pin_bound_author("memory_add", None, &mut a).expect_err("nobody to write as");
+        assert_eq!(err.meta.error_code, crate::errors::MISSING_AUTHOR_ID);
+    }
 }

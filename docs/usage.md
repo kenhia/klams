@@ -698,14 +698,23 @@ never mounted.)
 Since sprint 018 the write tools' `author_id` argument is optional:
 when omitted, the write is attributed to the author bound to the
 caller's declared identity (`agent_name` in `[[auth.identities]]`, or the
-seeded `system` author for unbound/legacy tokens). Passing an
-explicit `author_id` still works and always wins.
+seeded `system` author for unbound/legacy tokens).
 
-**Exception since sprint 025 — `memory_delete`.** There `author_id` is
-optional too, but an explicit value may only *confirm* your bound
-author; naming a different one is refused. Deletes always act as your
-own identity. Deleting a memory you wrote needs `write`; deleting
-another author's needs `manage`. Full model: [auth.md](auth.md).
+**Since sprint 057 an explicit `author_id` may only confirm your bound
+author** — on `memory_add`, `memory_append_event` and `dissent_propose`
+alike. Your own id, `null` or the nil UUID proceed as you; any other
+author's id is refused with `INSUFFICIENT_SCOPE`, whatever your scopes,
+because no tier writes as somebody else. (Before 057 an explicit id
+always won, so any `write` identity could publish under another
+agent's name; WI 4323.) The REST write routes never had that hole:
+their request bodies carry no `author_id` field, so a client-supplied
+one is dropped and the bound author stamped (sprint 009, FR-010).
+
+**`memory_delete` has had the same rule since sprint 025.** An
+explicit `author_id` may only *confirm* your bound author; deletes
+always act as your own identity. Deleting a memory you wrote needs
+`write`; deleting another author's needs `manage`. Full model:
+[auth.md](auth.md).
 
 **Lifecycle notes (sprint 029).** `memory_supersede`/`memory_update`
 refuse scanner-ingested targets with `NOT_AGENT_AUTHORED` (derived
