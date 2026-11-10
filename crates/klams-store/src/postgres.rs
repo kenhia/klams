@@ -7,7 +7,8 @@ use crate::{DissentQuery, EventQuery, FactQuery, StoreError, StoreResult, TextHi
 use async_trait::async_trait;
 use klams_types::{
     canonical_json_hash, AppendEvent, AuthorRecord, Dissent, DissentStatus, Event, Fact, FactType,
-    FactWriteOutcome, RegisterAuthorArgs, Source, UpsertFact,
+    FactWriteOutcome, NewSupersedeProposal, RegisterAuthorArgs, Source, SupersedeProposal,
+    SupersedeProposalStatus, UpsertFact,
 };
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
@@ -317,6 +318,138 @@ fn row_to_dissent(row: &sqlx::postgres::PgRow) -> StoreResult<Dissent> {
         contradicting_memory_id: row.try_get("contradicting_memory_id").map_err(map_decode)?,
         author_id: row.try_get("author_id").map_err(map_decode)?,
     })
+}
+
+const SUPERSEDE_PROPOSAL_COLUMNS: &str = "id, author_id, keeper_id, retire_ids, text, reason, \
+     status, submission_count, submitted_at, last_seen_at, resolved_at, \
+     resolved_by_author_id, result_memory_id, resolution_note";
+
+fn row_to_supersede_proposal(row: &sqlx::postgres::PgRow) -> StoreResult<SupersedeProposal> {
+    let status_str: String = row.try_get("status").map_err(map_decode)?;
+    let status = SupersedeProposalStatus::parse(&status_str).ok_or_else(|| {
+        StoreError::Other(format!("unknown SupersedeProposalStatus `{status_str}`"))
+    })?;
+    Ok(SupersedeProposal {
+        id: row.try_get("id").map_err(map_decode)?,
+        author_id: row.try_get("author_id").map_err(map_decode)?,
+        keeper_id: row.try_get("keeper_id").map_err(map_decode)?,
+        retire_ids: row.try_get("retire_ids").map_err(map_decode)?,
+        text: row.try_get("text").map_err(map_decode)?,
+        reason: row.try_get("reason").map_err(map_decode)?,
+        status,
+        submission_count: row.try_get("submission_count").map_err(map_decode)?,
+        submitted_at: row.try_get("submitted_at").map_err(map_decode)?,
+        last_seen_at: row.try_get("last_seen_at").map_err(map_decode)?,
+        resolved_at: row.try_get("resolved_at").map_err(map_decode)?,
+        resolved_by_author_id: row.try_get("resolved_by_author_id").map_err(map_decode)?,
+        result_memory_id: row.try_get("result_memory_id").map_err(map_decode)?,
+        resolution_note: row.try_get("resolution_note").map_err(map_decode)?,
+    })
+}
+
+impl PostgresStore {
+    /// Sprint 058 — file a supersede proposal. An identical pending
+    /// proposal (same `proposal_hash`) bumps `submission_count` and
+    /// `last_seen_at` and keeps its original reason and author. Returns
+    /// the stored row and whether it was deduped.
+    pub async fn insert_supersede_proposal(
+        &self,
+        p: &NewSupersedeProposal,
+    ) -> StoreResult<(SupersedeProposal, bool)> {
+        let sql = format!(
+            "INSERT INTO supersede_proposals
+                (id, author_id, keeper_id, retire_ids, text, reason, proposal_hash)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             ON CONFLICT (proposal_hash) WHERE status = 'pending'
+             DO UPDATE SET
+                submission_count = supersede_proposals.submission_count + 1,
+                last_seen_at = now()
+             RETURNING {SUPERSEDE_PROPOSAL_COLUMNS}"
+        );
+        let row = sqlx::query(&sql)
+            .bind(p.id)
+            .bind(p.author_id)
+            .bind(p.keeper_id)
+            .bind(&p.retire_ids)
+            .bind(p.text.as_deref())
+            .bind(&p.reason)
+            .bind(&p.proposal_hash)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| StoreError::from_sqlx("insert_supersede_proposal", &e))?;
+        let stored = row_to_supersede_proposal(&row)?;
+        let deduped = stored.submission_count > 1;
+        Ok((stored, deduped))
+    }
+
+    /// Sprint 058 — fetch one supersede proposal by id.
+    pub async fn get_supersede_proposal(&self, id: Uuid) -> StoreResult<Option<SupersedeProposal>> {
+        let sql =
+            format!("SELECT {SUPERSEDE_PROPOSAL_COLUMNS} FROM supersede_proposals WHERE id = $1");
+        let row = sqlx::query(&sql)
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StoreError::from_sqlx("get_supersede_proposal", &e))?;
+        row.as_ref().map(row_to_supersede_proposal).transpose()
+    }
+
+    /// Sprint 058 — list supersede proposals, oldest first, optionally
+    /// narrowed to one status.
+    pub async fn list_supersede_proposals(
+        &self,
+        status: Option<SupersedeProposalStatus>,
+        limit: u32,
+    ) -> StoreResult<Vec<SupersedeProposal>> {
+        let sql = format!(
+            "SELECT {SUPERSEDE_PROPOSAL_COLUMNS} FROM supersede_proposals
+             WHERE ($1::text IS NULL OR status = $1)
+             ORDER BY submitted_at, id
+             LIMIT $2"
+        );
+        let rows = sqlx::query(&sql)
+            .bind(status.map(SupersedeProposalStatus::as_str))
+            .bind(i64::from(limit))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StoreError::from_sqlx("list_supersede_proposals", &e))?;
+        rows.iter().map(row_to_supersede_proposal).collect()
+    }
+
+    /// Sprint 058 — move a proposal from `from` to `to`, only if it is
+    /// still in `from`. The conditional update is the claim that stops
+    /// two resolvers applying one proposal twice. `resolved_by`, `note`
+    /// and `result_memory_id` overwrite the row's values (so a rollback
+    /// to `pending` clears them). Returns whether the row moved.
+    pub async fn transition_supersede_proposal(
+        &self,
+        id: Uuid,
+        from: SupersedeProposalStatus,
+        to: SupersedeProposalStatus,
+        resolved_by: Option<Uuid>,
+        note: Option<&str>,
+        result_memory_id: Option<Uuid>,
+    ) -> StoreResult<bool> {
+        let res = sqlx::query(
+            r"UPDATE supersede_proposals
+              SET status = $3,
+                  resolved_at = CASE WHEN $3 = 'pending' THEN NULL ELSE now() END,
+                  resolved_by_author_id = $4,
+                  resolution_note = $5,
+                  result_memory_id = $6
+              WHERE id = $1 AND status = $2",
+        )
+        .bind(id)
+        .bind(from.as_str())
+        .bind(to.as_str())
+        .bind(resolved_by)
+        .bind(note)
+        .bind(result_memory_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StoreError::from_sqlx("transition_supersede_proposal", &e))?;
+        Ok(res.rows_affected() == 1)
+    }
 }
 
 /// Trust ordering used by US2 routing. Higher is more authoritative.

@@ -316,6 +316,35 @@ scanner chunks re-scan.
   is deliberately one authorization decision. Both refuse
   non-agent-authored targets (`NOT_AGENT_AUTHORED`) — scanner chunks
   are corrected by re-scanning, not by hand.
+* **Proposed supersedes** (sprint 058, klams-mind WI 3331) — the path
+  for an agent that may not supersede the records it wants to
+  consolidate (Ken's 2026-10-23 decision: klams-mind files, a `manage`
+  identity accepts). `supersede_propose` stores a row in Postgres
+  `supersede_proposals` (migration 0013): `keeper_id`, `retire_ids[]`,
+  optional `text`, `reason`, proposer, status. A pending-only unique
+  index on a hash of `(keeper, sorted retire set, text)` dedupes
+  re-filings. `supersede_proposal_resolve` (`Manage`) claims the row
+  with a conditional `pending → accepted` update, re-validates every
+  named id as live agent-authored knowledge (else `stale`), then
+  writes the merged text as a new memory **authored by the proposer**
+  (`supersedes` = keeper) when `text` is set, and stamps every retiree
+  — plus the keeper, when there is a merge — with the soft-delete pair
+  and `superseded_by` = the survivor; `deleted_by_author_id` is the
+  resolver. A failed mark restores what was already marked, removes
+  the replacement and returns the row to `pending`. Rationale for each
+  call: `sprints/058-soft-delete-propose-supersede/sprint.md`.
+* **Reads of soft-deleted records** (sprint 058, WI 4331) —
+  `QdrantStore::get_knowledge` is a plain point read and serves
+  soft-deleted points; the filter lives in `klams_core::fetch::memory_by_id`
+  (the MCP `memory_get` path), which answers `None` for them. REST
+  `GET /memory/knowledge/{id}` keeps serving deleted points on purpose:
+  it is what restore tooling reads. `memory_update`/`memory_supersede`
+  have refused deleted ids since sprint 029.
+* **Restore clears `superseded_by`** (sprint 058, overseer ruling) —
+  `restore_payload` removes `deleted_at`, `deleted_by_author_id` *and*
+  `superseded_by`: restored means live, and a live record names no
+  replacement. The replacement's `supersedes` keeps the lineage. Shared
+  by `memory_admin_restore` and the proposal-accept rollback.
 
 **Soft-delete representation** (sprint 007): `deleted_at`
 (timestamptz / Qdrant payload string) is NULL for live rows, set to the
@@ -815,10 +844,10 @@ every grant lists what it needs. Full model: [auth.md](auth.md).
 
 | Surface | Scope |
 |---------|-------|
-| `memory_search`, `memory_get`, `memory_related`, `event_search`; REST reads (`/memory/search`, `/memory/context`, `GET /memory/*`, `/v1/authors*`, `/v1/memories`) | `Read` |
-| `memory_add`, `memory_append_event`, `memory_delete`, `memory_supersede`, `memory_update`, `dissent_propose`, `register_author`; REST writes (`POST /memory/facts`, `/memory/events`, `/memory/knowledge/{index,delete}`) | `Write` |
+| `memory_search`, `memory_get`, `memory_related`, `event_search`, `supersede_proposals_list`; REST reads (`/memory/search`, `/memory/context`, `GET /memory/*`, `/v1/authors*`, `/v1/memories`) | `Read` |
+| `memory_add`, `memory_append_event`, `memory_delete`, `memory_supersede`, `memory_update`, `dissent_propose`, `supersede_propose`, `register_author`; REST writes (`POST /memory/facts`, `/memory/events`, `/memory/knowledge/{index,delete}`) | `Write` |
 | `memory_admin_*` (restore, hard_delete, list_deleted, list/remove/merge authors) | `Admin` |
-| Cross-author curation: deleting/superseding/updating somebody else's memory; REST dissent promote/discard | `Manage` |
+| Cross-author curation: deleting/superseding/updating somebody else's memory; `supersede_proposal_resolve`; REST dissent promote/discard | `Manage` |
 
 `Manage` gates *behaviour* rather than whole tools: self-management
 needs only `Write` (`authorize_curation` — own it, or hold `Manage`).

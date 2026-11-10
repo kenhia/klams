@@ -685,7 +685,10 @@ klams memories through a uniform tool interface. The MCP server is
 | `memory_delete` | `write` | Soft-delete the caller's own fact / knowledge item by id. |
 | `memory_supersede` | `write` | Sprint 029: replace a stale/wrong **agent-authored knowledge** memory in one call — writes the replacement (carrying `supersedes`), hides the original behind the soft-delete filter with a `superseded_by` pointer. Tags/volatility inherit unless given. Own memories need `write`; another author's needs `manage`. Prefer this over delete-then-add: it keeps the trail. |
 | `memory_update` | `write` | Sprint 029: in-place edit (`text` / `tags` / `volatility`) of an agent-authored knowledge memory; id stable, text changes re-embed. For typos and amendments — supersede when the old statement was *wrong*. Same ownership rules as delete. |
-| `memory_admin_restore` | `admin` | Reverse a prior soft delete. |
+| `supersede_propose` | `write` | Sprint 058: propose consolidating agent-authored knowledge you may not supersede yourself — a `keeper_id`, 1–20 `retire_ids`, an optional merged `text`, and a `reason`. Nothing changes until a `manage` identity accepts. An identical pending proposal is deduped (`deduped: true`, `submission_count` bumped). |
+| `supersede_proposals_list` | `read` | Sprint 058: the proposal queue, oldest first; `status` `pending` (default) / `accepted` / `rejected` / `stale` / `all`, `limit` 1–200. |
+| `supersede_proposal_resolve` | `manage` | Sprint 058: `accept` or `reject` up to 50 proposals in one call, with an optional `note`; one outcome per proposal (`accepted` + `result_memory_id`, `rejected`, `stale`, `not_pending`, `not_found`, `failed`). |
+| `memory_admin_restore` | `admin` | Reverse a prior soft delete. Since sprint 058 restoring a superseded record also clears its `superseded_by` (the replacement keeps `supersedes`). |
 | `memory_admin_hard_delete` | `admin` | Permanently remove a soft-deleted row. |
 | `memory_admin_list_deleted` | `admin` | Page through soft-deleted rows for triage. |
 
@@ -728,6 +731,23 @@ writes also accept `volatility: "stable" | "volatile"` — declare
 `volatile` for facts expected to age (IPs, versions, "not yet on X");
 volatile memories rank down as they age (week grace, 30-day
 half-life, 0.25 floor), everything else never decays.
+
+**Soft-deleted records are `NOT_FOUND` to `memory_get` (sprint 058,
+WI 4331).** A deleted or superseded id gets the same answer as an
+unknown one. Before 058 a deleted knowledge record was served in full.
+The REST `GET /memory/knowledge/{id}` still serves it, deliberately: it
+is the restore tooling's read (see architecture §2.3).
+
+**Proposing a supersede (sprint 058).** When the records you want to
+consolidate are another author's and you lack `manage`, file
+`supersede_propose` instead of `memory_supersede`. Without `text`, the
+retired records will point at the keeper (a duplicate). With `text`, a
+new memory carrying it — authored by **you**, the proposer — supersedes
+the keeper, and every retired record points at it (a merge).
+`supersede_proposal_resolve` re-checks every named record at acceptance:
+if one is no longer live agent-authored knowledge (typically because a
+sibling proposal over the same keeper was accepted first), the proposal
+goes `stale` and nothing changes; re-file it against the new survivor.
 
 Session teardown
 also answers 204 (not 202) so mcp python-sdk clients no longer log

@@ -94,8 +94,9 @@ header is all there is; no OAuth, no session pre-registration.
 
 The advertised tools are scope-filtered per token; a read+write token
 sees `memory_search`, `memory_get`, `memory_related`, `event_search`, `memory_add`,
-`memory_append_event`, `memory_delete`, `dissent_propose`,
-`register_author`. Full surface reference:
+`memory_append_event`, `memory_delete`, `memory_supersede`,
+`memory_update`, `dissent_propose`, `supersede_propose`,
+`supersede_proposals_list`, `register_author`. Full surface reference:
 [usage.md § MCP server](usage.md#sprint-007--mcp-server).
 
 Key behaviors (current as of sprint 018):
@@ -115,6 +116,11 @@ Key behaviors (current as of sprint 018):
   agents can bind it directly.
 - Writes land as `AgentProposal`; disagree with an existing canonical
   fact via `dissent_propose` rather than overwriting.
+- **Consolidating another author's knowledge (sprint 058).** Without
+  `manage` you cannot supersede it, but you can propose it:
+  `supersede_propose` with a `keeper_id`, the `retire_ids` and,
+  for a merge, the combined `text`. A `manage` identity accepts it
+  with `supersede_proposal_resolve`.
 
 ### Sprint 031 — MCP writes enforce the same policy as REST
 

@@ -64,3 +64,14 @@ fn get_info_serves_the_pinned_block() {
         "get_info no longer serves SERVER_INSTRUCTIONS — the pinned block is dead text"
     );
 }
+
+/// Sprint 058: the supersede advice has to name the way through for a
+/// caller who cannot supersede the record — otherwise the instruction
+/// leads straight to `INSUFFICIENT_SCOPE` with no next step.
+#[test]
+fn instructions_name_the_propose_path_for_another_authors_record() {
+    assert!(
+        SERVER_INSTRUCTIONS.contains("supersede_propose"),
+        "instructions should point at supersede_propose:\n{SERVER_INSTRUCTIONS}"
+    );
+}

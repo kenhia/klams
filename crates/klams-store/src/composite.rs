@@ -388,6 +388,42 @@ impl Store for CompositeStore {
             .await
     }
 
+    async fn insert_supersede_proposal(
+        &self,
+        p: &klams_types::NewSupersedeProposal,
+    ) -> StoreResult<(klams_types::SupersedeProposal, bool)> {
+        self.postgres.insert_supersede_proposal(p).await
+    }
+
+    async fn get_supersede_proposal(
+        &self,
+        id: Uuid,
+    ) -> StoreResult<Option<klams_types::SupersedeProposal>> {
+        self.postgres.get_supersede_proposal(id).await
+    }
+
+    async fn list_supersede_proposals(
+        &self,
+        status: Option<klams_types::SupersedeProposalStatus>,
+        limit: u32,
+    ) -> StoreResult<Vec<klams_types::SupersedeProposal>> {
+        self.postgres.list_supersede_proposals(status, limit).await
+    }
+
+    async fn transition_supersede_proposal(
+        &self,
+        id: Uuid,
+        from: klams_types::SupersedeProposalStatus,
+        to: klams_types::SupersedeProposalStatus,
+        resolved_by: Option<Uuid>,
+        note: Option<&str>,
+        result_memory_id: Option<Uuid>,
+    ) -> StoreResult<bool> {
+        self.postgres
+            .transition_supersede_proposal(id, from, to, resolved_by, note, result_memory_id)
+            .await
+    }
+
     async fn list_deleted_facts_filtered(
         &self,
         limit: u32,

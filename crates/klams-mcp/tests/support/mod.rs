@@ -99,6 +99,13 @@ struct Inner {
     deleted_knowledge: HashMap<Uuid, Uuid>,
     deleted_facts: Vec<Uuid>,
     fact_authors: HashMap<Uuid, Uuid>,
+    event_authors: HashMap<Uuid, Uuid>,
+    /// Sprint 058: superseded point → its replacement.
+    superseded_by: HashMap<Uuid, Uuid>,
+    supersede_proposals: Vec<klams_types::SupersedeProposal>,
+    /// Sprint 058: `mark_superseded` fails for this id, to drive the
+    /// resolve tool's rollback path.
+    fail_mark_for: Option<Uuid>,
     /// Bumped by `touch_author_last_seen_at`, so tests can assert the
     /// FR-005 activity touch actually happens.
     touches: Vec<Uuid>,
@@ -182,6 +189,30 @@ impl MemStore {
         id
     }
 
+    /// Seed a live `EnvFact` owned by `author`.
+    pub fn seed_fact(&self, author: Uuid) -> Uuid {
+        let now = OffsetDateTime::now_utc();
+        let id = Uuid::now_v7();
+        let fact = Fact {
+            id,
+            fact_type: klams_types::FactType::EnvFact,
+            payload: serde_json::json!({"key": "K", "value": "v"}),
+            version: 1,
+            source: klams_types::Source::AgentProposal,
+            confidence: 1.0,
+            decay_weight: 1.0,
+            use_count: 0,
+            dissent_count: 0,
+            last_used_at: None,
+            created_at: now,
+            updated_at: now,
+        };
+        let mut g = self.lock();
+        g.facts.push(fact);
+        g.fact_authors.insert(id, author);
+        id
+    }
+
     /// How many times `touch_author_last_seen_at` fired for `author`.
     pub fn touch_count(&self, author: Uuid) -> usize {
         self.lock().touches.iter().filter(|t| **t == author).count()
@@ -197,6 +228,31 @@ impl MemStore {
 
     pub fn knowledge_count(&self) -> usize {
         self.lock().knowledge.len()
+    }
+
+    /// Soft-delete a knowledge point directly.
+    pub fn mark_deleted(&self, id: Uuid, by: Uuid) {
+        self.lock().deleted_knowledge.insert(id, by);
+    }
+
+    /// The replacement a superseded point names, if any.
+    pub fn superseded_by(&self, id: Uuid) -> Option<Uuid> {
+        self.lock().superseded_by.get(&id).copied()
+    }
+
+    /// Who wrote a knowledge point.
+    pub fn knowledge_author(&self, id: Uuid) -> Option<Uuid> {
+        self.lock().knowledge_authors.get(&id).copied()
+    }
+
+    /// Make `mark_superseded` fail for `id`.
+    pub fn fail_mark_superseded_for(&self, id: Uuid) {
+        self.lock().fail_mark_for = Some(id);
+    }
+
+    /// Who soft-deleted a knowledge point.
+    pub fn knowledge_deleted_by(&self, id: Uuid) -> Option<Uuid> {
+        self.lock().deleted_knowledge.get(&id).copied()
     }
 
     pub fn is_knowledge_soft_deleted(&self, id: Uuid) -> bool {
@@ -261,7 +317,9 @@ impl Store for MemStore {
             source: req.source,
             created_at: OffsetDateTime::now_utc(),
         };
-        self.lock().events.push(ev.clone());
+        let mut g = self.lock();
+        g.event_authors.insert(ev.id, req.author_id);
+        g.events.push(ev.clone());
         Ok(ev)
     }
 
@@ -409,6 +467,10 @@ impl Store for MemStore {
         let g = self.lock();
         let mut out = Vec::new();
         for id in ids {
+            // Mirrors Postgres's `deleted_at IS NULL`.
+            if g.deleted_facts.contains(id) {
+                continue;
+            }
             let Some(fact) = g.facts.iter().find(|f| f.id == *id) else {
                 continue;
             };
@@ -422,6 +484,25 @@ impl Store for MemStore {
     }
 
     // ---- events ------------------------------------------------------
+
+    async fn fetch_events_with_authors(
+        &self,
+        ids: &[Uuid],
+    ) -> StoreResult<Vec<(Event, AuthorRecord)>> {
+        let g = self.lock();
+        let mut out = Vec::new();
+        for id in ids {
+            let Some(event) = g.events.iter().find(|e| e.id == *id) else {
+                continue;
+            };
+            let author_id = g.event_authors.get(id).copied();
+            let Some(author) = author_id.and_then(|a| g.authors.iter().find(|r| r.id == a)) else {
+                continue;
+            };
+            out.push((event.clone(), author.clone()));
+        }
+        Ok(out)
+    }
 
     async fn event_exists(&self, id: Uuid) -> StoreResult<bool> {
         Ok(self.lock().events.iter().any(|e| e.id == id))
@@ -494,7 +575,10 @@ impl Store for MemStore {
     }
 
     async fn restore_payload(&self, id: Uuid) -> StoreResult<()> {
-        self.lock().deleted_knowledge.remove(&id);
+        // Mirrors Qdrant since sprint 058: restore clears `superseded_by`.
+        let mut g = self.lock();
+        g.deleted_knowledge.remove(&id);
+        g.superseded_by.remove(&id);
         Ok(())
     }
 
@@ -504,6 +588,121 @@ impl Store for MemStore {
         g.knowledge_authors.remove(&id);
         g.deleted_knowledge.remove(&id);
         Ok(())
+    }
+
+    async fn mark_superseded(
+        &self,
+        old_id: Uuid,
+        new_id: Uuid,
+        by_author_id: Uuid,
+        _when: OffsetDateTime,
+    ) -> StoreResult<()> {
+        let mut g = self.lock();
+        if g.fail_mark_for == Some(old_id) {
+            return Err(StoreError::Backend(
+                "injected mark_superseded failure".into(),
+            ));
+        }
+        g.deleted_knowledge.insert(old_id, by_author_id);
+        g.superseded_by.insert(old_id, new_id);
+        Ok(())
+    }
+
+    // ---- supersede proposals (sprint 058) ----------------------------
+
+    async fn insert_supersede_proposal(
+        &self,
+        p: &klams_types::NewSupersedeProposal,
+    ) -> StoreResult<(klams_types::SupersedeProposal, bool)> {
+        use klams_types::{SupersedeProposal, SupersedeProposalStatus};
+        let mut g = self.lock();
+        // Mirrors the pending-only unique index on `proposal_hash`.
+        let hashes: Vec<String> = g
+            .supersede_proposals
+            .iter()
+            .map(|sp| format!("{}|{:?}|{:?}", sp.keeper_id, sp.retire_ids, sp.text))
+            .collect();
+        let key = format!("{}|{:?}|{:?}", p.keeper_id, p.retire_ids, p.text);
+        if let Some(i) = hashes.iter().position(|h| *h == key) {
+            let existing = &mut g.supersede_proposals[i];
+            if existing.status == SupersedeProposalStatus::Pending {
+                existing.submission_count += 1;
+                existing.last_seen_at = OffsetDateTime::now_utc();
+                return Ok((existing.clone(), true));
+            }
+        }
+        let now = OffsetDateTime::now_utc();
+        let row = SupersedeProposal {
+            id: p.id,
+            author_id: p.author_id,
+            keeper_id: p.keeper_id,
+            retire_ids: p.retire_ids.clone(),
+            text: p.text.clone(),
+            reason: p.reason.clone(),
+            status: SupersedeProposalStatus::Pending,
+            submission_count: 1,
+            submitted_at: now,
+            last_seen_at: now,
+            resolved_at: None,
+            resolved_by_author_id: None,
+            result_memory_id: None,
+            resolution_note: None,
+        };
+        g.supersede_proposals.push(row.clone());
+        Ok((row, false))
+    }
+
+    async fn get_supersede_proposal(
+        &self,
+        id: Uuid,
+    ) -> StoreResult<Option<klams_types::SupersedeProposal>> {
+        Ok(self
+            .lock()
+            .supersede_proposals
+            .iter()
+            .find(|p| p.id == id)
+            .cloned())
+    }
+
+    async fn list_supersede_proposals(
+        &self,
+        status: Option<klams_types::SupersedeProposalStatus>,
+        limit: u32,
+    ) -> StoreResult<Vec<klams_types::SupersedeProposal>> {
+        Ok(self
+            .lock()
+            .supersede_proposals
+            .iter()
+            .filter(|p| status.is_none_or(|s| p.status == s))
+            .take(limit as usize)
+            .cloned()
+            .collect())
+    }
+
+    async fn transition_supersede_proposal(
+        &self,
+        id: Uuid,
+        from: klams_types::SupersedeProposalStatus,
+        to: klams_types::SupersedeProposalStatus,
+        resolved_by: Option<Uuid>,
+        note: Option<&str>,
+        result_memory_id: Option<Uuid>,
+    ) -> StoreResult<bool> {
+        let mut g = self.lock();
+        let Some(p) = g
+            .supersede_proposals
+            .iter_mut()
+            .find(|p| p.id == id && p.status == from)
+        else {
+            return Ok(false);
+        };
+        p.status = to;
+        p.resolved_at =
+            (to != klams_types::SupersedeProposalStatus::Pending).then(OffsetDateTime::now_utc);
+        p.resolved_by_author_id = resolved_by;
+        p.resolution_note = note.map(str::to_string);
+        p.result_memory_id = result_memory_id;
+        Ok(true)
     }
 
     async fn search_knowledge_curated(

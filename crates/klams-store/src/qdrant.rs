@@ -1141,6 +1141,12 @@ impl QdrantStore {
 
     /// Remove the soft-delete payload fields, returning the point to live
     /// state. No-op if the point is not soft-deleted.
+    ///
+    /// Sprint 058 (overseer ruling on korg:4401): `superseded_by` is
+    /// cleared too. Restore means "live again", and a live record must
+    /// not name a replacement; lineage survives on the replacement's
+    /// `supersedes`. Before 058 a restored superseded record read live
+    /// while still pointing at its successor.
     pub async fn restore_payload(&self, id: uuid::Uuid) -> StoreResult<()> {
         use qdrant_client::qdrant::DeletePayloadPointsBuilder;
         let points = PointsIdsList {
@@ -1152,7 +1158,11 @@ impl QdrantStore {
             .delete_payload(
                 DeletePayloadPointsBuilder::new(
                     self.collection.clone(),
-                    vec!["deleted_at".to_string(), "deleted_by_author_id".to_string()],
+                    vec![
+                        "deleted_at".to_string(),
+                        "deleted_by_author_id".to_string(),
+                        "superseded_by".to_string(),
+                    ],
                 )
                 .points_selector(points)
                 .wait(true),

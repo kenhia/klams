@@ -147,6 +147,11 @@ async fn tools_list_admin_sees_everything() {
         "memory_admin_list_authors",
         "memory_admin_remove_author",
         "memory_admin_merge_authors",
+        // Sprint 058 (klams-mind WI 3331) — the propose-supersede path;
+        // resolve is `manage`, which this identity holds.
+        "supersede_propose",
+        "supersede_proposals_list",
+        "supersede_proposal_resolve",
     ];
     for name in expected {
         assert!(
@@ -174,6 +179,8 @@ async fn tools_list_read_only_sees_only_read_tools() {
             "memory_get".to_string(),
             "memory_related".to_string(),
             "memory_search".to_string(),
+            // Sprint 058 — the proposal queue is readable.
+            "supersede_proposals_list".to_string(),
         ],
         "read-only surface drift: {tools:?}"
     );
@@ -202,6 +209,10 @@ async fn tools_list_write_sees_read_and_write_no_admin() {
             "memory_supersede".to_string(),
             "memory_update".to_string(),
             "register_author".to_string(),
+            // Sprint 058 — propose at Write, list at Read; resolve is
+            // `manage` and stays hidden from this token.
+            "supersede_proposals_list".to_string(),
+            "supersede_propose".to_string(),
         ],
         "write surface drift: {tools:?}"
     );

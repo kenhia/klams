@@ -554,6 +554,54 @@ pub trait Store: Send + Sync + 'static {
         Err(StoreError::Other("propose_dissent not implemented".into()))
     }
 
+    /// Sprint 058 (klams-mind WI 3331): file a supersede proposal;
+    /// returns the stored row and whether it deduped onto a pending one.
+    async fn insert_supersede_proposal(
+        &self,
+        _p: &klams_types::NewSupersedeProposal,
+    ) -> StoreResult<(klams_types::SupersedeProposal, bool)> {
+        Err(StoreError::Other(
+            "insert_supersede_proposal not implemented".into(),
+        ))
+    }
+
+    /// Sprint 058: one supersede proposal by id.
+    async fn get_supersede_proposal(
+        &self,
+        _id: Uuid,
+    ) -> StoreResult<Option<klams_types::SupersedeProposal>> {
+        Err(StoreError::Other(
+            "get_supersede_proposal not implemented".into(),
+        ))
+    }
+
+    /// Sprint 058: supersede proposals oldest first, optionally one status.
+    async fn list_supersede_proposals(
+        &self,
+        _status: Option<klams_types::SupersedeProposalStatus>,
+        _limit: u32,
+    ) -> StoreResult<Vec<klams_types::SupersedeProposal>> {
+        Err(StoreError::Other(
+            "list_supersede_proposals not implemented".into(),
+        ))
+    }
+
+    /// Sprint 058: conditional status move — `true` only if the row was
+    /// still in `from`. This is the claim that stops a double apply.
+    async fn transition_supersede_proposal(
+        &self,
+        _id: Uuid,
+        _from: klams_types::SupersedeProposalStatus,
+        _to: klams_types::SupersedeProposalStatus,
+        _resolved_by: Option<Uuid>,
+        _note: Option<&str>,
+        _result_memory_id: Option<Uuid>,
+    ) -> StoreResult<bool> {
+        Err(StoreError::Other(
+            "transition_supersede_proposal not implemented".into(),
+        ))
+    }
+
     async fn list_deleted_facts_filtered(
         &self,
         _limit: u32,
