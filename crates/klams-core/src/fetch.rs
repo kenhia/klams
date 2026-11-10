@@ -34,6 +34,14 @@ pub async fn memory_by_id<S: Store>(
     // Knowledge first: it is by far the largest stratum, so it is the
     // likeliest hit and the cheapest expected path.
     if let Some(item) = store.get_knowledge(id).await? {
+        // Sprint 058 (WI 4331): `get_knowledge` is a plain point read
+        // that serves soft-deleted points too — the REST GET and the
+        // restore tooling depend on that, so the filter lives here, on
+        // the MCP read path, rather than in the store. Ids are unique
+        // across kinds, so a deleted knowledge hit is the whole answer.
+        if store.point_is_soft_deleted(id).await? == Some(true) {
+            return Ok(None);
+        }
         let author = knowledge_author(store, id).await;
         return Ok(Some(project_knowledge(&item, author)));
     }

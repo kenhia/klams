@@ -23,6 +23,7 @@ use klams_mcp::tools::{
     memory_admin_list_deleted::{run as list_deleted, MemoryAdminListDeletedArgs},
     memory_admin_restore::{run as restore, MemoryAdminRestoreArgs},
     memory_delete::{run as memory_delete, MemoryDeleteArgs},
+    memory_get::{run as memory_get, MemoryGetArgs},
     memory_related::{run as memory_related, MemoryRelatedArgs},
     memory_search::{run as memory_search, MemorySearchArgs},
 };
@@ -376,4 +377,52 @@ async fn event_search_rejects_an_unparseable_timestamp() {
         err.content[0].text.contains("since"),
         "the refusal must name WHICH timestamp failed: {err:?}"
     );
+}
+
+// ------------------------------------------------------------ memory_get
+
+/// WI 4331 (sprint 058): `memory_get` documents `NOT_FOUND` "when no live
+/// memory carries that id", but a soft-deleted knowledge point was
+/// served in full — `get_knowledge` is a plain point read with no
+/// `deleted_at` check, and `memory_by_id` trusted it.
+#[tokio::test]
+async fn memory_get_reports_not_found_for_soft_deleted_knowledge() {
+    let (st, store) = state();
+    let owner = store.seed_author("claude");
+    let id = store.seed_knowledge(owner, "soon to be deleted");
+
+    let live = memory_get(&st, MemoryGetArgs { id })
+        .await
+        .expect("a live memory is served");
+    assert_eq!(live.id, id);
+
+    memory_delete(&st, delete_args(id), Some(&writer(owner)))
+        .await
+        .expect("owner may delete");
+
+    let err = memory_get(&st, MemoryGetArgs { id })
+        .await
+        .expect_err("a soft-deleted memory must not be served");
+    assert_eq!(err.meta.error_code, "NOT_FOUND", "{err:?}");
+}
+
+/// The same contract for facts, which read through
+/// `fetch_facts_with_authors` (`deleted_at IS NULL` in Postgres).
+#[tokio::test]
+async fn memory_get_reports_not_found_for_a_soft_deleted_fact() {
+    let (st, store) = state();
+    let owner = store.seed_author("claude");
+    let fact_id = store.seed_fact(owner);
+    memory_get(&st, MemoryGetArgs { id: fact_id })
+        .await
+        .expect("a live fact is served");
+
+    memory_delete(&st, delete_args(fact_id), Some(&writer(owner)))
+        .await
+        .expect("owner may delete");
+
+    let err = memory_get(&st, MemoryGetArgs { id: fact_id })
+        .await
+        .expect_err("a soft-deleted fact must not be served");
+    assert_eq!(err.meta.error_code, "NOT_FOUND", "{err:?}");
 }

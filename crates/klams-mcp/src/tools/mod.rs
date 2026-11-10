@@ -19,6 +19,9 @@ pub mod memory_search;
 pub mod memory_supersede;
 pub mod memory_update;
 pub mod register_author;
+pub mod supersede_proposal_resolve;
+pub mod supersede_proposals_list;
+pub mod supersede_propose;
 
 use klams_core::validate::ValidatorRegistry;
 use klams_store::{CompositeStore, Store};
@@ -66,8 +69,10 @@ pub const SERVER_INSTRUCTIONS: &str = "klams memory server. Writes are attribute
     your bound author rather than minting a second identity). \
     When a memory you can see is stale or wrong, prefer \
     `memory_supersede` (one call: replacement + hidden original \
-    + trail) over delete-then-add; use `memory_update` for \
-    typo-level fixes to your own records. A `similar_existing` \
+    + trail) over delete-then-add; if it is another author's \
+    and you lack `manage`, file `supersede_propose` for review \
+    instead. Use `memory_update` for typo-level fixes to your own \
+    records. A `similar_existing` \
     block on a `memory_add` response is after the fact — the \
     near-duplicate is already written. The remedy is \
     `memory_delete` on the record you just created, then \
@@ -77,7 +82,13 @@ pub const SERVER_INSTRUCTIONS: &str = "klams memory server. Writes are attribute
 #[must_use]
 pub fn required_scope(tool: &str) -> Option<Scope> {
     Some(match tool {
-        "memory_search" | "memory_get" | "memory_related" | "event_search" => Scope::Read,
+        // Sprint 058: the proposal queue is readable by any reader, so
+        // a proposer can see what became of its proposals.
+        "memory_search"
+        | "memory_get"
+        | "memory_related"
+        | "event_search"
+        | "supersede_proposals_list" => Scope::Read,
         // Sprint 025 (#633): `register_author` moved Read -> Write. It
         // mints identities, which was a read-scope operation until now —
         // a read-only token could manufacture authors at will.
@@ -89,7 +100,12 @@ pub fn required_scope(tool: &str) -> Option<Scope> {
         | "memory_delete"
         | "memory_supersede"
         | "memory_update"
-        | "dissent_propose" => Scope::Write,
+        | "dissent_propose"
+        | "supersede_propose" => Scope::Write,
+        // Sprint 058 (klams-mind WI 3331): accepting a proposal
+        // supersedes another author's knowledge, which is exactly the
+        // cross-author curation `manage` exists for.
+        "supersede_proposal_resolve" => Scope::Manage,
         // Sprint 025 (#636): the author lifecycle verbs rewrite
         // attribution across the whole store — a stronger capability
         // than the cross-author curation `manage` grants, so they sit
@@ -643,6 +659,49 @@ impl<S: Store> ToolRegistry<S> {
                     Err(env) => Ok(envelope_result(&env)),
                 }
             }
+            "supersede_propose" | "supersede_proposal_resolve" => {
+                // Sprint 058: both act as the bearer-bound author — the
+                // proposer, or the resolver.
+                let lifecycle_caller = caller.as_ref().map(|a| memory_delete::DeleteCaller {
+                    author_id: a.author_id,
+                    scopes: caller_scopes(&context).map_or_else(Vec::new, |s| s.as_ref().clone()),
+                });
+                let bad_args = |e: serde_json::Error| {
+                    Ok(envelope_result(&crate::errors::envelope(
+                        crate::errors::SCHEMA_VALIDATION_FAILED,
+                        format!("invalid {name} arguments: {e}"),
+                    )))
+                };
+                if name == "supersede_propose" {
+                    let args = match serde_json::from_value(args_value) {
+                        Ok(a) => a,
+                        Err(e) => return bad_args(e),
+                    };
+                    match supersede_propose::run(&self.state, args, lifecycle_caller.as_ref()).await
+                    {
+                        Ok(out) => Ok(json_result(&out)),
+                        Err(env) => Ok(envelope_result(&env)),
+                    }
+                } else {
+                    let args = match serde_json::from_value(args_value) {
+                        Ok(a) => a,
+                        Err(e) => return bad_args(e),
+                    };
+                    match supersede_proposal_resolve::run(
+                        &self.state,
+                        args,
+                        lifecycle_caller.as_ref(),
+                    )
+                    .await
+                    {
+                        Ok(out) => Ok(json_result(&out)),
+                        Err(env) => Ok(envelope_result(&env)),
+                    }
+                }
+            }
+            "supersede_proposals_list" => {
+                dispatch!(supersede_proposals_list::run, "supersede_proposals_list")
+            }
             "memory_update" => {
                 let args = match serde_json::from_value(args_value) {
                     Ok(a) => a,
@@ -796,6 +855,18 @@ pub fn all_tool_descriptors() -> Vec<Tool> {
         tool_descriptor::<dissent_propose::DissentProposeArgs>(
             "dissent_propose",
             "File a dissent against a live canonical fact (proposed correction + reason). Lands as a pending AgentProposal a human promotes or discards over the dissents endpoints. Omit author_id — the dissent is attributed to the author bound to your bearer token; another author's id is refused.",
+        ),
+        tool_descriptor::<supersede_propose::SupersedeProposeArgs>(
+            "supersede_propose",
+            "Propose consolidating agent-authored knowledge you may not supersede yourself (another author's records). Name the keeper and 1-20 records to retire into it; add `text` to merge them into a new memory, or omit it when the keeper already says everything. A `manage` identity accepts or rejects it with supersede_proposal_resolve; nothing changes until then. An identical pending proposal is deduped. For your own records, use memory_supersede directly.",
+        ),
+        tool_descriptor::<supersede_proposals_list::SupersedeProposalsListArgs>(
+            "supersede_proposals_list",
+            "List supersede proposals, oldest first: `pending` (default) is the review queue; `accepted`, `rejected`, `stale` or `all` show outcomes. Each carries keeper_id, retire_ids, optional text, reason, status and, once accepted, result_memory_id.",
+        ),
+        tool_descriptor::<supersede_proposal_resolve::SupersedeProposalResolveArgs>(
+            "supersede_proposal_resolve",
+            "Manage: accept or reject up to 50 supersede proposals in one call. Accept re-checks that every named record is still live agent-authored knowledge (else the proposal goes `stale` and nothing changes), then retires each record behind a superseded_by pointer to the survivor — the keeper, or a new memory written from the proposal's text. Reports an outcome per proposal.",
         ),
         tool_descriptor::<memory_admin_restore::MemoryAdminRestoreArgs>(
             "memory_admin_restore",

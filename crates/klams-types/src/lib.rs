@@ -23,6 +23,7 @@ pub mod responses;
 pub mod retrieval;
 pub mod search;
 pub mod summary;
+pub mod supersede;
 pub mod text;
 pub mod validation;
 pub mod window;
@@ -83,6 +84,7 @@ pub use responses::{
 pub use retrieval::{FusionStrategy, HybridQueryPlan, RetrievalSource, WeightedNorm};
 pub use search::{SearchHit, SearchType};
 pub use summary::{EventSummary, SummaryMechanism};
+pub use supersede::{NewSupersedeProposal, SupersedeProposal, SupersedeProposalStatus};
 pub use text::normalize_chunk_text;
 pub use validation::{ErrorDetail, ValidationError, ValidationResult};
 pub use window::{validate_window, WindowError};
