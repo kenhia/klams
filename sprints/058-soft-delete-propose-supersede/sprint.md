@@ -151,13 +151,32 @@ tools. Transcript: `.scratch-agent/058/cc-proof.json`.
   so `memory_get` on a miss and every supersede path were untestable
   hermetically. Both are now implemented honestly (gate: the new tests).
 
-## Findings, not repaired
+## D8 — restore clears `superseded_by` (overseer call, korg:4401 ruling)
 
-- `QdrantStore::restore_payload` clears `deleted_at` and
-  `deleted_by_author_id` but leaves `superseded_by`. A superseded record
-  restored by `memory_admin_restore` therefore reads as live while still
-  naming a replacement. The same is true of this sprint's rollback path,
-  which is rare: it only runs after a failed Qdrant write. Clearing it on
-  restore changes what the admin surface reports, and someone may rely on
-  that as history. That makes it a decision, not a repair. It is described
-  in the wrap-up for the overseer to route.
+I first reported this as a finding.
+`QdrantStore::restore_payload` cleared `deleted_at` and
+`deleted_by_author_id` but left `superseded_by`. So a record restored by
+`memory_admin_restore`, or by this sprint's own accept-rollback, read as
+live while still naming a replacement.
+
+The overseer ruled that restore means "live again", and a live record
+must not carry `superseded_by`. Clear it. Lineage is not lost, because
+the replacement still carries `supersedes`. **This is a behaviour change
+Ken can reverse.** Before 058, `memory_get` and the admin surface showed
+a restored superseded record still pointing at its successor. Now they
+show it with no pointer.
+
+Tests:
+- Admin restore of a superseded record:
+  - hermetic: `admin_restore_of_a_retired_record_clears_superseded_by`
+  - docker, real Qdrant: `restoring_a_superseded_record_clears_superseded_by`.
+    It failed against the pre-fix `qdrant.rs` and passes with the fix.
+- Accept rollback: `a_failed_apply_rolls_back_and_returns_to_pending`
+  now asserts that the rolled-back record has no `superseded_by`.
+
+Rollback and admin restore share the `restore_payload` primitive. The
+docker test pins that primitive. The hermetic test pins that rollback
+calls it. A failure cannot be injected into the real Qdrant through MCP.
+
+Gates after the change: `just gate` green, and `just test-integration`
+green.

@@ -340,6 +340,11 @@ scanner chunks re-scan.
   `GET /memory/knowledge/{id}` keeps serving deleted points on purpose:
   it is what restore tooling reads. `memory_update`/`memory_supersede`
   have refused deleted ids since sprint 029.
+* **Restore clears `superseded_by`** (sprint 058, overseer ruling) —
+  `restore_payload` removes `deleted_at`, `deleted_by_author_id` *and*
+  `superseded_by`: restored means live, and a live record names no
+  replacement. The replacement's `supersedes` keeps the lineage. Shared
+  by `memory_admin_restore` and the proposal-accept rollback.
 
 **Soft-delete representation** (sprint 007): `deleted_at`
 (timestamptz / Qdrant payload string) is NULL for live rows, set to the

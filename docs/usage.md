@@ -688,7 +688,7 @@ klams memories through a uniform tool interface. The MCP server is
 | `supersede_propose` | `write` | Sprint 058: propose consolidating agent-authored knowledge you may not supersede yourself — a `keeper_id`, 1–20 `retire_ids`, an optional merged `text`, and a `reason`. Nothing changes until a `manage` identity accepts. An identical pending proposal is deduped (`deduped: true`, `submission_count` bumped). |
 | `supersede_proposals_list` | `read` | Sprint 058: the proposal queue, oldest first; `status` `pending` (default) / `accepted` / `rejected` / `stale` / `all`, `limit` 1–200. |
 | `supersede_proposal_resolve` | `manage` | Sprint 058: `accept` or `reject` up to 50 proposals in one call, with an optional `note`; one outcome per proposal (`accepted` + `result_memory_id`, `rejected`, `stale`, `not_pending`, `not_found`, `failed`). |
-| `memory_admin_restore` | `admin` | Reverse a prior soft delete. |
+| `memory_admin_restore` | `admin` | Reverse a prior soft delete. Since sprint 058 restoring a superseded record also clears its `superseded_by` (the replacement keeps `supersedes`). |
 | `memory_admin_hard_delete` | `admin` | Permanently remove a soft-deleted row. |
 | `memory_admin_list_deleted` | `admin` | Page through soft-deleted rows for triage. |
 

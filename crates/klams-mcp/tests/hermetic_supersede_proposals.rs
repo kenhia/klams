@@ -8,6 +8,7 @@
 mod support;
 
 use klams_mcp::tools::{
+    memory_admin_restore::{run as admin_restore, MemoryAdminRestoreArgs},
     memory_get::{run as memory_get, MemoryGetArgs},
     supersede_proposal_resolve::{
         run as resolve, ResolveDecision, ResolveOutcome, SupersedeProposalResolveArgs,
@@ -280,6 +281,11 @@ async fn a_failed_apply_rolls_back_and_returns_to_pending() {
         .unwrap();
     assert_eq!(out.results[0].outcome, ResolveOutcome::Failed);
     assert!(!store.is_knowledge_soft_deleted(first), "rolled back");
+    assert_eq!(
+        store.superseded_by(first),
+        None,
+        "a rolled-back record is live and must not name a replacement"
+    );
     let pending = list(&st, SupersedeProposalsListArgs::default())
         .await
         .unwrap();
@@ -347,4 +353,35 @@ fn resolve_needs_manage_and_propose_needs_only_write() {
         required_scope("supersede_proposals_list"),
         Some(Scope::Read)
     );
+}
+
+// ------------------------------------------------------------- restore
+
+/// Overseer ruling on korg:4401: restoring a superseded record makes it
+/// live, and a live record carries no `superseded_by`. The replacement's
+/// `supersedes` keeps the lineage.
+#[tokio::test]
+async fn admin_restore_of_a_retired_record_clears_superseded_by() {
+    let (st, store) = state();
+    let claude = store.seed_author("claude");
+    let mind = store.seed_author("klams-mind");
+    let ken = store.seed_author("ken");
+    let keeper = store.seed_knowledge(claude, "keeper");
+    let a = store.seed_knowledge(claude, "a");
+    let p = propose(&st, args(keeper, vec![a], None), Some(&writer(mind)))
+        .await
+        .unwrap()
+        .proposal;
+    resolve(&st, accept(vec![p.id]), Some(&curator(ken)))
+        .await
+        .unwrap();
+    assert_eq!(store.superseded_by(a), Some(keeper));
+
+    admin_restore(&st, MemoryAdminRestoreArgs { id: a })
+        .await
+        .expect("admin may restore a superseded record");
+    assert!(!store.is_knowledge_soft_deleted(a));
+    assert_eq!(store.superseded_by(a), None);
+    let live = memory_get(&st, MemoryGetArgs { id: a }).await.unwrap();
+    assert_eq!(live.id, a);
 }

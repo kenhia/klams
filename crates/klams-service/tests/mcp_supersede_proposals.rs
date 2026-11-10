@@ -154,3 +154,54 @@ async fn propose_then_accept_retires_into_the_merge() {
 
     server.cleanup().await;
 }
+
+/// Overseer ruling on korg:4401, against real Qdrant: restoring a
+/// superseded record clears `superseded_by` along with the soft-delete
+/// pair. `memory_admin_restore` and the proposal-accept rollback share
+/// `restore_payload`, so this pins the primitive both depend on.
+#[ignore = "requires docker compose test stack"]
+#[tokio::test]
+async fn restoring_a_superseded_record_clears_superseded_by() {
+    let server = TestServer::spawn_isolated().await;
+    let owner = McpSession::handshake(server.addr, &server.author_agent).await;
+    let admin = McpSession::handshake(server.addr, &server.full_agent).await;
+
+    let old = owner
+        .seed_knowledge("s058 restore target: rpidash3 is offline", &["s058"])
+        .await;
+    let sup = owner
+        .call_tool(
+            "memory_supersede",
+            serde_json::json!({ "id": old, "text": "s058 restore: rpidash3 is back" }),
+        )
+        .await;
+    assert_eq!(McpSession::error_code(&sup), None, "{sup}");
+    let new_id = sup["id"].as_str().unwrap().to_string();
+
+    let restored = admin
+        .call_tool("memory_admin_restore", serde_json::json!({ "id": old }))
+        .await;
+    assert_eq!(McpSession::error_code(&restored), None, "{restored}");
+
+    let got = owner
+        .call_tool("memory_get", serde_json::json!({ "id": old }))
+        .await;
+    assert_eq!(
+        McpSession::error_code(&got),
+        None,
+        "restored is live: {got}"
+    );
+    assert!(
+        got.get("superseded_by").is_none(),
+        "a live record must not name a replacement: {got}"
+    );
+    let replacement = owner
+        .call_tool("memory_get", serde_json::json!({ "id": new_id }))
+        .await;
+    assert!(
+        same_uuid(replacement["supersedes"].as_str().unwrap_or_default(), &old),
+        "lineage stays on the replacement: {replacement}"
+    );
+
+    server.cleanup().await;
+}

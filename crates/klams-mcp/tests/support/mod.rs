@@ -575,7 +575,10 @@ impl Store for MemStore {
     }
 
     async fn restore_payload(&self, id: Uuid) -> StoreResult<()> {
-        self.lock().deleted_knowledge.remove(&id);
+        // Mirrors Qdrant since sprint 058: restore clears `superseded_by`.
+        let mut g = self.lock();
+        g.deleted_knowledge.remove(&id);
+        g.superseded_by.remove(&id);
         Ok(())
     }
 
