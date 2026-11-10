@@ -4,6 +4,7 @@ directory, chronicle in markdown), TDD, the `just gate` code-standards
 gate, docs-as-definition-of-done, and YAGNI.
 
 <!-- kproject:begin — managed by kprojects; do not edit inside this block -->
+
 ## kproject conventions
 
 This project uses the kproject minimal harness
@@ -20,6 +21,9 @@ over ceremony.
     `###-<short-name>/` directory of files for larger/more formal ones
   - a sprint record is one informal narrative: goal, decisions, what
     shipped, follow-ups — written during the sprint, not after
+  - projects that deploy end the record with a `## Deployed` section:
+    what shipped, where, when, and what was verified live — appended
+    after the deploy, not predicted before it
 - `docs/` — project documentation, architecture, usage
 - `.scratch/` — git-ignored scratch space for user or agent ephemera;
   use it instead of /tmp
@@ -31,8 +35,20 @@ over ceremony.
 
 - One sprint ≈ one PR. Sprint proposals and work items are managed in
   `korg`; durable cross-project knowledge goes in `klams`.
+- Mark each work item resolved as its work completes — don't batch the
+  resolutions into sprint-ship. A proposal's progress should be readable
+  while the sprint is running, which is the only time it is useful.
 - If the korg or klams MCP tools are unavailable in your session, say so
   up front — don't silently work around missing infrastructure.
+- A few projects share contract surfaces with siblings and have a
+  **guiding plan** constraining how those change; most have none, and one
+  grep is the whole cost of finding out. Grep the `index.md` routing
+  table in `kai:~/src/tools/cross-project-planning` — a local path on
+  kai, read through kaed from any other host (`root: "kai:src"`, path
+  `tools/cross-project-planning/…`); don't clone a second copy. Not
+  listed → nothing applies. Listed → read the mapped plan folder before
+  planning sessions and before changing a contract surface it names, and
+  amend the plan in the same ship when what you build diverges from it.
 - TDD preferred: write the failing test first when practical.
 
 ### Tooling preferences
@@ -43,4 +59,5 @@ over ceremony.
 - Mirror `rust-toolchain.toml`, `rustfmt.toml` and `clippy.toml` from a
   sibling homelab repo rather than generating them
 - License is MIT unless specifically directed otherwise
+
 <!-- kproject:end -->
