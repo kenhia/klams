@@ -180,3 +180,19 @@ calls it. A failure cannot be injected into the real Qdrant through MCP.
 
 Gates after the change: `just gate` green, and `just test-integration`
 green.
+
+## Deployed 2026-11-09 (PST)
+
+- Version `0.1.58` is live on kubs0. `/healthz` confirms it, with all backends `Ok`; it was `0.1.57`. `klams-service`, `klams-scanner`, `klams-monitor` and `klams-token` each report `--version` 0.1.58.
+- Published to the store as `artifacts/klams-*/0.1.58/` via `just publish`, then installed with `just deploy-from-store` and `just restart` (the `deploy-kubs0` skill, declared in `.sprint-deploy`).
+- Unit files: unchanged (`git diff 3e8772d..HEAD -- deploy/` is empty), so `install-systemd` was not run.
+- kai's `klams-scanner`: left at 0.1.55. This sprint touched no scanner code, so nothing on kai changes behaviour.
+- Rollback target: `0.1.57` via `just rollback` (the `.prev` binaries are in place), or any published version via `just deploy-from-store --version`.
+- Migrations applied: `0013_supersede_proposals` (table only; no data moved). A binary rollback leaves the table in place, and 0.1.57 ignores it.
+- Verified live over raw MCP as `claude`:
+  - `tools/list` includes `supersede_propose`, `supersede_proposals_list` and `supersede_proposal_resolve`.
+  - `memory_get` on `01a19fd7-a9e8-7613-91f9-40b355f9939b`, the record WI 4331 was filed about, now returns `NOT_FOUND`.
+  - `supersede_proposals_list` returns `{"proposals":[]}`, so the migration is applied.
+  - `KLAMS_AGENT=claude just health` passed 2, failed 0.
+  - Both units are active, with no WARN/ERROR lines since the restart.
+- Config changes required: none. `klams-mind` already holds `read,write`; `claude`, `ghcp` and `claude-duet` hold `manage`.
