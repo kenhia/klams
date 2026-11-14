@@ -330,6 +330,63 @@ sudo systemctl start klams-scanner.service
 The scanner is idempotent: rerunning it on an unchanged tree posts
 zero chunks.
 
+Since sprint 059 each root ends with one `scan complete` line, so an
+idle run is visible in the journal rather than looking like a scanner
+that has stopped:
+
+```text
+INFO klams_scanner: scan complete root=/srv/src walked=12345 indexed=0 pruned=0
+```
+
+A scanner author's `last_seen_at` moves only when it **writes**. A host
+whose tree has not changed keeps an old `last_seen_at` while its timer
+fires hourly — that is healthy. Judge a scanner by when it last *ran*
+(`systemctl show klams-scanner.service -p ExecMainExitTimestamp -p Result`,
+or `last_ran_at` in the dashboard record below), not by when it last wrote.
+
+### Dashboard status record (`kdash:klams:status`)
+
+Sprint 059 (korg WI 4612). `klams-monitor` publishes the klams status
+record kdashdata contracts as `kdash:klams:status` (schema
+`contracts/schemas/kdash-klams-status.schema.json` in kdashdata, v1,
+pinned at `d57e1dc`). It writes through `kdash-pub set`, so the central
+Redis is resolved through khlenv and the password comes from
+`REDISCLI_AUTH` or the host secrets file. Opt in with a section in
+`monitor.toml` (see `deploy/config/monitor.example.toml`):
+
+```toml
+[kdash_status]
+interval_secs = 60                 # also written as expected_refresh_s
+kdash_pub = "/usr/local/bin/kdash-pub"
+
+[[kdash_status.scanners]]          # one per scanner, in card order
+name = "kubs0"                     # display name
+author = "klams-scanner"           # the klams author it writes as
+unit = "klams-scanner.service"     # only for a scanner on THIS host
+```
+
+What each field is copied from: `/healthz` (health, version, uptime,
+subsystems, queue), `/v1/authors` (counts, summed as klams-view's
+`/api/overview` sums them, and each scanner's `last_wrote_at` from its
+author's `last_seen_at`), `/metrics` (`backup_at`), and for a scanner
+with a `unit`, systemd's last **successful** run (`last_ran_at`). A
+scanner on another host has no source here and reports `last_ran_at:
+null`. `new_per_day` is `[]`: klams has no daily series to copy yet. When
+klams does not answer, the record is still written, as `health: "down"`
+with every klams value null.
+
+To publish once without waiting for the cadence, or to see the record:
+
+```sh
+sudo -u klams klams-monitor --config /etc/klams/monitor.toml --kdash-status-once
+sudo -u klams klams-monitor --config /etc/klams/monitor.toml --kdash-status-once --dry-run
+```
+
+`--kdash-status-once` polls no units and posts no events. It exits `0` on
+a publish, and non-zero with the `kdash-pub` exit code and stderr in the
+message when delivery fails (`kdash-pub` exits `1` for an off-contract
+key or payload, `2` when Redis is unreachable).
+
 ### ansible-k handoff
 
 The sprint-003 handoff document for the ansible-k integrator lives

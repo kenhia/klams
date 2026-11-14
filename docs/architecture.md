@@ -94,7 +94,7 @@ service) — see §2.4.
 | `klams-service` | The binary. Loads `klams.toml`, wires queue + workers + HTTP server + background tasks, owns the tokio runtime. |
 | `klams-client` | Typed HTTP client. Used by `klams-scanner`, `klams-monitor` and `tools/bench`, and by `klams-service`'s integration tests, so every Rust caller shares one API contract. |
 | `klams-scanner` | Non-agentic filesystem writer: walks configured roots, chunks, publishes to `/memory/knowledge/index` (sprint 003; §2.4). |
-| `klams-monitor` | Non-agentic systemd-state writer: posts `Service` events on unit-state edges; optional kpidash `/healthz` reporter (sprint 003/010; §2.4). |
+| `klams-monitor` | Non-agentic systemd-state writer: posts `Service` events on unit-state edges; optional kpidash `/healthz` reporter and `kdash:klams:status` publisher (sprint 003/010/059; §2.4). |
 | `tools/klams-token` | Operator CLI over the `[[auth.identities]]` rows in `klams.toml` (sprint 045, #265; identities added in sprint 049, and the token subcommands deleted with the table in sprint 052). Not part of the service: it never runs in-process, and it edits config the service only reads. It shares the schema, though — rows are read and validated through `klams_types::AuthConfig`, the same type the service boots from, which is why it lives here rather than in k-homelab. Writes are structural (`toml_edit`), guarded by a before/after fingerprint of the identity set, and rolled back from a timestamped backup if the result would not start the service. |
 
 ### 1.2 The human surface (`klams-view`, out of tree)
@@ -440,6 +440,14 @@ an optional `[kpidash]` config section additionally polls `/healthz`
 and publishes a `kpidash:services:<name>:<host>` Redis card — an
 *external* observer on a separate Redis host, which side-steps the
 kwi #55 self-dependency. The section is inert when omitted.
+A second optional section, `[kdash_status]` (sprint 059,
+[`crates/klams-monitor/src/kdash_status.rs`](../crates/klams-monitor/src/kdash_status.rs)),
+publishes kdashdata's `kdash:klams:status` record for kpidash once a
+minute through `kdash-pub`: health, version, uptime, corpus counts,
+per-scanner `last_wrote_at` / `last_ran_at`, subsystems, queue and last
+backup, all copied from klams rather than re-derived, and still written
+as `down` when klams does not answer. A scanner's `last_ran_at` comes
+from systemd, so it is known only for a scanner on the monitor's host.
 
 ### 2.5 Read path — the ONE retrieval pipeline
 

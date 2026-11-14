@@ -50,6 +50,13 @@ struct Args {
     /// Override the config's `interval_secs`.
     #[arg(long)]
     interval_secs: Option<u64>,
+    /// Publish one `kdash:klams:status` record and exit, polling no units
+    /// and posting no events. Needs a `[kdash_status]` config section.
+    #[arg(long)]
+    kdash_status_once: bool,
+    /// With `--kdash-status-once`: print the record instead of publishing.
+    #[arg(long, requires = "kdash_status_once")]
+    dry_run: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -67,6 +74,10 @@ struct Config {
     #[cfg(feature = "kpidash")]
     #[serde(default)]
     kpidash: Option<klams_monitor::kpidash::KpidashConfig>,
+    /// Optional `kdash:klams:status` publishing (sprint 059). Absent in a
+    /// fresh clone, so nothing is published unless the operator opts in.
+    #[serde(default)]
+    kdash_status: Option<klams_monitor::kdash_status::KdashStatusConfig>,
 }
 
 fn default_interval() -> u64 {
@@ -104,6 +115,18 @@ async fn main() -> Result<()> {
     let cfg: Config = toml::from_str(&body).context("parse config TOML")?;
     let interval = Duration::from_secs(args.interval_secs.unwrap_or(cfg.interval_secs));
     let client = Client::new(&cfg.url, cfg.agent.clone()).context("build klams client")?;
+    // kdash:klams:status publisher (sprint 059). Inert unless a
+    // `[kdash_status]` section is present.
+    let status_pub = cfg
+        .kdash_status
+        .clone()
+        .map(|sc| klams_monitor::kdash_status::StatusPublisher::new(sc, client.clone(), &cfg.url));
+    if args.kdash_status_once {
+        let publisher = status_pub
+            .context("--kdash-status-once needs a [kdash_status] section in the config")?;
+        publisher.publish_once(args.dry_run).await?;
+        return Ok(());
+    }
     let mut prev: HashMap<String, PreviousState> = HashMap::new();
     tracing::info!(
         units = cfg.units.len(),
@@ -129,6 +152,20 @@ async fn main() -> Result<()> {
             reporter.report_once().await;
         } else {
             tokio::spawn(reporter.run());
+        }
+    }
+    if let Some(publisher) = status_pub {
+        tracing::info!(
+            interval_secs = publisher.interval().as_secs(),
+            key = klams_monitor::kdash_status::KEY,
+            "kdash status publisher enabled"
+        );
+        if args.once {
+            if let Err(e) = publisher.publish_once(false).await {
+                tracing::warn!(error = %e, "kdash status publish failed");
+            }
+        } else {
+            tokio::spawn(publisher.run());
         }
     }
     loop {

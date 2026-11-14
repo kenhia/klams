@@ -130,7 +130,7 @@ impl RepoCache {
 /// (sprint 027 #420) — an oversized chunk is split here rather than
 /// accepted by the API with a 202 and then dropped at the worker, which
 /// is how ~30k chunks were lost silently on kai.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub async fn scan_root(
     client: &Client,
     base_url: &str,
@@ -150,6 +150,8 @@ pub async fn scan_root(
     // Sprint 028 (#640): repo is derived per file, not from the root's
     // basename (which stamped repo="src" on 218k of 222k live points).
     let mut repos = RepoCache::default();
+    let mut indexed = 0usize;
+    let mut pruned = 0usize;
 
     for f in files {
         let abs = f.absolute_path.display().to_string();
@@ -241,6 +243,7 @@ pub async fn scan_root(
         metrics::add_chunks(chunks.len() as u64);
         cursor.upsert(&abs, &file_hash, f.mtime_ns, now_seconds_i64())?;
         metrics::incr_processed();
+        indexed += 1;
     }
 
     // Prune vanished files — but ONLY within the current root's subtree.
@@ -260,10 +263,23 @@ pub async fn scan_root(
             Ok(n) => {
                 tracing::info!(path = %prev.absolute_path, deleted = n, "pruned");
                 cursor.delete(&prev.absolute_path)?;
+                pruned += 1;
             }
             Err(e) => tracing::warn!(path = %prev.absolute_path, %e, "delete failed"),
         }
     }
+    // Sprint 059 (WI 4612): one line per root per run, so an idle run
+    // ("walked N, indexed 0") reads differently in the journal from one
+    // that never got this far. Before this, a run that found nothing new
+    // logged only "starting", and four days of healthy idle runs on kubs0
+    // looked like a scanner that had stopped writing.
+    tracing::info!(
+        root = %root.display(),
+        walked = seen.len(),
+        indexed,
+        pruned,
+        "scan complete"
+    );
     Ok(())
 }
 

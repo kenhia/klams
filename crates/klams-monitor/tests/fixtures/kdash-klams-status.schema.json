@@ -1,0 +1,329 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kenhia/kdashdata/contracts/schemas/kdash-klams-status.schema.json",
+  "title": "kdash klams status",
+  "description": "Payload of kdash:klams:status — latest-value TS-OWNED (STRING JSON, no TTL), exactly 3 segments, on central (KDASH_CENTRAL_REDIS). The klams memory server at a glance: its health, the size of its corpus, when each scanner last wrote (and ran), its subsystems, its ingest queue and its last backup. Contract v1 (CD-28). The consumers are kpidash's korg + klams card (health, knowledge, scanners, subsystems) and a standalone klams card (which adds version, uptime, queue, backup and new_per_day); the fuller set is contracted now so the standalone card needs no version bump. Written by a publisher that reads klams's own health and stats and COPIES them, never re-deriving (CD-26's rule, applied to klams). When klams does not answer, the publisher still writes: `health` is `down` and every value it would have read from klams is null — so an ageing `ts` means the PUBLISHER is gone, and a fresh `down` means klams is. Freshness is reader-owned: the writer publishes its cadence in `expected_refresh_s` and the reader greys the card once `ts` is older than that plus its grace (kdash_cadence_stale). Nulls are present-and-null, never absent (CD-27). Field names are pinned; a rename, retype or removal lands as kdash:klams:v2:status (rules.md Versioning), never in place.",
+  "type": "object",
+  "required": ["ts", "expected_refresh_s", "health", "version", "uptime_s", "knowledge", "facts", "events", "scanners", "subsystems", "queue_depth", "queue_capacity", "backup_at", "new_per_day"],
+  "additionalProperties": true,
+  "properties": {
+    "ts": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "maximum": 100000000000,
+      "description": "Unix seconds (float) when the publisher read klams, writer's clock. Bounded at 1e11 so a millisecond stamp fails instead of reading as permanently fresh."
+    },
+    "expected_refresh_s": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 86400,
+      "description": "How long the publisher expects between its own writes, in seconds. The reader greys the record once `ts` is older than this plus its own grace (CD-28)."
+    },
+    "health": {
+      "enum": ["ok", "degraded", "down"],
+      "description": "klams's own verdict, copied: `ok` every subsystem answers; `degraded` the server answers but a subsystem does not; `down` klams itself did not answer the publisher. Closed: the card picks a dot colour from it, and an unknown word distrusts the record."
+    },
+    "version": {
+      "type": ["string", "null"],
+      "maxLength": 31,
+      "description": "The running klams version (`0.1.58`). null when klams did not answer."
+    },
+    "uptime_s": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "Seconds since the klams server started. null when klams did not answer or does not report it."
+    },
+    "knowledge": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "Knowledge records (chunks) in the corpus. The card's headline number. null when klams did not answer."
+    },
+    "facts": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "Fact records in the corpus. null when klams did not answer."
+    },
+    "events": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "Event records in the corpus. null when klams did not answer."
+    },
+    "scanners": {
+      "type": "array",
+      "maxItems": 8,
+      "description": "One entry per scanner that writes into klams (one per scanning host today: `kai`, `kubs0`), in the publisher's stable order. The card draws one row each, with a freshness bar that drains from `last_wrote_at` over `expected_interval_s`. Empty when klams did not answer.",
+      "items": {
+        "type": "object",
+        "required": ["name", "last_wrote_at", "last_ran_at", "expected_interval_s"],
+        "additionalProperties": true,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 31,
+            "description": "The scanner's display name — today its host."
+          },
+          "last_wrote_at": {
+            "type": ["integer", "null"],
+            "exclusiveMinimum": 0,
+            "maximum": 100000000000,
+            "description": "Unix seconds of the scanner's newest write into klams. null when it has never written."
+          },
+          "last_ran_at": {
+            "type": ["integer", "null"],
+            "exclusiveMinimum": 0,
+            "maximum": 100000000000,
+            "description": "Unix seconds the scanner last RAN, whether or not it wrote. Distinct on purpose: a scanner that runs hourly and finds nothing new is healthy, and one that has stopped running is not, and `last_wrote_at` alone cannot tell them apart. null when the publisher has no source for it — present-and-null, never absent (CD-27), so a card can say `run time unknown` rather than guess."
+          },
+          "expected_interval_s": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 604800,
+            "description": "How often the scanner is scheduled to run, in seconds (3600 for an hourly timer). Carried per scanner so the card can draw the draining bar with no table of its own."
+          }
+        }
+      }
+    },
+    "subsystems": {
+      "type": "array",
+      "maxItems": 8,
+      "description": "klams's dependencies and whether each answered, in the publisher's stable order (`postgres`, `qdrant`, `embed`, `rerank` today). Empty when klams did not answer.",
+      "items": {
+        "type": "object",
+        "required": ["name", "ok"],
+        "additionalProperties": true,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 31,
+            "description": "Subsystem name, as klams reports it."
+          },
+          "ok": {
+            "type": "boolean",
+            "description": "Whether klams reported it healthy."
+          }
+        }
+      }
+    },
+    "queue_depth": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "Items waiting in klams's ingest queue. null when klams did not answer or does not report it."
+    },
+    "queue_capacity": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "description": "The ingest queue's bound, so the card can draw `depth / capacity`. null under the same conditions as `queue_depth`."
+    },
+    "backup_at": {
+      "type": ["integer", "null"],
+      "exclusiveMinimum": 0,
+      "maximum": 100000000000,
+      "description": "Unix seconds of the newest completed backup. null when none is known."
+    },
+    "new_per_day": {
+      "type": "array",
+      "maxItems": 14,
+      "description": "Knowledge records added per day, OLDEST FIRST, at most 14 entries, the last being today. Only the standalone card draws it. May be shorter, or empty, while the publisher is new or when klams did not answer; missing days are absent, a day that added nothing is a 0.",
+      "items": {
+        "type": "object",
+        "required": ["date", "added"],
+        "additionalProperties": true,
+        "properties": {
+          "date": {
+            "type": "string",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+            "description": "Calendar date, `YYYY-MM-DD`, in the publisher's local timezone."
+          },
+          "added": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Knowledge records created that day."
+          }
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "ts": 1794617160.2,
+      "expected_refresh_s": 60,
+      "health": "ok",
+      "version": "0.1.58",
+      "uptime_s": 57600,
+      "knowledge": 228934,
+      "facts": 40,
+      "events": 39,
+      "scanners": [
+        {"name": "kai", "last_wrote_at": 1794616020, "last_ran_at": 1794616020, "expected_interval_s": 3600},
+        {"name": "kubs0", "last_wrote_at": 1794358800, "last_ran_at": 1794615480, "expected_interval_s": 3600}
+      ],
+      "subsystems": [
+        {"name": "postgres", "ok": true},
+        {"name": "qdrant", "ok": true},
+        {"name": "embed", "ok": true},
+        {"name": "rerank", "ok": true}
+      ],
+      "queue_depth": 0,
+      "queue_capacity": 1024,
+      "backup_at": 1794573960,
+      "new_per_day": [
+        {"date": "2026-10-31", "added": 310}, {"date": "2026-11-01", "added": 120},
+        {"date": "2026-11-02", "added": 0}, {"date": "2026-11-03", "added": 540},
+        {"date": "2026-11-04", "added": 220}, {"date": "2026-11-05", "added": 90},
+        {"date": "2026-11-06", "added": 410}, {"date": "2026-11-07", "added": 1320},
+        {"date": "2026-11-08", "added": 760}, {"date": "2026-11-09", "added": 180},
+        {"date": "2026-11-10", "added": 0}, {"date": "2026-11-11", "added": 260},
+        {"date": "2026-11-12", "added": 140}, {"date": "2026-11-13", "added": 95}
+      ]
+    },
+    {
+      "ts": 1794617160.2,
+      "expected_refresh_s": 60,
+      "health": "degraded",
+      "version": "0.1.58",
+      "uptime_s": 259200,
+      "knowledge": 228934,
+      "facts": 40,
+      "events": 39,
+      "scanners": [
+        {"name": "kai", "last_wrote_at": 1794599160, "last_ran_at": null, "expected_interval_s": 3600},
+        {"name": "kubs0", "last_wrote_at": null, "last_ran_at": null, "expected_interval_s": 3600}
+      ],
+      "subsystems": [
+        {"name": "postgres", "ok": true},
+        {"name": "qdrant", "ok": true},
+        {"name": "embed", "ok": true},
+        {"name": "rerank", "ok": false}
+      ],
+      "queue_depth": 212,
+      "queue_capacity": 1024,
+      "backup_at": null,
+      "new_per_day": []
+    },
+    {
+      "ts": 1794617160.2,
+      "expected_refresh_s": 60,
+      "health": "down",
+      "version": null,
+      "uptime_s": null,
+      "knowledge": null,
+      "facts": null,
+      "events": null,
+      "scanners": [],
+      "subsystems": [],
+      "queue_depth": null,
+      "queue_capacity": null,
+      "backup_at": null,
+      "new_per_day": []
+    }
+  ],
+  "x-counterexamples": [
+    {
+      "record": {
+        "ts": 1794617160.2,
+        "expected_refresh_s": 60,
+        "health": "warn",
+        "version": "0.1.58",
+        "uptime_s": 57600,
+        "knowledge": 228934,
+        "facts": 40,
+        "events": 39,
+        "scanners": [],
+        "subsystems": [],
+        "queue_depth": 0,
+        "queue_capacity": 1024,
+        "backup_at": null,
+        "new_per_day": []
+      },
+      "why": "`health` is the closed set ok / degraded / down; the mock-up's own `warn` is a render state, not a wire word, and the card has no colour for a word it does not know"
+    },
+    {
+      "record": {
+        "ts": 1794617160.2,
+        "expected_refresh_s": 60,
+        "health": "ok",
+        "version": "0.1.58",
+        "uptime_s": 57600,
+        "knowledge": 228934,
+        "facts": 40,
+        "events": 39,
+        "scanners": [
+          {"name": "kai", "last_wrote_at": 1794616020, "expected_interval_s": 3600}
+        ],
+        "subsystems": [],
+        "queue_depth": 0,
+        "queue_capacity": 1024,
+        "backup_at": null,
+        "new_per_day": []
+      },
+      "why": "a publisher with no source for a scanner's run time sends `last_ran_at: null`, not nothing — absence is indistinguishable from a publisher that dropped the field, and `wrote` is not `ran` (CD-27)"
+    },
+    {
+      "record": {
+        "ts": 1794617160.2,
+        "expected_refresh_s": 60,
+        "health": "down",
+        "version": null,
+        "uptime_s": null,
+        "facts": null,
+        "events": null,
+        "scanners": [],
+        "subsystems": [],
+        "queue_depth": null,
+        "queue_capacity": null,
+        "backup_at": null,
+        "new_per_day": []
+      },
+      "why": "a `down` record still carries every field, as null; dropping the counts when klams is down is the absent-not-null shape CD-27 rules out"
+    },
+    {
+      "record": {
+        "ts": 1794617160.2,
+        "expected_refresh_s": 60,
+        "health": "ok",
+        "version": "0.1.58",
+        "uptime_s": 57600,
+        "knowledge": 228934,
+        "facts": 40,
+        "events": 39,
+        "scanners": [],
+        "subsystems": [],
+        "queue_depth": 0,
+        "queue_capacity": 1024,
+        "backup_at": 1794573960000,
+        "new_per_day": []
+      },
+      "why": "`backup_at` is unix SECONDS; a millisecond stamp puts the last backup tens of thousands of years in the future and the card's `12h ago` becomes nonsense"
+    },
+    {
+      "record": {
+        "ts": 1794617160.2,
+        "expected_refresh_s": 60,
+        "health": "ok",
+        "version": "0.1.58",
+        "uptime_s": 57600,
+        "knowledge": 228934,
+        "facts": 40,
+        "events": 39,
+        "scanners": [],
+        "subsystems": [],
+        "queue_depth": 0,
+        "queue_capacity": 1024,
+        "backup_at": null,
+        "new_per_day": [
+          {"date": "2026-10-30", "added": 1}, {"date": "2026-10-31", "added": 1},
+          {"date": "2026-11-01", "added": 1}, {"date": "2026-11-02", "added": 1},
+          {"date": "2026-11-03", "added": 1}, {"date": "2026-11-04", "added": 1},
+          {"date": "2026-11-05", "added": 1}, {"date": "2026-11-06", "added": 1},
+          {"date": "2026-11-07", "added": 1}, {"date": "2026-11-08", "added": 1},
+          {"date": "2026-11-09", "added": 1}, {"date": "2026-11-10", "added": 1},
+          {"date": "2026-11-11", "added": 1}, {"date": "2026-11-12", "added": 1},
+          {"date": "2026-11-13", "added": 1}
+        ]
+      },
+      "why": "15 days of `new_per_day`: the series is capped at 14, the standalone card's bar count"
+    }
+  ]
+}
