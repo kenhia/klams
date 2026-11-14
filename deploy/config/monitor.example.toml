@@ -44,3 +44,23 @@ interval_secs = 30
 # install-systemd.sh adds when the file is present; elsewhere, supply it
 # with a drop-in of your own, or fall back to an inline `password = "..."`
 # key here.
+
+# ── kdash:klams:status (optional, sprint 059) ─────────────────────────
+# Publishes kdashdata's klams status record for kpidash, once per
+# interval, through `kdash-pub set` — which resolves the central Redis
+# through khlenv and reads the password from REDISCLI_AUTH or the host
+# secrets file. Inert when omitted. Needs kdash-pub installed.
+#
+# [kdash_status]
+# interval_secs = 60                 # cadence; also expected_refresh_s
+# kdash_pub     = "kdash-pub"        # path or name on PATH
+#
+# One entry per scanner, in the order the card draws them. `unit` only
+# for a scanner whose systemd service runs on THIS host: its last
+# successful run becomes last_ran_at. Others report last_ran_at = null.
+#
+# [[kdash_status.scanners]]
+# name   = "this-host"
+# author = "klams-scanner"
+# unit   = "klams-scanner.service"
+# expected_interval_s = 3600

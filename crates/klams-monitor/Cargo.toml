@@ -37,3 +37,6 @@ redis = { workspace = true, optional = true }
 
 [dev-dependencies]
 which = "6"
+jsonschema = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
