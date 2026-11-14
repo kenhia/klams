@@ -222,3 +222,23 @@ name = "kubs0"
 author = "klams-scanner"
 unit = "klams-scanner.service"
 ```
+
+## Deployed 2026-11-14
+
+Ship turn of leg `klams-ebb307`, cleared by the overseer in comment 4671. PR #64, squash merge `deadcda`. Deployed with `deploy-kubs0`, the step `.sprint-deploy` names.
+
+- **Version:** `0.1.59` is live on kubs0. `/healthz` reports `0.1.59`, up from `0.1.58`, with `status` Ok and every backend Ok. `klams-token --version`, `klams-monitor --version` and `klams-scanner --version` all report `0.1.59`.
+- **Store:** published as `artifacts/klams-{service,scanner,monitor,token}/0.1.59/` and installed with `just deploy-from-store`. Then `just restart` was run.
+- **Unit files:** unchanged. The only change under `deploy/` is the example config, so `install-systemd` was not run.
+- **kai's `klams-scanner`:** deployed to `0.1.59` with `just deploy-remote kai klams-scanner`. `ssh kai klams-scanner --version` reports `0.1.59`.
+- **Rollback target:** `0.1.58`, either with `just rollback` (the `.prev` binaries are in place) or with `just deploy-from-store --version 0.1.58`.
+- **Migrations applied:** none.
+- **Config change:** a `[kdash_status]` section was appended to `/etc/klams/monitor.toml` (the overseer cleared this in comment 4671). The previous file is kept beside it as `monitor.toml.bak-<UTC stamp>`. The config parsed as the `klams` user before the restart.
+- **Publisher, verified live:**
+  - The monitor logs `kdash status publisher enabled interval_secs=60 key="kdash:klams:status"`.
+  - Its first tick landed in the known startup race and correctly published `down`.
+  - The next two ticks, read back with `kdash-pub get`, were both **schema-valid** against the `d57e1dc` schema, about 17 s old, `health: ok`, version `0.1.59`. Counts were 229318 knowledge, 66 facts and 50 events, equal to `/api/overview` read in the same minute.
+  - Scanner rows: kai wrote at 1794619181 with `last_ran_at` null. kubs0 wrote at 1794290946 and ran at 1794618657.
+  - The journal shows no `kdash status publish failed` lines after the restart.
+- **Scanner repair, verified live:** a forced kubs0 run logged `scan complete root=/home/ken/src walked=1931 indexed=11 pruned=0`. It indexed 11 files because this merge changed files in the klams checkout.
+- **Smoke test:** `KLAMS_AGENT=klams-monitor just health` passed 2 and failed 0. Run with no `KLAMS_AGENT`, the recipe stops and asks for one, which is expected.
