@@ -81,9 +81,10 @@ async fn main() -> Result<()> {
 
     // Sprint 006 (T013) — `--validate-backup-config` early-out.
     // Loads the config, prints a single line, exits 0/2 without
-    // starting the service or contacting any backend.
+    // starting the service. Sprint 060 (korg WI 4588): when backups
+    // are enabled it also asks Postgres its version, advisory only.
     if args.iter().any(|a| a == "--validate-backup-config") {
-        validate_backup_config_cli(&config_path);
+        validate_backup_config_cli(&config_path).await;
     }
 
     // Sprint 007 — `--validate-config` early-out covering all blocks
@@ -728,9 +729,14 @@ fn validate_config_cli(config_path: &str) -> ! {
 ///
 /// Loads `klams.toml`, runs [`BackupConfig::validate`], prints either
 /// `OK: ...` or the error, and exits with `0` on success or `2` on
-/// any error. No backends are contacted, no logging is initialized.
-/// Never returns.
-fn validate_backup_config_cli(config_path: &str) -> ! {
+/// any error. No logging is initialized. Never returns.
+///
+/// Sprint 060 (korg WI 4588): with backups enabled it also compares
+/// the `pg_dump` major against the server's and prints a `warning:`
+/// on a mismatch — the one backend contact this check makes, bounded
+/// at 5s. Advisory: neither a mismatch nor an unreachable server
+/// changes the exit code.
+async fn validate_backup_config_cli(config_path: &str) -> ! {
     let cfg = match config::Config::from_path(config_path) {
         Ok(c) => c,
         Err(e) => {
@@ -757,6 +763,18 @@ fn validate_backup_config_cli(config_path: &str) -> ! {
             }
             for warning in cfg.backup.warnings() {
                 eprintln!("warning: {warning}");
+            }
+            if cfg.backup.enabled {
+                match klams_store::backup::postgres::check_tool_version(
+                    &cfg.postgres.url,
+                    cfg.backup.pg_bin_dir.as_deref(),
+                )
+                .await
+                {
+                    Ok(Some(warning)) => eprintln!("warning: {warning}"),
+                    Ok(None) => {}
+                    Err(e) => eprintln!("note: pg client/server version check skipped: {e}"),
+                }
             }
             std::process::exit(0);
         }

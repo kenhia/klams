@@ -620,12 +620,31 @@ diff /tmp/pre-counts-facts  /tmp/post-counts-facts  && echo "facts match"
 diff /tmp/pre-counts-events /tmp/post-counts-events && echo "events match"
 ```
 
+> **Before you rely on this: `[backup].pg_bin_dir`.** If the host's
+> `pg_dump` is newer than the server (Debian/Ubuntu's `pg_wrapper`
+> picks the newest client installed), the nightly dumps are written
+> fine and this procedure cannot restore them: the server-major
+> `pg_restore` rejects the archive version, and the newer one emits
+> `SET`s the older server refuses. Pin `pg_bin_dir` to the server's
+> major — `/usr/lib/postgresql/16/bin` for the shipped Postgres 16 —
+> and confirm with `just backup-validate-config`, which warns on a
+> mismatch (korg WI 4588). A hand edit to `/etc/klams/klams.toml` is
+> lost on a host rebuild unless the rendered config carries it.
+
+> **A fresh, never-migrated target needs no `--force`** (sprint 060).
+> Steps 2–3 above give a database with no `facts`/`events` tables and
+> a Qdrant with no collection; the guard reads both as empty and the
+> dump and snapshot create them. Before sprint 060 the probe failed
+> here with `relation "facts" does not exist`.
+
 > **`--force` is required against a non-empty target.** `just
 > restore-from <date>` refuses to overwrite a non-empty target and
 > exits non-zero with `target is non-empty; pass --force to
 > overwrite`. The guard probes the two stores separately
 > (`crates/klams-service/src/backup/restore.rs`): Postgres rows in
-> `facts` / `events`, and Qdrant points in the knowledge collection —
+> `facts` / `events` (a missing table counts as zero), and Qdrant
+> points in the knowledge collection (a missing collection counts as
+> zero; any other error refuses rather than guessing) —
 > knowledge lives only in Qdrant; Postgres has no knowledge table.
 > Pass `--force` only when you have already accepted the data loss:
 >
