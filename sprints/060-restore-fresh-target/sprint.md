@@ -127,3 +127,16 @@ pair into a fresh, never-migrated stack on kubs0.
   operator-surface rule in `AGENTS.md` ("generic or fail loudly"). The
   new warning is the loud half: on a rebuilt host that forgot the pin, the
   first `--validate-backup-config` or nightly run says so by name.
+
+## Repaired in passing (at ship)
+
+- **CI's restore tests had silently lost their PG 16 tools.** On PR #65 the
+  first CI run failed both `restore_roundtrip` tests. The new one failed at
+  its version assertion (`pg_dump is PostgreSQL 18 but the server is 16`).
+  The **existing** one failed with WI 4588's own error
+  (`SET transaction_timeout` rejected by PG 16). `main` was last green on
+  2026-11-14, so the runner image changed underneath it: only the 18 client
+  remained, and `common::pg16_bin_dir()` fell back to PATH. Without the new
+  assertion, the first sign would have been an unexplained red `main`.
+  `ci.yml` now installs `postgresql-client-16` before the integration
+  tests. The gate that proves it is the PR's own CI run.
