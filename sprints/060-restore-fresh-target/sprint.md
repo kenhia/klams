@@ -140,3 +140,34 @@ pair into a fresh, never-migrated stack on kubs0.
   assertion, the first sign would have been an unexplained red `main`.
   `ci.yml` now installs `postgresql-client-16` before the integration
   tests. The gate that proves it is the PR's own CI run.
+
+## Deployed 2026-11-26
+
+- Version `0.1.60` live on kubs0. `/healthz` confirms (`status` Ok, with
+  postgres, qdrant, embeddings and reranker all Ok; was `0.1.59`).
+  `klams-service`, `klams-scanner`, `klams-monitor` and `klams-token`
+  `--version` all report `0.1.60`.
+- Deployed by the `deploy-kubs0` skill: `just publish`, then
+  `just deploy-from-store`, then `just restart`. Published to the store as
+  `artifacts/klams-*/0.1.60/`.
+- Merged as `ab834e1` (PR #65).
+- Unit files unchanged. The only `deploy/` change is the example config, so
+  `install-systemd` was not run.
+- kai's `klams-scanner` was left at `0.1.59`. This sprint changed no scanner
+  code, and kai's floor does not move for a backup/restore fix.
+- Rollback target: `0.1.59` via `just rollback` (`.prev` in place), or
+  `just deploy-from-store --version 0.1.59`.
+- Migrations applied: none.
+- Verified live:
+  - `sudo -u klams env KLAMS_CONFIG=/etc/klams/klams.toml klams-service
+    --validate-backup-config` printed `OK: [backup] enabled,
+    dir=/backup/klams, …` with **no** version warning and no note. The new
+    check reached Postgres and found the pinned 16 tools matching the 16
+    server, as the overseer asked.
+  - `KLAMS_AGENT=claude just health`: 2 passed, 0 failed.
+  - `klams-service` and `klams-monitor` are active, with 0 error lines in the
+    journal since the restart.
+  - The restore path itself was proven pre-merge by the drill above, using
+    the same code.
+- Config changes required: none. The `pg_bin_dir` pin was already in
+  `/etc/klams/klams.toml` from 2026-11-13.
