@@ -166,6 +166,16 @@ async fn run_once_inner(
     run: &mut BackupRun,
     date_str: &str,
 ) -> Result<(), OrchestratorError> {
+    // Advisory (korg WI 4588): a dump written by a newer pg_dump than
+    // the server cannot be restored by `--restore-from`. Warn, never
+    // block — the overseer's call for sprint 060.
+    match store_backup::postgres::check_tool_version(&deps.pg_url, deps.pg_bin_dir.as_deref()).await
+    {
+        Ok(Some(warning)) => tracing::warn!("{warning}"),
+        Ok(None) => {}
+        Err(e) => tracing::debug!(error = %e, "pg client/server version check skipped"),
+    }
+
     let pg_suffix = next_suffix_for_date(
         &deps.backup_dir,
         ArtifactKind::Postgres,

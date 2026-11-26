@@ -576,7 +576,18 @@ weekly_count         = 4                           # newest N Sundays per kind
 same_day_strategy    = "suffix"                    # "suffix" (default) | "overwrite"
 status_hook          = "/usr/local/bin/klams-backup-shim"   # optional
 status_hook_timeout  = "10s"                       # bounded; misbehaving hook can't stall a backup
+pg_bin_dir           = "/usr/lib/postgresql/16/bin"  # REQUIRED when PATH's pg_dump is newer than the server
 ```
+
+**Set `pg_bin_dir` whenever the host's Postgres client tools are newer
+than the server** — on Debian/Ubuntu `pg_wrapper` picks the newest
+installed, so installing any newer client package silently changes it.
+A newer `pg_dump` writes an archive the server-major `pg_restore`
+cannot read, and its own `pg_restore` emits `SET`s the older server
+rejects: the nightly dump succeeds and `restore-from` cannot restore it
+(korg WI 4588 — kubs0 ran PG 18 tools against PG 16 until 2026-11-13).
+Since sprint 060 every backup run, and `backup-validate-config`, warns
+when the `pg_dump` major differs from the server's.
 
 Under the shipped systemd unit, enabling `[backup]` also needs the
 `ReadWritePaths=` drop-in described in [systemd](#systemd) above — the
@@ -587,15 +598,22 @@ Validate the config without starting the service:
 ```bash
 just backup-validate-config
 # OK: [backup] enabled=true backup_dir=/backup/klams window_start_utc=07:00 ...
+# warning: [backup] pg_dump is PostgreSQL 18 but the server is 16: ...   (only on a mismatch)
 ```
+
+With backups enabled this is the one validation that contacts a
+backend: it asks Postgres its version (bounded at 5s) to compare with
+the `pg_dump` the backup would run. Advisory — a mismatch prints a
+`warning:` and an unreachable server a `note:`; neither changes the
+exit code.
 
 ### `just` recipe additions
 
 | Recipe                    | What it does |
 |---------------------------|--------------|
 | `backup-once`             | Runs `klams-service --run-backup-now` once: skips the scheduler but exercises every other path (maintenance flag, hook invocations, retention, metrics). |
-| `restore-from <date> [--force]` | Restores `postgres-<date>.dump` + `qdrant-<date>.snapshot` from `[backup].backup_dir`. Refuses non-empty targets without `--force`. |
-| `backup-validate-config`  | Loads `klams.toml`, runs `BackupConfig::validate()`, exits `0` on OK / `2` on validation error. |
+| `restore-from <date> [--force]` | Restores `postgres-<date>.dump` + `qdrant-<date>.snapshot` from `[backup].backup_dir`. Refuses non-empty targets without `--force`; a never-migrated database or a missing collection counts as empty (sprint 060), so a fresh DR target needs no `--force`. |
+| `backup-validate-config`  | Loads `klams.toml`, runs `BackupConfig::validate()`, exits `0` on OK / `2` on validation error. Warns (exit code unchanged) when `pg_dump`'s major differs from the server's. |
 | `backup-verify [<date>]`  | Read-only integrity check of a committed pair (default: today UTC). Runs `pg_restore --list` on the dump and `tar tf` on the snapshot, asserts both produce a non-empty listing. Exits `0` on OK / `1` on missing or unreadable artifact. |
 | `backup-size`             | Brings up the test stack, loads the scale fixture, times one `run_once`, prints `kind | bytes | seconds`, and appends a dated entry to `sprints/006-maintenance-and-backups/sizing.md`. |
 

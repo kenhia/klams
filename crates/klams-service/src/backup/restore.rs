@@ -135,17 +135,33 @@ fn newest_artifact(
         })
 }
 
+/// Rows in `facts` + `events`. A table that does not exist counts as
+/// empty: a never-migrated database is exactly the disaster-recovery
+/// target, and the dump creates the schema itself (korg WI 4588 —
+/// this used to fail `relation "facts" does not exist`).
 async fn probe_postgres_non_empty(pg_url: &str) -> Result<u64, RestoreError> {
     let pool = sqlx::PgPool::connect(pg_url)
         .await
         .map_err(|e| RestoreError::PgProbe(e.to_string()))?;
-    let row: (i64,) =
-        sqlx::query_as("SELECT (SELECT COUNT(*) FROM facts) + (SELECT COUNT(*) FROM events)")
+    let mut total: u64 = 0;
+    for table in ["facts", "events"] {
+        let exists: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
+            .bind(table)
             .fetch_one(&pool)
             .await
             .map_err(|e| RestoreError::PgProbe(e.to_string()))?;
+        if !exists {
+            continue;
+        }
+        // `table` is one of two literals above, never input.
+        let n: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
+            .fetch_one(&pool)
+            .await
+            .map_err(|e| RestoreError::PgProbe(e.to_string()))?;
+        total += u64::try_from(n).unwrap_or(0);
+    }
     pool.close().await;
-    Ok(u64::try_from(row.0).unwrap_or(0))
+    Ok(total)
 }
 
 async fn probe_qdrant_non_empty(rest_url: &str, collection: &str) -> Result<u64, RestoreError> {
@@ -164,9 +180,19 @@ async fn probe_qdrant_non_empty(rest_url: &str, collection: &str) -> Result<u64,
         .send()
         .await
         .map_err(|e| RestoreError::QdrantProbe(e.to_string()))?;
-    if !resp.status().is_success() {
-        // Treat missing collection as empty.
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        // A missing collection is empty: the snapshot upload creates it.
         return Ok(0);
+    }
+    if !resp.status().is_success() {
+        // Anything else (auth, 5xx) is not evidence of emptiness, and
+        // reading it as such would let the guard wave through a
+        // restore over live data.
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(RestoreError::QdrantProbe(format!(
+            "{url} returned {status}: {body}"
+        )));
     }
     let env: CountEnvelope = resp
         .json()

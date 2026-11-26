@@ -324,10 +324,14 @@ task_interval_seconds  = 3600
 #
 # Directory holding the `pg_dump`/`pg_restore` binaries used for
 # backups and `just backup-verify` (sprint 035, #776 — a real key that
-# was previously undocumented). Set it when the pg_dump on PATH doesn't
-# match the server's major version (the compose stack runs Postgres 16,
-# so e.g. Debian/Ubuntu: "/usr/lib/postgresql/16/bin"). Unset, the
-# binaries are taken from PATH.
+# was previously undocumented). SET IT whenever the host's client tools
+# are newer than the server — the compose stack runs Postgres 16, so on
+# Debian/Ubuntu "/usr/lib/postgresql/16/bin". Unset, the binaries come
+# from PATH, where pg_wrapper picks the NEWEST installed client: a newer
+# pg_dump writes dumps that `--restore-from` cannot restore into the
+# older server, and nothing fails until you need the backup (korg WI
+# 4588). Every backup run and `--validate-backup-config` warn when the
+# pg_dump major differs from the server's.
 # pg_bin_dir           = "/usr/lib/postgresql/16/bin"
 
 

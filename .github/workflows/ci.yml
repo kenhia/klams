@@ -74,6 +74,21 @@ jobs:
       - name: Bring up test stack
         uses: ./.github/actions/test-stack
 
+      # Sprint 060 (korg WI 4588): the test stack runs Postgres 16, and the
+      # restore tests use `common::pg16_bin_dir()` (/usr/lib/postgresql/16/bin)
+      # when it exists, else PATH. By 2026-11-26 the runner image shipped
+      # only the 18 client, so the backup wrote a dump PG 16 rejects
+      # (`SET transaction_timeout`): the trap WI 4588 found on kubs0, which
+      # the new version assertion caught here. Install the server-major
+      # client; the pgdg script only adds the apt source if it is missing.
+      - name: Install PostgreSQL 16 client tools (match the test server)
+        run: |
+          if ! sudo apt-get install -y -qq postgresql-client-16; then
+            sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+            sudo apt-get install -y -qq postgresql-client-16
+          fi
+          /usr/lib/postgresql/16/bin/pg_dump --version
+
       - name: cargo test --ignored (integration)
         env:
           TEST_DATABASE_URL: postgres://klams:klams_test@127.0.0.1:61400/klams

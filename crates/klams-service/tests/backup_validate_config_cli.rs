@@ -37,7 +37,9 @@ agent_name = "test-agent"
 scopes     = ["read", "write"]
 
 [postgres]
-url = "postgres://klams:klams@127.0.0.1:5432/klams"
+# Port 1, not 5432: since sprint 060 an enabled-backup validation asks
+# Postgres its version, and on kubs0 5432 is the live database.
+url = "postgres://klams:klams@127.0.0.1:1/klams"
 max_connections = 4
 
 [qdrant]

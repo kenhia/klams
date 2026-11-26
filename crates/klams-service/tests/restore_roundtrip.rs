@@ -126,3 +126,147 @@ async fn restore_roundtrip_reproduces_counts_and_sample() {
 
     pool.close().await;
 }
+
+const FRESH_COLLECTION: &str = "klams_restore_fresh_target_test";
+
+async fn qdrant_points(collection: &str) -> u64 {
+    let v: serde_json::Value = reqwest::get(format!(
+        "{}/collections/{collection}",
+        common::test_qdrant_rest_url()
+    ))
+    .await
+    .expect("qdrant GET")
+    .json()
+    .await
+    .expect("qdrant json");
+    v["result"]["points_count"].as_u64().unwrap_or(0)
+}
+
+/// Sprint 060 (korg WI 4588) — the disaster-recovery case the test
+/// above never exercised. It truncates tables that already exist and
+/// passes `force=true`, so it could not see either defect the November
+/// 2026 restore drill hit on kubs0:
+///
+/// 1. `--restore-from` without `--force` into a **never-migrated**
+///    database failed its own guard (`relation "facts" does not
+///    exist`), and the Qdrant side has to accept a missing collection.
+/// 2. The `pg_dump` the backup runs must match the server's major, or
+///    the dump it writes cannot be restored by this tool. Asserted
+///    against the same `pg_bin_dir` resolution the backup uses, so on
+///    a host whose PATH `pg_dump` is newer than the server and with no
+///    pin, this test fails and says why.
+///
+/// Restores into a brand-new database (created and dropped here) and a
+/// deleted collection, with `force=false`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires docker-compose.test.yml; multi-second roundtrip"]
+async fn restore_into_never_migrated_target_without_force() {
+    let _serial = common::whole_database_guard().await;
+    common::ensure_collection(FRESH_COLLECTION, true).await;
+    let dir = tempdir().unwrap();
+    let state = MaintenanceState::new();
+    let server = TestServer::spawn().await;
+
+    let pool = sqlx::PgPool::connect(&common::test_pg_url())
+        .await
+        .expect("pg connect");
+    sqlx::query("TRUNCATE facts, events, summaries CASCADE")
+        .execute(&pool)
+        .await
+        .expect("truncate");
+    let fixture = generate_with_seed(FixtureScale::tiny(), 0xDA70_0060_4588_0001);
+    seed::load(&server.store, &fixture).await;
+    let facts_before = count_facts(&pool).await;
+    let events_before = count_events(&pool).await;
+    let sample_before = sample_fact_ids(&pool).await;
+    assert!(facts_before > 0 && events_before > 0);
+
+    let backup_deps = OrchestratorDeps {
+        backup_dir: dir.path().to_path_buf(),
+        pg_url: common::test_pg_url(),
+        pg_bin_dir: common::pg16_bin_dir(),
+        qdrant_rest_url: common::test_qdrant_rest_url(),
+        qdrant_collection: FRESH_COLLECTION.into(),
+        daily_count: 14,
+        weekly_count: 4,
+        same_day_strategy: SameDayStrategy::Suffix,
+        drop_remote_qdrant_snapshot: false,
+        state: state.clone(),
+        status_hook: None,
+        status_hook_timeout: std::time::Duration::from_secs(10),
+    };
+
+    // Defect 1: the tools the backup will run must match the server.
+    let check = klams_store::backup::postgres::check_tool_version(
+        &backup_deps.pg_url,
+        backup_deps.pg_bin_dir.as_deref(),
+    )
+    .await
+    .expect("version check must be able to read both sides");
+    assert_eq!(
+        check, None,
+        "a dump written by these tools could not be restored by --restore-from"
+    );
+
+    let run = run_once(&backup_deps).await.expect("backup ran");
+    assert_eq!(run.ok, Some(true), "backup run must be ok");
+    let points_before = qdrant_points(FRESH_COLLECTION).await;
+    let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+
+    // A never-migrated database: no `facts`, no `events`, nothing.
+    let fresh_db = format!("klams_restore_fresh_{}", std::process::id());
+    sqlx::query(&format!("DROP DATABASE IF EXISTS {fresh_db}"))
+        .execute(&pool)
+        .await
+        .expect("drop stale fresh db");
+    sqlx::query(&format!("CREATE DATABASE {fresh_db}"))
+        .execute(&pool)
+        .await
+        .expect("create fresh db");
+    let mut fresh_url = url::Url::parse(&common::test_pg_url()).expect("pg url");
+    fresh_url.set_path(&format!("/{fresh_db}"));
+    // And a missing collection.
+    reqwest::Client::new()
+        .delete(format!(
+            "{}/collections/{FRESH_COLLECTION}",
+            common::test_qdrant_rest_url()
+        ))
+        .send()
+        .await
+        .expect("delete collection");
+
+    let restore_deps = OrchestratorDeps {
+        pg_url: fresh_url.to_string(),
+        ..backup_deps
+    };
+    let result = run_from(&restore_deps, &date, false, |_| {}).await;
+
+    let fresh = sqlx::PgPool::connect(fresh_url.as_str())
+        .await
+        .expect("fresh connect");
+    let outcome = async {
+        result.map_err(|e| format!("restore without force into a fresh target: {e}"))?;
+        Ok::<_, String>((
+            count_facts(&fresh).await,
+            count_events(&fresh).await,
+            sample_fact_ids(&fresh).await,
+        ))
+    }
+    .await;
+    fresh.close().await;
+    sqlx::query(&format!("DROP DATABASE IF EXISTS {fresh_db} WITH (FORCE)"))
+        .execute(&pool)
+        .await
+        .expect("drop fresh db");
+    pool.close().await;
+
+    let (facts_after, events_after, sample_after) = outcome.expect("restore succeeded");
+    assert_eq!(facts_after, facts_before, "fact count must match");
+    assert_eq!(events_after, events_before, "event count must match");
+    assert_eq!(sample_after, sample_before, "10-row fact sample must match");
+    assert_eq!(
+        qdrant_points(FRESH_COLLECTION).await,
+        points_before,
+        "qdrant point count must match"
+    );
+}
