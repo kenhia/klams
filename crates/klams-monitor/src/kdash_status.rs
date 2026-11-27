@@ -18,13 +18,15 @@
 //! corpus counts (summed exactly as klams-view's `/api/overview` sums
 //! them) and each scanner author's `last_seen_at`, which klams bumps only
 //! on a write; `/metrics` for the last backup. A scanner's `last_ran_at`
-//! comes from systemd and so is only known for a scanner whose unit runs
-//! on this host — any other scanner reports it as null, which the
-//! contract defines as "no source".
+//! is its author's `last_ran_at` on `/v1/authors` — the per-run heartbeat
+//! every scanner sends (sprint 061, WI 4639) — so a scanner on any host
+//! has one. Before 061 it came from systemd and only this host's scanner
+//! had a source. One source for every scanner, on purpose: a run that
+//! reported failure, or a scanner that has never sent a heartbeat,
+//! publishes null, which the contract defines as "no source".
 //!
 //! Inert unless a `[kdash_status]` section is present in the config.
 
-use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use klams_client::Client;
@@ -62,12 +64,10 @@ pub struct KdashStatusConfig {
 pub struct ScannerConfig {
     /// Display name on the card — today the scanner's host.
     pub name: String,
-    /// The klams author the scanner writes as.
+    /// The klams author the scanner writes as — and reports its runs
+    /// as. (A pre-061 `unit = ` key is ignored: the run time now comes
+    /// from the heartbeat for every scanner, not from systemd.)
     pub author: String,
-    /// The scanner's systemd service, when it runs on THIS host. Its
-    /// last successful run becomes `last_ran_at`; absent means null.
-    #[serde(default)]
-    pub unit: Option<String>,
     /// How often the scanner is scheduled, in seconds.
     #[serde(default = "default_scanner_interval")]
     pub expected_interval_s: u64,
@@ -95,8 +95,6 @@ pub struct Observed {
     pub authors: Option<Vec<PublicAuthor>>,
     /// The backup gauge from `/metrics`, when present and non-zero.
     pub backup_at: Option<i64>,
-    /// Last successful run per scanner name, from systemd.
-    pub last_ran: HashMap<String, i64>,
 }
 
 fn health_word(s: HealthStatus) -> &'static str {
@@ -166,15 +164,19 @@ pub fn build_record(cfg: &KdashStatusConfig, obs: &Observed) -> Value {
             .scanners
             .iter()
             .map(|s| {
-                let wrote = list
-                    .iter()
-                    .find(|a| a.agent_name == s.author)
-                    .map(|a| a.last_seen_at.timestamp())
+                let a = list.iter().find(|a| a.agent_name == s.author);
+                let wrote = a.map(|a| a.last_seen_at.timestamp()).filter(|t| *t > 0);
+                // Only a run that reported success counts, as with the
+                // systemd source this replaced (sprint 059).
+                let ran = a
+                    .filter(|a| a.last_run_ok == Some(true))
+                    .and_then(|a| a.last_ran_at)
+                    .map(|t| t.timestamp())
                     .filter(|t| *t > 0);
                 json!({
                     "name": s.name,
                     "last_wrote_at": wrote,
-                    "last_ran_at": obs.last_ran.get(&s.name),
+                    "last_ran_at": ran,
                     "expected_interval_s": s.expected_interval_s,
                 })
             })
@@ -202,29 +204,6 @@ pub fn build_record(cfg: &KdashStatusConfig, obs: &Observed) -> Value {
     })
 }
 
-/// Parse `systemctl show --timestamp=unix -p Result -p ExecMainExitTimestamp`
-/// output into the last *successful* run's end time. A unit that has never
-/// run reports an empty timestamp; a failed last run is not a run the card
-/// should call healthy, so both are `None`.
-pub fn parse_last_ran(show: &str) -> Option<i64> {
-    let mut result = None;
-    let mut exit = None;
-    for line in show.lines() {
-        if let Some(v) = line.strip_prefix("Result=") {
-            result = Some(v.trim());
-        } else if let Some(v) = line.strip_prefix("ExecMainExitTimestamp=") {
-            exit = v
-                .trim()
-                .strip_prefix('@')
-                .and_then(|n| n.parse::<i64>().ok());
-        }
-    }
-    match (result, exit) {
-        (Some("success"), Some(t)) if t > 0 => Some(t),
-        _ => None,
-    }
-}
-
 /// Pull one un-labelled gauge out of Prometheus text exposition.
 pub fn parse_gauge(metrics: &str, name: &str) -> Option<f64> {
     metrics.lines().find_map(|l| {
@@ -234,7 +213,7 @@ pub fn parse_gauge(metrics: &str, name: &str) -> Option<f64> {
     })
 }
 
-/// Reads klams and systemd, builds the record, and publishes it.
+/// Reads klams, builds the record, and publishes it.
 #[derive(Debug)]
 pub struct StatusPublisher {
     cfg: KdashStatusConfig,
@@ -291,13 +270,6 @@ impl StatusPublisher {
             }
         };
         obs.backup_at = self.backup_at().await;
-        for s in &self.cfg.scanners {
-            if let Some(unit) = &s.unit {
-                if let Some(t) = last_ran(unit).await {
-                    obs.last_ran.insert(s.name.clone(), t);
-                }
-            }
-        }
         obs
     }
 
@@ -380,49 +352,9 @@ impl StatusPublisher {
     }
 }
 
-async fn last_ran(unit: &str) -> Option<i64> {
-    let out = tokio::time::timeout(
-        SUBPROCESS_TIMEOUT,
-        Command::new("systemctl")
-            .args([
-                "show",
-                unit,
-                "--timestamp=unix",
-                "-p",
-                "Result",
-                "-p",
-                "ExecMainExitTimestamp",
-            ])
-            .output(),
-    )
-    .await
-    .ok()?
-    .ok()?;
-    parse_last_ran(&String::from_utf8_lossy(&out.stdout))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn last_ran_success() {
-        let s = "Result=success\nExecMainExitTimestamp=@1794618657\n";
-        assert_eq!(parse_last_ran(s), Some(1_794_618_657));
-    }
-
-    #[test]
-    fn last_ran_failed_or_never() {
-        assert_eq!(
-            parse_last_ran("Result=exit-code\nExecMainExitTimestamp=@1794618657\n"),
-            None
-        );
-        assert_eq!(
-            parse_last_ran("Result=success\nExecMainExitTimestamp=\n"),
-            None
-        );
-        assert_eq!(parse_last_ran(""), None);
-    }
 
     #[test]
     fn gauge_parses_only_the_exact_name() {

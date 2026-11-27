@@ -71,7 +71,7 @@ pub const SERVER_INSTRUCTIONS: &str = "klams memory server. Writes are attribute
     `memory_supersede` (one call: replacement + hidden original \
     + trail) over delete-then-add; if it is another author's \
     and you lack `manage`, file `supersede_propose` for review \
-    instead. Use `memory_update` for typo-level fixes to your own \
+    instead (no `retire_ids`, just the corrected `text`). Use `memory_update` for typo-level fixes to your own \
     records. A `similar_existing` \
     block on a `memory_add` response is after the fact — the \
     near-duplicate is already written. The remedy is \
@@ -858,7 +858,7 @@ pub fn all_tool_descriptors() -> Vec<Tool> {
         ),
         tool_descriptor::<supersede_propose::SupersedeProposeArgs>(
             "supersede_propose",
-            "Propose consolidating agent-authored knowledge you may not supersede yourself (another author's records). Name the keeper and 1-20 records to retire into it; add `text` to merge them into a new memory, or omit it when the keeper already says everything. A `manage` identity accepts or rejects it with supersede_proposal_resolve; nothing changes until then. An identical pending proposal is deduped. For your own records, use memory_supersede directly.",
+            "Propose consolidating agent-authored knowledge you may not supersede yourself (another author's records). Name the keeper and 1-20 records to retire into it; add `text` to merge them into a new memory, or omit it when the keeper already says everything. To correct ONE stale record, pass no `retire_ids` and the corrected `text`. A `manage` identity accepts or rejects it with supersede_proposal_resolve; nothing changes until then. An identical pending proposal is deduped. For your own records, use memory_supersede directly.",
         ),
         tool_descriptor::<supersede_proposals_list::SupersedeProposalsListArgs>(
             "supersede_proposals_list",
@@ -915,6 +915,12 @@ fn envelope_result(env: &crate::errors::ErrorEnvelope) -> CallToolResult {
     let mut out = CallToolResult::success(vec![ContentBlock::text(json)]);
     out.is_error = Some(true);
     out.structured_content = Some(structured);
+    // Sprint 061 (korg:4767 item 10): the error code also goes in the
+    // result's own `_meta`, where MCP clients look for it. The text
+    // envelope above is deliberately unchanged — klams-mind parses it.
+    if let serde_json::Value::Object(meta) = serde_json::to_value(&env.meta).unwrap_or_default() {
+        out.meta = Some(rmcp::model::MetaObject(meta));
+    }
     out
 }
 
@@ -935,6 +941,45 @@ mod tests {
 
     fn pinned(a: Option<&Map<String, Value>>) -> Option<&str> {
         a?.get("author_id")?.as_str()
+    }
+
+    /// Sprint 061 (korg:4767 item 10, ruling "fix it, keep the text"): a
+    /// failed call carries `error_code` in the `CallToolResult`'s OWN
+    /// `_meta`, and the JSON envelope inside the text is unchanged, so a
+    /// client parsing the nested envelope keeps working.
+    #[test]
+    fn error_result_puts_code_in_own_meta_and_keeps_the_text_envelope() {
+        let env = crate::errors::envelope_with_retry(
+            crate::errors::EMBEDDING_UNAVAILABLE,
+            "embedder down",
+            5,
+        );
+        let out = envelope_result(&env);
+        assert_eq!(out.is_error, Some(true));
+        let meta = out.meta.as_ref().expect("result _meta is set").0.clone();
+        assert_eq!(
+            meta.get("error_code"),
+            Some(&json!("EMBEDDING_UNAVAILABLE"))
+        );
+        assert_eq!(meta.get("retry_after_seconds"), Some(&json!(5)));
+        let text = out.content[0].as_text().expect("text content").text.clone();
+        assert_eq!(
+            text,
+            serde_json::to_string(&env).unwrap(),
+            "text envelope unchanged"
+        );
+        let nested: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            nested["_meta"]["error_code"],
+            json!("EMBEDDING_UNAVAILABLE")
+        );
+        assert_eq!(
+            out.structured_content,
+            Some(serde_json::to_value(&env).unwrap()),
+            "structured content unchanged"
+        );
+        let wire = serde_json::to_value(&out).unwrap();
+        assert_eq!(wire["_meta"]["error_code"], json!("EMBEDDING_UNAVAILABLE"));
     }
 
     #[test]

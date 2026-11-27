@@ -7,8 +7,6 @@
 //! new key (`kdash:klams:v2:status`), so this copy should never need a
 //! silent refresh — replace it only alongside a key change.
 
-use std::collections::HashMap;
-
 use jsonschema::JSONSchema;
 use klams_monitor::kdash_status::{build_record, KdashStatusConfig, Observed, ScannerConfig};
 use klams_types::{HealthSnapshot, PublicAuthor};
@@ -38,13 +36,11 @@ fn cfg() -> KdashStatusConfig {
             ScannerConfig {
                 name: "kai".into(),
                 author: "kai-scanner".into(),
-                unit: None,
                 expected_interval_s: 3600,
             },
             ScannerConfig {
                 name: "kubs0".into(),
                 author: "klams-scanner".into(),
-                unit: Some("klams-scanner.service".into()),
                 expected_interval_s: 3600,
             },
         ],
@@ -68,11 +64,27 @@ fn health(status: &str, rerank: Option<&str>) -> HealthSnapshot {
 }
 
 fn author(name: &str, last_seen: &str, knowledge: i64, writes: i64, events: i64) -> PublicAuthor {
+    ran(name, last_seen, None, None, knowledge, writes, events)
+}
+
+/// An author as `/v1/authors` returns it since sprint 061, with the run
+/// heartbeat's `last_ran_at` / `last_run_ok`.
+fn ran(
+    name: &str,
+    last_seen: &str,
+    last_ran: Option<&str>,
+    ok: Option<bool>,
+    knowledge: i64,
+    writes: i64,
+    events: i64,
+) -> PublicAuthor {
     serde_json::from_value(json!({
         "id": uuid::Uuid::now_v7(),
         "agent_name": name,
         "created_at": "2026-06-01T00:00:00Z",
         "last_seen_at": last_seen,
+        "last_ran_at": last_ran,
+        "last_run_ok": ok,
         "counts": {
             "writes": writes, "knowledge": knowledge, "events": events,
             "soft_deletes": 0, "restores_received": 0,
@@ -87,9 +99,11 @@ fn observed() -> Observed {
         health: Some(health("Ok", Some("Ok"))),
         authors: Some(vec![
             author("kai-scanner", "2026-11-13T21:19:17.982202Z", 123_565, 0, 0),
-            author(
+            ran(
                 "klams-scanner",
                 "2026-11-10T06:09:06.047238Z",
+                Some("2026-11-14T00:30:57Z"),
+                Some(true),
                 104_933,
                 0,
                 0,
@@ -97,7 +111,6 @@ fn observed() -> Observed {
             author("claude", "2026-11-13T05:04:57Z", 364, 8, 6),
         ]),
         backup_at: Some(1_794_556_864),
-        last_ran: HashMap::from([("kubs0".to_string(), 1_794_618_657)]),
     }
 }
 
@@ -154,13 +167,46 @@ fn a_scanner_that_ran_without_writing_carries_both_stamps() {
     let s = &r["scanners"];
     assert_eq!(s[0]["name"], "kai");
     assert_eq!(s[0]["last_wrote_at"], 1_794_604_757);
-    // No unit on this host for kai: present-and-null, never absent.
+    // kai's author has never sent a heartbeat: present-and-null, never absent.
     assert!(s[0].as_object().unwrap().contains_key("last_ran_at"));
     assert_eq!(s[0]["last_ran_at"], Value::Null);
     assert_eq!(s[1]["name"], "kubs0");
     assert_eq!(s[1]["last_wrote_at"], 1_794_290_946);
-    assert_eq!(s[1]["last_ran_at"], 1_794_618_657);
+    assert_eq!(s[1]["last_ran_at"], 1_794_616_257);
     assert_eq!(s[1]["expected_interval_s"], 3600);
+}
+
+/// Sprint 061 (WI 4639): every scanner's run time comes from its own
+/// heartbeat on `/v1/authors` — a remote scanner (kai) is no longer
+/// null — and a run that reported failure is not a run the card should
+/// call healthy, so it publishes null exactly as the systemd source did.
+#[test]
+fn a_remote_scanner_run_time_comes_from_its_heartbeat() {
+    let (_, compiled) = schema();
+    let mut obs = observed();
+    let authors = obs.authors.as_mut().unwrap();
+    authors[0] = ran(
+        "kai-scanner",
+        "2026-11-13T21:19:17.982202Z",
+        Some("2026-11-27T21:00:00Z"),
+        Some(true),
+        123_565,
+        0,
+        0,
+    );
+    authors[1] = ran(
+        "klams-scanner",
+        "2026-11-10T06:09:06.047238Z",
+        Some("2026-11-27T21:00:00Z"),
+        Some(false),
+        104_933,
+        0,
+        0,
+    );
+    let r = build_record(&cfg(), &obs);
+    assert_valid(&compiled, &r);
+    assert_eq!(r["scanners"][0]["last_ran_at"], 1_795_813_200);
+    assert_eq!(r["scanners"][1]["last_ran_at"], Value::Null, "failed run");
 }
 
 #[test]
@@ -169,7 +215,6 @@ fn degraded_record_is_valid() {
     let mut obs = observed();
     obs.health = Some(health("Degraded", Some("Down")));
     obs.backup_at = None;
-    obs.last_ran.clear();
     let r = build_record(&cfg(), &obs);
     assert_valid(&compiled, &r);
     assert_eq!(r["health"], "degraded");

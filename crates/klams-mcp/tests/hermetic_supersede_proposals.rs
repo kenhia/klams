@@ -84,7 +84,7 @@ async fn propose_refuses_shapes_that_cannot_be_applied() {
     let w = writer(mind);
 
     for (bad, why) in [
-        (args(keeper, vec![], None), "empty retire set"),
+        (args(keeper, vec![], None), "empty retire set and no text"),
         (args(keeper, vec![keeper], None), "keeper in retire set"),
         (args(keeper, vec![dup, dup], None), "duplicate retiree"),
         (args(keeper, vec![dup], Some("   ")), "blank text"),
@@ -212,6 +212,48 @@ async fn accept_with_text_writes_the_merge_as_the_proposer() {
     }
     let live = memory_get(&st, MemoryGetArgs { id: merged }).await.unwrap();
     assert_eq!(live.id, merged);
+}
+
+/// Sprint 061 (WI 4835, Ken's option 1): a non-manage identity may
+/// propose a correction to ONE record — zero `retire_ids` plus `text` —
+/// and a manage identity's accept replaces the keeper with that text.
+#[tokio::test]
+async fn a_text_only_correction_replaces_the_keeper_on_accept() {
+    let (st, store) = state();
+    let claude = store.seed_author("claude");
+    let codex = store.seed_author("codex");
+    let ken = store.seed_author("ken");
+    let keeper = store.seed_knowledge(claude, "kai runs the scanner daily");
+    let p = propose(
+        &st,
+        args(keeper, vec![], Some("kai runs the scanner hourly")),
+        Some(&writer(codex)),
+    )
+    .await
+    .expect("a writer may propose a single-record correction")
+    .proposal;
+    assert!(p.retire_ids.is_empty());
+    assert!(
+        !store.is_knowledge_soft_deleted(keeper),
+        "nothing changes yet"
+    );
+
+    let out = resolve(&st, accept(vec![p.id]), Some(&curator(ken)))
+        .await
+        .unwrap();
+    assert_eq!(out.results[0].outcome, ResolveOutcome::Accepted);
+    let fixed = out.results[0].result_memory_id.expect("a new memory");
+    assert_ne!(fixed, keeper);
+    assert_eq!(
+        store.knowledge_text(fixed).as_deref(),
+        Some("kai runs the scanner hourly")
+    );
+    assert_eq!(store.superseded_by(keeper), Some(fixed));
+    assert_eq!(
+        store.knowledge_author(fixed),
+        Some(codex),
+        "proposer's words"
+    );
 }
 
 #[tokio::test]

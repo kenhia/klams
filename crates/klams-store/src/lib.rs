@@ -486,6 +486,13 @@ pub trait Store: Send + Sync + 'static {
         Ok(0)
     }
 
+    /// Sprint 061 (WI 4639) — record a run heartbeat for an author
+    /// (`last_ran_at = now()`, `last_run_ok = ok`). Default no-op so test
+    /// mocks need not implement it.
+    async fn record_author_run(&self, _id: Uuid, _ok: bool) -> StoreResult<u64> {
+        Ok(0)
+    }
+
     // ---------------------------------------------------------------
     // Sprint 031 (#645) — the surface `klams-mcp` used to reach through
     // `CompositeStore`'s concrete `.postgres` / `.qdrant` / `.embedder`
@@ -844,6 +851,10 @@ pub struct AuthorWithCountsOut {
     pub events: i64,
     pub soft_deletes_authored: i64,
     pub restores_received: i64,
+    /// Sprint 061 (WI 4639): the author's last reported run, and whether
+    /// it succeeded. `None` until the author first sends a heartbeat.
+    pub last_ran_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_run_ok: Option<bool>,
 }
 
 /// Query for `Store::list_author_memories`.
