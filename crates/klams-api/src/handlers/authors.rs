@@ -31,6 +31,12 @@ pub struct PublicAuthor {
     pub client_version: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub last_seen_at: chrono::DateTime<chrono::Utc>,
+    /// Sprint 061 (WI 4639): when this author last reported a run
+    /// (`POST /v1/authors/me/ran`). Present-and-null until it first does.
+    /// Distinct from `last_seen_at`, which is a write stamp.
+    pub last_ran_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Whether that run succeeded; null with `last_ran_at`.
+    pub last_run_ok: Option<bool>,
     pub counts: AuthorCounts,
 }
 
@@ -54,6 +60,8 @@ fn to_public(row: AuthorWithCountsOut) -> PublicAuthor {
         client_version: row.author.client_version,
         created_at: row.author.created_at,
         last_seen_at: row.author.last_seen_at,
+        last_ran_at: row.last_ran_at,
+        last_run_ok: row.last_run_ok,
         counts: AuthorCounts {
             writes: row.writes_facts,
             knowledge: row.writes_knowledge,
@@ -99,6 +107,48 @@ pub async fn list<S: Store>(
     Ok(Json(AuthorPage {
         authors: rows.into_iter().map(to_public).collect(),
         next_cursor,
+    }))
+}
+
+/// Body of `POST /v1/authors/me/ran`.
+#[derive(Debug, Deserialize)]
+pub struct RanRequest {
+    /// Whether the run succeeded. Defaults to `true`, so a bare `{}`
+    /// heartbeat reads as "I ran".
+    #[serde(default = "default_ok")]
+    pub ok: bool,
+}
+
+fn default_ok() -> bool {
+    true
+}
+
+/// Answer to `POST /v1/authors/me/ran`.
+#[derive(Debug, Serialize)]
+pub struct RanResponse {
+    pub author_id: Uuid,
+    pub ok: bool,
+}
+
+/// `POST /v1/authors/me/ran` — sprint 061 (WI 4639).
+///
+/// The run heartbeat: a scanner (or any periodic writer) calls this once
+/// per run as its own bound identity, and klams records `last_ran_at`
+/// and `last_run_ok` on that author. Idempotent: a repeat only moves the
+/// time forward. Does not move `last_seen_at` — wrote is not ran.
+pub async fn ran<S: Store>(
+    State(state): State<ApiState<S>>,
+    axum::Extension(author): axum::Extension<klams_types::AuthenticatedAuthor>,
+    Json(req): Json<RanRequest>,
+) -> Result<Json<RanResponse>, ApiError> {
+    state
+        .store
+        .record_author_run(author.author_id, req.ok)
+        .await
+        .map_err(|e| map_store(&e))?;
+    Ok(Json(RanResponse {
+        author_id: author.author_id,
+        ok: req.ok,
     }))
 }
 

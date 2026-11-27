@@ -281,3 +281,41 @@ async fn authors_memories_old_cursor_returns_400() {
     .await;
     assert_eq!(status, 400);
 }
+
+/// Sprint 061 (WI 4639): the run heartbeat. `last_ran_at` is always
+/// present on the projection; one `POST /v1/authors/me/ran` as the bound
+/// identity moves it to now and records `last_run_ok`. (The bound test
+/// author is shared and long-lived, so "null before" and "`last_seen_at`
+/// untouched" are not assertable here without racing other tests; the
+/// UPDATE in `record_author_run` names only the two run columns.)
+#[ignore = "requires docker compose stack"]
+#[tokio::test]
+async fn run_heartbeat_sets_last_ran_at_and_last_run_ok() {
+    let server = TestServer::spawn().await;
+    let author = server.bound_author_id;
+    let (status, before) = http_get(&server, &format!("/v1/authors/{author}")).await;
+    assert_eq!(status, 200);
+    assert!(
+        before.as_object().unwrap().contains_key("last_ran_at"),
+        "{before}"
+    );
+
+    let started = chrono::Utc::now() - chrono::Duration::seconds(5);
+    for ok in [false, true] {
+        let resp = reqwest::Client::new()
+            .post(format!("http://{}/v1/authors/me/ran", server.addr))
+            .header("X-Homelab-Agent", &server.author_agent)
+            .json(&serde_json::json!({ "ok": ok }))
+            .send()
+            .await
+            .expect("send");
+        assert_eq!(resp.status(), 200);
+        let (_, after) = http_get(&server, &format!("/v1/authors/{author}")).await;
+        assert_eq!(after["last_run_ok"], ok, "{after}");
+        let ran: chrono::DateTime<chrono::Utc> = after["last_ran_at"]
+            .as_str()
+            .and_then(|t| t.parse().ok())
+            .unwrap_or_else(|| panic!("last_ran_at set: {after}"));
+        assert!(ran >= started, "{after}");
+    }
+}

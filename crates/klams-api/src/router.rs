@@ -201,6 +201,13 @@ pub fn build_router_with_auth<S: Store>(state: ApiState<S>, auth_state: AuthStat
             "/v1/authors",
             get(handlers::authors::list::<S>).route_layer(scope!(Scope::Read)),
         )
+        // Sprint 061 (WI 4639): the per-run heartbeat. Write, because
+        // every scanner already holds it and it changes the caller's own
+        // row only — no new scope for a scanner to be granted.
+        .route(
+            "/v1/authors/me/ran",
+            post(handlers::authors::ran::<S>).route_layer(scope!(Scope::Write)),
+        )
         .route(
             "/v1/authors/{id}",
             get(handlers::authors::get::<S>).route_layer(scope!(Scope::Read)),

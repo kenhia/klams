@@ -248,6 +248,13 @@ impl Client {
         self.get_json_query("/v1/authors", params).await
     }
 
+    /// `POST /v1/authors/me/ran` — sprint 061 (WI 4639): the run
+    /// heartbeat, recorded on this client's own bound identity.
+    pub async fn report_run(&self, ok: bool) -> ClientResult<serde_json::Value> {
+        self.post_json("/v1/authors/me/ran", &serde_json::json!({ "ok": ok }))
+            .await
+    }
+
     /// `GET /v1/authors/{id}`.
     pub async fn get_author(&self, id: uuid::Uuid) -> ClientResult<PublicAuthor> {
         self.get_json(&format!("/v1/authors/{id}")).await

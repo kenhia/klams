@@ -155,6 +155,92 @@ async fn propose_then_accept_retires_into_the_merge() {
     server.cleanup().await;
 }
 
+/// Sprint 061 (WI 4835): a write-only identity proposes a correction to
+/// another author's single record — no `retire_ids`, just `text` — and
+/// a `manage` identity's accept replaces it. Exercises migration 0014's
+/// relaxed CHECK against real Postgres.
+#[ignore = "requires docker compose test stack"]
+#[tokio::test]
+async fn a_text_only_correction_is_accepted_end_to_end() {
+    let server = TestServer::spawn_isolated().await;
+    let owner = McpSession::handshake(server.addr, &server.author_agent).await;
+    let proposer = McpSession::handshake(server.addr, &server.other_write_agent).await;
+    let curator = McpSession::handshake(server.addr, &server.manage_agent).await;
+
+    let keeper = owner
+        .seed_knowledge("s061 stale: kai scans daily", &["s061"])
+        .await;
+
+    let bare = proposer
+        .call_tool(
+            "supersede_propose",
+            serde_json::json!({ "keeper_id": keeper, "retire_ids": [], "reason": "stale" }),
+        )
+        .await;
+    assert_eq!(
+        McpSession::error_code(&bare),
+        Some("SCHEMA_VALIDATION_FAILED"),
+        "no retirees and no text is still refused: {bare}"
+    );
+
+    let filed = proposer
+        .call_tool(
+            "supersede_propose",
+            serde_json::json!({
+                "keeper_id": keeper,
+                "text": "s061 fixed: kai scans hourly",
+                "reason": "the timer is hourly",
+            }),
+        )
+        .await;
+    assert_eq!(McpSession::error_code(&filed), None, "{filed}");
+    let pid = filed["proposal"]["id"].as_str().unwrap().to_string();
+
+    let done = curator
+        .call_tool(
+            "supersede_proposal_resolve",
+            serde_json::json!({ "proposal_ids": [pid], "decision": "accept" }),
+        )
+        .await;
+    assert_eq!(done["results"][0]["outcome"], "accepted", "{done}");
+    let correction = done["results"][0]["result_memory_id"].as_str().unwrap();
+
+    let got = owner
+        .call_tool("memory_get", serde_json::json!({ "id": correction }))
+        .await;
+    assert_eq!(got["text"], "s061 fixed: kai scans hourly", "{got}");
+    let old = owner
+        .call_tool("memory_get", serde_json::json!({ "id": keeper }))
+        .await;
+    assert_eq!(McpSession::error_code(&old), Some("NOT_FOUND"), "{old}");
+
+    server.cleanup().await;
+}
+
+/// Sprint 061 (korg:4767 item 10): a failed call carries `error_code`
+/// in the `CallToolResult`'s own `_meta` on the wire, and the envelope in
+/// the text content is unchanged.
+#[ignore = "requires docker compose test stack"]
+#[tokio::test]
+async fn a_failed_call_carries_its_code_in_the_result_meta() {
+    let server = TestServer::spawn_isolated().await;
+    let owner = McpSession::handshake(server.addr, &server.author_agent).await;
+    let rpc = owner
+        .call_tool_rpc(
+            "memory_get",
+            serde_json::json!({ "id": Uuid::now_v7().to_string() }),
+        )
+        .await;
+    let result = &rpc["result"];
+    assert_eq!(result["isError"], true, "{rpc}");
+    assert_eq!(result["_meta"]["error_code"], "NOT_FOUND", "{rpc}");
+    let nested: serde_json::Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(nested["_meta"]["error_code"], "NOT_FOUND", "{rpc}");
+    assert_eq!(nested["isError"], true, "{rpc}");
+    server.cleanup().await;
+}
+
 /// Overseer ruling on korg:4401, against real Qdrant: restoring a
 /// superseded record clears `superseded_by` along with the soft-delete
 /// pair. `memory_admin_restore` and the proposal-accept rollback share

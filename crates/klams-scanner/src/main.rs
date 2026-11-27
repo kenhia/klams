@@ -135,14 +135,23 @@ async fn main() -> Result<()> {
     );
 
     loop {
+        let mut ok = true;
         for root in &roots {
             if let Err(e) =
                 scan_root(&client, &cfg.url, &host, &cursor_path, root, embed_limit).await
             {
                 tracing::warn!(root = %root.display(), error = %e, "scan failed");
+                ok = false;
             }
         }
         sm::record_last_run(now_seconds_f64());
+        // Sprint 061 (WI 4639): tell klams this scanner ran, so
+        // `/v1/authors` (and kdash:klams:status) knows a remote scanner's
+        // run time. Best-effort: a klams that cannot be reached must not
+        // fail the run over its own heartbeat.
+        if let Err(e) = client.report_run(ok).await {
+            tracing::warn!(error = %e, "run heartbeat to klams failed");
+        }
         if args.once {
             break;
         }

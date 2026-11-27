@@ -742,6 +742,22 @@ impl McpSession {
     /// `result.content[0].text`. Errors come back as tool results too
     /// (with an `error_code` in `meta`), not as transport failures.
     pub async fn call_tool(&self, name: &str, arguments: serde_json::Value) -> serde_json::Value {
+        let rpc = self.call_tool_rpc(name, arguments).await;
+        let text = rpc["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_else(|| panic!("unexpected tools/call response: {rpc}"));
+        serde_json::from_str(text).expect("tool result JSON")
+    }
+
+    /// The raw JSON-RPC response to a `tools/call` — for asserting on the
+    /// `CallToolResult` itself (its own `_meta`, sprint 061) rather than
+    /// the JSON inside its text content.
+    #[allow(dead_code)]
+    pub async fn call_tool_rpc(
+        &self,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> serde_json::Value {
         let body = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 2,
@@ -762,11 +778,7 @@ impl McpSession {
             .await
             .expect("tools/call");
         assert!(resp.status().is_success(), "tools/call http ok");
-        let rpc = parse_sse_json(&resp.text().await.expect("body"));
-        let text = rpc["result"]["content"][0]["text"]
-            .as_str()
-            .unwrap_or_else(|| panic!("unexpected tools/call response: {rpc}"));
-        serde_json::from_str(text).expect("tool result JSON")
+        parse_sse_json(&resp.text().await.expect("body"))
     }
 
     /// The `error_code` of a tool result that failed, or `None` if it

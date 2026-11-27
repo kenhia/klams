@@ -166,7 +166,20 @@ fn mutating_routes() -> Vec<(Method, &'static str)> {
             Method::POST,
             "/memory/dissents/00000000-0000-0000-0000-000000000001/discard",
         ),
+        // Sprint 061 (WI 4639): the run heartbeat writes the caller's row.
+        (Method::POST, "/v1/authors/me/ran"),
     ]
+}
+
+/// Sprint 061 (WI 4639): a scanner already holds Write, and that is all
+/// the heartbeat needs — no new scope to grant every scanner identity.
+#[tokio::test]
+async fn write_token_may_report_a_run() {
+    assert_ne!(
+        status(Method::POST, "/v1/authors/me/ran", WRITE_AGENT).await,
+        StatusCode::FORBIDDEN,
+        "a write-scoped scanner must reach the heartbeat"
+    );
 }
 
 #[tokio::test]

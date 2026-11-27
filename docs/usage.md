@@ -341,8 +341,27 @@ INFO klams_scanner: scan complete root=/srv/src walked=12345 indexed=0 pruned=0
 A scanner author's `last_seen_at` moves only when it **writes**. A host
 whose tree has not changed keeps an old `last_seen_at` while its timer
 fires hourly — that is healthy. Judge a scanner by when it last *ran*
-(`systemctl show klams-scanner.service -p ExecMainExitTimestamp -p Result`,
-or `last_ran_at` in the dashboard record below), not by when it last wrote.
+— `last_ran_at` on `GET /v1/authors` (below), or in the dashboard
+record — not by when it last wrote.
+
+### Scanner run heartbeat (`POST /v1/authors/me/ran`)
+
+Sprint 061 (WI 4639). At the end of every run, `klams-scanner` posts
+`{"ok": <bool>}` to `POST /v1/authors/me/ran` as its own identity
+(`Write` scope, which every scanner already holds). klams sets
+`last_ran_at = now()` and `last_run_ok` on that author, and
+`GET /v1/authors` / `GET /v1/authors/{id}` return both — present-and-null
+until the author's first heartbeat. `ok` is `false` when any root's scan
+failed (the scanner still exits 0 in that case, so systemd's `Result`
+alone could not tell). The heartbeat is best-effort: a klams it cannot
+reach is logged as a warning and never fails the run. It does **not**
+move `last_seen_at`, which stays a write stamp. Any periodic writer may
+send it; a bare `{}` means `ok: true`.
+
+```sh
+curl -s -X POST -H "X-Homelab-Agent: $KLAMS_AGENT" -H 'Content-Type: application/json' \
+  -d '{"ok": true}' "$KLAMS_URL/v1/authors/me/ran"
+```
 
 ### Dashboard status record (`kdash:klams:status`)
 
@@ -361,17 +380,19 @@ kdash_pub = "/usr/local/bin/kdash-pub"
 
 [[kdash_status.scanners]]          # one per scanner, in card order
 name = "kubs0"                     # display name
-author = "klams-scanner"           # the klams author it writes as
-unit = "klams-scanner.service"     # only for a scanner on THIS host
+author = "klams-scanner"           # the klams author it writes and reports runs as
 ```
 
 What each field is copied from: `/healthz` (health, version, uptime,
 subsystems, queue), `/v1/authors` (counts, summed as klams-view's
-`/api/overview` sums them, and each scanner's `last_wrote_at` from its
-author's `last_seen_at`), `/metrics` (`backup_at`), and for a scanner
-with a `unit`, systemd's last **successful** run (`last_ran_at`). A
-scanner on another host has no source here and reports `last_ran_at:
-null`. `new_per_day` is `[]`: klams has no daily series to copy yet. When
+`/api/overview` sums them, each scanner's `last_wrote_at` from its
+author's `last_seen_at`, and its `last_ran_at` from its author's run
+heartbeat — only when `last_run_ok` is true), and `/metrics`
+(`backup_at`). Since sprint 061 every scanner, on any host, has the one
+source; before it, `last_ran_at` came from systemd and a remote scanner
+was always null. A scanner whose last run failed, or that has never sent
+a heartbeat (a binary older than 0.1.61), reports `last_ran_at: null`.
+A leftover `unit = ` key from a 059/060 config is ignored. `new_per_day` is `[]`: klams has no daily series to copy yet. When
 klams does not answer, the record is still written, as `health: "down"`
 with every klams value null.
 
@@ -925,7 +946,8 @@ walks through detecting and reversing a mass-delete.
 Sprint 007 added the endpoints this runs on, and they are unchanged:
 
 1. **`GET /v1/authors`** — every registered author with rolling counts
-   (writes, knowledge, events, soft-deletes, restores received).
+   (writes, knowledge, events, soft-deletes, restores received), and
+   since sprint 061 `last_ran_at` / `last_run_ok` from the run heartbeat.
    Filter by `agent_name` substring or `since` timestamp.
 2. **`GET /v1/authors/{id}`** and **`GET /v1/authors/{id}/memories`** —
    author header (model, repo, client app, first/last seen, counts)

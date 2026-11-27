@@ -121,6 +121,20 @@ Key behaviors (current as of sprint 018):
   `supersede_propose` with a `keeper_id`, the `retire_ids` and,
   for a merge, the combined `text`. A `manage` identity accepts it
   with `supersede_proposal_resolve`.
+- **Correcting one record of another author's (sprint 061, WI 4835).**
+  Same tool, no `retire_ids`: `supersede_propose` with the stale
+  record as `keeper_id` and the corrected `text`. On accept the text
+  becomes a new memory (authored by you) that supersedes the keeper.
+  No retirees *and* no text is still refused — there would be nothing
+  to do.
+- **Where a failed call's error code is (sprint 061).** On an
+  `isError` result, `error_code` (plus `retry_after_seconds` /
+  `window_max_days` when they apply) is in the `CallToolResult`'s own
+  `_meta` — read `result.meta["error_code"]`. The same envelope is
+  still serialized as JSON inside the text content, unchanged, so a
+  client that parses the nested envelope keeps working. Before 0.1.61
+  the result's own `_meta` was empty and the nested parse was the only
+  route.
 
 ### Sprint 031 — MCP writes enforce the same policy as REST
 

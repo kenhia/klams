@@ -1126,6 +1126,10 @@ pub struct AuthorWithCounts {
     /// Number of times this author's items have been restored.
     /// Always `0` in v1 — restores are not yet audit-logged.
     pub restores_received: i64,
+    /// Sprint 061 (WI 4639): when this author last reported a run
+    /// (`POST /v1/authors/me/ran`), and whether that run succeeded.
+    pub last_ran_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_run_ok: Option<bool>,
 }
 
 /// Postgres-side projection of a soft-deleted fact for the admin
@@ -1313,6 +1317,21 @@ impl PostgresStore {
         Ok(res.rows_affected())
     }
 
+    /// Sprint 061 (WI 4639): record that this author ran — the scanner
+    /// heartbeat. Sets `last_ran_at = now()` and `last_run_ok`; never
+    /// touches `last_seen_at`, which stays a write stamp. Idempotent in
+    /// the sense that matters: a repeat only moves the time forward.
+    pub async fn record_author_run(&self, id: Uuid, ok: bool) -> StoreResult<u64> {
+        let res =
+            sqlx::query("UPDATE authors SET last_ran_at = now(), last_run_ok = $2 WHERE id = $1")
+                .bind(id)
+                .bind(ok)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StoreError::from_sqlx("record_author_run", &e))?;
+        Ok(res.rows_affected())
+    }
+
     /// Append a miss-log row (sprint 021, #317). Called fire-and-forget
     /// off the MCP search path, so callers ignore the result — a failed
     /// insert must never affect a live search.
@@ -1426,7 +1445,7 @@ impl PostgresStore {
             r"
             SELECT a.id, a.agent_name, a.model, a.session_title, a.repo,
                    a.client_app, a.client_version, a.extra,
-                   a.created_at, a.last_seen_at,
+                   a.created_at, a.last_seen_at, a.last_ran_at, a.last_run_ok,
                    COALESCE(fc.cnt, 0) AS fact_count,
                    COALESCE(ec.cnt, 0) AS event_count,
                    COALESCE(sd.cnt, 0) AS soft_deletes_authored
@@ -1477,6 +1496,8 @@ impl PostgresStore {
                 event_count: r.try_get("event_count").map_err(map_decode)?,
                 soft_deletes_authored: r.try_get("soft_deletes_authored").map_err(map_decode)?,
                 restores_received: 0,
+                last_ran_at: r.try_get("last_ran_at").map_err(map_decode)?,
+                last_run_ok: r.try_get("last_run_ok").map_err(map_decode)?,
             });
         }
         let next = if i64::try_from(out.len()).is_ok_and(|n| n == limit) {
@@ -1495,7 +1516,7 @@ impl PostgresStore {
             r"
             SELECT a.id, a.agent_name, a.model, a.session_title, a.repo,
                    a.client_app, a.client_version, a.extra,
-                   a.created_at, a.last_seen_at,
+                   a.created_at, a.last_seen_at, a.last_ran_at, a.last_run_ok,
                    COALESCE(fc.cnt, 0) AS fact_count,
                    COALESCE(ec.cnt, 0) AS event_count,
                    COALESCE(sd.cnt, 0) AS soft_deletes_authored
@@ -1529,6 +1550,8 @@ impl PostgresStore {
             event_count: r.try_get("event_count").map_err(map_decode)?,
             soft_deletes_authored: r.try_get("soft_deletes_authored").map_err(map_decode)?,
             restores_received: 0,
+            last_ran_at: r.try_get("last_ran_at").map_err(map_decode)?,
+            last_run_ok: r.try_get("last_run_ok").map_err(map_decode)?,
         }))
     }
 

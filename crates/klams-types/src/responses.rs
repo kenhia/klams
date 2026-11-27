@@ -92,6 +92,12 @@ pub struct PublicAuthor {
     pub client_version: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub last_seen_at: chrono::DateTime<chrono::Utc>,
+    /// Sprint 061 (WI 4639): the author's last reported run. `default`
+    /// so a client reading an older server still decodes.
+    #[serde(default)]
+    pub last_ran_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    pub last_run_ok: Option<bool>,
     pub counts: AuthorCounts,
 }
 

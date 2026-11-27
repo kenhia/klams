@@ -15,6 +15,12 @@
 //! it; without `text`, the keeper stays as it is and the retired records
 //! point at the keeper.
 //!
+//! Sprint 061 (WI 4835): `retire_ids` may be empty when `text` is given.
+//! That is a **single-record correction** — "replace the keeper with this
+//! text" — the path a non-manage agent takes to fix another author's
+//! stale record. Acceptance runs the same `text` branch: the replacement
+//! supersedes the keeper and nothing else is retired.
+//!
 //! Every argument is a string or an array of strings, deliberately: the
 //! untyped `payload` fields are what kept `dissent_propose` unreachable
 //! from Claude Code (#850).
@@ -43,13 +49,16 @@ pub struct SupersedeProposeArgs {
     /// live, agent-authored knowledge.
     #[schemars(with = "String")]
     pub keeper_id: Uuid,
-    /// The records to retire into the survivor (1..=20, distinct, not
-    /// the keeper). Each must be live, agent-authored knowledge.
+    /// The records to retire into the survivor (0..=20, distinct, not
+    /// the keeper). Each must be live, agent-authored knowledge. Empty
+    /// is allowed only with `text`: a correction to the keeper alone.
+    #[serde(default)]
     #[schemars(with = "Vec<String>")]
     pub retire_ids: Vec<Uuid>,
     /// Optional merged replacement text. Omit it when the keeper already
     /// says everything (a duplicate); pass it when the records combine
-    /// into something new (a merge).
+    /// into something new (a merge), or — with no `retire_ids` — as the
+    /// corrected text for the keeper alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     /// Why these records should be consolidated (1..=2000 chars) — the
@@ -119,6 +128,61 @@ fn proposal_hash(keeper: Uuid, retire_sorted: &[Uuid], text: Option<&str>) -> St
     sha256_hex(&format!("{keeper}\n{}\n{text}", retire.join(",")))
 }
 
+/// Check the retire set and text are a shape acceptance can apply:
+/// at most [`MAX_RETIRE_IDS`] distinct retirees, none the keeper, text
+/// non-blank when present, and — sprint 061 (WI 4835) — zero retirees
+/// only with text. Returns the sorted retire set and the trimmed text.
+fn validate_shape(
+    args: &SupersedeProposeArgs,
+) -> Result<(Vec<Uuid>, Option<String>), ErrorEnvelope> {
+    let mut retire = args.retire_ids.clone();
+    retire.sort_unstable();
+    retire.dedup();
+    if retire.len() > MAX_RETIRE_IDS {
+        return Err(envelope(
+            errors::SCHEMA_VALIDATION_FAILED,
+            format!("retire_ids must name at most {MAX_RETIRE_IDS} distinct records"),
+        ));
+    }
+    if retire.len() != args.retire_ids.len() {
+        return Err(envelope(
+            errors::SCHEMA_VALIDATION_FAILED,
+            "retire_ids contains a duplicate",
+        ));
+    }
+    if retire.contains(&args.keeper_id) {
+        return Err(envelope(
+            errors::SCHEMA_VALIDATION_FAILED,
+            "keeper_id must not also appear in retire_ids",
+        ));
+    }
+    let text = match args.text.clone() {
+        Some(t) => {
+            let t = t.trim().to_string();
+            if t.is_empty() {
+                return Err(envelope(
+                    errors::SCHEMA_VALIDATION_FAILED,
+                    "text must be non-empty when present (omit it to keep the keeper as is)",
+                ));
+            }
+            Some(t)
+        }
+        None => None,
+    };
+    // Sprint 061 (WI 4835): zero retirees is a single-record correction,
+    // which only means something with replacement text.
+    if retire.is_empty() && text.is_none() {
+        return Err(envelope(
+            errors::SCHEMA_VALIDATION_FAILED,
+            format!(
+                "retire_ids must name 1..={MAX_RETIRE_IDS} distinct records, or be empty \
+                 with `text` given to propose a correction to the keeper alone"
+            ),
+        ));
+    }
+    Ok((retire, text))
+}
+
 /// Execute `supersede_propose`.
 ///
 /// # Errors
@@ -148,40 +212,7 @@ pub async fn run<S: Store>(
             format!("reason must be 1..={MAX_REASON_CHARS} chars"),
         ));
     }
-    let mut retire = args.retire_ids.clone();
-    retire.sort_unstable();
-    retire.dedup();
-    if retire.is_empty() || retire.len() > MAX_RETIRE_IDS {
-        return Err(envelope(
-            errors::SCHEMA_VALIDATION_FAILED,
-            format!("retire_ids must name 1..={MAX_RETIRE_IDS} distinct records"),
-        ));
-    }
-    if retire.len() != args.retire_ids.len() {
-        return Err(envelope(
-            errors::SCHEMA_VALIDATION_FAILED,
-            "retire_ids contains a duplicate",
-        ));
-    }
-    if retire.contains(&args.keeper_id) {
-        return Err(envelope(
-            errors::SCHEMA_VALIDATION_FAILED,
-            "keeper_id must not also appear in retire_ids",
-        ));
-    }
-    let text = match args.text {
-        Some(t) => {
-            let t = t.trim().to_string();
-            if t.is_empty() {
-                return Err(envelope(
-                    errors::SCHEMA_VALIDATION_FAILED,
-                    "text must be non-empty when present (omit it to keep the keeper as is)",
-                ));
-            }
-            Some(t)
-        }
-        None => None,
-    };
+    let (retire, text) = validate_shape(&args)?;
 
     let author = state
         .store

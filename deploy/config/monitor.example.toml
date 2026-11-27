@@ -55,12 +55,11 @@ interval_secs = 30
 # interval_secs = 60                 # cadence; also expected_refresh_s
 # kdash_pub     = "kdash-pub"        # path or name on PATH
 #
-# One entry per scanner, in the order the card draws them. `unit` only
-# for a scanner whose systemd service runs on THIS host: its last
-# successful run becomes last_ran_at. Others report last_ran_at = null.
+# One entry per scanner, in the order the card draws them. last_ran_at
+# comes from the scanner author's run heartbeat on /v1/authors (sprint
+# 061), so a scanner on any host has one; no systemd unit is needed.
 #
 # [[kdash_status.scanners]]
 # name   = "this-host"
 # author = "klams-scanner"
-# unit   = "klams-scanner.service"
 # expected_interval_s = 3600

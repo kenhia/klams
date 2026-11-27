@@ -322,6 +322,10 @@ impl Store for CompositeStore {
         self.postgres.touch_author_last_seen_at(id).await
     }
 
+    async fn record_author_run(&self, id: Uuid, ok: bool) -> StoreResult<u64> {
+        self.postgres.record_author_run(id, ok).await
+    }
+
     // Sprint 031 (#645): delegate the MCP surface to the concrete
     // backends. These are the calls the tools used to make directly
     // through the public `.postgres` / `.qdrant` / `.embedder` fields.
@@ -626,6 +630,8 @@ fn authors_to_public(row: crate::postgres::AuthorWithCounts) -> crate::AuthorWit
         events: row.event_count,
         soft_deletes_authored: row.soft_deletes_authored,
         restores_received: row.restores_received,
+        last_ran_at: row.last_ran_at,
+        last_run_ok: row.last_run_ok,
     }
 }
 

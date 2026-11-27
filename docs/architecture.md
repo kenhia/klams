@@ -330,7 +330,12 @@ scanner chunks re-scan.
   (`supersedes` = keeper) when `text` is set, and stamps every retiree
   — plus the keeper, when there is a merge — with the soft-delete pair
   and `superseded_by` = the survivor; `deleted_by_author_id` is the
-  resolver. A failed mark restores what was already marked, removes
+  resolver. Since sprint 061 (WI 4835, migration 0014) `retire_ids` may
+  be empty when `text` is given — a **single-record correction**, the
+  path a non-manage agent takes to fix another author's stale record;
+  acceptance is the same `text` branch with no other retirees. The
+  table's CHECK is `cardinality(retire_ids) >= 1 OR text IS NOT NULL`.
+  A failed mark restores what was already marked, removes
   the replacement and returns the row to `pending`. Rationale for each
   call: `sprints/058-soft-delete-propose-supersede/sprint.md`.
 * **Reads of soft-deleted records** (sprint 058, WI 4331) —
@@ -697,6 +702,13 @@ does the endpoint return `503 + Retry-After`.
   is `Store::list_memories`' merge with `authors = [id]` and an
   all-time window — one newest-first timeline, one `ns:uuid` cursor;
   the old sectioned `section:ns:uuid` cursor is refused with a 400.
+  Sprint 061 (WI 4639) adds `last_ran_at` / `last_run_ok` to the author
+  projection (migration 0015, columns on `authors`), written by
+  **`POST /v1/authors/me/ran`** (`Write`) — the run heartbeat each
+  scanner sends once per run as its own identity. Deliberately separate
+  from `last_seen_at`, which stays a write stamp: a scanner that runs
+  and finds nothing new still ran. klams-monitor's `kdash:klams:status`
+  publisher copies it for every scanner.
 * **Admin tools (MCP)** — `memory_admin_list_deleted`,
   `memory_admin_restore`, `memory_admin_hard_delete`, and the author
   registry verbs (§3.2), all `Admin` scope.
@@ -853,7 +865,7 @@ every grant lists what it needs. Full model: [auth.md](auth.md).
 | Surface | Scope |
 |---------|-------|
 | `memory_search`, `memory_get`, `memory_related`, `event_search`, `supersede_proposals_list`; REST reads (`/memory/search`, `/memory/context`, `GET /memory/*`, `/v1/authors*`, `/v1/memories`) | `Read` |
-| `memory_add`, `memory_append_event`, `memory_delete`, `memory_supersede`, `memory_update`, `dissent_propose`, `supersede_propose`, `register_author`; REST writes (`POST /memory/facts`, `/memory/events`, `/memory/knowledge/{index,delete}`) | `Write` |
+| `memory_add`, `memory_append_event`, `memory_delete`, `memory_supersede`, `memory_update`, `dissent_propose`, `supersede_propose`, `register_author`; REST writes (`POST /memory/facts`, `/memory/events`, `/memory/knowledge/{index,delete}`, `/v1/authors/me/ran`) | `Write` |
 | `memory_admin_*` (restore, hard_delete, list_deleted, list/remove/merge authors) | `Admin` |
 | Cross-author curation: deleting/superseding/updating somebody else's memory; `supersede_proposal_resolve`; REST dissent promote/discard | `Manage` |
 
