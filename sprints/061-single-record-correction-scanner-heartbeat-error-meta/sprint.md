@@ -155,3 +155,31 @@ Three klams contract changes Ken ruled on at the 2026-11-27 staff meeting:
 - The live `/etc/klams/monitor.toml` still carries `unit =
   "klams-scanner.service"` on the kubs0 entry. Harmless (ignored); remove it
   whenever that file is next touched by whatever renders it.
+
+## Deployed 2026-11-27
+
+Deployed by the ship turn of karc leg `klams-badd2f`, via the `deploy-kubs0` skill (`.sprint-deploy`). Overseer clearance: korg:5107 comment 5248.
+
+- Version `0.1.61` live on kubs0 (`/healthz` confirms, status Ok with all four backends Ok; was `0.1.60`). `klams-token --version`, `klams-scanner --version` and `klams-monitor --version` all report `0.1.61`.
+- Published to the store as `artifacts/klams-{service,scanner,monitor,token}/0.1.61/` (`just publish`).
+- **Restart:** `klams-service` + `klams-monitor` restarted at **2026-11-27 20:33:24Z (12:33 PST)**. `/healthz` reported 0.1.61 by 20:33:25Z. The monitor logged one `/healthz unreachable` and one `publish failed` at the restart instant, which is the documented bind race, and none after.
+- Unit files: unchanged (only `deploy/config/monitor.example.toml` moved under `deploy/`), so `install-systemd` was not run.
+- kai's `klams-scanner`: deployed to `0.1.61` (`just deploy-remote kai klams-scanner`; `ssh kai klams-scanner --version` → `0.1.61`).
+- Migrations applied: **0014** (`supersede_proposals_retire_ids_check` replaced by `supersede_proposals_retire_or_text_check`) and **0015** (`authors.last_ran_at`, `authors.last_run_ok`). `_sqlx_migrations` is at 15. Row counts are unchanged across the migration: `authors` 50 → 50, `supersede_proposals` 5 → 5.
+- Rollback target: `0.1.60` via `just rollback` (`.prev` binaries in place), or any published version via `just deploy-from-store --version`. Either one **needs a restore to undo 0014/0015**, although both are additive, so an 0.1.60 binary runs fine against the migrated schema.
+- Config change: removed the stale `unit = "klams-scanner.service"` line from `/etc/klams/monitor.toml` before the restart (overseer ruling, comment 5248). The file is hand-managed on kubs0, not rendered by k-homelab. A backup was kept as `monitor.toml.bak-<UTC stamp>`, following the file's existing convention. `/etc/klams/klams.toml` was untouched.
+- **Verified live** (all triggered, nothing time-gated):
+  - **4639:**
+    - Triggered the real `klams-scanner.service` on kai and on kubs0 (probed from kubs0, the deploying host). Both exited `Result=success`.
+    - `/v1/authors` then showed `kai-scanner` `last_ran_at 20:33:44Z, last_run_ok true` and `klams-scanner` `last_ran_at 20:33:47Z, last_run_ok true`.
+    - `klams-monitor --kdash-status-once` published `kdash:klams:status`. Read back via `kdash-pub get`: kai `last_ran_at: 1795811624`, kubs0 `last_ran_at: 1795811627`. **kai is no longer null.**
+  - **4835:** throwaway records, owner `claude`, proposer `klams-bench` (read+write, no manage). Script: `.scratch-agent/061-live/probe.py`.
+    - Text-only proposal filed with `retire_ids: []`.
+    - With neither retirees nor text: `SCHEMA_VALIDATION_FAILED`.
+    - Proposer's own accept: `INSUFFICIENT_SCOPE`.
+    - `claude`'s accept: `accepted`. The replacement carries the corrected text, is authored by `klams-bench`, and has `supersedes` = keeper; the keeper now reads `NOT_FOUND`.
+    - Merge proposal (keeper + one retiree + text): `accepted`, both originals retired.
+    - Cleanup: the two survivors were soft-deleted, and all five throwaway records now read `NOT_FOUND`.
+  - **Error format:** `memory_get` on an unknown id came back with `isError: true`. The result's own `_meta` was `{"error_code": "NOT_FOUND"}`. The text content was still the full envelope `{"isError":true,"content":[…],"_meta":{"error_code":"NOT_FOUND"}}`, and `structuredContent` was identical to it.
+  - `KLAMS_AGENT=claude just health`: 2 passed, 0 failed.
+- klams memory `01a1c36c-162a-7202-bda8-2ee72cd40f35` superseded by `01a21eb7-6287-7f61-aeaf-95baf259416a`, carrying the corrected error-format account plus the correction shape.
